@@ -1827,3 +1827,60 @@ Domino workspace) rather than assume:
 runtime git operations (none exist today — apps don't commit) and any workspace-era (pre-pivot,
 soon-to-be-deleted) code paths are unaffected; this is scoped to the Orchestrator's own per-turn
 saves and the provisioning seed commit, the only two places this codebase ever authors a commit.
+
+## UPDATE 2026-09-24 (same session, continued): `registry.create()`/`registry.clone()` live-verified end to end against this real Domino sandbox — closes the gap named at the top of Phase 3's own status
+
+The user asked for this directly rather than more implementation: drive `registry.create()`/
+`registry.clone()` for real, not just against fakes. Built a real `DominoControlPlane` (sidecar
+token, this sandbox's own `DOMINO_ENVIRONMENT_ID`/`DOMINO_HARDWARE_TIER_ID`), a real `GitHubProvider`
+(token via `credentials.extract_token`), a real `ProvisionService` pointed at the actual
+`template/fastapi-antd`, and two independent throwaway `$SAGE_HOME` directories — one for `create()`,
+one for `clone()` — via a one-shot script, run once, deleted after.
+
+**Found and worth knowing before running anything like this again: the token that provisions repos
+has `repo` scope but NOT `delete_repo`** (checked via `GET /user`'s `X-OAuth-Scopes` header before
+creating anything, not assumed) — so **any repo `registry.create()` makes here cannot be deleted
+through the API afterward**, only by hand in GitHub's UI. This is not new; it explains an existing,
+larger problem found while checking: **23 real orphaned repos** (`sage-sales` through
+`sage-sales-23`) already sit on this account, left by `test_create_project.py`'s
+`test_a_container_that_cannot_provision_refuses_to_create` — a dogfood-unsafe test this file has
+called out every session, hitting real infrastructure every time the full suite runs (which happened
+3× this session alone). That test's own rollback path (`_rollback_repo`) already tries to delete the
+repo it just orphaned and already logs the same 403 each time — nobody had connected that log line to
+an accumulating account-level side effect until this check. Worth a dedicated look (rescope that test
+off real credentials, or fix `_rollback_repo`'s expectations) — not done here, flagged rather than
+fixed, since it's unrelated to Phase 3/registry work.
+
+**The live run itself** (one own bug found and fixed along the way): the first attempt used the
+wrong template path (guessed `backend/template/fastapi-antd` instead of the real
+`template/fastapi-antd` at the repo root) — failed after the GitHub repo was already created (empty,
+no commits, `auto_init: false`), and the rollback then hit the same delete_repo-scope 403 above,
+leaving `sage-live-verify-registry-delete-me` (no suffix) as a second, EMPTY orphan. Fixed the path
+and re-ran; `naming.candidates`' own `-N` collision retry picked
+`sage-live-verify-registry-delete-me-2` for the real attempt, exactly as designed.
+
+**Full pass, verified line by line, not just "it didn't crash":**
+- `registry.create("Live Verify Registry DELETE ME")` → real GitHub repo
+  `etanlightstone/sage-live-verify-registry-delete-me-2`, real Domino project of the same name
+  (id `6ab489f94fd92a76b2895e6a`), local directory seeded with the real template (`app.py` present),
+  `.sage/project.json` written with every field correct, and — the git-identity fix, confirmed live
+  in the same pass — **the initial commit's author is `Etan Lightstone
+  <etan.lightstone@dominodatalab.com>`**, not `agent <agent@localhost>`.
+- `registry.clone(entry.domino_project_id)`, from a SECOND, independent `$SAGE_HOME` → same slug,
+  same `app.py` bytes (byte-compared, not eyeballed), confirming the clone is a faithful copy of what
+  `create()` actually pushed.
+
+**Real resources left behind, not auto-deletable, named here for manual cleanup:**
+- GitHub repos (delete via GitHub UI): `etanlightstone/sage-live-verify-registry-delete-me` (empty,
+  this session's own path-bug artifact) and `etanlightstone/sage-live-verify-registry-delete-me-2`
+  (the real, successful verification).
+- Domino project `sage-live-verify-registry-delete-me-2` (id `6ab489f94fd92a76b2895e6a`) — archive or
+  delete from Domino's own project settings.
+- Local temp directories were cleaned up by the script itself; nothing left on disk.
+
+**This closes item 3 from the "Next session should" list two updates up** ("`registry.create()`/
+`clone()` are fully unit-tested but have never been driven through a real HTTP request or against a
+real Domino sandbox") — for the underlying library calls. Still not done: driving them through an
+actual HTTP route (none exist yet — that's still Phase 3 step 3's job, wiring `create`/`clone` to
+real routes together with the door/home-page work).
+saves and the provisioning seed commit, the only two places this codebase ever authors a commit.
