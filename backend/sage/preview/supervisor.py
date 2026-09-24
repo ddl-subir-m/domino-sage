@@ -20,6 +20,10 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..platform.auth import TokenSource
 
 log = logging.getLogger("sage.preview.supervisor")
 
@@ -59,10 +63,14 @@ class UvicornSupervisor:
     def mount_base(self) -> str:
         return ""
 
-    def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3) -> None:
+    def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3,
+                 token_source: TokenSource | None = None) -> None:
         self._workspace = Path(workspace)
         self._base_prefix = base_prefix  # unused by this stack; kept for the proxy's uniform call
         self._max_restarts = max_restarts
+        # For the child's own `sage_domino.py`/`sage_queries.py` to reach the platform without a
+        # sidecar (ONE-APP-PLAN.md §2.4) — a laptop preview has no sidecar at localhost:8899 at all.
+        self._token_source = token_source
         self._proc: subprocess.Popen | None = None
         self._upstream: str | None = None
         self._ready = threading.Event()
@@ -101,8 +109,7 @@ class UvicornSupervisor:
     def _spawn(self) -> None:
         self._ready.clear()
         self._upstream = None
-        port = _free_port() if not os.environ.get("SAGE_PREVIEW_PORT", "").strip() else self._env_port()
-        self._clear_stale_port(port)
+        port = _free_port()
         self._proc = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
              "--reload", "--reload-dir", ".", "--log-level", "info"],
@@ -111,17 +118,28 @@ class UvicornSupervisor:
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
-            env={**os.environ, "SAGE_PREVIEW": "1"},
+            env={**os.environ, "SAGE_PREVIEW": "1", **self._platform_env()},
         )
         threading.Thread(target=self._read_output, args=(self._proc,), daemon=True).start()
 
-    def _env_port(self) -> int:
-        raw = os.environ.get("SAGE_PREVIEW_PORT", "").strip()
-        try:
-            return int(raw)
-        except ValueError:
-            log.warning("preview: SAGE_PREVIEW_PORT=%r is not a number; using a free port", raw)
-            return _free_port()
+    def _platform_env(self) -> dict[str, str]:
+        """What this project's `sage_domino.py`/`sage_queries.py` need to reach the platform.
+
+        `DOMINO_API_HOST` is set explicitly rather than left to `**os.environ` above so a laptop
+        (which has no such variable in its own shell) gets it too — `TokenSource` already resolved
+        it from Settings or the injected env, so this is the same host either way. `SAGE_DOMINO_TOKEN`
+        is only set for a `static` source: a `sidecar` source means a real sidecar is reachable at
+        localhost:8899 inside this same container, which is what the app already reads by default.
+        """
+        ts = self._token_source
+        if ts is None:
+            return {}
+        env: dict[str, str] = {}
+        if ts.api_host:
+            env["DOMINO_API_HOST"] = ts.api_host
+        if ts.kind == "static":
+            env["SAGE_DOMINO_TOKEN"] = ts.bearer()
+        return env
 
     def _read_output(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
@@ -146,23 +164,3 @@ class UvicornSupervisor:
                 os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 self._proc.terminate()
-
-    def _clear_stale_port(self, port: int) -> None:
-        """Reap any leftover process still listening on `port` from an unclean prior shutdown."""
-        try:
-            # -sTCP:LISTEN restricts to the actual server socket — plain `-ti tcp:{port}` also
-            # matches client sockets (e.g. our own proxy's outgoing connections), which let this
-            # kill the orchestrator's own process group when its pid was among them.
-            pids = subprocess.run(
-                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5,
-                check=False,  # lsof exits 1 when nothing is listening — the empty stdout is the answer
-            ).stdout.split()
-        except (OSError, subprocess.TimeoutExpired):
-            return
-        for pid in pids:
-            try:
-                os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, ValueError):
-                continue
-            else:
-                log.warning("preview: killed stale process %s squatting on port %d", pid, port)

@@ -542,11 +542,12 @@ _ENTRY_POINT = "app.sh"
 # none.
 
 
-def _supervisor_for(workspace: Path, base_prefix: str) -> UvicornSupervisor:
+def _supervisor_for(workspace: Path, base_prefix: str,
+                     token_source: TokenSource | None = None) -> UvicornSupervisor:
     """The preview server for the app at `workspace`: the app's own uvicorn, reloaded on change.
     Reads the class off this module at call time, so a test that stands in for it still does.
     There is only one stack now, so there is nothing left to pick between (#490)."""
-    return UvicornSupervisor(workspace, base_prefix)
+    return UvicornSupervisor(workspace, base_prefix, token_source=token_source)
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
@@ -6313,7 +6314,7 @@ class Orchestrator:
         shim = EnforcementShim(control, self._effective_catalog(record), self._gateway,
                                project_name=self._cost_project_label)
         shim.resolve_capability = self.route_capability
-        supervisor = _supervisor_for(workspace.path, domino_base_prefix())
+        supervisor = _supervisor_for(workspace.path, domino_base_prefix(), self._token_source)
         queries = PreviewQueries(workspace.path, self._wm.template)
         # Cached BEFORE the preview starts, and the start below is best-effort (#500). A preview that
         # cannot start used to raise from here with `self._project` still None, so the attach never
@@ -6907,7 +6908,7 @@ class Orchestrator:
         if project.workspace.path != workspace.path:
             project.supervisor.stop()
             project.queries.stop()
-            project.supervisor = _supervisor_for(workspace.path, domino_base_prefix())
+            project.supervisor = _supervisor_for(workspace.path, domino_base_prefix(), self._token_source)
             project.queries = PreviewQueries(workspace.path, self._wm.template)
         project.workspace = workspace
         project.session_id = None

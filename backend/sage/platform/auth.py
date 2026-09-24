@@ -146,6 +146,12 @@ class TokenSource:
         of kind, not as a general-purpose accessor."""
         return self._bearer_fn()
 
+    @property
+    def api_host(self) -> str:
+        """The Domino host this source authenticates against — what a preview child process needs
+        to reach the platform itself (ONE-APP-PLAN.md §2.4), not just a header shape."""
+        return self._api_host
+
     def headers(self) -> dict[str, str]:
         """Auth header for a raw REST call to the Domino API, correct for either kind (see the
         module docstring for what was actually tried)."""

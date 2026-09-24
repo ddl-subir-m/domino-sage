@@ -142,6 +142,13 @@ def test_sdk_kwarg_matches_the_domino_data_constructor_shape():
     assert sidecar.sdk_kwarg() == {"token": "jwt-1"}
 
 
+def test_api_host_is_readable_for_a_preview_child_process():
+    """A per-project preview supervisor (ONE-APP-PLAN.md §2.4) needs the host as a plain string to
+    hand its child process — not just a header shape for Sage's own outbound calls."""
+    source = TokenSource.static("key-1", "https://d.example", scheme="api_key")
+    assert source.api_host == "https://d.example"
+
+
 def test_whoami_with_no_api_host_raises_rather_than_answering_garbage():
     source = TokenSource("sidecar", lambda: "tok", "")
     with pytest.raises(RuntimeError):

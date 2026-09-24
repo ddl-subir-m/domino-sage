@@ -269,7 +269,11 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
         await client_ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
 
         try:
-            upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
+            # In a thread: with many projects open in one process (ONE-APP-PLAN.md §2.4), this can
+            # block for as long as `UvicornSupervisor.start()`'s own timeout while a cold project's
+            # server boots — calling it inline on the event loop would freeze every OTHER project's
+            # requests for that whole wait, not just this one's.
+            upstream = await run_in_threadpool(get_upstream)  # raises RuntimeError while (re)starting
         except Exception:
             # Nothing to proxy yet; close cleanly — the Vite HMR client reconnects on its own.
             await client_ws.close()
@@ -315,7 +319,9 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
             if relayed is not None:
                 return relayed
         try:
-            upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
+            # Same reasoning as `ws_proxy` above: this can block for a cold project's whole startup
+            # timeout, and must not do that on the shared event loop other projects' requests share.
+            upstream = await run_in_threadpool(get_upstream)  # raises RuntimeError while (re)starting
         except Exception as e:
             return _starting(f"{type(e).__name__}: {e}")
         url = f"{upstream}{mount_base()}/{path}"

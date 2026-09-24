@@ -2331,3 +2331,138 @@ cloud-dogfood):
 the `publish_available()` dogfood check (`/mnt/code` is Sage's own repo here) plus
 `test_native_gateway_transport.py`'s Node ESM failure. Diff any new red against `git stash`
 before assuming it's yours.
+
+## UPDATE 2026-09-24 (new session): Phase 4 — preview per project
+
+Read `ONE-APP-PLAN.md` and this file fresh, starting from the "Where things stand" section above.
+Confirmed the branch matched this file's account (`9ffb38c5`, clean tree) before starting.
+
+**Found the supervisor was already structurally per-project**, and said so rather than redoing work
+that was already done: Phase 2/3 already gave every registry-cached `Orchestrator` its own `Project`
+and its own `UvicornSupervisor` (`_supervisor_for`, called from `Orchestrator.project()`/`_bind_app()`
+— both instance methods, so one call per open project, not a module-level shared instance). `_free_port()`
+and `mount_base() == ""` were already in place from the Phase 0 fastapi-antd-only work. `/p/<slug>/preview/*`
+already dispatches correctly with no code change needed: `_ProjectDispatchMiddleware` only ever EXTENDS
+`root_path`, never rewrites `path` (ONE-APP-PLAN.md §2.3), so the single `control_app.mount("/preview", ...)`
+registered at root already matches under any `root_path` value — Starlette routes on
+`get_route_path = path - root_path` at every level. The general mechanism is proven by
+`test_project_dispatch.py`'s existing `test_two_projects_bind_two_different_orchestrators` (any mount,
+including `/preview`, resolves via the same ContextVar); a further preview-specific end-to-end test
+would only re-prove the same mechanism through a heavier fixture, so none was added — see "not done"
+below for what a REAL live check still owes.
+**Also found `previewStatus` reset needs no code**: `scope-picker.js`'s project switch is already a
+full `window.location.assign(...)` browser navigation (ONE-APP-PLAN.md §2.3's own "switch is a
+same-origin navigation"), which re-initializes `store.js`'s state — including `previewStatus: 'idle'`
+— from scratch on every project open. Nothing to reset that isn't already reset by the navigation.
+
+**Found and fixed a real bug this pivot's own history had not yet surfaced**: `sage/preview/proxy.py`'s
+`get_upstream()` (`_preview_upstream` in `app.py`, which can block for up to `UvicornSupervisor.start()`'s
+own 30s timeout on a cold project or a crashed one) was called DIRECTLY inside `async def http_proxy`/
+`ws_proxy` route handlers — never on a background thread. In the single-project world this blocked one
+person's own requests; in the one-app pivot's actual shape (many projects, ONE process, ONE event loop)
+it would freeze every OTHER open project's requests — and every other async route in the whole
+process — for the same wait. This is exactly the #500 class of bug plan step 1 ("Supervisor start on
+a background thread... never on the request path") already named, just not yet found in this
+particular call path. Fixed: both call sites wrapped in `run_in_threadpool`.
+  - Proven with a test that actually discriminates fixed-from-broken, not just "both requests
+    eventually returned": `test_preview_proxy_does_not_block_the_event_loop.py` drives two concurrent
+    requests through ONE shared `asyncio` event loop (`httpx.AsyncClient` + `ASGITransport` +
+    `asyncio.gather`, all inside one `asyncio.run()`) against a `get_upstream` that blocks
+    synchronously, and asserts both were inside it AT THE SAME TIME. **First attempt was wrong and
+    caught before landing**: using `fastapi.testclient.TestClient` from two Python threads
+    (`ThreadPoolExecutor`) showed "both concurrent" regardless of whether the fix was in place —
+    each thread's call got its own event loop under `TestClient`'s httpx transport, so the test
+    wasn't exercising the one-shared-loop scenario the bug is actually about. Verified the ONE-loop
+    version does discriminate: monkeypatching `run_in_threadpool` to a passthrough (simulating the
+    pre-fix code with no file edit) reproduces `max_concurrent == 1`; the real fix gives `2`.
+  - Also nearly lost this exact fix once by mistake this session: a sanity-check edit was
+    reverted with `git checkout -- sage/preview/proxy.py` to restore the pre-check state, which
+    (correctly, since nothing had been committed) reverted ALL of this session's uncommitted changes
+    to that file, including the real fix, not just the check's own edit. Caught by `git diff --stat`
+    coming back empty when it shouldn't have; redone. Recorded so a future session doesn't reach for
+    `git checkout --` on a file with real uncommitted work still in it, even for a "just testing"
+    edit — `git stash`, not `git checkout --`, is the reversible one.
+
+**Completed the rest of plan §2.4:**
+- `sage/preview/supervisor.py`: removed `SAGE_PREVIEW_PORT` (`_env_port`) and the `lsof`-based
+  `_clear_stale_port` reaper. Both existed to guard a FIXED, shared port from a stale prior process —
+  `_free_port()` already picks a fresh OS-assigned ephemeral port every spawn, so the collision they
+  guarded against is now negligible, and keeping them would have meant two conflicting "which port"
+  stories in one class.
+- `UvicornSupervisor` gained an optional `token_source: TokenSource | None` and a `_platform_env()`
+  method: `DOMINO_API_HOST` is set explicitly (not left to `**os.environ`) so a laptop shell — which
+  never has it — gets it too, from the same `TokenSource` every other Domino call in this process
+  already uses; `SAGE_DOMINO_TOKEN` is set only for a `static` source (a laptop PAT/key), never for a
+  `sidecar` one (a real workspace/App already has a reachable sidecar in the same container, and
+  should keep using it — a minted-once env value would go stale against its whole reason for being
+  short-lived). `Orchestrator.project()`/`_bind_app()` now pass `self._token_source` through
+  `_supervisor_for`.
+- `TokenSource` (`platform/auth.py`) gained a public `api_host` property — it already stored this
+  privately; the supervisor needs it as a plain string, not just baked into `.headers()`.
+- `template/fastapi-antd/sage_domino.py`'s `token()` now reads `SAGE_DOMINO_TOKEN` first (stripped of
+  a `Bearer ` prefix the same way the sidecar's own answer already is) and only falls back to the
+  sidecar when it is unset — this is the actual "reader" that Phase 0 explicitly deferred this exact
+  passthrough for ("Skipped, deliberately... Revisit in Phase 4/5 when there's a reader for it").
+  **That deferred item was about `environment/app.sh`, the PUBLISH entrypoint** (a real sidecar is
+  always present there) — this session's reader is for the PREVIEW child `UvicornSupervisor` spawns
+  from inside the orchestrator process, a completely separate code path. `app.sh` still needs nothing
+  and was not touched.
+
+**Deliberately NOT done, named rather than silently skipped:**
+1. **`SAGE_PROXY_MODE` / `preview/prefix.py` deletion** — plan step 3 literally bundles this with
+   `SAGE_PREVIEW_PORT` and the reaper, but it is not a preview-port concern at all: `proxy_is_app()`
+   (`SAGE_PROXY_MODE=="app"`) is still the ONLY thing that distinguishes a published Domino App from
+   a laptop run, and real, current callers depend on it — `publish_available()`'s dogfood-safety
+   gate, `domino_base_prefix()`'s App-vs-local branch, `_manage_app_url`'s visibility check, and the
+   cost-label derivation. Phase 3's door deletion already retired the THIRD value this variable used
+   to distinguish (`workspace`, the Sage Builder pluggable-tool launch — `environment/pluggable-tools.yaml`
+   is gone, so nothing sets it anymore), which makes the docstring's three-way framing stale prose,
+   but the function itself is not: replacing App-detection with something else is genuinely Phase 7
+   packaging work ("Two hosts, one code path"), not something to fold into a preview change. Deleting
+   it now would have broken `publish_available()`'s safety gate for no preview-related benefit. Left
+   alone; the docstring's stale "Sage Builder workspace" framing is exactly the same kind of paper
+   cut Phase 3's own door-deletion update already flagged in `environment/README.md` rather than
+   silently rewriting mid-stream — a real rewrite of this file belongs with Phase 7's "Two hosts, one
+   code path" work, not scattered across whichever phase happens to touch it next.
+2. **A live check against a real Domino sandbox or a real laptop** — everything above is verified by
+   unit tests (including the concurrency test's careful double-check that it actually discriminates)
+   and a full-suite run, never by opening two real projects in two real tabs and watching their
+   previews run side by side. Same caveat every phase's own status entry in this file has carried;
+   the plan's own Phase 4 verify line ("two projects open in two tabs... `/p/a/preview/` and
+   `/p/b/preview/` serve different apps") is still only unit-proven, not live-proven.
+3. **`FlightExecutor`/`DataSourceClient(token=...)` on a laptop** — still untouched and still listed
+   as open item 4 in the "Where things stand" section above ("A PAT passed to `domino_data` as
+   `token=` ... has never been run"). This session's `SAGE_DOMINO_TOKEN` plumbing only reaches
+   `sage_domino.py`'s relay (Dataset/Governance/Users reads via plain `urllib`), not the Data Source
+   Flight executor, which constructs `DataSourceClient()` with no token argument at all and still
+   only works where a real sidecar is present. Out of scope here; risk #1/#4 in the plan stand as
+   they were.
+4. Risk #13 (shared vs. per-project `OpenCode` server) is untouched and still open — it concerns the
+   AGENT session server (`opencode serve`, one child per project today), which is architecturally
+   separate from the preview `UvicornSupervisor` this update is about. Nothing here required
+   resolving it, and nothing here makes it easier or harder to resolve later.
+
+**Verification:**
+- Every new/changed test green individually as written: `test_supervisor_parse.py` (rewritten: the
+  `SAGE_PREVIEW_PORT`/`_clear_stale_port` tests are gone, replaced with two tests proving the
+  `static`/`sidecar` env-passthrough split), `test_token_source.py` (+1, `api_host`),
+  `test_sage_domino_token_reads_the_supervisor_override.py` (new, 4 tests, loads the real shipped
+  `template/fastapi-antd/sage_domino.py` by path the way `test_a_no_build_app_serves_from_static_files.py`
+  already does), `test_preview_proxy_does_not_block_the_event_loop.py` (new, 1 test, see above).
+- `make lint` (repo-wide `cd backend && ruff check ..`): clean (one `UP037` quoted-annotation finding
+  caught and fixed along the way — `from __future__ import annotations` was already active in
+  `supervisor.py`, so the quotes around the new `TokenSource` type hint were needless).
+- **Full suite, reconciled**: `cd backend && uv run --extra dev pytest -q -n auto` →
+  `97 failed, 7745 passed, 10 skipped` (7852 collected, both runs). The first run's captured output
+  was silently truncated to the last 79 of 96(→97) `FAILED` lines by this session's own tool
+  plumbing — caught by counting rather than trusting the file, and fixed by redirecting to an
+  explicit file on a second run rather than trusting a background-task capture for a report this
+  size. All 97 failing test names, from 17 files, diffed against a `git stash`-restored baseline run
+  of exactly those 17 files (none overlap this session's changed files) — **byte-for-byte identical
+  failing test names, zero new failures, same collected count**. `git stash`/`git stash pop` verified
+  restored via `git status --short` immediately after.
+
+**Where things stand now**: Phase 4 is done as scoped above, live verification still owed (item 2),
+and item 1 (`SAGE_PROXY_MODE`) is Phase 7's to actually resolve, not Phase 4's. Next phase per the
+plan's own dependency table is Phase 5 (resources without mounts) or Phase 6 (publish); either can
+start from a clean, green tree.
