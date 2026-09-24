@@ -41,12 +41,14 @@ from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
-PLAN = Turn(text="# Consumption Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data")
+PLAN = Turn(text=execution_plan("Consumption Dashboard", "A consumption dashboard.",
+                                "Add the table", work="Add the table and wire up its data."))
 BUILD = Turn(writes={"src/App.tsx": "// the table\n"})
 FOLLOW_UP = Turn(writes={"src/App.tsx": "// the table, filtered\n"})
-FOLLOW_UP_PLAN = Turn(text="# Filtering\n\n## Plan\n1. Add a filter control")
+FOLLOW_UP_PLAN = Turn(text=execution_plan("Filtering", "A filter for the dashboard.",
+                                          "Add a filter control"))
 
 # Names no file of this app, is not a question, does not ask for a plan or an architecture — so
 # every deterministic signal declines and the scope classifier is the one that decides.

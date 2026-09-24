@@ -34,7 +34,7 @@ from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -54,12 +54,8 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-_DESK = ("# Desk exposure\n\n"
-         "## Plan\n1. **Desk table** — Show it.\n\n"
-         "## Open questions\n- None, ready to build.\n")
-_REPORT = ("# Daily P&L\n\n"
-           "## Plan\n1. **P&L table** — Show it.\n\n"
-           "## Open questions\n- None, ready to build.\n")
+_DESK = execution_plan("Desk exposure", "A desk exposure dashboard.", "Desk table")
+_REPORT = execution_plan("Daily P&L", "A daily P&L report.", "P&L table")
 
 ALL_OFF = {"resources": False, "artifacts": False, "transcript": False}
 ALL_ON = {"resources": True, "artifacts": True, "transcript": True}

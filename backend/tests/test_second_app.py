@@ -21,7 +21,7 @@ from sage.orchestrator.service import Orchestrator, TurnBusy
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -44,11 +44,7 @@ class ScriptedGateway:
 def _plan(name: str, step: str) -> str:
     """Opening on a `# ` heading, which is the only thing that names the app it is built into
     (#216) and what the plan shape asks the planner for."""
-    return (f"# {name}\n\n"
-            "## Plan\n"
-            f"1. **{step}** — Show it.\n\n"
-            "## Open questions\n"
-            "None — ready to build.\n")
+    return execution_plan(name, f"A {name.lower()} app.", step)
 
 
 _DESK = _plan("Desk exposure", "Desk table")

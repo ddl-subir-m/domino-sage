@@ -19,7 +19,7 @@ from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -39,13 +39,8 @@ class ScriptedGateway:
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
-_PLAN = (
-    "# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n"
-    "## Plan\n"
-    "1. **Desk table** — Show notional by desk.\n\n"
-    "## Open questions\n"
-    "None — ready to build.\n"
-)
+_PLAN = execution_plan("Desk Exposure Dashboard", "A desk exposure dashboard.", "Desk table",
+                       work="Show notional by desk.")
 
 
 @pytest.fixture(autouse=True)
@@ -137,7 +132,7 @@ def test_a_build_writes_its_code_in_the_app_directory(tmp_path: Path):
     """The app directory is the build agent's working directory, so from the agent's side nothing
     has moved: it writes `src/App.tsx` and that lands one level down."""
     orch, oc, root = _orch(tmp_path, [
-        Turn(text="# Desk Dashboard\n\nA dashboard.\n\n## Plan\n1. **Table** — Show it.\n"),
+        Turn(text=execution_plan("Desk Dashboard", "A dashboard.", "Table")),
         Turn(text="Built it.", writes={"src/App.tsx": "// the desk table\n"}),
     ], verdict="BUILD")
     orch.project(start_preview=False)   # no Vite in tests

@@ -32,17 +32,12 @@ from sage.orchestrator.service import Orchestrator
 from sage.router.models import ModelCatalog
 from sage.workspace.snapshot import TurnSnapshot
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 ARTIFACT = b"\x89PNG revenue by desk"
 
-_PLAN = (
-    "# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n"
-    "## Plan\n"
-    "1. **Desk table** — Show notional by desk.\n\n"
-    "## Open questions\n"
-    "None — ready to build.\n"
-)
+_PLAN = execution_plan("Desk Exposure Dashboard", "A desk exposure dashboard.", "Desk table",
+                       work="Show notional by desk.")
 
 
 class OkFeedback:

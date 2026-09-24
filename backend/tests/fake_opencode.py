@@ -22,6 +22,32 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def execution_plan(name: str = "Test App", summary: str = "A test app.",
+                   step: str = "Build the app", *, files: str = "src/App.tsx",
+                   work: str | None = None, done_when: str = "The requested change is visible.",
+                   include_title: bool = True) -> str:
+    """A minimal valid v1 plan for tests whose subject is not the plan contract."""
+    title = f"# {name}\n\n" if include_title else ""
+    return title + (
+        f"{summary}\n\n"
+        "## Problem & outcome\n"
+        "The requested workflow is unavailable; this app makes it available.\n\n"
+        "## Who uses this\n"
+        "The app user.\n\n"
+        "## What it does\n"
+        f"- {step}.\n\n"
+        "## Screens\n"
+        f"- **{name}** — Shows the requested workflow.\n\n"
+        "## Done when\n"
+        f"- {done_when}\n\n"
+        "## Plan\n"
+        f"### 1. {step}\n"
+        f"- Files — {files}\n"
+        f"- Do — {work or step + '.'}\n"
+        f"- Done when — {done_when}"
+    )
+
+
 @dataclass
 class Turn:
     """What the agent does for one prompt.

@@ -28,7 +28,7 @@ from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -56,10 +56,15 @@ def _no_waiting(monkeypatch):
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
 
 
-_DESK = "# Desk Exposure Dashboard\n\nA desk exposure dashboard.\n\n## Plan\n1. **Table** — Notional by desk.\n"
-_FILTER = "# Desk Exposure Dashboard\n\nA desk exposure dashboard with a date filter.\n\n## Plan\n1. **Filter** — By date.\n"
-_CHART = "# Desk Exposure Dashboard\n\nA desk exposure dashboard with a chart.\n\n## Plan\n1. **Chart** — Daily move.\n"
-_BURNDOWN = "# Burndown Chart\n\nA burndown chart.\n\n## Plan\n1. **Burndown** — Remaining by day.\n"
+_DESK = execution_plan("Desk Exposure Dashboard", "A desk exposure dashboard.", "Table",
+                       work="Show notional by desk.")
+_FILTER = execution_plan("Desk Exposure Dashboard",
+                         "A desk exposure dashboard with a date filter.", "Filter",
+                         work="Filter the dashboard by date.")
+_CHART = execution_plan("Desk Exposure Dashboard", "A desk exposure dashboard with a chart.",
+                        "Chart", work="Show the daily move chart.")
+_BURNDOWN = execution_plan("Burndown Chart", "A burndown chart.", "Burndown",
+                           work="Show remaining work by day.")
 _NOTHING_EXTRA = {"files": [], "artifacts": [], "resources": []}
 
 CONVERSATION = "conv_desk"

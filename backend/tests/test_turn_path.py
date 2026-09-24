@@ -21,7 +21,7 @@ from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import Orchestrator
 from sage.router.models import Mode, ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -110,9 +110,11 @@ def _kinds(events: list[dict]) -> set[str]:
     return {e.get("type") for e in events}
 
 
-TABLE_PLAN = "# Dashboard\n\n## Plan\n1. A table\n2. A chart"
-ADD_TABLE_PLAN = "# Dashboard\n\n## Plan\n1. Add a table\n2. Wire up the data"
-SIMPLE_DASHBOARD_PLAN = "# Dashboard\n\nA dashboard.\n\n## Plan\n1. **Table** — Show it.\n"
+TABLE_PLAN = execution_plan("Dashboard", "A dashboard.", "Add a table",
+                            work="Add a table and chart.")
+ADD_TABLE_PLAN = execution_plan("Dashboard", "A dashboard.", "Add a table",
+                                work="Add a table and wire up the data.")
+SIMPLE_DASHBOARD_PLAN = execution_plan("Dashboard", "A dashboard.", "Table")
 
 
 # --- the answer-only path ------------------------------------------------------------------------
@@ -152,7 +154,14 @@ def test_a_gated_turn_writes_a_plan_document_beside_the_handoff(tmp_path: Path):
         "# Desk Dashboard\n\n"
         "A desk dashboard.\n\n"
         "## Problem & outcome\nRisk cannot see notional by desk.\n\n"
-        "## Plan\n1. **Desk table** — Show notional by desk.\n"
+        "## Who uses this\nRisk analysts.\n\n"
+        "## What it does\n- Shows notional by desk.\n\n"
+        "## Screens\n- **Desk table** — Shows notional by desk.\n\n"
+        "## Done when\n- The desk table is visible.\n\n"
+        "## Plan\n### 1. Desk table\n"
+        "- Files — src/App.tsx\n"
+        "- Do — Show notional by desk.\n"
+        "- Done when — The desk table is visible.\n"
     ))])
     events = _run(orch, "build me a dashboard")
 
@@ -234,7 +243,8 @@ def test_approving_an_edited_plan_puts_the_edit_in_the_document(tmp_path: Path):
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     list(orch.build_stream("build me a dashboard"))
-    edited = "# Dashboard\n\nA dashboard.\n\n## Plan\n1. **Chart** — Show it as a chart.\n"
+    edited = execution_plan("Dashboard", "A dashboard.", "Chart",
+                            work="Show the dashboard as a chart.")
 
     list(orch.approve_stream("", edited, None, "001"))
 
@@ -294,7 +304,9 @@ def test_the_scope_classifier_gates_a_substantial_change_on_a_built_app(tmp_path
     orch, _oc, gateway = _build(tmp_path, [
         Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
-        Turn(text="# Auth Dashboard\n\n## Plan\n1. Add an auth provider\n2. Add an orgs page"),
+        Turn(text=execution_plan("Auth Dashboard", "An authenticated dashboard.",
+                                 "Add authentication",
+                                 work="Add an auth provider and an organizations page.")),
     ], verdict="PLAN")
     _get_built(orch)
     events = _run(orch, "add auth, orgs and a billing page")
@@ -328,7 +340,8 @@ def test_a_failed_turn_makes_the_next_one_plan_first(tmp_path: Path):
         Turn(text=TABLE_PLAN),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text=""),                       # fails: gated, wrote nothing, said nothing
-        Turn(text="# Data Repair\n\n## Plan\n1. Check the data source\n2. Then retry"),
+        Turn(text=execution_plan("Data Repair", "A repair for the data source.",
+                                 "Check the data source", work="Check the source and retry.")),
     ], verdict="BUILD")
     _get_built(orch)
 
@@ -350,7 +363,8 @@ def test_a_question_after_a_failure_does_not_spend_the_gate(tmp_path: Path):
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text=""),                       # fails
         Turn(text="Because the data source was empty."),
-        Turn(text="# Data Repair\n\n## Plan\n1. Fix the data source"),
+        Turn(text=execution_plan("Data Repair", "A repair for the data source.",
+                                 "Fix the data source")),
     ], verdict="BUILD")
     _get_built(orch)
     _run(orch, "plan the retraining work", Mode.PLAN)
@@ -460,7 +474,9 @@ def test_a_marker_on_a_plan_turn_is_stripped_from_the_card(tmp_path: Path):
     end the turn with no plan to approve. The gate resolves first; the marker is only stripped, so
     it can't be persisted into plan.md or shown on the approval card."""
     orch, _oc, _gw = _build(tmp_path, [
-        Turn(text="# Dashboard\n\n## Plan\n1. Add a table\n2. Wire up the data\nNOTHING_TO_BUILD"),
+        Turn(text=execution_plan("Dashboard", "A dashboard.", "Add a table",
+                                 work="Add a table and wire up the data.")
+             + "\nNOTHING_TO_BUILD"),
     ])
     events = _run(orch, "build me a dashboard")
 
@@ -523,9 +539,9 @@ def test_an_approved_plan_builds_even_when_the_classifier_would_gate(tmp_path: P
     asks it.
     """
     orch, oc, gateway = _build(tmp_path, [
-        Turn(text="# Dashboard\n\na plan for the dashboard"),
+        Turn(text=execution_plan("Dashboard", "A plan for the dashboard.", "Build the dashboard")),
         Turn(writes={"src/App.tsx": "export default function App() { return <div>one</div> }\n"}),
-        Turn(text="# Second Tab\n\na plan for the second tab"),
+        Turn(text=execution_plan("Second Tab", "A plan for the second tab.", "Add the tab")),
         Turn(writes={"src/Tab.tsx": "export function Tab() { return <div>two</div> }\n"}),
     ], verdict="PLAN")
     _get_built(orch)

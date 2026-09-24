@@ -29,7 +29,7 @@ import pytest
 from sage.orchestrator import recall
 from sage.workspace.threads import ThreadStore
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 from .test_a_dead_alias_stops_the_turn_before_it_starts import BUILD, PLAN
 from .test_a_dead_alias_stops_the_turn_before_it_starts import _error as _build_error
 from .test_a_dead_alias_stops_the_turn_before_it_starts import _orch as _build_orch
@@ -82,7 +82,10 @@ class _GuardrailRefusesPlanning(FakeOpenCode):
 def test_the_handoff_plans_in_the_threads_own_session(tmp_path: Path):
     """The fact the other two tests rest on. If the planner opened a session of its own, a refused
     Chat Thread could still be handed over and none of this would matter."""
-    orch, oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="# Rates Table\n\nA table.\n")])
+    orch, oc = _orch(tmp_path, [
+        Turn(text="Rates."),
+        Turn(text=execution_plan("Rates Table", "A rates table.", "Show rates")),
+    ])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "which desk is largest?"))
 
@@ -251,7 +254,10 @@ def test_a_single_refused_chat_turn_still_offers_nothing(tmp_path: Path):
 def test_clearing_recall_gets_the_handoff_a_fresh_session(tmp_path: Path):
     """What the offer promises, on the path that could not make it. The planner reads the session
     id back off `session.json` like every Chat turn, so dropping the file IS the clear."""
-    orch, oc = _orch(tmp_path, [Turn(text="Rates."), Turn(text="# Rates Table\n\nA table.\n")])
+    orch, oc = _orch(tmp_path, [
+        Turn(text="Rates."),
+        Turn(text=execution_plan("Rates Table", "A rates table.", "Show rates")),
+    ])
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "which desk is largest?"))
     poisoned = oc.prompts[0]["session"]

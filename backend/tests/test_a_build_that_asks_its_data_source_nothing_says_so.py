@@ -33,7 +33,7 @@ from sage.orchestrator.service import _PERSISTED_EVENTS, Orchestrator
 from sage.resources.provider import FakeResourceProvider
 from sage.router.models import ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -113,7 +113,10 @@ def test_an_approved_plan_is_told_the_same_thing(tmp_path: Path):
     build that followed ran without planning again. An approve IS a build turn — `_approve_locked`
     yields from the same generator — but the flow that produced the invented dashboard is worth
     holding down rather than inferring from a delegation."""
-    orch, _oc = _orch(tmp_path, [Turn(text="# Usage Dashboard\n\n## Plan\n1. Add the table\n2. Wire up the data"),
+    orch, _oc = _orch(tmp_path, [Turn(text=execution_plan(
+        "Usage Dashboard", "A usage dashboard.", "Add the table",
+        work="Add the table and wire up its data.",
+    )),
                                  Turn(writes={"src/App.tsx": "// the table\n"})])
     orch.project(start_preview=False).record.write_settings({"skip_planning": False})
     orch.bind_data_source("ds-dwh")

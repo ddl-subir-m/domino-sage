@@ -12,7 +12,7 @@ from sage.orchestrator.service import ChartFontsMissing, Orchestrator, _chat_sav
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
 
 class OkFeedback:
@@ -2205,7 +2205,9 @@ def test_a_reused_thread_session_tells_the_client_where_it_stands(tmp_path: Path
 
     # Sage restarted. The Thread's session id is on disk; nothing else about it is.
     ws = tmp_path / "mnt" / "code"
-    oc2 = FakeOpenCode(ws, [Turn(text="# Desk dashboard\n\nOne page per position.\n")])
+    oc2 = FakeOpenCode(ws, [Turn(text=execution_plan(
+        "Desk dashboard", "One page per position.", "Show positions",
+    ))])
     orch2 = Orchestrator(workspace_dir=ws, template=tmp_path / "template",
                          gateway=ScriptedGateway(), catalog=_catalog(), project_id="Sage",
                          feedback=OkFeedback(), opencode_client=oc2)
