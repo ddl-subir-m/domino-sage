@@ -21,6 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import timing
+from .request_composition import diagnostic_tool_name
 from .tool_timing import argument_keys_for_tool
 from .workspace.stack import STACKS
 
@@ -121,6 +122,29 @@ def _request_composition(value) -> dict | None:
     categories = mapping(value.get("categories"))
     roles = mapping(value.get("messagesByRole"))
     rewrites = mapping(value.get("rewrites"))
+    sources = mapping(value.get("systemInstructionsBySource"))
+    schemas = mapping(value.get("toolSchemasByName"))
+    duplicates = mapping(value.get("exactDuplicateInstructionBlocks"))
+    build_bytes = mapping(value.get("buildBytes"))
+    assembly = mapping(value.get("implementationAssembly"))
+    removed_schemas = mapping(assembly.get("removedToolSchemasByName"))
+    removed_instruction_sources = mapping(
+        assembly.get("duplicateInstructionBlocksRemovedBySource"))
+
+    def named_counts(raw):
+        out = {}
+        for key, row in raw.items():
+            identifier = diagnostic_tool_name(key)
+            bucket = out.setdefault(identifier, {"count": 0, "bytes": 0})
+            bucket["count"] += number(mapping(row).get("count"))
+            bucket["bytes"] += number(mapping(row).get("bytes"))
+        return out
+
+    removed_by_name = {}
+    for key, count in removed_schemas.items():
+        identifier = diagnostic_tool_name(key)
+        removed_by_name[identifier] = removed_by_name.get(identifier, 0) + number(count)
+
     return {
         "version": 1, "boundary": boundary, "status": status,
         "totalBytes": number(value.get("totalBytes")),
@@ -134,6 +158,34 @@ def _request_composition(value) -> dict | None:
         "toolCallCount": number(value.get("toolCallCount")),
         "toolArgumentsBytes": number(value.get("toolArgumentsBytes")),
         "rewrites": {key: number(rewrites.get(key)) for key in rewrite_keys},
+        "systemInstructionsBySource": {
+            key: {"count": number(mapping(sources.get(key)).get("count")),
+                  "bytes": number(mapping(sources.get(key)).get("bytes"))}
+            for key in ("topLevelInstructions", "topLevelSystem",
+                        "messageSystem", "messageDeveloper")
+        },
+        "toolSchemasByName": named_counts(schemas),
+        "exactDuplicateInstructionBlocks": {
+            "count": number(duplicates.get("count")),
+            "bytes": number(duplicates.get("bytes")),
+        },
+        "buildBytes": {
+            key: number(build_bytes.get(key))
+            for key in ("fixedBytes", "dynamicBuildIntentBytes",
+                        "toolResultBytes", "mediaBytes")
+        },
+        "implementationAssembly": {
+            **{key: number(assembly.get(key)) for key in (
+                "beforeBytes", "afterBytes", "removedBytes",
+                "duplicateInstructionBlocksRemoved", "duplicateInstructionBytesRemoved",
+                "duplicateToolSchemasRemoved", "unreachableToolSchemasRemoved")},
+            "duplicateInstructionBlocksRemovedBySource": {
+                key: number(removed_instruction_sources.get(key))
+                for key in ("topLevelInstructions", "topLevelSystem",
+                            "messageSystem", "messageDeveloper")
+            },
+            "removedToolSchemasByName": removed_by_name,
+        } if assembly else {},
         "limitReason": reason,
     }
 
