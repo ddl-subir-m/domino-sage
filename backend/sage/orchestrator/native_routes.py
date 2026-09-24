@@ -12,7 +12,7 @@ from uuid import uuid4
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import timing
+from .. import build_intent, timing
 from ..gateway.client import GatewayUpstreamError, StreamCancellation
 from ..gateway.events import StreamEvents
 from ..gateway.protocol import Protocol
@@ -30,6 +30,22 @@ from ..shim.native import (
 # The same logger the legacy `/v1/chat/completions` handler writes to, so its "model call ->
 # streaming" line and the ones below land in the one ring `/api/diag/log` reads.
 log = logging.getLogger("sage.orchestrator")
+_BUILD_INTENT_ERROR = (
+    "The Build instructions were not intact at the model boundary. "
+    "Sage stopped before sending the request."
+)
+
+
+def _record_build_intent(call, intent, check, failure_stage):
+    call.intent(
+        kind=intent.kind,
+        status=check.status,
+        carrier_count=check.carrier_count,
+        carrier_bytes=check.carrier_bytes,
+        source_request_count=len(intent.source_requests),
+        plan_present=bool(intent.authoritative_plan or intent.phase_brief),
+        failure_stage=failure_stage,
+    )
 
 
 def _scope(orchestrator, request):
@@ -80,6 +96,8 @@ def install(app, get_orchestrator):
         protocol = (Protocol.MESSAGES if request.url.path.endswith("/messages") else
                     Protocol.RESPONSES if request.url.path.endswith("/responses") else Protocol.CHAT)
         call = timing.model_call(record=None)
+        intent = None
+        installed = None
         try:
             project, session = _scope(get_orchestrator(), request)
             record = timing.current()
@@ -93,6 +111,24 @@ def install(app, get_orchestrator):
                 app_id=project.app_for_turn().app_id if record is not None and record.kind != "chat" else None,
                 conversation_id=project.build_conversation)
             call.request(len(raw))
+
+            intent = project.active_build_intent
+            if intent is not None:
+                try:
+                    body = build_intent.install(body, protocol, intent)
+                    installed = build_intent.inspect(body, protocol, intent)
+                    _record_build_intent(call, intent, installed, "none")
+                    if installed.status != "ok":
+                        _record_build_intent(call, intent, installed, "install")
+                        project.last_gateway_error = {"message": _BUILD_INTENT_ERROR}
+                        call.done(ok=False, error=_BUILD_INTENT_ERROR, outcome="error")
+                        return _error(_BUILD_INTENT_ERROR)
+                except (TypeError, ValueError):
+                    failed = build_intent.BuildIntentCheck("unsupported", 0, 0)
+                    _record_build_intent(call, intent, failed, "install")
+                    project.last_gateway_error = {"message": _BUILD_INTENT_ERROR}
+                    call.done(ok=False, error=_BUILD_INTENT_ERROR, outcome="error")
+                    return _error(_BUILD_INTENT_ERROR)
 
             resolution = None
             rewrite_counts = {}
@@ -122,10 +158,14 @@ def install(app, get_orchestrator):
             call.route(protocol.value, view.get("reasoning_effort"))
             project.model_calls += 1
         except NativeCheckpointRequired as error:
+            if intent is not None and installed is not None:
+                _record_build_intent(call, intent, installed, "prepare")
             project.last_gateway_error = {"message": str(error)}
             call.done(ok=False, error=str(error))
             return _error(str(error))
         except (ValueError, KeyError, TypeError) as error:
+            if intent is not None and installed is not None:
+                _record_build_intent(call, intent, installed, "prepare")
             call.done(ok=False, error="Request preparation failed", outcome="error")
             return _error(str(error))
 
@@ -153,6 +193,14 @@ def install(app, get_orchestrator):
                       request_composition=composition)
         events = StreamEvents(protocol, response_contract=contract)
         cancel = StreamCancellation()
+        if intent is not None:
+            checked = build_intent.inspect(outbound, protocol, intent)
+            _record_build_intent(
+                call, intent, checked, "none" if checked.status == "ok" else "final_check")
+            if checked.status != "ok":
+                project.last_gateway_error = {"message": _BUILD_INTENT_ERROR}
+                call.done(ok=False, error=_BUILD_INTENT_ERROR, outcome="error")
+                return _error(_BUILD_INTENT_ERROR)
         upstream = project.shim.gateway.route(outbound, labels, protocol=protocol, cancel=cancel)
 
         def validated():

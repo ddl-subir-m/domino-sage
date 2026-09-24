@@ -2084,6 +2084,38 @@ def test_confirm_handoff_writes_files_and_bindings_not_src(tmp_path: Path):
     assert (ws.path / ".sage" / "handoff-transcript.md").exists()
 
 
+def test_a_chat_handoff_uses_the_same_approved_intent_shape_as_a_build_plan(tmp_path: Path):
+    request = "put this on a dashboard colleagues can open"
+    orch, oc = _orch(tmp_path, [
+        Turn(text="Rates is the largest desk."),
+        Turn(text=_PLAN),
+        Turn(writes={"src/App.tsx": "export default () => null\n"}),
+    ])
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, request))
+    orch.draft_handoff_plan(tid)
+    orch.confirm_handoff(tid, {"resources": False, "artifacts": False, "transcript": False})
+    project = orch.project(start_preview=False)
+    intents = []
+    send_prompt = oc.send_prompt
+
+    def capture(*args, **kwargs):
+        intents.append(project.active_build_intent)
+        return send_prompt(*args, **kwargs)
+
+    oc.send_prompt = capture
+    list(orch.approve_stream(plan_id="001"))
+
+    intent = intents[-1]
+    assert intent.kind == "approved_plan"
+    assert intent.source_requests == (request,)
+    assert intent.authoritative_plan == _PLAN.strip()
+    assert "The plan is what to build" in intent.handoff_note
+    assert request not in oc.prompts[-1]["text"]
+    assert _PLAN not in oc.prompts[-1]["text"]
+    assert project.active_build_intent is None
+
+
 def test_confirm_handoff_binds_the_data_source_a_table_chip_came_from(tmp_path: Path):
     """A table chip carries the TABLE's name. The Binding has to carry the SOURCE's.
 
