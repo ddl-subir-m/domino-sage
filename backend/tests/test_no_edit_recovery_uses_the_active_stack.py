@@ -61,23 +61,23 @@ class DecisionCase:
 CASES = (
     DecisionCase(
         "red-starter-no-edit-then-success",
-        ("none", "write"),
+        ("none", "write", "write"),
         ("starter", "clean"),
-        ("request", "no_edit"),
+        ("request", "pre_edit_recovery", "typecheck_repair"),
         True,
     ),
     DecisionCase(
         "red-starter-no-edit-exhausted",
-        ("none", "none", "none", "none"),
-        ("starter", "starter", "starter", "starter"),
-        ("request", "no_edit", "no_edit", "no_edit"),
+        ("none", "none"),
+        (),
+        ("request", "pre_edit_recovery"),
         False,
     ),
     DecisionCase(
         "red-no-edit-does-not-spend-typecheck-breaker",
-        ("none", "none", "opaque", "write"),
-        ("starter", "starter", "starter", "clean"),
-        ("request", "no_edit", "no_edit", "typecheck_repair"),
+        ("none", "opaque", "write"),
+        ("starter", "clean"),
+        ("request", "pre_edit_recovery", "typecheck_repair"),
         True,
     ),
     DecisionCase(
@@ -97,8 +97,8 @@ CASES = (
     DecisionCase(
         "clean-no-edit-then-success",
         ("none", "write"),
-        ("clean", "clean"),
-        ("request", "no_edit"),
+        ("clean",),
+        ("request", "pre_edit_recovery"),
         True,
     ),
     DecisionCase(
@@ -109,10 +109,10 @@ CASES = (
         True,
     ),
     DecisionCase(
-        "completed-no-op-write-remains-an-edit-signal",
+        "completed-no-op-write-needs-authoritative-tree-change",
         ("noop", "write"),
-        ("starter", "clean"),
-        ("request", "typecheck_repair"),
+        ("clean",),
+        ("request", "pre_edit_recovery"),
         True,
     ),
 )
@@ -163,15 +163,15 @@ def _turns(case: DecisionCase, entry_file: str) -> list[Turn]:
 
 
 def _prompt_kind(text: str) -> str:
-    if "Now IMPLEMENT" in text:
-        return "no_edit"
+    if "only clean recovery" in text:
+        return "pre_edit_recovery"
     if "found 1 error(s). Fix these:" in text:
         return "typecheck_repair"
     return "request"
 
 
 def _wrote(effect: str) -> bool:
-    return effect in {"write", "opaque", "noop"}
+    return effect in {"write", "opaque"}
 
 
 def _standing(state):
@@ -243,7 +243,7 @@ def test_no_edit_and_typecheck_repair_decision_matrix(
     assert all(intent is intents[0] for intent in intents)
     assert orch.project(start_preview=False).active_build_intent is None
     assert [_prompt_kind(prompt["text"]) for prompt in prompts] == list(case.prompt_kinds)
-    assert len([event for event in events if event["type"] == "typecheck"]) == len(case.effects)
+    assert len([event for event in events if event["type"] == "typecheck"]) == len(case.reports)
     done = next(event for event in events if event["type"] == "done")
     assert done["ok"] is case.final_ok
     assert feedback.reports == []
@@ -251,14 +251,25 @@ def test_no_edit_and_typecheck_repair_decision_matrix(
     # One classifier for a true built-app Auto turn. Implement and every internal retry add none.
     assert gateway.calls == (1 if mode is Mode.AUTO else 0)
     assert all(prompt["agent"] == "sage-implement" for prompt in prompts)
-    assert all(prompt["session"] == prompts[0]["session"] for prompt in prompts)
+    recovery_indexes = [n for n, kind in enumerate(case.prompt_kinds)
+                        if kind == "pre_edit_recovery"]
+    if recovery_indexes:
+        recovery = recovery_indexes[0]
+        assert prompts[recovery]["session"] != prompts[0]["session"]
+        assert all(prompt["session"] == prompts[recovery]["session"]
+                   for prompt in prompts[recovery:])
+    else:
+        assert all(prompt["session"] == prompts[0]["session"] for prompt in prompts)
     assert prompts[0]["attachments"][0]["path"] == attached["path"]
-    assert all(prompt["attachments"] is None for prompt in prompts[1:])
+    if recovery_indexes:
+        recovery = recovery_indexes[0]
+        assert prompts[recovery]["attachments"][0]["path"] == attached["path"]
+        assert all(prompt["attachments"] is None for prompt in prompts[recovery + 1:])
+    else:
+        assert all(prompt["attachments"] is None for prompt in prompts[1:])
     assert all(state.mode is Mode.IMPLEMENT for state in states)
     assert states[0].picked_model == "a"
-    for n, kind in enumerate(case.prompt_kinds[1:], start=1):
-        used_no_edit = "no_edit" in case.prompt_kinds[1:n + 1]
-        assert states[n].picked_model == ("p" if used_no_edit else "a")
+    assert all(state.picked_model == "a" for state in states)
     after = orch.project(start_preview=False).control.snapshot()
     assert (after.mode, after.picked_model, after.picked_effort) == (
         before.mode, before.picked_model, before.picked_effort
@@ -266,20 +277,18 @@ def test_no_edit_and_typecheck_repair_decision_matrix(
 
     spans = [span for span in last_turn().spans if span.name.startswith("agent-turn.")]
     assert len(spans) == len(case.effects)
-    no_edit_attempt = 0
-    for n, (span, effect, report) in enumerate(zip(spans, case.effects, case.reports)):
+    report_index = 0
+    for n, (span, effect) in enumerate(zip(spans, case.effects)):
         wrote = _wrote(effect)
-        assert span.fields["stack"] == stack_name
-        assert span.fields["no_edit_attempt"] == no_edit_attempt
-        assert span.fields["wrote_code"] is wrote
-        if not wrote:
-            assert span.fields["retry_reason"] == "no_edit"
-            assert span.fields["retry_exhausted"] is (no_edit_attempt == 3)
-            no_edit_attempt += 1
-        elif report != "clean":
+        if wrote:
+            report = case.reports[report_index]
+            report_index += 1
+            assert span.fields["stack"] == stack_name
+            assert span.fields["wrote_code"] is True
+        if wrote and report != "clean":
             assert span.fields["retry_reason"] == "typecheck_repair"
             assert span.fields["retry_exhausted"] is False
-        else:
+        elif wrote:
             assert "retry_reason" not in span.fields
 
         if n == 0:
@@ -287,10 +296,7 @@ def test_no_edit_and_typecheck_repair_decision_matrix(
         elif case.prompt_kinds[n] == "typecheck_repair":
             assert span.fields["why"] == "iteration 1, errors remain"
         else:
-            # A built-app Auto BUILD verdict pins the actual dispatch to Implement before the
-            # first send. It is therefore already in Implement when recovery starts; saying the
-            # retry switches modes would be false. The standing Auto choice is still restored.
-            assert span.fields["why"].startswith("wrote no code — retrying")
+            assert span.fields["why"] == "clean pre-edit recovery"
 
     if not case.final_ok:
         assert all(kind != "typecheck_repair" for kind in case.prompt_kinds)
@@ -330,31 +336,17 @@ def test_red_read_only_violation_reverts_before_any_repair(
     assert gateway.calls == 0
 
 
-class StopAfterRedCheck(ScriptedFeedback):
-    def __init__(self, labels: list[str]) -> None:
-        super().__init__(labels)
-        self.orch: Orchestrator | None = None
-
-    def check(self, path: Path) -> FeedbackReport:
-        report = super().check(path)
-        if len(self.checked) == 2:
-            assert self.orch is not None
-            self.orch.project(start_preview=False).stop_requested = True
-        return report
-
-
 @pytest.mark.parametrize("stack_name", STACKS)
-def test_stop_after_red_no_edit_check_preempts_both_recovery_paths(
+def test_stop_after_recovery_event_preempts_fresh_session_creation(
     tmp_path: Path, stack_name: str
 ):
     stack = STACKS[stack_name]
-    feedback = StopAfterRedCheck(["clean", "starter"])
+    feedback = ScriptedFeedback(["clean"])
     orch, oc, _gateway = _build(tmp_path, [
         Turn(text=_valid_plan("Seed", "Seed the app.", stack.entry_file)),
         Turn(writes={stack.entry_file: "// seeded app\n"}),
         Turn(text="I would plan this change."),
     ])
-    feedback.orch = orch
     orch._feedback = feedback
     orch.create_app(stack=stack_name)
     project = orch.project(start_preview=False)
@@ -367,12 +359,22 @@ def test_stop_after_red_no_edit_check_preempts_both_recovery_paths(
     body = entry.read_text()
     prompt_count = len(oc.prompts)
 
-    events = list(orch.build_stream("Add a region filter."))
+    stream = orch.build_stream("Add a region filter.")
+    events = []
+    for event in stream:
+        events.append(event)
+        if event["type"] == "build-recovery":
+            project.stop_requested = True
+            break
+    sessions_before_stop = len(oc.sessions)
+    events.extend(stream)
 
     assert len(oc.prompts) == prompt_count + 1
-    assert [event["type"] for event in events].count("typecheck") == 1
+    assert len(oc.sessions) == sessions_before_stop
+    assert [event["type"] for event in events].count("typecheck") == 0
     assert any(event["type"] == "stopped" for event in events)
-    assert not any(event["type"] in {"iterate", "done"} for event in events)
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert not any(event["type"] == "done" for event in events)
     assert entry.read_text() == body
     assert project.stop_requested is False
     assert _standing(project.control.snapshot()) == _standing(before)
@@ -386,6 +388,7 @@ def _approve(tmp_path: Path, stack_name: str, mode: Mode):
         Turn(text=plan),
         Turn(text="I will add a table and a region filter."),
         Turn(writes={stack.entry_file: "// region filter implemented\n"}),
+        Turn(writes={stack.entry_file: "// region filter repaired\n"}),
     ]
     orch, oc, gateway = _build(tmp_path, turns)
     orch._feedback = ScriptedFeedback(["starter", "clean"])
@@ -419,23 +422,26 @@ def test_red_approval_keeps_plan_request_attachment_and_control_context(
 ):
     orch, oc, gateway, before, states, intents, events, attached = _approve(
         tmp_path, stack_name, mode)
-    first, retry = oc.prompts[1:]
+    first, recovery, repair = oc.prompts[1:]
 
     assert oc.prompts[0]["attachments"][0]["path"] == attached["path"]
-    assert first["attachments"] is retry["attachments"] is None
-    assert retry["session"] == first["session"]
+    assert first["attachments"] is recovery["attachments"] is repair["attachments"] is None
+    assert recovery["session"] != first["session"]
+    assert repair["session"] == recovery["session"]
     assert first["session"] != oc.prompts[0]["session"]
     assert "Build a sales dashboard with a region filter." in oc.prompts[0]["text"]
+    assert "Show the selected sales data with a region filter." in recovery["text"]
     assert all("Show the selected sales data with a region filter." not in p["text"]
-               for p in (first, retry))
-    assert all("Keep the North region visible." not in p["text"] for p in (first, retry))
-    assert intents[0] is intents[1]
+               for p in (first, repair))
+    assert all("Keep the North region visible." not in p["text"]
+               for p in (first, recovery, repair))
+    assert intents[0] is intents[1] is intents[2]
     assert "Show the selected sales data with a region filter." in intents[0].authoritative_plan
     assert intents[0].answers == "Keep the North region visible."
-    assert f"start with {STACKS[stack_name].entry_file}" in retry["text"]
-    assert retry["agent"] == "sage-implement"
+    assert "only clean recovery" in recovery["text"]
+    assert repair["agent"] == "sage-implement"
     assert all(state.mode is Mode.IMPLEMENT for state in states)
-    assert states[0].picked_model == "a" and states[1].picked_model == "p"
+    assert all(state.picked_model == "a" for state in states)
     after = orch.project(start_preview=False).control.snapshot()
     assert (after.mode, after.picked_model, after.picked_effort) == (
         before.mode, before.picked_model, before.picked_effort
@@ -454,9 +460,10 @@ def test_red_approval_exhaustion_keeps_the_plan_for_try_again(
         "Dashboard", "Show the selected sales data with a region filter.", stack.entry_file)
     orch, oc, gateway = _build(tmp_path, [
         Turn(text=plan),
-        *[Turn(text="I would plan this change.") for _ in range(4)],
+        Turn(text="I would plan this change."),
+        Turn(text="I still did not edit."),
     ])
-    orch._feedback = ScriptedFeedback(["starter"] * 4)
+    orch._feedback = ScriptedFeedback([])
     orch.create_app(stack=stack_name)
     project = orch.project(start_preview=False)
     data = tmp_path / "sales.csv"
@@ -481,33 +488,29 @@ def test_red_approval_exhaustion_keeps_the_plan_for_try_again(
     approval_prompts = oc.prompts[1:]
     app = project.app_for_turn()
 
-    assert len(approval_prompts) == 4
+    assert len(approval_prompts) == 2
     assert [_prompt_kind(prompt["text"]) for prompt in approval_prompts] == [
-        "request", "no_edit", "no_edit", "no_edit",
+        "request", "pre_edit_recovery",
     ]
-    assert all(prompt["session"] == approval_prompts[0]["session"] for prompt in approval_prompts)
+    assert approval_prompts[1]["session"] != approval_prompts[0]["session"]
     assert approval_prompts[0]["attachments"] is None
     assert all(prompt["attachments"] is None for prompt in approval_prompts[1:])
-    assert all("Show the selected sales data with a region filter." not in prompt["text"]
-               for prompt in approval_prompts)
+    assert "Show the selected sales data with a region filter." not in approval_prompts[0]["text"]
+    assert "Show the selected sales data with a region filter." in approval_prompts[1]["text"]
     assert all("Keep the North region visible." not in prompt["text"]
                for prompt in approval_prompts)
     assert all(intent is intents[0] for intent in intents)
     assert "Show the selected sales data with a region filter." in intents[0].authoritative_plan
     assert intents[0].answers == "Keep the North region visible."
-    assert all(f"start with {stack.entry_file}" in prompt["text"]
-               for prompt in approval_prompts[1:])
+    assert "only clean recovery" in approval_prompts[1]["text"]
     assert all(prompt["agent"] == "sage-implement" for prompt in approval_prompts)
     assert all(state.mode is Mode.IMPLEMENT for state in states)
-    assert states[0].picked_model == "a"
-    assert all(state.picked_model == "p" for state in states[1:])
+    assert all(state.picked_model == "a" for state in states)
 
     done = next(event for event in events if event["type"] == "done")
-    assert done == {
-        "type": "done",
-        "ok": False,
-        "decision": "the model replied but didn't change any files — try rephrasing or a smaller step",
-    }
+    assert done["ok"] is False and done["decision"] == "pre_edit_limit"
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert [event["type"] for event in events].count("build-pre-edit-limit") == 1
     assert app.read_plan() == plan.strip()
     assert app.read_plan_retry_step() == 1
     assert app.has_built() is False

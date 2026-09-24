@@ -16,6 +16,7 @@ from .. import build_intent, timing
 from ..gateway.client import GatewayUpstreamError, StreamCancellation
 from ..gateway.events import StreamEvents
 from ..gateway.protocol import Protocol
+from ..pre_edit_guard import PreEditAction
 from ..request_composition import measure, wire_bytes
 from ..shim import keepalive as ka
 from ..shim.enforcement import _capture_refusal
@@ -26,6 +27,7 @@ from ..shim.native import (
     sdk_view,
     session_policy,
 )
+from ..tool_result_window import completed_tool_results
 
 # The same logger the legacy `/v1/chat/completions` handler writes to, so its "model call ->
 # streaming" line and the ones below land in the one ring `/api/diag/log` reads.
@@ -33,6 +35,13 @@ log = logging.getLogger("sage.orchestrator")
 _BUILD_INTENT_ERROR = (
     "The Build instructions were not intact at the model boundary. "
     "Sage stopped before sending the request."
+)
+_PRE_EDIT_REJECTION = "Sage stopped this native request under the active pre-edit Build policy."
+_PRE_EDIT_MEASUREMENT_ERROR = (
+    "Sage could not measure the final native request under the active pre-edit Build policy."
+)
+_PRE_EDIT_WITNESS_ERROR = (
+    "Sage could not verify the app working tree under the active pre-edit Build policy."
 )
 
 
@@ -98,6 +107,7 @@ def install(app, get_orchestrator):
         call = timing.model_call(record=None)
         intent = None
         installed = None
+        original_results = ()
         try:
             project, session = _scope(get_orchestrator(), request)
             record = timing.current()
@@ -130,6 +140,10 @@ def install(app, get_orchestrator):
                     call.done(ok=False, error=_BUILD_INTENT_ERROR, outcome="error")
                     return _error(_BUILD_INTENT_ERROR)
 
+            guard = project.pre_edit_guard
+            if guard is not None:
+                original_results = completed_tool_results(body, protocol)
+
             resolution = None
             rewrite_counts = {}
             def resolved(model, phase, reason):
@@ -155,8 +169,6 @@ def install(app, get_orchestrator):
                 project.note_resolved(*resolution, protocol=protocol.value,
                                       effort=view.get("reasoning_effort"), native=capability.native)
                 call.model(*resolution)
-            call.route(protocol.value, view.get("reasoning_effort"))
-            project.model_calls += 1
         except NativeCheckpointRequired as error:
             if intent is not None and installed is not None:
                 _record_build_intent(call, intent, installed, "prepare")
@@ -181,13 +193,13 @@ def install(app, get_orchestrator):
             contract = {"nonce": nonce, "effort": (outbound.get("reasoning") or {}).get("effort")}
         # Match httpx's JSON body encoder, after the final native contract rewrite. Only the
         # length survives; neither payload nor private native state enters the timing record.
+        forwarded_bytes = None
         try:
             forwarded_bytes = wire_bytes(outbound)
             composition = measure(outbound, forwarded_bytes, rewrite_counts)
         except Exception:
             # Let the transport retain its existing invalid-payload error path. Diagnostics
             # must not replace that response with an uncaught serializer exception.
-            forwarded_bytes = None
             composition = None
         call.prepared(forwarded_bytes, requested_alias=outbound.get("model"),
                       request_composition=composition)
@@ -201,6 +213,38 @@ def install(app, get_orchestrator):
                 project.last_gateway_error = {"message": _BUILD_INTENT_ERROR}
                 call.done(ok=False, error=_BUILD_INTENT_ERROR, outcome="error")
                 return _error(_BUILD_INTENT_ERROR)
+        guard = project.pre_edit_guard
+        if guard is not None:
+            if forwarded_bytes is None:
+                with project.pre_edit_tree_lock:
+                    decision = guard.fail_request_measurement()
+            else:
+                # Unknown classification is non-media. If composition failed after serialization,
+                # the whole final wire request is therefore the safe non-media count.
+                media_bytes = 0
+                if isinstance(composition, dict):
+                    categories = composition.get("categories")
+                    if isinstance(categories, dict):
+                        raw_media = categories.get("mediaBytes")
+                        if (isinstance(raw_media, int) and not isinstance(raw_media, bool)
+                                and raw_media >= 0):
+                            media_bytes = raw_media
+                non_media_bytes = max(0, forwarded_bytes - media_bytes)
+                with project.pre_edit_tree_lock:
+                    decision = guard.decide_request(original_results, non_media_bytes)
+            if decision.action in {
+                    PreEditAction.RECOVER, PreEditAction.STOP, PreEditAction.FAIL}:
+                message = (
+                    _PRE_EDIT_MEASUREMENT_ERROR
+                    if decision.trigger.value == "request_measurement_unavailable"
+                    else _PRE_EDIT_WITNESS_ERROR
+                    if decision.trigger.value == "tree_witness_unavailable"
+                    else _PRE_EDIT_REJECTION
+                )
+                call.done(ok=False, error=message, outcome="pre_edit_policy")
+                return _error(message, 409)
+        call.route(protocol.value, view.get("reasoning_effort"))
+        project.model_calls += 1
         upstream = project.shim.gateway.route(outbound, labels, protocol=protocol, cancel=cancel)
 
         def validated():

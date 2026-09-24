@@ -187,6 +187,10 @@ def test_the_file_api_reads_a_chat_artifact_from_the_root_and_app_code_from_the_
         assert client.get("/api/project/file?path=examples/thr_a/exposure.table.json"
                           ).json()["content"] == '{"title": "Desks"}'
         assert client.get("/api/project/file?path=src/App.tsx").json()["content"] == "// the app\n"
+        assert client.put(
+            "/api/project/file", json={"path": "src/App.tsx", "content": "// user edit\n"}
+        ).json() == {"path": "src/App.tsx", "saved": True}
+        assert (project.workspace.path / "src" / "App.tsx").read_text() == "// user edit\n"
 
 
 # 1×1 transparent PNG. The Thread inlines charts as

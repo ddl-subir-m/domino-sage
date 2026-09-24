@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Protocol as TypingProtocol
+
+from .gateway.protocol import Protocol as GatewayProtocol
 
 SHORTENED_RECEIPT = (
     "[Sage shortened this tool result to fit the model context. The beginning and end are shown. "
@@ -14,12 +17,77 @@ COMPACTED_RECEIPT = (
 )
 
 
-class ToolResultWindowPolicy(Protocol):
+class ToolResultWindowPolicy(TypingProtocol):
     """The fields this transformation consumes from the central BuildPolicy."""
 
     tool_result_max_bytes: int
     tool_result_aggregate_max_bytes: int
     tool_result_head_fraction: float
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedToolResult:
+    """One completed native result, reduced to identity and original non-media bytes."""
+
+    identity: str
+    non_media_bytes: int
+
+
+def _result_identity(value) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("A completed tool result is missing its native result identity.")
+    return value
+
+
+def completed_tool_results(request: dict, protocol: GatewayProtocol) -> tuple[CompletedToolResult, ...]:
+    """Observe completed results before privacy and model-facing window transformations.
+
+    Each native result carrier produces one observation even when its content has several blocks.
+    The caller owns deduplication across cumulative requests.
+    """
+    found: list[CompletedToolResult] = []
+    if protocol is GatewayProtocol.CHAT:
+        rows = request.get("messages", [])
+        if not isinstance(rows, list):
+            return ()
+        for row in rows:
+            if not isinstance(row, dict) or row.get("role") != "tool":
+                continue
+            found.append(CompletedToolResult(
+                _result_identity(row.get("tool_call_id")),
+                _content_bytes(row.get("content")),
+            ))
+    elif protocol is GatewayProtocol.MESSAGES:
+        rows = request.get("messages", [])
+        if not isinstance(rows, list):
+            return ()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            content = row.get("content", [])
+            if isinstance(content, dict):
+                content = [content]
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                found.append(CompletedToolResult(
+                    _result_identity(block.get("tool_use_id")),
+                    _content_bytes(block.get("content", "")),
+                ))
+    else:
+        rows = request.get("input", [])
+        if not isinstance(rows, list):
+            return ()
+        for row in rows:
+            if not isinstance(row, dict) or row.get("type") != "function_call_output":
+                continue
+            found.append(CompletedToolResult(
+                _result_identity(row.get("call_id")),
+                _content_bytes(row.get("output", "")),
+            ))
+    return tuple(found)
 
 
 def _json_bytes(value) -> int:

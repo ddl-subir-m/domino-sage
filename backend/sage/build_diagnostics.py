@@ -27,7 +27,9 @@ from .workspace.stack import STACKS
 
 log = logging.getLogger("sage.diagnostics")
 SCHEMA_VERSION = 1
-OUTCOMES = frozenset({"repeat_brake", "user_stop", "gateway_refusal", "error", "success"})
+OUTCOMES = frozenset({
+    "repeat_brake", "user_stop", "gateway_refusal", "pre_edit_limit", "error", "success",
+})
 PHASES = frozenset({"planning", "implementation"})
 CAPTURE_STATUSES = frozenset({"running", "finished", "interrupted"})
 MAX_RECORDS = 20
@@ -233,7 +235,9 @@ def _implementation_session(value) -> dict | None:
     if not isinstance(value, dict):
         return None
     reason = value.get("reason")
-    if reason not in {"approved_plan", "phase", "broken_call_recovery", "reused"}:
+    if reason not in {
+        "approved_plan", "phase", "broken_call_recovery", "pre_edit_recovery", "reused",
+    }:
         return None
     keys = ("fresh", "created", "persisted", "dispatchStarted")
     if any(not isinstance(value.get(key), bool) for key in keys):
@@ -241,6 +245,55 @@ def _implementation_session(value) -> dict | None:
     return {"fresh": value["fresh"], "reason": reason,
             "created": value["created"], "persisted": value["persisted"],
             "dispatchStarted": value["dispatchStarted"]}
+
+
+def _pre_edit_guard(value) -> dict | None:
+    """Copy only the exact content-free pre-edit guard schema."""
+    if (not isinstance(value, dict) or value.get("policyVersion") != 1
+            or isinstance(value.get("policyVersion"), bool)):
+        return None
+    if value.get("attempt") not in {"initial", "recovery"}:
+        return None
+    if value.get("state") not in {"armed", "disarmed", "recovering", "terminal"}:
+        return None
+    if value.get("trigger") not in {
+            "none", "model_calls", "request_bytes", "tool_result_bytes",
+            "no_edit_completion", "request_measurement_unavailable",
+            "tree_witness_unavailable", "session_abort_unconfirmed"}:
+        return None
+    if value.get("action") not in {"route", "recover", "stop", "disarm", "fail"}:
+        return None
+
+    def number(key):
+        raw = value.get(key)
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else None
+
+    numeric_keys = (
+        "sessionGeneration", "modelCalls", "modelCallLimit",
+        "originalUniqueToolResultBytes", "toolResultLimitBytes",
+        "maxForwardedNonMediaRequestBytes", "requestLimitBytes",
+    )
+    numbers = {key: number(key) for key in numeric_keys}
+    if any(item is None for item in numbers.values()):
+        return None
+    if not isinstance(value.get("firstEditObserved"), bool):
+        return None
+
+    return {
+        "policyVersion": 1,
+        "attempt": value["attempt"],
+        "sessionGeneration": numbers["sessionGeneration"],
+        "state": value["state"],
+        "modelCalls": numbers["modelCalls"],
+        "modelCallLimit": numbers["modelCallLimit"],
+        "originalUniqueToolResultBytes": numbers["originalUniqueToolResultBytes"],
+        "toolResultLimitBytes": numbers["toolResultLimitBytes"],
+        "maxForwardedNonMediaRequestBytes": numbers["maxForwardedNonMediaRequestBytes"],
+        "requestLimitBytes": numbers["requestLimitBytes"],
+        "firstEditObserved": value["firstEditObserved"],
+        "trigger": value["trigger"],
+        "action": value["action"],
+    }
 
 
 @lru_cache(maxsize=1)
@@ -302,6 +355,9 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
     implementation_session = _implementation_session(raw.get("implementationSession"))
     if implementation_session is not None:
         record["implementationSession"] = implementation_session
+    pre_edit_guard = _pre_edit_guard(raw.get("preEditGuard"))
+    if pre_edit_guard is not None:
+        record["preEditGuard"] = pre_edit_guard
     if plan_contract is not None:
         record["planContract"] = plan_contract
     drops = record["capture"]["droppedEvents"]
@@ -535,6 +591,7 @@ def observe(event: dict) -> str | None:
             "success" if event.get("ok") is True
             else "repeat_brake" if decision in {"repeat_brake", "repeated", "looped"}
             else "gateway_refusal" if decision in {"gateway error", "model unavailable"}
+            else "pre_edit_limit" if decision == "pre_edit_limit"
             else "error"
         )
     elif event.get("type") == "stopped":

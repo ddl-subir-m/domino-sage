@@ -1189,24 +1189,23 @@ def test_a_turn_whose_only_edit_was_refused_did_not_write(tmp_path: Path, monkey
     events = list(orch.build_stream("chart them"))
 
     done = next(e for e in events if e.get("type") == "done")
-    assert done["ok"] is False
-    assert "didn't change any files" in done["decision"] \
-        or "couldn't get past planning" in done["decision"]
+    assert done == {"type": "done", "ok": False, "decision": "pre_edit_limit"}
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert [event["type"] for event in events].count("build-pre-edit-limit") == 1
     # And nothing told the person their app had changed, because it had not.
     assert [e for e in events if e.get("type") == "app-change"] == []
 
 
-def test_a_turn_whose_edit_landed_still_wrote(tmp_path: Path, monkeypatch):
-    """The other side of the same key, and the one that stops the fix being `made_edits = False`.
-
-    Nothing reaches the disk here, so the tree hash cannot answer this one — only the tool part can.
-    """
+def test_a_completed_noop_edit_does_not_disarm_the_pre_edit_guard(tmp_path: Path, monkeypatch):
+    """A successful tool receipt is only a hint; the authoritative tree did not change."""
     oc = _EditOnce(tmp_path / "mnt" / "code", status="completed")
     orch = _orch(tmp_path, oc, "BUILD", no_edit_nudge_limit=0)
 
     events = list(orch.build_stream("chart them"))
 
-    assert next(e for e in events if e.get("type") == "done")["ok"] is True
+    done = next(e for e in events if e.get("type") == "done")
+    assert done == {"type": "done", "ok": False, "decision": "pre_edit_limit"}
+    assert [event["type"] for event in events].count("build-recovery") == 1
 
 
 def test_the_working_tree_answers_for_a_write_no_tool_reported(tmp_path: Path, monkeypatch):

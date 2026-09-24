@@ -8,9 +8,11 @@ import pytest
 
 from sage import build_diagnostics, build_intent, timing
 from sage.build_intent import BuildIntent, BuildIntentCheck
+from sage.build_policy import BuildPolicy
 from sage.gateway.protocol import Protocol
 from sage.liveread import data_use
 from sage.orchestrator import native_routes
+from sage.pre_edit_guard import PreEditAction, PreEditGuard, PreEditTrigger
 
 from .test_native_model_controls import active, dispatch
 from .test_native_model_controls import running as _running
@@ -179,6 +181,79 @@ def test_native_boundary_forwards_one_exact_carrier(native_env, model, protocol)
     outbound = gateway.seen[-1][0]
     assert build_intent.inspect(outbound, protocol, intent).status == "ok"
     assert _body(intent)["source_requests"] == [TRICKY]
+
+
+def test_native_pre_edit_limit_blocks_before_the_gateway_and_leaves_one_pending_decision(
+        native_env):
+    client, orch, gateway = native_env
+    project = orch._project
+    assert client.post("/api/project/model", json={
+        "pick": "GLM 5.3 OR", "mode": "implement",
+    }).status_code == 200
+    intent = BuildIntent.for_direct("build it")
+    project.pre_edit_guard = PreEditGuard(
+        BuildPolicy(pre_edit_model_call_limit=1), "base", lambda: "base")
+    with active(orch) as headers:
+        project.active_build_intent = intent
+        first = dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR")
+        second = dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR")
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json() == {"error": {"message": native_routes._PRE_EDIT_REJECTION}}
+    assert len(gateway.seen) == 1
+    assert project.pre_edit_guard.consume_pending().action is PreEditAction.RECOVER
+    assert project.pre_edit_guard.consume_pending() is None
+
+
+def test_native_completed_result_without_identity_is_a_local_policy_error(native_env):
+    client, orch, gateway = native_env
+    project = orch._project
+    assert client.post("/api/project/model", json={
+        "pick": "GLM 5.3 OR", "mode": "implement",
+    }).status_code == 200
+    project.pre_edit_guard = PreEditGuard(BuildPolicy(), "base", lambda: "base")
+    with active(orch) as headers:
+        project.active_build_intent = BuildIntent.for_direct("build it")
+        response = dispatch(
+            client, headers, Protocol.CHAT, "GLM 5.3 OR",
+            [{"role": "tool", "content": "PRIVATE_SENTINEL"}],
+        )
+    assert response.status_code == 400
+    assert response.json() == {"error": {
+        "message": "A completed tool result is missing its native result identity."
+    }}
+    assert gateway.seen == []
+    assert "PRIVATE_SENTINEL" not in response.text
+
+
+def test_native_wire_measurement_failure_is_fixed_local_failure_not_zero_bytes(
+        native_env, monkeypatch):
+    """Reviewer case 5: serializer failure cannot bypass the request-byte guard."""
+    client, orch, gateway = native_env
+    project = orch._project
+    assert client.post("/api/project/model", json={
+        "pick": "GLM 5.3 OR", "mode": "implement",
+    }).status_code == 200
+    project.pre_edit_guard = PreEditGuard(BuildPolicy(), "base", lambda: "base")
+    monkeypatch.setattr(
+        native_routes, "wire_bytes",
+        lambda _outbound: (_ for _ in ()).throw(ValueError("PRIVATE_WIRE_BODY")),
+    )
+
+    with active(orch) as headers:
+        project.active_build_intent = BuildIntent.for_direct("build it")
+        response = dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR")
+
+    assert response.status_code == 409, response.text
+    assert response.json() == {"error": {
+        "message": native_routes._PRE_EDIT_MEASUREMENT_ERROR,
+    }}
+    assert gateway.seen == []
+    decision = project.pre_edit_guard.consume_pending()
+    assert decision.action is PreEditAction.FAIL
+    assert decision.trigger is PreEditTrigger.REQUEST_MEASUREMENT_UNAVAILABLE
+    assert project.pre_edit_guard.diagnostic()["action"] == "fail"
+    assert "PRIVATE_WIRE_BODY" not in response.text
 
 
 @pytest.mark.parametrize("model,protocol", LANES)
