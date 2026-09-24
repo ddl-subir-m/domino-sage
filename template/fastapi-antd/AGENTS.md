@@ -65,7 +65,7 @@ identifiers into a plan. Describe the product structure and behavior instead.
 <!-- sage:build-profile:v1:implement:begin -->
 ## What the final check rejects
 
-When your turn ends, Sage runs one check. Any failure sends you back for a repair turn:
+When your turn ends, one check runs. Any failure sends you back for a repair turn:
 
 1. A `.py` file that does not compile (`python -m py_compile`).
 2. A `.js` file in `static/` (except `static/vendor/` and `static/sage/`) that `node --check`
