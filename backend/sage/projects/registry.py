@@ -83,11 +83,15 @@ class RegistryEntry:
 
 @dataclass(frozen=True)
 class ProjectRow:
-    """One row of `GET /api/projects` (§2.2's merged listing)."""
+    """One row of `GET /api/projects` (§2.2's merged listing).
+
+    `domino_project_id` rides along so the Projects home can `clone()` a `local: false` row without
+    a second lookup — every row has one, local or not (a `RegistryEntry` always carries it too)."""
 
     slug: str
     name: str
     local: bool
+    domino_project_id: str = ""
     current: bool = False
 
 
@@ -158,13 +162,16 @@ class ProjectRegistry:
         for slug in self.local_slugs():
             e = self.entry(slug)
             name = e.domino_project_name if e else slug
-            rows[slug] = ProjectRow(slug=slug, name=name, local=True, current=slug == current)
+            pid = e.domino_project_id if e else ""
+            rows[slug] = ProjectRow(slug=slug, name=name, local=True, domino_project_id=pid,
+                                     current=slug == current)
         if self._control_plane is not None:
             for ref in self._control_plane.list_apps():
                 slug = self._slug_for_remote(ref)
                 if slug in rows:
                     continue
-                rows[slug] = ProjectRow(slug=slug, name=ref.name, local=False, current=slug == current)
+                rows[slug] = ProjectRow(slug=slug, name=ref.name, local=False,
+                                         domino_project_id=ref.id, current=slug == current)
         return [rows[k] for k in sorted(rows)]
 
     @staticmethod

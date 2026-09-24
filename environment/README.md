@@ -3,6 +3,12 @@
 One Domino Environment image that carries Sage's code, the agent runtime (OpenCode), and the
 no-build fastapi-antd template. Chat and Build are one orchestrator process.
 
+**Retired by ONE-APP-PLAN.md Phase 3 step 3** (see ONE-APP-STATUS.md): there is no more Workbench
+door and no more Sage Builder workspace launch. `pluggable-tools.yaml`, the `sageBuilder` tool, and
+every `ControlPlane` method that started/stopped/resumed one are deleted — this section and the rest
+of this file still describe the pre-pivot two-container shape and are due the real rewrite Phase 7
+("Packaging: App and laptop") owns; treat what follows as historical until then.
+
 Two launch paths, same process:
 
 1. **Published App — the door.** Publish **this repo** as a Domino App. Root `app.sh` starts the
@@ -13,9 +19,10 @@ Two launch paths, same process:
    To provision, the App's container needs an **HTTPS Git credential** (Account Settings > Git
    Credentials) — it creates the `sage-*` repo and pushes the seed with it. Set `SAGE_GIT_HOST`
    when that host is not `github.com`.
-2. **Sage Builder workspace** — launch the `sageBuilder` pluggable tool in a **git-based app
-   project**. [`environment/app.sh`](app.sh) starts the same orchestrator with
-   `SAGE_WORKSPACE_DIR=/mnt/code`. That is where **Publish** ships the Built App.
+2. ~~**Sage Builder workspace** — launch the `sageBuilder` pluggable tool in a **git-based app
+   project**.~~ Gone (above). [`environment/app.sh`](app.sh) still starts the same orchestrator with
+   `SAGE_WORKSPACE_DIR=/mnt/code`, which is where **Publish** ships the Built App — Phase 7 is what
+   repoints this file at the one-process-many-projects shape.
 
 There is no Hub, no second server, and no `sageHub` tool.
 
@@ -24,7 +31,6 @@ There is no Hub, no second server, and no `sageHub` tool.
 | File | Goes into |
 |------|-----------|
 | `Dockerfile` | The Environment's **Edit Dockerfile** box (on top of your base image) |
-| `pluggable-tools.yaml` | The Environment's **Pluggable Workspace Tools** field (`sageBuilder` only) |
 | `app.sh` | Baked via the repo clone; the tool's `start` runs `/opt/sage/environment/app.sh` |
 | repo-root `app.sh` | What a published App runs (`/mnt/code/app.sh`) — execs the same orchestrator with App settings |
 

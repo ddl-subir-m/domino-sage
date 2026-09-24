@@ -74,7 +74,7 @@ def test_the_workbench_renders_no_notices_surface():
     client = TestClient(appmod.control_app)
     for path in ("/NOTICE", "/notice", "/notices", "/api/notices", "/vendor/NOTICE"):
         assert client.get(path).status_code == 404, path
-    for page in ("index.html", "door.html"):
+    for page in ("index.html", "home.html"):
         assert "Notices" not in (ROOT / "backend" / "sage" / "workbench" / page).read_text()
 
 

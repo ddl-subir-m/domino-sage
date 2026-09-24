@@ -1,34 +1,27 @@
-"""ProvisionService — the git-backed Sage Project flow behind the Workbench door (#43, #44).
+"""ProvisionService — the git-backed Sage Project flow (#43, #44).
 
 Ties the pieces together: pick a collision-free repo name, create the private repo (provider API),
-seed+push the warm template, create a git-based Domino project pointing at the repo, and launch a
-Sage Builder workspace. Also lists the caller's Sage Projects and re-opens an existing one.
+seed+push the warm template, and create a git-based Domino project pointing at the repo
+(`provision_project`). Also lists the caller's Sage Projects.
 
-This is the seam the Workbench door sits on: a viewer's Default Project, "New project", and
-switching Projects are all `create_app` / `open_app` / `list_apps` against a real control plane.
-There is no Hub App and no Hub UI — Publish, Stop and Delete stay in the Sage Builder, where the
-person doing them already is.
+There is no workspace launch here (ONE-APP-PLAN.md Phase 3 step 3 retired it along with the
+Workbench door): `ProjectRegistry.create()`/`clone()` (`sage/projects/registry.py`) are what land a
+Project locally now, using `provision_project` for the git half.
 
 Every collaborator is behind a Protocol so the whole flow runs against fakes in tests with no
-network. The one piece that needs live verification on Domino is turning a created workspace into a
-browser URL (open_url) — the v4 workspace-create response fields aren't nailed down; we derive
-best-effort and mark it so.
+network.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
-from urllib.parse import quote
 
 from ..orchestrator import brand
 from . import naming
-from .domino import BUILDER_WORKSPACE_NAME, BuiltApp, ControlPlane, CredentialRef, ProjectRef
+from .domino import BuiltApp, ControlPlane, CredentialRef, ProjectRef
 from .github import RepoInfo, RepoNameConflict, RepoProvider, repo_full_name
 from .seed import seed_and_push
 
@@ -37,102 +30,6 @@ log = logging.getLogger("sage.provision.service")
 # The seed step: materialize the template into the new repo and push it. Injectable so fake-mode and
 # tests can no-op it (a real git push would otherwise need a live remote).
 Seeder = Callable[..., None]
-
-
-class WorkspaceLaunchFailed(RuntimeError):
-    """Starting or resuming a builder refused — as opposed to anything else `open_app` does.
-
-    `open_app` also lists projects and workspaces, and a Domino outage during either of those has
-    nothing to do with git. Without this marker a caller reinterpreting the failure would rewrite a
-    transient, retriable 503 into permanent advice about a repository.
-    """
-
-
-@contextmanager
-def _launching() -> Iterator[None]:
-    """Tag whatever the launch call raises, preserving it as the cause."""
-    try:
-        yield
-    except Exception as e:
-        # `or ...`: an exception with an empty str() would reach the door route as {"error": ""},
-        # which renders as a blank failure.
-        raise WorkspaceLaunchFailed(str(e) or f"{type(e).__name__} (no message)") from e
-
-
-@dataclass(frozen=True)
-class AppCreated:
-    project: ProjectRef
-    repo: RepoInfo
-    workspace: dict[str, Any]
-    open_url: str | None
-
-
-def workspace_open_url(ws: dict[str, Any], project_name: str | None = None) -> str | None:
-    """Host-relative path that opens a running workspace in the browser:
-    /{owner}/{project}/notebookSession/{runId}/ (same shape as preview.prefix).
-
-    Returned as a path with no host on purpose: DOMINO_API_HOST is the internal cluster address and
-    isn't browser-reachable, so the browser resolves this against the external origin the caller is
-    already served from. Returns None if the pieces are missing (the caller then shows a fallback).
-
-    owner + runId come from the v4 WorkspaceDto (ownerName, mostRecentSession.executionId). The DTO's
-    `project` field is null on create/open, so the project name — the URL slug — must be passed in by
-    the caller, who knows it from the ProjectRef."""
-    if not isinstance(ws, dict):
-        return None
-    owner = ws.get("ownerName")
-    project = project_name or (
-        (ws.get("project") or {}).get("name") if isinstance(ws.get("project"), dict) else None
-    )
-    session = ws.get("mostRecentSession") or {}
-    run_id = session.get("executionId") or session.get("id") if isinstance(session, dict) else None
-    if not (owner and project and run_id):
-        return None
-    return f"/{quote(str(owner))}/{quote(str(project))}/notebookSession/{run_id}/"
-
-
-# v4 workspace `state` values that mean "stopped but relaunchable in place" (vs. running, or the
-# terminal deleted/failed states that warrant a fresh workspace). Matched case-insensitively.
-_STOPPED_STATES = frozenset({"stopped", "stopping"})
-
-
-def is_builder_workspace(ws: dict[str, Any]) -> bool:
-    """True unless the workspace is clearly a non-builder session — a VS Code / Jupyter workspace a
-    user opened in the same project. The list DTO carries no tool info, so we discriminate by name:
-    Sage names its builders BUILDER_WORKSPACE_NAME. An unnamed workspace is treated as a builder
-    (backward-compatible), so only a workspace with a different explicit name is excluded."""
-    if not isinstance(ws, dict):
-        return False
-    name = ws.get("name")
-    return not name or name == BUILDER_WORKSPACE_NAME
-
-
-def is_owned_by(ws: dict[str, Any], owner: str | None) -> bool:
-    """True when this workspace belongs to `owner` — or when the caller isn't filtering by owner.
-
-    A Project can hold several people's Sage Builders. Reusing or resuming a collaborator's would
-    put two people in one container and hand this viewer someone else's session, so attaching is
-    always scoped to the viewer (#47). `ownerName` on the workspace DTO is the Domino username, the
-    same value `whoami()` returns. A workspace with no owner is nobody's to claim.
-    """
-    if owner is None:
-        return True
-    name = ws.get("ownerName")
-    return bool(name) and str(name) == owner
-
-
-def workspace_is_running(ws: dict[str, Any]) -> bool:
-    """True once the workspace's session is actually running — i.e. safe to open in the browser.
-
-    The coarse workspace `state` flips to "Started" while the session is still booting, so prefer
-    the session's sessionStatusInfo.isRunning; fall back to `state` only when that's absent."""
-    if not isinstance(ws, dict):
-        return False
-    session = ws.get("mostRecentSession") or {}
-    info = session.get("sessionStatusInfo") if isinstance(session, dict) else None
-    if isinstance(info, dict) and "isRunning" in info:
-        return bool(info.get("isRunning"))
-    return str(ws.get("state") or ws.get("status") or "").lower() == "running"
 
 
 _ERR_JSON = re.compile(r"->\s*\d+:\s*(\{.*\})\s*$", re.DOTALL)
@@ -329,12 +226,6 @@ class ProvisionService:
             return None
         return (who.full_name or who.name, who.email)
 
-    def create_app(self, display_name: str, *, name: str | None = None) -> AppCreated:
-        """Provision a Project (git half, above) and launch this caller's Sage Builder in it."""
-        project, repo = self.provision_project(display_name, name=name)
-        ws = self._cp.create_workspace(project.id, branch=self._branch)
-        return AppCreated(project=project, repo=repo, workspace=ws, open_url=workspace_open_url(ws, project.name))
-
     def _create_project(self, repo_name: str, git_url: str, description: str) -> ProjectRef:
         """Create the Domino Project, trying each of the caller's credentials for the host until one
         works (ADR-0033).
@@ -377,42 +268,6 @@ class ProvisionService:
             "skipped": [c.label for c in creds if not c.usable],
         }
 
-    def open_app(self, project_id: str, *, owner: str | None = None) -> dict[str, Any]:
-        """Return a runnable workspace in an existing Project: reuse a running one, else restart a
-        stopped one in place, else launch a fresh one.
-
-        `owner` scopes reuse and resume to one person's builders (#47) — pass the viewer's Domino
-        username and a collaborator's builder in the same Project is left running and untouched.
-        A fresh launch is always the caller's own, so it needs no filter.
-        """
-        # The workspace DTO has no project name (the URL slug), so resolve it from the app list.
-        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
-        workspaces = [w for w in self._cp.list_workspaces(project_id)
-                      if isinstance(w, dict) and is_builder_workspace(w) and is_owned_by(w, owner)]
-        for ws in workspaces:
-            state = str(ws.get("state") or ws.get("status") or "").lower()
-            if state in ("", "running", "started", "active") or ws.get("isRunning"):
-                return self._open_result(ws, name, launched=False)
-        # Resume the newest stopped workspace in place rather than piling up new ones. The session
-        # DTO carries no owner/open-url fields, so return it launched=True and let the caller's
-        # status poll surface the running URL (same path as a fresh create).
-        # The v4 list DTO (WorkspaceDto) has NO isRestartable field — that lives only on the separate
-        # WorkspaceSummary schema — so restartability is derived from `state`: anything stopped and
-        # not deleted can be relaunched. (A deleted/failed workspace falls through to a fresh create.)
-        restartable = [
-            w for w in workspaces
-            if w.get("id") and not w.get("deleted")
-            and str(w.get("state") or w.get("status") or "").lower() in _STOPPED_STATES
-        ]
-        if restartable:
-            target = max(restartable, key=lambda w: w.get("createdAt") or "")
-            with _launching():
-                self._cp.resume_workspace(project_id, str(target["id"]))
-            return self._open_result(target, name, launched=True)
-        with _launching():
-            ws = self._cp.create_workspace(project_id, branch=self._branch)
-        return self._open_result(ws, name, launched=True)
-
     def repo_is_unreachable(self, project: ProjectRef) -> bool | None:
         """Can the configured provider still reach this Project's repo? None when it can't be asked.
 
@@ -440,61 +295,3 @@ class ProvisionService:
             log.warning("couldn't check whether repo %s is reachable", full_name, exc_info=True)
             return None
         return None if exists is None else not exists
-
-    def _reachable(self, running: bool, open_url: str | None) -> bool:
-        """`running` narrowed by whether that workspace's own web server answers yet.
-
-        Domino's session state says running while the Sage process inside is still booting, and the
-        workspace proxy answers 502 Bad Gateway for the whole gap — so a caller that sends the
-        browser in on the session state alone lands a first-time viewer on the gateway's error page.
-        The probe only ever narrows: when it cannot tell, the session state stands.
-        """
-        if not running or not open_url:
-            return running
-        ready = self._cp.workspace_http_ready(open_url)
-        return running if ready is None else ready
-
-    def workspace_status(
-        self, project_id: str, workspace_id: str | None = None, *, owner: str | None = None
-    ) -> dict[str, Any]:
-        """Current running-state + open URL for a Project's workspace — the caller polls this after a
-        launch so it only sends the viewer in once the builder behind that URL actually answers.
-        `running` means both halves: Domino's session is up AND its web server is serving.
-
-        `owner` scopes the answer the same way `open_app` scopes reuse: without it, a collaborator's
-        newer builder could answer for the viewer's and hand back a URL that is not theirs to open.
-        """
-        name = next((a.name for a in self._cp.list_apps() if a.id == project_id), None)
-        workspaces = [w for w in self._cp.list_workspaces(project_id)
-                      if isinstance(w, dict) and is_builder_workspace(w) and is_owned_by(w, owner)]
-        ws = None
-        if workspace_id:
-            ws = next((w for w in workspaces if w.get("id") == workspace_id), None)
-        if ws is None:
-            # Prefer a running workspace so the card reflects a live builder even when a stopped
-            # leftover was created more recently (the earlier relaunch bug piled these up); else newest.
-            running = [w for w in workspaces if workspace_is_running(w)]
-            pool = running or workspaces
-            if pool:
-                ws = max(pool, key=lambda w: w.get("createdAt") or "")
-        if ws is None:
-            return {"running": False, "open_url": None, "state": None, "workspace_id": None}
-        open_url = workspace_open_url(ws, name)
-        return {
-            "running": self._reachable(workspace_is_running(ws), open_url),
-            "open_url": open_url,
-            "state": ws.get("state") or ws.get("status"),
-            "workspace_id": ws.get("id"),
-        }
-
-    def _open_result(self, ws: dict[str, Any], name: str | None, *, launched: bool) -> dict[str, Any]:
-        # `running` is narrowed here too, not only in the status poll: the door and the chip both
-        # skip the poll entirely when this call already says running, which is exactly the reused
-        # workspace whose builder may still be booting.
-        open_url = workspace_open_url(ws, name)
-        return {
-            "workspace": ws,
-            "open_url": open_url,
-            "running": self._reachable(workspace_is_running(ws), open_url),
-            "launched": launched,
-        }

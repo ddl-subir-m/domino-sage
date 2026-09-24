@@ -48,7 +48,7 @@ why = "provenance is the whole point of author-time substitution (ADR-0014)"
 # An entry page is scanned as bytes, and a grep over source is explicitly not this test — it breaks
 # the moment somebody writes a code comment. HTML, CSS and JS comments come out before the scan.
 # Everything else stays in, including every string literal the page's own script can put on screen:
-# door.html builds its failure line from one, and that line is a leak if it names us.
+# home.html builds its failure lines from them, and any one of those is a leak if it names us.
 applies_to = ["entry-page"]
 why = "a comment is not read by a person; ADR-0014 rules a source grep out for exactly this reason"
 
@@ -123,7 +123,7 @@ shows_pack = true
 
 [[surface]]
 kind = "entry-page"
-file = "door.html"
+file = "home.html"
 shows_pack = true
 
 [[surface]]
@@ -224,11 +224,6 @@ shows_pack = true
 [[surface]]
 kind = "python-prose"
 module = "sage/provision/domino.py"
-shows_pack = true
-
-[[surface]]
-kind = "python-prose"
-module = "sage/provision/door.py"
 shows_pack = true
 
 [[surface]]

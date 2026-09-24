@@ -122,13 +122,26 @@ def _read_api_brand(_surface, _monkeypatch) -> list[str]:
     return [json.dumps(r.json(), ensure_ascii=False)]
 
 
-def _read_entry_page(surface, monkeypatch) -> list[str]:
+def _read_entry_page(surface, _monkeypatch) -> list[str]:
     """The bytes the server sends, which is where the pack has to already be — a page patched from
-    JS on boot paints our name first, and the flash lands on the door (#116)."""
+    JS on boot paints our name first, and the flash lands on the very first page a viewer sees
+    (#116). `index.html` is served once a project is dispatched (`/p/<slug>/`); `home.html` is the
+    root-scope default — see `test_workbench.py`'s identical dispatch trick for why this registers
+    a throwaway fake project rather than monkeypatching anything `ui()` reads."""
     import sage.orchestrator.app as appmod
 
-    monkeypatch.setattr(appmod, "proxy_is_app", lambda: surface.name == "door.html")
-    r = TestClient(appmod.control_app).get("/")
+    client = TestClient(appmod.control_app)
+    if surface.name != "index.html":
+        r = client.get("/")
+        assert r.status_code == 200
+        return [_without_comments(r.text)]
+    with appmod._REGISTRY._lock:
+        appmod._REGISTRY._open["t-fake"] = object()
+    try:
+        r = client.get("/p/t-fake/")
+    finally:
+        with appmod._REGISTRY._lock:
+            appmod._REGISTRY._open.pop("t-fake", None)
     assert r.status_code == 200
     return [_without_comments(r.text)]
 
@@ -503,8 +516,8 @@ def _without_comments(page: str) -> str:
     """An entry page with its HTML, CSS and JS comments removed (`rules.comments`).
 
     A grep over source is explicitly not this test — it breaks the moment somebody writes a code
-    comment. Everything a comment is not stays in, string literals included: door.html builds its
-    failure line out of one, and that line names us if nobody templated it. So the comments come
+    comment. Everything a comment is not stays in, string literals included: home.html builds its
+    failure lines out of them, and any one names us if nobody templated it. So the comments come
     out inside `<style>` and `<script>` only, where a comment is the one thing they can be.
     """
     assert LIST["rules"]["comments"]["applies_to"] == ["entry-page"]

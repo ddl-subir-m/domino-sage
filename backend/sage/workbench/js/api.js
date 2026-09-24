@@ -358,8 +358,12 @@ SW.api = {
   // Every project the registry knows: local clones on this machine plus any `sage-*` Domino
   // project the token can see that isn't cloned here yet (ONE-APP-PLAN.md §2.2). `current` marks
   // whichever one this call was scoped to — the scope chip's own project, when it is the one
-  // asking; nothing, from the Projects home. `local: false` rows are not yet openable.
+  // asking; nothing, from the Projects home. `local: false` rows carry `dominoProjectId`, so
+  // `cloneProject` below can make one openable.
   projects: () => request('/projects').then((listing) => listing.items || []),
+  // Clones a `local: false` row to this machine (ONE-APP-PLAN.md Phase 3 step 3) and returns
+  // {slug, name} — the caller navigates to `../${slug}/` on success, same as opening a local row.
+  cloneProject: (dominoProjectId) => request('/projects/clone', { method: 'POST', body: { dominoProjectId } }),
   gallery: () => request('/gallery'),
   resources: async () => {
     // Membership is a local file. Do not wait on the Domino listing or on /project

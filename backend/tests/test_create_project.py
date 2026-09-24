@@ -24,15 +24,16 @@ def _service(tmp_path, cp=None, repo=None, **kw) -> ProvisionService:
 
 
 def test_the_control_plane_name_is_the_sage_repo_name_not_what_was_typed(tmp_path):
-    # Sage finds a Project by its Domino name — the door looks the Default up that way — and a
-    # typed name is neither unique nor stable.
+    # Sage finds a Project by its Domino name — the registry's own entry names it that way (its
+    # slug on disk, `local_slugs()`'s scan) — and a typed name is neither unique nor stable.
     cp = FakeControlPlane()
     repo = FakeRepoProvider()
 
-    created = _service(tmp_path, cp, repo).create_app("Quarterly Revenue!")
+    project, repo_info = _service(tmp_path, cp, repo).provision_project("Quarterly Revenue!")
 
     assert [r.full_name for r in repo.created] == ["test-owner/sage-quarterly-revenue"]
-    assert created.project.name == "sage-quarterly-revenue"
+    assert repo_info.full_name == "test-owner/sage-quarterly-revenue"
+    assert project.name == "sage-quarterly-revenue"
     assert cp.projects[0].name == "sage-quarterly-revenue"
 
 
@@ -47,20 +48,20 @@ def test_the_typed_name_is_the_projects_description(tmp_path):
             return super().create_project(name, git_url=git_url, git_credential_id=git_credential_id,
                                           branch=branch, description=description)
 
-    _service(tmp_path, Recorder()).create_app("Quarterly Revenue")
+    _service(tmp_path, Recorder()).provision_project("Quarterly Revenue")
 
     assert seen["description"] == "Quarterly Revenue"
 
 
-def test_the_typed_name_is_seeded_as_the_chip_of_the_builder_that_does_not_exist_yet(tmp_path):
-    # The new builder has nothing but the repo, so the overlay has to ride in the initial commit.
+def test_the_typed_name_is_seeded_as_the_chip_of_the_project_that_does_not_exist_yet(tmp_path):
+    # The new project has nothing but the repo, so the overlay has to ride in the initial commit.
     seen = {}
     service = ProvisionService(
         FakeControlPlane(), FakeRepoProvider(), tmp_path,
         seed=lambda *a, **k: seen.update(k),
     )
 
-    service.create_app("Quarterly Revenue")
+    service.provision_project("Quarterly Revenue")
 
     assert seen["settings"] == {"displayName": "Quarterly Revenue"}
 
@@ -73,10 +74,10 @@ def test_a_taken_repo_name_suffixes_both_the_repo_and_the_project(tmp_path):
             return super().create_repo(name, description=description, private=private)
 
     cp = FakeControlPlane()
-    created = _service(tmp_path, cp, Taken()).create_app("Sales")
+    project, repo_info = _service(tmp_path, cp, Taken()).provision_project("Sales")
 
-    assert created.repo.full_name == "test-owner/sage-sales-2"
-    assert created.project.name == "sage-sales-2"  # the same suffix, or the door can't find it
+    assert repo_info.full_name == "test-owner/sage-sales-2"
+    assert project.name == "sage-sales-2"  # the same suffix, or a clone can't find it by name
 
 
 def test_an_empty_name_is_refused_and_creates_nothing(tmp_path):
@@ -86,19 +87,10 @@ def test_an_empty_name_is_refused_and_creates_nothing(tmp_path):
 
     for blank in ("", "   ", "\n\t"):
         with pytest.raises(ValueError):
-            service.create_app(blank)
+            service.provision_project(blank)
 
     assert repo.created == []
     assert cp.projects == []
-
-
-def test_the_new_project_opens_this_creators_builder(tmp_path):
-    cp = FakeControlPlane()
-
-    created = _service(tmp_path, cp).create_app("Sales")
-
-    assert cp.workspaces[created.project.id]
-    assert created.open_url == f"/tester/sage-sales/notebookSession/run-{created.project.id}/"
 
 
 def test_provision_project_seeds_directly_into_the_given_destination(tmp_path):
@@ -134,8 +126,8 @@ def test_provision_project_seeds_directly_into_the_given_destination(tmp_path):
 
 
 def test_provision_project_with_no_dest_for_still_uses_a_throwaway_tempdir(tmp_path):
-    """`create_app` (the door's own path) passes no `dest_for` — unchanged from before this method
-    existed: the seed lands in a tempdir that is gone by the time this returns."""
+    """A caller passing no `dest_for` (none does today, since `registry.create()` always does) gets
+    the original behavior: the seed lands in a tempdir that is gone by the time this returns."""
     seen: dict = {}
     service = ProvisionService(
         FakeControlPlane(), FakeRepoProvider(), tmp_path,
@@ -154,7 +146,7 @@ def test_a_failure_before_the_project_exists_rolls_the_repo_back(tmp_path):
 
     service = ProvisionService(FakeControlPlane(), repo, tmp_path, seed=boom)
     with pytest.raises(RuntimeError):
-        service.create_app("Sales")
+        service.provision_project("Sales")
 
     assert repo.created == []  # the orphan is gone, so the name is free to retry
 
@@ -232,15 +224,14 @@ def test_the_workbench_no_longer_hands_the_browser_over_to_create():
     assert "window.location.replace(url)" not in store
 
 
-def test_new_project_is_explained_rather_than_offered_when_it_cannot_work():
+def test_new_project_is_a_real_link_now_that_create_works(tmp_path):
+    """ONE-APP-PLAN.md Phase 3 step 3: `registry.create()` is real now, so "New project" is a plain
+    link to the Projects home (its own form lives there, not duplicated into this popover)."""
     picker = (WB / "components" / "scope-picker.js").read_text()
 
-    assert "'sw-scope-pop-new', disabled: true" in picker
-    # Says why, not just greyed out. Written as a token since ADR-0026 gave `Project` a noun
-    # key, so the sentence a partner reads is theirs; what is pinned here is that the reason
-    # is in the picker at all.
-    assert "arrives in a later phase" in picker
-    assert "{project}" in picker
+    assert "disabled: true" not in picker
+    assert "arrives in a later phase" not in picker
+    assert "window.location.assign('../')" in picker
 
 
 def test_new_conversation_still_does_not_provision():

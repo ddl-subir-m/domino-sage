@@ -69,20 +69,7 @@ def _error(response) -> str:
     return response.json()["error"]
 
 
-# ---- the door and the chip, off the platform ---------------------------------------------------
-
-
-def test_the_door_names_the_pack_when_it_cannot_reach_the_platform(acme, client):
-    """Four brand words in one sentence, two of them different: the agent that cannot reach, the
-    platform it cannot reach, the builder it cannot open, and the platform's API host. The App's
-    Environment and the Git credential are the platform's own things and keep their words."""
-    r = client.post("/api/door")
-
-    assert r.status_code == 503
-    assert _error(r) == (
-        "Ada can't reach Acme Cloud from this App, so it can't open the Builder. Check the "
-        "App's Environment has the Acme Cloud API host and a Git credential, then restart."
-    )
+# ---- the Projects home and the chip, off the platform --------------------------------------------
 
 
 def test_creating_a_project_off_the_platform_names_the_pack(acme, client, monkeypatch):
@@ -100,14 +87,14 @@ def test_creating_a_project_off_the_platform_names_the_pack(acme, client, monkey
     )
 
 
-def test_opening_another_project_off_the_platform_names_the_pack(acme, client, monkeypatch):
+def test_cloning_a_project_off_the_platform_names_the_pack(acme, client, monkeypatch):
     import sage.orchestrator.app as appmod
-    monkeypatch.setattr(appmod, "_provision", None)
-    r = client.post("/api/projects/p-1/open")
+    monkeypatch.setattr(appmod, "_control_plane", None)
+    r = client.post("/api/projects/clone", json={"dominoProjectId": "p-1"})
 
     assert r.status_code == 503
     assert _error(r) == (
-        "Ada can't reach Acme Cloud from this container, so it can't open another Project. This "
+        "Ada can't reach Acme Cloud from this container, so it can't clone a Project. This "
         "build runs against the project it is bound to."
     )
 

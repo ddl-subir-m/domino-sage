@@ -393,7 +393,7 @@ def test_a_destination_string_names_the_packs_platform(tmp_path, monkeypatch):
         seed=lambda *a, **k: None,
     )
     with pytest.raises(RuntimeError) as e:
-        svc.create_app("X")
+        svc.provision_project("X")
     assert "in your Acme Cloud account" in str(e.value)
     assert "github.com" in str(e.value)      # the literal in the same sentence
     assert "Domino" not in str(e.value)
@@ -870,7 +870,7 @@ def test_clearing_a_name_gives_the_baked_word_back(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("bad", ["<script>x</script>", 'a" onload=x', "it's", "a`b"])
 def test_a_name_carrying_markup_is_refused(bad):
-    """`ui()` substitutes the pack into `index.html` and `door.html` and escapes nothing, because
+    """`ui()` substitutes the pack into `index.html` and `home.html` and escapes nothing, because
     until this layer existed every value in a pack was baked by an OEM. It is not any more."""
     with pytest.raises(ValueError):
         save_override({"productName": bad})

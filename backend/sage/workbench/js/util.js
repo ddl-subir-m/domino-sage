@@ -466,7 +466,7 @@ window.SW = window.SW || {};
     // address, so the only browser-reachable host it can name is the one this page came from. That
     // is right in a Builder workspace, which is served from the main host. The published Workbench
     // App is served from apps.<host>, where the same path would resolve against the apps origin and
-    // 404 — so the `apps.` label comes off first. Same rule as door.html's builderUrl().
+    // 404 — so the `apps.` label comes off first.
     //
     // An absolute URL is somebody's deliberate override and passes through untouched.
     mainHostUrl(path) {

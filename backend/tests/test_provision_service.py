@@ -10,7 +10,7 @@ from sage.provision.service import ProvisionService
 
 @pytest.fixture
 def no_network_seed():
-    """A recording no-op seeder so create_app runs without touching git or the network."""
+    """A recording no-op seeder so provision_project runs without touching git or the network."""
     calls = []
     yield calls
 
@@ -20,28 +20,20 @@ def _service(tmp_path, cp=None, repo=None, seed_calls=None):
     return ProvisionService(cp or FakeControlPlane(), repo or FakeRepoProvider(), tmp_path, seed=seed)
 
 
-def test_create_app_provisions_repo_project_workspace(tmp_path, no_network_seed):
+def test_provision_project_provisions_repo_and_project(tmp_path, no_network_seed):
     cp, repo = FakeControlPlane(), FakeRepoProvider()
     svc = _service(tmp_path, cp, repo, seed_calls=no_network_seed)
 
-    created = svc.create_app("My App")
+    project, repo_info = svc.provision_project("My App")
 
-    assert created.repo.full_name == "test-owner/sage-my-app"
-    assert created.repo.private is True
+    assert repo_info.full_name == "test-owner/sage-my-app"
+    assert repo_info.private is True
     # The Domino project is named after the repo, never after what was typed (#46) — Sage looks a
     # Project up by that name, and the typed name rides in as the chip overlay instead.
-    assert created.project.name == "sage-my-app"
-    assert created.project.git_url == created.repo.clone_url
-    assert created.workspace["id"] == f"ws-{created.project.id}"
+    assert project.name == "sage-my-app"
+    assert project.git_url == repo_info.clone_url
     # seed was invoked with the new repo's clone URL
-    assert no_network_seed and no_network_seed[0][0] == created.repo.clone_url
-
-
-def test_create_app_returns_an_open_url_for_the_new_builder(tmp_path, no_network_seed):
-    # The workspace DTO carries owner + run id and the project name comes from the ProjectRef, so
-    # the caller gets a host-relative path it can send the browser to.
-    created = _service(tmp_path, seed_calls=no_network_seed).create_app("My App")
-    assert created.open_url == f"/tester/sage-my-app/notebookSession/run-{created.project.id}/"
+    assert no_network_seed and no_network_seed[0][0] == repo_info.clone_url
 
 
 def test_the_initial_commit_is_authored_as_the_real_control_plane_identity(tmp_path, no_network_seed):
@@ -51,7 +43,7 @@ def test_the_initial_commit_is_authored_as_the_real_control_plane_identity(tmp_p
 
     cp = FakeControlPlane(user=UserRef(id="u-1", name="etan_lightstone",
                                        full_name="Etan Lightstone", email="etan@example.com"))
-    _service(tmp_path, cp, seed_calls=no_network_seed).create_app("My App")
+    _service(tmp_path, cp, seed_calls=no_network_seed).provision_project("My App")
 
     assert no_network_seed[0][1]["identity"] == ("Etan Lightstone", "etan@example.com")
 
@@ -59,7 +51,7 @@ def test_the_initial_commit_is_authored_as_the_real_control_plane_identity(tmp_p
 def test_the_initial_commit_falls_back_to_none_with_no_full_name_or_email(tmp_path, no_network_seed):
     # FakeControlPlane's default user has an id/name but no full_name/email — the shape a
     # whoami() built for id/name alone (older fixtures, or a real answer that never fetched them).
-    _service(tmp_path, seed_calls=no_network_seed).create_app("My App")
+    _service(tmp_path, seed_calls=no_network_seed).provision_project("My App")
 
     assert no_network_seed[0][1]["identity"] is None
 
@@ -69,23 +61,23 @@ def test_the_initial_commit_identity_survives_a_whoami_failure(tmp_path, no_netw
         def whoami(self):
             raise RuntimeError("network hiccup")
 
-    _service(tmp_path, _BrokenControlPlane(), seed_calls=no_network_seed).create_app("My App")
+    _service(tmp_path, _BrokenControlPlane(), seed_calls=no_network_seed).provision_project("My App")
 
     assert no_network_seed[0][1]["identity"] is None
 
 
-def test_create_app_resolves_repo_name_collision(tmp_path, no_network_seed):
+def test_provision_project_resolves_repo_name_collision(tmp_path, no_network_seed):
     repo = FakeRepoProvider()
     repo.create_repo("sage-my-app")  # occupy the base name
     svc = _service(tmp_path, FakeControlPlane(), repo, seed_calls=no_network_seed)
 
-    created = svc.create_app("My App")
-    assert created.repo.full_name == "test-owner/sage-my-app-2"
+    _, repo_info = svc.provision_project("My App")
+    assert repo_info.full_name == "test-owner/sage-my-app-2"
 
 
-def test_create_app_requires_name(tmp_path, no_network_seed):
+def test_provision_project_requires_name(tmp_path, no_network_seed):
     with pytest.raises(ValueError):
-        _service(tmp_path).create_app("   ")
+        _service(tmp_path).provision_project("   ")
 
 
 def test_rollback_deletes_repo_when_seed_fails(tmp_path):
@@ -96,7 +88,7 @@ def test_rollback_deletes_repo_when_seed_fails(tmp_path):
 
     svc = ProvisionService(FakeControlPlane(), repo, tmp_path, seed=failing_seed)
     with pytest.raises(RuntimeError, match="push failed"):
-        svc.create_app("My App")
+        svc.provision_project("My App")
     # the orphaned repo was cleaned up
     assert repo.created == []
 
@@ -110,7 +102,7 @@ def test_rollback_deletes_repo_when_project_create_fails(tmp_path):
     repo = FakeRepoProvider()
     svc = ProvisionService(FailingCP(), repo, tmp_path, seed=lambda *a, **k: None)
     with pytest.raises(RuntimeError, match="project rejected"):
-        svc.create_app("My App")
+        svc.provision_project("My App")
     assert repo.created == []
 
 
@@ -126,9 +118,9 @@ def test_a_dead_credential_does_not_win_the_pick(tmp_path):
         ],
         dead_credentials={"dead"},
     )
-    created = _service(tmp_path, cp).create_app("My App")
+    project, _ = _service(tmp_path, cp).provision_project("My App")
 
-    assert created.project.name == "sage-my-app"
+    assert project.name == "sage-my-app"
     assert cp.tried_credentials == ["dead", "live"]  # in list order, and it did not stop at the first
 
 
@@ -142,7 +134,7 @@ def test_unusable_credentials_are_never_tried(tmp_path):
         CredentialRef(id="ok", label="PAT (github.com)", domain="github.com",
                       protocol="https", usable=True),
     ])
-    _service(tmp_path, cp).create_app("My App")
+    _service(tmp_path, cp).provision_project("My App")
     assert cp.tried_credentials == ["ok"]
 
 
@@ -156,7 +148,7 @@ def test_no_usable_credential_lists_what_the_account_holds(tmp_path):
     ])
     repo = FakeRepoProvider()
     with pytest.raises(RuntimeError) as e:
-        _service(tmp_path, cp, repo).create_app("My App")
+        _service(tmp_path, cp, repo).provision_project("My App")
 
     msg = str(e.value)
     assert "work GitLab (gitlab.com)" in msg
@@ -190,7 +182,7 @@ def test_every_credential_failing_groups_them_by_what_domino_said(tmp_path):
                       protocol="https", usable=True),
     ])
     with pytest.raises(RuntimeError) as e:
-        _service(tmp_path, cp).create_app("My App")
+        _service(tmp_path, cp).provision_project("My App")
 
     msg = str(e.value)
     assert cp.tried_credentials == ["a", "b", "odd"]  # uncapped: all of them
@@ -216,78 +208,6 @@ def test_the_diag_says_which_credentials_the_loop_would_try(tmp_path):
         "will_try": ["PAT (github.com)"],
         "skipped": ["my key (github.com) [SSH]"],
     }
-
-
-def test_no_rollback_once_project_exists(tmp_path):
-    """A workspace-launch failure must not delete the repo — the app already exists."""
-    class WsFailCP(FakeControlPlane):
-        def create_workspace(self, project_id, *, branch="main"):
-            raise RuntimeError("Workspace start wasn't completed")
-
-    repo = FakeRepoProvider()
-    svc = ProvisionService(WsFailCP(), repo, tmp_path, seed=lambda *a, **k: None)
-    with pytest.raises(RuntimeError, match="Workspace start"):
-        svc.create_app("My App")
-    # repo (and the created project) are kept so the user can retry opening it
-    assert [r.full_name for r in repo.created] == ["test-owner/sage-my-app"]
-
-
-def test_open_app_reuses_running_workspace(tmp_path):
-    cp = FakeControlPlane()
-    cp.workspaces["proj-1"] = [{"id": "ws-existing", "state": "running"}]
-    svc = _service(tmp_path, cp)
-
-    result = svc.open_app("proj-1")
-    assert result["launched"] is False
-    assert result["workspace"]["id"] == "ws-existing"
-    assert len(cp.workspaces["proj-1"]) == 1  # no second builder launched
-
-
-def test_open_app_ignores_non_builder_workspace_in_same_project(tmp_path):
-    # A user's VS Code session in the project must not be reused or reported as their Sage Builder.
-    cp = FakeControlPlane()
-    vscode = {"id": "vscode-1", "state": "running", "name": "my-vscode",
-              "mostRecentSession": {"sessionStatusInfo": {"isRunning": True}}}
-    cp.workspaces["proj-1"] = [vscode]
-    svc = _service(tmp_path, cp)
-
-    # launches a fresh builder rather than reusing the VS Code session
-    result = svc.open_app("proj-1")
-    assert result["launched"] is True
-    assert result["workspace"]["id"] == "ws-proj-1"
-    assert vscode in cp.workspaces["proj-1"]  # the VS Code workspace was left untouched
-
-
-def test_open_app_launches_when_none(tmp_path):
-    svc = _service(tmp_path, FakeControlPlane())
-    result = svc.open_app("proj-9")
-    assert result["launched"] is True
-    assert result["workspace"]["id"] == "ws-proj-9"
-
-
-def test_open_app_relaunches_stopped_workspace(tmp_path):
-    cp = FakeControlPlane()
-    # The v4 list DTO has no isRestartable field — restartability comes from `state` alone.
-    cp.workspaces["proj-1"] = [{"id": "ws-1", "state": "Stopped"}]
-    svc = _service(tmp_path, cp)
-
-    result = svc.open_app("proj-1")
-    assert result["launched"] is True
-    # Restarted the SAME workspace in place, not created a new one.
-    assert result["workspace"]["id"] == "ws-1"
-    assert len(cp.workspaces["proj-1"]) == 1  # no new workspace appended
-    assert cp.workspaces["proj-1"][0]["state"] == "running"
-
-
-def test_open_app_creates_when_only_workspace_is_terminal(tmp_path):
-    cp = FakeControlPlane()
-    # Deleted/failed workspaces aren't relaunchable — fall through to a fresh one.
-    cp.workspaces["proj-1"] = [{"id": "ws-old", "state": "Deleted", "deleted": True}]
-    svc = _service(tmp_path, cp)
-
-    result = svc.open_app("proj-1")
-    assert result["launched"] is True
-    assert result["workspace"]["id"] == "ws-proj-1"  # a fresh workspace, not the terminal one
 
 
 def test_list_apps_keeps_only_sage_repos(tmp_path):
@@ -327,6 +247,6 @@ def test_the_new_repos_description_names_the_packs_assistant(tmp_path, monkeypat
             seen["description"] = description
             return super().create_repo(name, description=description, private=private)
 
-    _service(tmp_path, repo=_Recording(), seed_calls=no_network_seed).create_app("Domino Sales")
+    _service(tmp_path, repo=_Recording(), seed_calls=no_network_seed).provision_project("Domino Sales")
 
     assert seen["description"] == "Ada app: Domino Sales"

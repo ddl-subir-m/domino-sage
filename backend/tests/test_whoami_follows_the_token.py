@@ -1,10 +1,11 @@
 """`whoami()` answers for the token it was asked with, not for the first one it ever saw.
 
 `_headers` calls `self._token_provider()` on every request, and `DominoControlPlane` is a
-process-wide singleton. On the published Workbench App — a door serving many viewers (ADR-0004) —
-`_me` cached once and forever meant the first viewer's name was handed to everyone after them.
-`Door.ensure_default` builds the Default Project name out of it, so viewer B landed in viewer A's
-Project and A's Sage Builder.
+process-wide singleton shared by every project the registry opens. On the Workbench App this pivot
+retired — a door serving many viewers (ADR-0004) — `_me` cached once and forever meant the first
+viewer's name was handed to everyone after them, landing them in the wrong Project and the wrong
+builder. One person per Sage process (ONE-APP-PLAN.md decision #1) makes that particular collision
+moot, but the cache still has to answer correctly across a token this process re-fetches.
 
 The cache still earns its place: attach polls ask who the viewer is every few seconds while a
 builder boots. It is keyed on the token now, so the poll still costs one request and a different
@@ -52,8 +53,8 @@ def test_a_second_viewers_token_gets_a_second_viewers_identity():
 
 
 def test_the_same_token_is_still_asked_once():
-    """What the cache was for: the door polls `whoami` every few seconds while a builder boots, and
-    without a cache that is one request per poll."""
+    """What the cache was for: an attach poll asks `whoami` every few seconds while a builder
+    boots, and without a cache that is one request per poll."""
     calls: list[str] = []
     cp = _cp(lambda: "tok-alice", calls)
 
@@ -78,9 +79,9 @@ def test_going_back_to_the_first_token_asks_again_rather_than_answering_from_a_s
 
 
 def test_the_username_helper_follows_the_token_too():
-    """`_username` is what names a Default Project and what `app_manage_url` builds a link out of.
-    It reads `whoami`, so it inherits the fix — asserted because it is the caller that made the
-    leak visible rather than merely present."""
+    """`_username` is what `app_manage_url` builds a link out of. It reads `whoami`, so it inherits
+    the fix — asserted because it is the caller that made the leak visible rather than merely
+    present."""
     token = {"v": "tok-alice"}
     calls: list[str] = []
     cp = _cp(lambda: token["v"], calls)

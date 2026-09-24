@@ -59,7 +59,7 @@ from starlette.staticfiles import StaticFiles
 
 _WB = Path(__file__).resolve().parents[1] / "workbench"
 _UI = _WB / "index.html"
-_DOOR_UI = _WB / "door.html"
+_HOME_UI = _WB / "home.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
 from .. import config as sage_config
@@ -266,7 +266,6 @@ def _build_control_plane():
         environment_id=env_id,
         environment_revision_id=os.environ.get("DOMINO_ENVIRONMENT_REVISION_ID"),
         hardware_tier_id=tier_id,
-        builder_tool=os.environ.get("SAGE_BUILDER_TOOL", "sageBuilder"),
         git_host=os.environ.get("SAGE_GIT_HOST", "github.com"),
     )
 
@@ -322,22 +321,6 @@ def _build_provision_service(control_plane):
         Path(os.environ.get("SAGE_TEMPLATE", _REPO / "template" / "fastapi-antd")),
         push_token_provider=token_provider,
     )
-
-
-def _build_door(service, control_plane):
-    """The Workbench door (ADR-0004), or None when this process is not one.
-
-    Only the published Workbench App is a door: a Sage Builder serves the Workbench chrome, and a
-    laptop run has nothing to provision against — "no second local hub" is a decision, not a gap.
-    """
-    if not proxy_is_app():
-        return None
-    if service is None or control_plane is None:
-        log.warning("Workbench App can't provision — the door has nothing to open")
-        return None
-    from ..provision.door import Door
-
-    return Door(service, control_plane.whoami)
 
 
 # One Settings object per process (ONE-APP-PLAN.md Phase 1, §2.7): $SAGE_HOME/settings.json, with
@@ -401,7 +384,7 @@ def _manage_app_url() -> str | None:
     So the platform bar links OUT to it rather than routing in.
 
     Host-RELATIVE, the same rule every other main-host link here follows (`app_manage_url`,
-    `workspace_open_url`, `_open_url`): DOMINO_API_HOST is the INTERNAL cluster address
+    `_open_url`): DOMINO_API_HOST is the INTERNAL cluster address
     (nucleus-frontend…), so a URL built from it is not one a browser can open. The browser resolves
     this path against the origin it was served from, which is by definition reachable — the UI drops
     a leading `apps.` first, since the published Workbench App is served from apps.<host> while
@@ -474,7 +457,6 @@ def _build_resources():
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
 _control_plane = _build_control_plane()
 _provision = _build_provision_service(_control_plane)
-_door = _build_door(_provision, _control_plane)
 # Built once, shared by the legacy default Orchestrator below AND by every per-project one the
 # registry opens (ONE-APP-PLAN.md's "shared, process-wide" services list, §2). Hoisted out of the
 # constructor call (each used to be built inline, once, only for the one Orchestrator that existed)
@@ -498,7 +480,6 @@ _DEFAULT_ORCHESTRATOR = Orchestrator(
     domino_project_id=os.environ.get("DOMINO_PROJECT_ID"),
     control_plane=_control_plane,
     domino_project_name=os.environ.get("DOMINO_PROJECT_NAME"),
-    domino_run_id=os.environ.get("DOMINO_RUN_ID"),
     cost_project_label=_COST_PROJECT_LABEL,
     gateway_ui_url=_gateway_ui_url(_COST_PROJECT_LABEL),
     manage_url=_manage_app_url(),
@@ -1060,12 +1041,12 @@ control_app.add_middleware(_PrefixMiddleware, prefix=BASE_PREFIX)
 class _ViewerIdentityMiddleware:
     """Bind this request's own viewer JWT from Authorization, and clear it when the request ends.
 
-    `/api/me` is the only reader. Listings and model calls use the sidecar, on the door as on a
-    Sage Builder, so no path inherits a viewer from an earlier request any more (#91).
+    `/api/me` is the only reader. Listings and model calls use the sidecar, so no path inherits a
+    viewer from an earlier request any more (#91).
 
     The `finally` is the load-bearing half: a ContextVar left set on a pooled worker would hand one
     viewer's identity to the next request that arrives with no Authorization header — the leak
-    ef86bdc closed, coming back by the back door.
+    ef86bdc closed, coming back another way.
     """
 
     def __init__(self, app) -> None:
@@ -1102,87 +1083,28 @@ control_app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 
 @control_app.get("/")
 def ui() -> HTMLResponse:
-    """The Workbench shell (Chat / Build), or the door.
+    """The Workbench shell (Chat / Build) for an open project, or the Projects home at root scope.
 
-    In the published Workbench App this is the door (ADR-0004): it does not run Chat or Build
-    against the App's scratch checkout — it sends the viewer to their own Sage Builder, where their
-    files live in a real git Project. A Sage Builder serves the shell itself, unchanged.
+    `/p/<slug>/` dispatches here too — `_ProjectDispatchMiddleware` only ever EXTENDS `root_path`,
+    never rewrites `path`, so a request to `/p/<slug>/` resolves to this same bare `/` route once the
+    prefix is subtracted (ONE-APP-PLAN.md §2.3). Which page it serves is whether that dispatch bound
+    a project for this request, not the URL text — the one thing this route can already tell apart.
 
     Both pages come through here, so the brand pack is substituted here and reaches both (#116).
     Server-side, never from JS on boot: the browser paints whatever the HTML literally said first,
-    and the flash lands on the door — the first page a viewer ever sees — where it would show our
-    name over a partner's product. `text()` leaves an unknown token as written, so a page keeps
-    booting whatever the pack says — and that is also what protects the rest of the document, which
-    is templated wholesale: a `{word}` in the CSS or the inline JS resolves only if it happens to
-    name a pack key, and otherwise comes through untouched.
+    and the flash would land on the very first page a viewer ever sees, showing our name over a
+    partner's product. `text()` leaves an unknown token as written, so a page keeps booting whatever
+    the pack says — and that is also what protects the rest of the document, which is templated
+    wholesale: a `{word}` in the CSS or the inline JS resolves only if it happens to name a pack key,
+    and otherwise comes through untouched.
 
     no-store so the current HTML is always served.
     """
     from .brand import text as brand_text
 
-    page = _DOOR_UI if proxy_is_app() else _UI
+    page = _UI if _CURRENT_ORCHESTRATOR.get() is not None else _HOME_UI
     return HTMLResponse(brand_text(page.read_text(encoding="utf-8")),
                         headers={"Cache-Control": "no-store"})
-
-
-@control_app.post("/api/door")
-async def door_open() -> JSONResponse:
-    """Find or create this viewer's Default Project, open their Sage Builder, and say where to go.
-
-    Slow on purpose the first time — creating the repo, seeding it, creating the Domino project and
-    launching the builder is a minute of real work — so the door page holds a progress line rather
-    than the browser holding a blank tab.
-    """
-    if _door is None:
-        # Ours, and not retryable: the resolution is an Environment change and a restart, so the
-        # page prints this as our own sentence with no Try again button (same contract as the
-        # unreachable-repo branch below).
-        return JSONResponse(
-            status_code=503,
-            content={"error": brand_text(
-                "{assistantName} can't reach {platformName} from this App, so it can't open the "
-                "Builder. Check the App's Environment has the {platformName} API host and a Git "
-                "credential, then restart."
-            ), "ours": True, "retryable": False},
-        )
-    from ..provision.door import DefaultProjectRepoUnreachable  # lazy, as every provision import here is
-
-    try:
-        target = await run_in_threadpool(_door.ensure_default)
-    except DefaultProjectRepoUnreachable as e:
-        # Sage wrote this sentence, so it is NOT a passed-through platform body: the page prints it
-        # as ours rather than quoting it (ADR-0014, #121). And it cannot be retried — the same
-        # Project fails identically every time — so the page drops its Try again button too.
-        # exc_info: `from e` carries Domino's refusal, and this is the one path that
-        # replaces it in the UI — without this it is written down nowhere.
-        log.warning("door: %s", e, exc_info=True)
-        return JSONResponse(status_code=502, content={"error": str(e), "ours": True, "retryable": False})
-    except Exception as e:
-        log.exception("door: couldn't open the viewer's Sage Builder")
-        return JSONResponse(status_code=502, content={"error": str(e)})
-    return JSONResponse(content={
-        "open_url": target.open_url,
-        "running": target.running,
-        "launched": target.launched,
-        "created": target.created,
-        "project": {"id": target.project.id, "name": target.project.name},
-    })
-
-
-@control_app.get("/api/door/status")
-async def door_status(project_id: str, workspace_id: str | None = None) -> JSONResponse:
-    """Whether that builder's session is up yet, and the URL to open once it is.
-
-    A launched or resumed workspace says `Started` before its session runs, so the door page polls
-    here rather than sending the viewer to a page that isn't ready.
-    """
-    if _door is None:
-        return JSONResponse(status_code=503, content={"error": "no door in this container"})
-    try:
-        return JSONResponse(content=await run_in_threadpool(_door.status, project_id, workspace_id))
-    except Exception as e:
-        log.exception("door: couldn't read the builder's status")
-        return JSONResponse(status_code=502, content={"error": str(e)})
 
 
 @control_app.get("/api/projects")
@@ -1204,19 +1126,22 @@ async def list_projects() -> JSONResponse:
     slug = current_orchestrator()._project_id if _CURRENT_ORCHESTRATOR.get() is not None else None
     rows = await run_in_threadpool(_REGISTRY.list, slug)
     return JSONResponse(content={
-        "items": [{"slug": r.slug, "name": r.name, "local": r.local, "current": r.current}
+        "items": [{"slug": r.slug, "name": r.name, "local": r.local,
+                   "dominoProjectId": r.domino_project_id, "current": r.current}
                   for r in rows],
     })
 
 
 @control_app.post("/api/projects")
 async def create_project(body: dict) -> JSONResponse:
-    """Create a Project from a typed name and start this viewer's Sage Builder in it (#46).
+    """Create a `sage-*` Project from a typed name and land it locally, open (ONE-APP-PLAN.md
+    Phase 3 step 3 — `ProjectRegistry.create()`, no workspace).
 
-    A minute of real work: a private sage-* repo, the template seeded and pushed, a git-based Domino
-    project, then the builder. The typed name is not the Domino project name — it rides into the
-    repo as the chip overlay and into the project's description — so the name a person picks can be
-    anything without breaking the lookup Sage finds Projects by.
+    A private repo, the template seeded and pushed, and a git-based Domino project: real work, but
+    no builder to wait for any more — the seeded checkout IS `projects/<slug>/`, open the moment this
+    returns. The typed name is not the Domino project name (#46) — it rides in as the chip overlay
+    and the project's description — so the name a person picks can be anything without breaking the
+    lookup Sage finds Projects by.
     """
     if _provision is None:
         return JSONResponse(
@@ -1226,73 +1151,48 @@ async def create_project(body: dict) -> JSONResponse:
                 "create a {project}. This build runs against the project it is bound to."
             )},
         )
-    from ..provision.service import workspace_is_running
-
     name = str((body or {}).get("name") or "").strip()
     if not name:
         return JSONResponse(status_code=400, content={"error": "Name the project to create it."})
     try:
-        created = await run_in_threadpool(_provision.create_app, name)
+        entry = await run_in_threadpool(_REGISTRY.create, name)
     except Exception as e:
-        log.exception("chip: couldn't create the Project %r", name)
+        log.exception("projects: couldn't create the Project %r", name)
         return JSONResponse(status_code=502, content={"error": str(e)})
-    return JSONResponse(content={
-        "open_url": created.open_url,
-        "running": workspace_is_running(created.workspace),
-        "launched": True,
-        "workspace_id": (created.workspace or {}).get("id"),
-        "project": {"id": created.project.id, "name": created.project.name},
-    })
+    return JSONResponse(content={"slug": entry.slug, "name": entry.domino_project_name})
 
 
-@control_app.post("/api/projects/{project_id}/open")
-async def open_project(project_id: str) -> JSONResponse:
-    """Attach THIS viewer's Sage Builder in that Project and say where to send the browser (#47).
+@control_app.post("/api/projects/clone")
+async def clone_project(body: dict) -> JSONResponse:
+    """Clone an already-existing `sage-*` Domino project this token can see but this machine hasn't
+    opened yet (ONE-APP-PLAN.md Phase 3 step 3 — `ProjectRegistry.clone()`) — the `local: false` rows
+    `GET /api/projects` already lists. Body: `{"dominoProjectId": "..."}`.
 
-    Switching Project means leaving this container for another one, so the answer is a URL, not new
-    state here. Reuse if theirs is running, resume if it is stopped, create if they have none — and
-    a collaborator's builder in the same Project is left alone (see ProvisionService.open_app).
+    Gated on `_control_plane`, not `_provision`: `clone()` only needs a control plane to look the
+    project up and a git credential to pull it — it never creates a repo, so a git host `_provision`
+    has no adapter for (see `_build_provision_service`) still leaves cloning possible.
     """
-    if _provision is None:
+    if _control_plane is None:
         return JSONResponse(
             status_code=503,
             content={"error": brand_text(
-                "{assistantName} can't reach {platformName} from this container, so it can't open "
-                "another {project}. This build runs against the project it is bound to."
+                "{assistantName} can't reach {platformName} from this container, so it can't clone "
+                "a {project}. This build runs against the project it is bound to."
             )},
         )
+    project_id = str((body or {}).get("dominoProjectId") or "").strip()
+    if not project_id:
+        return JSONResponse(status_code=400, content={"error": "Name the project to clone it."})
     try:
-        who = await run_in_threadpool(_control_plane.whoami)
-        opened = await run_in_threadpool(_provision.open_app, project_id, owner=who.name)
+        entry = await run_in_threadpool(_REGISTRY.clone, project_id)
+    except KeyError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+    except FileExistsError as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
     except Exception as e:
-        log.exception("chip: couldn't attach a Sage Builder in project %s", project_id)
+        log.exception("projects: couldn't clone Domino project %s", project_id)
         return JSONResponse(status_code=502, content={"error": str(e)})
-    return JSONResponse(content={
-        "open_url": opened["open_url"],
-        "running": opened["running"],
-        "launched": opened["launched"],
-        "workspace_id": (opened["workspace"] or {}).get("id"),
-    })
-
-
-@control_app.get("/api/projects/status")
-async def project_status(project_id: str, workspace_id: str | None = None) -> JSONResponse:
-    """Whether that builder's session is up yet, and the URL to open once it is.
-
-    Same reason the door polls: a launched or resumed workspace says `Started` before its session
-    runs, and sending the browser in then lands it on a page that isn't ready.
-    """
-    if _provision is None:
-        return JSONResponse(status_code=503, content={"error": "this container can't open Projects"})
-    try:
-        who = await run_in_threadpool(_control_plane.whoami)
-        content = await run_in_threadpool(
-            _provision.workspace_status, project_id, workspace_id, owner=who.name
-        )
-    except Exception as e:
-        log.exception("chip: couldn't read the builder's status in project %s", project_id)
-        return JSONResponse(status_code=502, content={"error": str(e)})
-    return JSONResponse(content=content)
+    return JSONResponse(content={"slug": entry.slug, "name": entry.domino_project_name})
 
 
 @control_app.get("/api/gallery")
@@ -2563,18 +2463,6 @@ async def publish_status(app_id: str) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:
         log.exception("publish-status failed")
-        return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
-    return JSONResponse(content=result)
-
-
-@control_app.post("/api/stop")
-async def stop() -> JSONResponse:
-    """Stop THIS builder's workspace (saving in-progress work first). Offloaded to a thread — it
-    drives a git push and a control-plane call."""
-    try:
-        result = await run_in_threadpool(orchestrator.stop)
-    except Exception as e:
-        log.exception("stop failed")
         return JSONResponse(status_code=502, content={"error": f"{type(e).__name__}: {e}"})
     return JSONResponse(content=result)
 

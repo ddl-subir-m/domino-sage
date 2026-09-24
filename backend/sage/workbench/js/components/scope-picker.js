@@ -7,17 +7,28 @@ window.SW = window.SW || {};
 
   // Only the project this builder is bound to can be described from here — the others are a name
   // and a slug to open by, so the row says what picking it does rather than inventing counts.
-  // A row this process hasn't cloned yet (`local: false`) has nothing here to open — Phase 3's
-  // `clone()` is what would make it openable — so it says that instead of offering a dead click.
+  // A row this process hasn't cloned yet (`local: false`) clones on click (ONE-APP-PLAN.md Phase 3
+  // step 3 — `ProjectRegistry.clone()`), then opens the same way a local row does.
   function ScopeRow({ project, onSelect }) {
-    const openable = project.current || project.local;
+    const [cloning, setCloning] = useState(false);
+
+    const clone = async () => {
+      setCloning(true);
+      try {
+        const cloned = await SW.api.cloneProject(project.dominoProjectId);
+        window.location.assign(`../${cloned.slug}/`);
+      } catch (e) {
+        setCloning(false);
+        antd.message.error(e.message);
+      }
+    };
+
     return h(
       'button',
       {
         className: `sw-scope-row${project.current ? ' is-active' : ''}`,
-        disabled: !openable,
-        title: openable ? '' : 'Not on this machine yet.',
-        onClick: openable ? () => onSelect(project) : undefined,
+        disabled: cloning,
+        onClick: cloning ? undefined : () => (project.local ? onSelect(project) : clone()),
       },
       h('span', { className: 'sw-scope-dot' }),
       h(
@@ -28,7 +39,7 @@ window.SW = window.SW || {};
       h(
         'span',
         { className: 'sw-scope-row-count' },
-        project.current ? 'You are here' : (project.local ? 'Open' : 'Not cloned yet')
+        project.current ? 'You are here' : (project.local ? 'Open' : (cloning ? 'Cloning…' : 'Clone'))
       )
     );
   }
@@ -54,20 +65,17 @@ window.SW = window.SW || {};
     const content = h(
       'div',
       { className: 'sw-scope-pop' },
+      // Creating a Project is a real, heavier flow (repo + seed + Domino project, ONE-APP-PLAN.md
+      // Phase 3 step 3) with its own form — the Projects home at root scope, not this popover — so
+      // the chip links there rather than reimplementing the form twice.
       h(
-        Tooltip,
+        'button',
         {
-          // Creating a Project from here is Phase 3 work (ONE-APP-PLAN.md §4) — say so rather than
-          // offering a button that fails on click, or hiding the action the target design keeps.
-          title: SW.brand.text('Creating a new {project} from here arrives in a later phase.'),
-          placement: 'right',
+          className: 'sw-scope-pop-new',
+          onClick: () => { onOpenChange(false); window.location.assign('../'); },
         },
-        h(
-          'button',
-          { className: 'sw-scope-pop-new', disabled: true },
-          h(PlusOutlined, null),
-          'New project'
-        )
+        h(PlusOutlined, null),
+        'New project'
       ),
 
       h(

@@ -24,7 +24,6 @@ _CSS = Path(__file__).resolve().parents[1] / "sage" / "workbench" / "css"
 COMPONENT = (_JS / "components" / "platform-error.js").read_text()
 GALLERY = (_JS / "modes" / "gallery.js").read_text()
 TREE = (_JS / "components" / "resource-tree.js").read_text()
-DOOR = (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "door.html").read_text()
 TOKENS = (_CSS / "tokens.css").read_text()
 BOOT = (_JS / "app.js").read_text()
 
@@ -99,11 +98,18 @@ def test_every_surface_that_draws_a_platform_error_inline_uses_the_one_treatment
 
     A toast is deliberately not one of them. It is a corner that auto-dismisses in seconds, which
     is the wrong placement for output somebody has to read, so those stay one-line summaries.
+
+    `home.html` (the door's replacement, ONE-APP-PLAN.md Phase 3 step 3) is NOT one of these
+    surfaces yet — its create/clone/settings errors are shown as plain text, not this quotation
+    treatment, and its `POST /api/projects`/`/clone` routes carry no `ours`/`retryable` marker the
+    way `/api/door` used to. A real gap against ADR-0014 (a platform body like a failed git
+    credential should be quoted, not blended into Sage's own sentence), named here rather than
+    silently dropped — not fixed in this pass, which is about retiring the door, not redesigning
+    the Projects home's error surfaces.
     """
     assert "SW.PlatformError" in GALLERY
     assert "SW.PlatformError" in BOOT  # the shell's own "could not load", same shape
     assert TREE.count("treeFailure(") == 3  # one shape, called by both trees
-    assert "sw-passthrough" in DOOR  # the door carries its own copy — it loads no shell JS
     assert '"./js/components/platform-error.js"' in (
         (Path(__file__).resolve().parents[1] / "sage" / "workbench" / "index.html").read_text()
     )
@@ -115,87 +121,3 @@ def test_the_copy_around_the_quotation_comes_from_the_pack():
     assert "SW.brand.text(" in GALLERY
     assert "Could not list files." not in TREE
     assert "Could not look inside this Data Source." not in TREE
-    # The door loads no shell JS, so it reads the pack it already fetches for its logo and colours.
-    assert "'Sage couldn't open your workspace'" not in DOOR
-    assert "pack.assistantName" in DOOR
-
-
-# ---- the door's one sentence that is OURS ------------------------------------------------------
-
-
-def _door_raising(monkeypatch, err: Exception):
-    from fastapi.testclient import TestClient
-
-    import sage.orchestrator.app as appmod
-
-    class _Door:
-        def ensure_default(self):
-            raise err
-
-    monkeypatch.setattr(appmod, "_door", _Door())
-    return TestClient(appmod.control_app).post("/api/door")
-
-
-def _unreachable_default():
-    from sage.provision.domino import ProjectRef
-    from sage.provision.door import DefaultProjectRepoUnreachable
-
-    return DefaultProjectRepoUnreachable(ProjectRef(
-        id="p-1", name="sage-alice-1a2b3c4d", git_url="https://github.com/o/sage-alice-1a2b3c4d.git",
-    ))
-
-
-def test_a_door_explanation_sage_wrote_is_not_offered_as_the_platforms(monkeypatch):
-    """The door's failure body is normally Domino's, and is quoted. This one is Sage's own.
-
-    Without the marker it lands in the quotation under "Setting it up failed. Try again…", which
-    attributes Sage's sentence to the platform and answers a permanent condition with a button
-    that fails identically every press.
-    """
-    r = _door_raising(monkeypatch, _unreachable_default())
-    body = r.json()
-
-    assert r.status_code == 502
-    assert body["ours"] is True         # printed as our sentence, never quoted
-    assert body["retryable"] is False   # and without the button that cannot work
-    assert "sage-alice-1a2b3c4d" in body["error"]
-
-
-def test_an_ordinary_door_failure_is_still_the_platforms_to_quote(monkeypatch):
-    """The marker is for the one condition Sage understands — not a blanket reclassification."""
-    upstream = RuntimeError(UPSTREAM)
-    body = _door_raising(monkeypatch, upstream).json()
-
-    assert not body.get("ours")
-    assert body["error"] == UPSTREAM
-
-
-def test_the_door_page_prints_our_explanation_and_withdraws_the_dead_retry():
-    """Pinned against the source: the door loads no shell JS, so there is no component to render.
-
-    Three things, all of which the pre-`ours` page got wrong for this condition: the text goes to
-    the message slot, nothing is quoted alongside it, and the Try again button is withdrawn.
-    """
-    assert "if (data.ours) fail(data.error, null, data.retryable !== false);" in DOOR
-    assert "function fail(message, said, retryable)" in DOOR
-    assert "actions.style.display = retryable === false ? 'none' : '';" in DOOR
-    # A later open must hand the button back, or one bad Project disables retry for the session.
-    assert DOOR.count("actions.style.display = '';") == 1
-
-
-def test_the_off_platform_door_sentence_is_ours_too(monkeypatch):
-    """The neighbour of the branch above, and the one `ours` is most likely to be forgotten on.
-
-    It is Sage's own `brand_text` sentence. Marking only the new branch would leave this one drawn
-    inside the quotation as if the platform said it, under a Try again that cannot fix an
-    Environment — the misattribution this contract exists to prevent, on the same route.
-    """
-    from fastapi.testclient import TestClient
-
-    import sage.orchestrator.app as appmod
-
-    monkeypatch.setattr(appmod, "_door", None)
-    body = TestClient(appmod.control_app).post("/api/door").json()
-
-    assert body["ours"] is True
-    assert body["retryable"] is False

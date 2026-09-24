@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 
 from sage.orchestrator import app as app_module
 from sage.orchestrator.app import _ProjectDispatchMiddleware, current_orchestrator
-from sage.projects.registry import ProjectRow
+from sage.projects.registry import ProjectRow, RegistryEntry
 
 
 class _FakeRegistry:
@@ -225,7 +225,8 @@ def test_the_projects_route_marks_no_current_at_root_scope(monkeypatch):
     r = TestClient(app_module.control_app).get("/api/projects")
     assert r.status_code == 200
     assert seen["current"] is None
-    assert r.json() == {"items": [{"slug": "alpha", "name": "Alpha", "local": True, "current": False}]}
+    assert r.json() == {"items": [{"slug": "alpha", "name": "Alpha", "local": True,
+                                    "dominoProjectId": "", "current": False}]}
 
 
 def test_the_projects_route_marks_current_for_a_project_scoped_call(monkeypatch):
@@ -250,3 +251,82 @@ def test_the_projects_route_marks_current_for_a_project_scoped_call(monkeypatch)
         }
     finally:
         _forget_project("alpha")
+
+
+# -- ONE-APP-PLAN.md Phase 3 step 3: `POST /api/projects`/`/api/projects/clone` wired to
+# `ProjectRegistry.create()`/`clone()` (replacing the door-era `POST /api/projects/{id}/open`).
+# `registry.create`/`clone` are unit-tested directly in `test_project_registry.py`; these prove the
+# ROUTE calls them correctly and translates their exceptions to the right status code.
+
+_ENTRY = RegistryEntry(
+    slug="alpha", domino_project_id="proj-1", domino_project_name="Alpha",
+    owner_name="etan", repo_url="https://github.com/o/sage-alpha.git", created_at="2026-01-01T00:00:00Z",
+)
+
+
+def test_creating_a_project_calls_the_registry_and_returns_its_slug(monkeypatch):
+    seen = {}
+
+    def fake_create(name):
+        seen["name"] = name
+        return _ENTRY
+
+    monkeypatch.setattr(app_module, "_provision", object())  # non-None: past the 503 guard
+    monkeypatch.setattr(app_module._REGISTRY, "create", fake_create)
+    r = TestClient(app_module.control_app).post("/api/projects", json={"name": "Alpha"})
+    assert r.status_code == 200
+    assert seen["name"] == "Alpha"
+    assert r.json() == {"slug": "alpha", "name": "Alpha"}
+
+
+def test_creating_a_project_with_no_name_is_refused_before_the_registry_is_asked(monkeypatch):
+    called = []
+    monkeypatch.setattr(app_module, "_provision", object())
+    monkeypatch.setattr(app_module._REGISTRY, "create", lambda name: called.append(name))
+    r = TestClient(app_module.control_app).post("/api/projects", json={"name": "   "})
+    assert r.status_code == 400
+    assert called == []
+
+
+def test_cloning_a_project_calls_the_registry_and_returns_its_slug(monkeypatch):
+    seen = {}
+
+    def fake_clone(domino_project_id):
+        seen["id"] = domino_project_id
+        return _ENTRY
+
+    monkeypatch.setattr(app_module, "_control_plane", object())  # non-None: past the 503 guard
+    monkeypatch.setattr(app_module._REGISTRY, "clone", fake_clone)
+    r = TestClient(app_module.control_app).post("/api/projects/clone", json={"dominoProjectId": "proj-1"})
+    assert r.status_code == 200
+    assert seen["id"] == "proj-1"
+    assert r.json() == {"slug": "alpha", "name": "Alpha"}
+
+
+def test_cloning_an_id_the_token_cannot_see_is_a_404(monkeypatch):
+    def fake_clone(domino_project_id):
+        raise KeyError(f"no Domino project {domino_project_id!r} visible to this token")
+
+    monkeypatch.setattr(app_module, "_control_plane", object())
+    monkeypatch.setattr(app_module._REGISTRY, "clone", fake_clone)
+    r = TestClient(app_module.control_app).post("/api/projects/clone", json={"dominoProjectId": "ghost"})
+    assert r.status_code == 404
+
+
+def test_cloning_a_slug_already_on_disk_is_a_409(monkeypatch):
+    def fake_clone(domino_project_id):
+        raise FileExistsError("projects/alpha already exists locally")
+
+    monkeypatch.setattr(app_module, "_control_plane", object())
+    monkeypatch.setattr(app_module._REGISTRY, "clone", fake_clone)
+    r = TestClient(app_module.control_app).post("/api/projects/clone", json={"dominoProjectId": "proj-1"})
+    assert r.status_code == 409
+
+
+def test_cloning_with_no_id_is_refused_before_the_registry_is_asked(monkeypatch):
+    called = []
+    monkeypatch.setattr(app_module, "_control_plane", object())
+    monkeypatch.setattr(app_module._REGISTRY, "clone", lambda domino_project_id: called.append(domino_project_id))
+    r = TestClient(app_module.control_app).post("/api/projects/clone", json={})
+    assert r.status_code == 400
+    assert called == []

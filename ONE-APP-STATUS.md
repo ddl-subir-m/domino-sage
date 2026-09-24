@@ -1,13 +1,22 @@
 ---
 doc: Implementation status for ONE-APP-PLAN.md
 branch: one-app-pivot-Etan
-last updated: 2026-09-23
+last updated: 2026-09-24
 ---
 
 # Status
 
 Read `ONE-APP-PLAN.md` first. This file tracks what's actually landed, phase by phase, so a fresh
 session can resume without re-deriving the mirror map or the design calls below.
+
+**This file is long and grows chronologically — read to the LAST `## UPDATE` block before trusting
+any earlier `## Next session should` list.** Several of those are now stale (e.g. the one just below
+the 2026-09-23 mirror-map section still names Phase 3 step 3 as the next thing to do — it was
+finished in the 2026-09-24 update at the bottom of this file). As of 2026-09-24: Phases 0-2 and
+Phase 3 steps 1-4 are done and verified; Phase 3 step 3 (door/workspace-lifecycle deletion, the
+Projects home page, wiring `create`/`clone` to real HTTP routes) is ALSO now done — see the final
+`## UPDATE` block. **Nothing on this branch has been committed** — nearly 40 files are sitting
+uncommitted in the working tree as of that update; confirm with the user before committing anything.
 
 **Scope per session:** one phase at a time (Phase 0 alone is already sized ~1-2 PRs per the plan's
 own table). Update this file's checklist as you go, and the "Design calls" section whenever you make
@@ -1982,3 +1991,144 @@ ongoing `main`-line divergence.
    prompt/runner-drift guard.
 4. The broader (unaudited) question of whether any of the remaining ~16 dogfood-class test files
    have the same unenforced-assumption shape as the 5 just fixed, beyond the specific ones checked.
+
+## UPDATE 2026-09-24 (new session): Phase 3 step 3 done — door/workspace-lifecycle deleted, Projects home page built, `create`/`clone` wired to real HTTP routes
+
+Read `ONE-APP-PLAN.md` and this file fresh; confirmed the branch matched this file's account
+(`7f3b327c`, clean tree). This closes the one item every prior session flagged as the coordinated
+next step.
+
+**Deleted, real functions with real callers, not dead stubs:**
+- `sage/provision/door.py` (whole file: `Door`, `DoorTarget`, `DefaultProjectRepoUnreachable`) and
+  `sage/workbench/door.html`.
+- `/api/door`, `/api/door/status`, `/api/stop`, and the door-era `POST /api/projects/{id}/open`,
+  `GET /api/projects/status` routes; `_build_door`/`_door` in `app.py`.
+- `ControlPlane.create_workspace`/`stop_workspace`/`resume_workspace`/`delete_workspace`/
+  `save_workspace_work`/`workspace_http_ready`/`list_workspaces` — real impl AND `FakeControlPlane`
+  counterparts, plus the now-dead `BUILDER_WORKSPACE_NAME`/`_SAVE_TIMEOUT_S`/`_READY_TIMEOUT_S`
+  constants and the `builder_tool` ctor param (`SAGE_BUILDER_TOOL` env read in `app.py` too).
+  `archive_project` and `available_tools` are ALSO uncalled now (door.py's own docstring already
+  said `archive_project` had zero callers before this session) but are pre-existing dead code
+  outside this deletion's cause — named, not touched.
+- `ProvisionService.create_app`/`open_app`/`workspace_status`/`_open_result`/`_reachable` and the
+  helpers only they used (`AppCreated`, `workspace_open_url`, `is_builder_workspace`, `is_owned_by`,
+  `workspace_is_running`, `_STOPPED_STATES`, `WorkspaceLaunchFailed`, `_launching`).
+  `provision_project`/`_committer_identity`/`_create_repo`/`_create_project`/`git_credential_diag`/
+  `repo_is_unreachable`/`list_apps`/`list_built_apps` are untouched — `registry.create()`/`clone()`
+  already ran through `provision_project`, not `create_app`.
+- `Orchestrator.stop()`/`_resolve_workspace_id()` and the `workspace_id`/`domino_run_id` ctor params
+  they were the only readers of (`orchestrator/service.py`).
+- `environment/pluggable-tools.yaml`. `environment/README.md`'s "Sage Builder workspace" section is
+  now actively wrong (describes a launch path that cannot work), not just stale — added a one-line
+  flag at the top saying so and pointing at Phase 7 for the real rewrite, rather than doing that
+  rewrite here (out of this step's scope, and `environment/app.sh`/the Dockerfile are untouched).
+
+**Built, not just deleted:**
+1. `sage/workbench/home.html` — the Projects home the plan's §2 target architecture puts at root
+   scope. Self-contained (no shared shell CSS/JS), matching `door.html`'s own established reason for
+   that shape (reached before any project — and now, possibly before Settings has ever been saved —
+   so it must not depend on anything a broken/unconfigured process could be missing): project
+   list (Open for `local: true` rows, Clone for `local: false`), a New-project form, and a compact
+   Connection form (`domino_host`/`domino_token`/`git_token` via the already-existing
+   `GET/PUT /api/settings` and `POST /api/settings/test`) shown alone when nothing is configured yet
+   — §2.7's "First run with no host/token: the Projects home shows the Connection form and nothing
+   else" literally, though only the core fields (not the publish env/tier pickers, which stay in the
+   Workbench's own Account drawer — Phase 6 territory since there's no live env/tier listing route
+   yet either).
+2. `GET /`'s `ui()` now serves `home.html` at root scope and `index.html` (the Workbench shell) once
+   `_ProjectDispatchMiddleware` has bound a project for the request (`_CURRENT_ORCHESTRATOR.get() is
+   not None`) — replacing the `_DOOR_UI if proxy_is_app() else _UI` branch. `_DOOR_UI` → `_HOME_UI`.
+3. `POST /api/projects` rewritten to call `_REGISTRY.create(name)` (was `_provision.create_app`);
+   new `POST /api/projects/clone` (body `{"dominoProjectId"}`) calls `_REGISTRY.clone(...)`, 404 on
+   `KeyError` (token can't see it), 409 on `FileExistsError` (slug collision). Gated on `_provision`
+   (create) vs. `_control_plane` (clone) respectively, NOT the same guard: `clone()` only needs a
+   control plane to look the project up and a git credential to pull it, so a git host `_provision`
+   has no adapter for (`_build_provision_service` returns `None` for anything but GitHub) still
+   leaves cloning possible — checked against `registry.py`'s actual guard rather than assumed.
+4. `ProjectRow` (`sage/projects/registry.py`) gained `domino_project_id: str = ""` (populated for
+   both local and remote rows) so `GET /api/projects`'s `dominoProjectId` field lets a client clone a
+   `local: false` row with no second lookup.
+5. Workbench-shell wiring, now that create/clone are real: `scope-picker.js`'s "New project" button
+   is a plain enabled link to the Projects home (`../`) rather than a permanently-disabled tooltip —
+   a full create FORM belongs on the home page, not duplicated into this popover. A `local: false`
+   `ScopeRow` now clones on click (`SW.api.cloneProject`, new) instead of staying disabled, then
+   navigates the same way a local row does; a collaborator-safety note doesn't apply here since
+   clone has no workspace-reuse semantics to get wrong.
+
+**Deliberately NOT done, named rather than silently cut:**
+- Full ADR-0014 quotation treatment (the `sw-passthrough` blockquote, `ours`/`retryable` markers) is
+  not implemented for `home.html`'s create/clone/settings errors — they're plain text. `/api/door`
+  used to carry that distinction; the new routes don't. Flagged directly in
+  `test_a_platform_error_reads_as_a_quotation.py`'s surviving test rather than silently dropped —
+  redesigning the Projects home's error surfaces is bigger than retiring the door.
+- A new ADR superseding ADR-0004 ("Workbench is the door") is Phase 8's job per the plan's own
+  phasing; not written here. `docs/adr/0004-workbench-is-the-door.md` still describes the retired
+  shape.
+- `environment/app.sh`, the Dockerfile, and the rest of `environment/README.md` still describe the
+  pre-pivot two-container world (Sage Builder workspace, `SAGE_SELF_UPDATE`, the fast inner dev
+  loop) — Phase 7's "Packaging: App and laptop" is the real rewrite; this session only flagged the
+  one paragraph that became actively wrong (the pluggable-tools launch path) rather than doing that
+  rewrite piecemeal.
+
+**Test sweep — every file the deletions touched, fixed rather than left red:**
+`test_door.py`, `test_provision_open_url.py` (`workspace_open_url`/`workspace_is_running` unit
+tests — no longer meaningful once workspace launch is gone), `test_the_door_waits_for_the_builder_to_answer.py`
+deleted wholesale. `test_provision_domino.py` (-7 workspace-lifecycle tests), `test_provision_service.py`
+(create_app/open_app tests repointed to `provision_project` where the behavior is shared — repo
+naming collision, credential retry/grouping, rollback, identity attribution, description branding —
+and deleted outright where genuinely workspace-only: `test_no_rollback_once_project_exists` and 5
+`open_app` tests), `test_create_project.py` (same repoint pattern, `test_the_new_project_opens_this_creators_builder`
+deleted), `test_attach.py` (its whole first half — `open_app`/`workspace_status` against
+`FakeControlPlane` — deleted; the Phase-2-era same-origin-navigation tests kept), `test_orchestrator.py`
+(3 stop tests deleted, `workspace_id`/`domino_run_id` dropped from the `_domino_orch` fixture),
+`test_brand.py` (1 `create_app`→`provision_project` repoint). Door/brand-substitution surface tests
+(`test_a_platform_error_reads_as_a_quotation.py`, `test_the_favicon_comes_from_the_pack.py`,
+`test_the_entry_pages_carry_the_packs_name.py`, `test_the_workbench_ships_the_licences_it_owes.py`,
+`test_workbench.py`, `test_the_paranoid_pack_finds_no_leak.py`, `brand_coverage.toml`) all repointed
+from monkeypatching `proxy_is_app()` to registering a throwaway fake project directly in
+`_REGISTRY._open` and dispatching through `/p/<slug>/` for real — the same shortcut
+`test_project_dispatch.py` already established — since `ui()` no longer reads `proxy_is_app()` at
+all. `test_the_control_plane_routes_speak_the_packs_words.py`'s door test deleted, its
+`/api/projects/{id}/open` test repointed to `/api/projects/clone` (own guard, own text). New
+route-level tests for `POST /api/projects`/`/api/projects/clone` added to `test_project_dispatch.py`
+(6 tests: happy path + empty-name/empty-id refusal + 404/409 for clone) since nothing else exercised
+the HTTP wiring directly (`registry.create`/`clone` themselves were already unit-tested).
+Docstring/comment staleness fixed where it named now-deleted code as if it still existed (not
+metaphorical "door" prose, which is untouched): `sage/provision/domino.py`'s `whoami()` docstring,
+`test_whoami_follows_the_token.py`'s module docstring, `sage/orchestrator/app.py`'s
+`_ViewerIdentityMiddleware`/`_manage_app_url` docstrings, `sage/orchestrator/brand.py`'s
+`_safe_name` docstring, `sage/workbench/js/util.js`'s `mainHostUrl` comment,
+`sage/workbench/js/prefs.js`'s module comment (described the pre-Phase-2 one-container-per-project
+model, already stale before this session, made worse by citing the now-deleted
+`/api/projects/{id}/open`).
+
+**Verification, following this repo's own protocol:**
+- Every touched/new test file green individually as each was fixed (recorded inline above; not
+  re-listed here).
+- `make lint` (repo-wide, `cd backend && ruff check ..`): clean.
+- `node --check` on every edited `.js` file and on `home.html`'s inline `<script>` (extracted to a
+  temp file first, since `node --check` needs a real file): clean. (This only proves syntax, not
+  reference resolution — see the 2026-09-23 laptop-smoke-test update's own lesson about
+  `Popover`-style bugs `node --check` cannot catch; nobody has run `home.html` in a real browser.)
+- **Full suite, reconciled**: `cd backend && uv run --extra dev pytest -q -n auto` →
+  `96 failed, 7723 passed, 10 skipped` (7829 collected). Every one of the 96 failures diffed against
+  the unmodified baseline via `git stash`/`git stash pop` (restored and spot-checked intact each
+  time) in three batches by file plus `test_orchestrator.py` checked separately — **byte-for-byte
+  identical failing test names in every batch, same root cause every time** (the well-established
+  `publish_available()` dogfood-safety class: `/mnt/code` really is the mounted Sage repo in this
+  sandbox, so anything that reaches real publish/rename/delete/credential code 404s or refuses the
+  same way pre- and post-this-session) plus the pre-existing `test_native_gateway_transport.py` node
+  ESM resolution failure (sandbox-environment, unrelated to this pivot). **Zero new regressions,
+  zero collection errors, zero new failing test names anywhere in the diff.**
+
+**Not done, and worth a dedicated look later, named rather than silently dropped:**
+1. Live HTTP check of the new routes/`home.html` against a real Domino sandbox — the underlying
+   `registry.create()`/`clone()` calls were live-verified two updates up, but the HTTP wrapper and
+   the page itself have only been checked via `TestClient` and `node --check`, never a real browser
+   or a real request through the App proxy. Same caveat every phase's own status entry has carried.
+2. The two long-standing coverage gaps (`test_sage_domino_relay.py`, `test_feedback.py`'s weakened
+   drift guard) and the ADR-0014 quotation-treatment gap on `home.html` named above.
+3. `docs/adr/0004-workbench-is-the-door.md` and the rest of `environment/README.md`/`app.sh`/the
+   Dockerfile still describe the retired shape — Phase 8 and Phase 7 respectively.
+4. This session did not commit anything (CLAUDE.md: never commit unless asked) — the working tree
+   has all of the above uncommitted. Confirm with the user before committing.

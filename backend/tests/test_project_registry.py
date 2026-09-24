@@ -204,7 +204,8 @@ def test_list_with_no_control_plane_is_local_only(tmp_path):
     _write_entry(tmp_path, "alpha")
     reg = ProjectRegistry(tmp_path, _counting_factory([]))
     rows = reg.list()
-    assert rows == [ProjectRow(slug="alpha", name="Project alpha", local=True, current=False)]
+    assert rows == [ProjectRow(slug="alpha", name="Project alpha", local=True,
+                                domino_project_id="proj-alpha", current=False)]
 
 
 def test_list_marks_the_current_slug(tmp_path):
@@ -226,8 +227,10 @@ def test_list_merges_remote_projects_the_token_can_see(tmp_path):
     reg = ProjectRegistry(tmp_path, _counting_factory([]), control_plane=remote)
     rows = reg.list()
     assert rows == [
-        ProjectRow(slug="alpha", name="Project alpha", local=True, current=False),
-        ProjectRow(slug="sage-remote-one", name="Remote One", local=False, current=False),
+        ProjectRow(slug="alpha", name="Project alpha", local=True,
+                   domino_project_id="proj-alpha", current=False),
+        ProjectRow(slug="sage-remote-one", name="Remote One", local=False,
+                   domino_project_id="proj-remote", current=False),
     ]
 
 
@@ -242,7 +245,8 @@ def test_list_prefers_the_local_row_when_a_remote_slug_collides(tmp_path):
     reg = ProjectRegistry(tmp_path, _counting_factory([]), control_plane=remote)
     rows = reg.list()
     assert rows == [ProjectRow(slug="sage-remote-one", name="Project sage-remote-one",
-                                local=True, current=False)]
+                                local=True, domino_project_id="proj-sage-remote-one",
+                                current=False)]
 
 
 def test_a_remote_project_with_no_git_url_falls_back_to_its_id(tmp_path):
@@ -251,7 +255,8 @@ def test_a_remote_project_with_no_git_url_falls_back_to_its_id(tmp_path):
     remote = _FakeControlPlane(apps=[ProjectRef(id="proj-remote", name="Remote One", git_url=None)])
     reg = ProjectRegistry(tmp_path, _counting_factory([]), control_plane=remote)
     rows = reg.list()
-    assert rows == [ProjectRow(slug="proj-remote", name="Remote One", local=False, current=False)]
+    assert rows == [ProjectRow(slug="proj-remote", name="Remote One", local=False,
+                                domino_project_id="proj-remote", current=False)]
 
 
 # -- create() (Phase 3 step 1) ------------------------------------------------------------------

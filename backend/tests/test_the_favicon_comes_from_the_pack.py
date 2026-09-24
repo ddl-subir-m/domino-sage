@@ -20,7 +20,7 @@ from sage.orchestrator.brand import DEFAULT, load
 
 _WB = Path(__file__).resolve().parents[1] / "sage" / "workbench"
 SHELL = (_WB / "index.html").read_text()
-DOOR = (_WB / "door.html").read_text()
+HOME = (_WB / "home.html").read_text()
 
 DOMINO_DEFAULT = "./img/domino-favicon.svg"
 
@@ -60,11 +60,28 @@ def _pack(tmp_path, monkeypatch, **keys) -> dict:
     return load()
 
 
-def _client(monkeypatch, *, door: bool) -> TestClient:
+def _client() -> TestClient:
     import sage.orchestrator.app as appmod
 
-    monkeypatch.setattr(appmod, "proxy_is_app", lambda: door)
     return TestClient(appmod.control_app)
+
+
+def _get(client: TestClient, *, scoped: bool):
+    """`GET /`, at root scope (the Projects home) or dispatched into a project (the Workbench
+    shell) — `ui()` reads `_CURRENT_ORCHESTRATOR`, set only by a real `/p/<slug>/` dispatch, so a
+    scoped fetch registers a throwaway fake project directly in `_REGISTRY`'s cache (the same
+    shortcut `test_project_dispatch.py` uses) rather than monkeypatching anything `ui()` reads."""
+    import sage.orchestrator.app as appmod
+
+    if not scoped:
+        return client.get("/")
+    with appmod._REGISTRY._lock:
+        appmod._REGISTRY._open["t-fake"] = object()
+    try:
+        return client.get("/p/t-fake/")
+    finally:
+        with appmod._REGISTRY._lock:
+            appmod._REGISTRY._open.pop("t-fake", None)
 
 
 # --- the slot and the default -----------------------------------------------------------------
@@ -77,24 +94,25 @@ def test_the_default_pack_names_the_domino_favicon():
 
 def test_both_entry_pages_fill_the_icon_slot_from_the_pack():
     """The source, not the response: a literal href is what the browser would paint first."""
-    for page in (SHELL, DOOR):
+    for page in (SHELL, HOME):
         assert '<link rel="icon" href="{faviconUrl}" />' in page
 
 
-@pytest.mark.parametrize("door", [False, True])
-def test_an_unset_favicon_serves_the_domino_default_on_both_pages(monkeypatch, door):
-    r = _client(monkeypatch, door=door).get("/")
+@pytest.mark.parametrize("scoped", [False, True])
+def test_an_unset_favicon_serves_the_domino_default_on_both_pages(monkeypatch, scoped):
+    r = _get(_client(), scoped=scoped)
     assert r.status_code == 200
     assert f'<link rel="icon" href="{DOMINO_DEFAULT}" />' in r.text
 
 
-@pytest.mark.parametrize("door", [False, True])
-def test_the_packs_favicon_is_in_the_html_the_server_sends(tmp_path, monkeypatch, door):
+@pytest.mark.parametrize("scoped", [False, True])
+def test_the_packs_favicon_is_in_the_html_the_server_sends(tmp_path, monkeypatch, scoped):
     _pack(tmp_path, monkeypatch, faviconUrl="./brand/acme-favicon.svg")
-    r = _client(monkeypatch, door=door).get("/")
+    r = _get(_client(), scoped=scoped)
     assert '<link rel="icon" href="./brand/acme-favicon.svg" />' in r.text
     # Scoped to the icon link, not the whole document: the default favicon IS the logo until the
-    # asset is drawn, and the door renders the logo in an <img> that this pack does not change.
+    # asset is drawn, and the Projects home renders the logo in an <img> that this pack does not
+    # change.
     assert f'<link rel="icon" href="{DOMINO_DEFAULT}"' not in r.text
 
 
@@ -139,11 +157,11 @@ def test_the_logo_keeps_a_relative_url(tmp_path, monkeypatch):
     assert _pack(tmp_path, monkeypatch, logoUrl="./brand/acme-logo.svg")["logoUrl"] == "./brand/acme-logo.svg"
 
 
-@pytest.mark.parametrize("door", [False, True])
-def test_a_remote_url_never_reaches_the_page(tmp_path, monkeypatch, door):
+@pytest.mark.parametrize("scoped", [False, True])
+def test_a_remote_url_never_reaches_the_page(tmp_path, monkeypatch, scoped):
     """Refused rather than fetched — and refused before it can be handed to a browser to fetch."""
     _pack(tmp_path, monkeypatch, faviconUrl="https://cdn.acme.example/favicon.svg")
-    r = _client(monkeypatch, door=door).get("/")
+    r = _get(_client(), scoped=scoped)
     assert "cdn.acme.example" not in r.text
     assert f'<link rel="icon" href="{DOMINO_DEFAULT}" />' in r.text
 
@@ -209,5 +227,5 @@ def test_faviconurl_is_a_known_key_and_draws_no_unknown_key_warning(tmp_path, mo
 
 def test_the_resolved_pack_is_on_the_api(tmp_path, monkeypatch):
     _pack(tmp_path, monkeypatch, faviconUrl="./brand/acme.png")
-    r = _client(monkeypatch, door=False).get("/api/brand")
+    r = _client().get("/api/brand")
     assert r.json()["faviconUrl"] == "./brand/acme.png"

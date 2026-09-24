@@ -253,8 +253,7 @@ def _template_with_app_sh(tmp: Path) -> Path:
     return t
 
 
-def _domino_orch(tmp: Path, cp: FakeControlPlane, *, run_id: str | None = None,
-                 workspace_id: str | None = None, template: Path | None = None) -> Orchestrator:
+def _domino_orch(tmp: Path, cp: FakeControlPlane, *, template: Path | None = None) -> Orchestrator:
     orch = Orchestrator(
         workspace_dir=tmp / "mnt" / "code",
         template=template or _template_with_app_sh(tmp),
@@ -264,8 +263,6 @@ def _domino_orch(tmp: Path, cp: FakeControlPlane, *, run_id: str | None = None,
         control_plane=cp,
         domino_project_id="proj-1",
         domino_project_name="Sales dashboard",
-        domino_run_id=run_id,
-        workspace_id=workspace_id,
     )
     orch.project(start_preview=False)  # attach + seed the workspace without starting Vite
     return orch
@@ -342,35 +339,6 @@ def test_publish_status_maps_phase(tmp_path: Path, raw: str, phase: str):
     orch = _domino_orch(tmp_path, cp)
     out = orch.publish_status("app-1")
     assert out == {"app_id": "app-1", "status": raw, "phase": phase}
-
-
-def test_stop_resolves_workspace_id_from_run_id_and_stops(tmp_path: Path):
-    cp = FakeControlPlane()
-    ws = cp.create_workspace("proj-1")  # executionId == "run-proj-1"
-    orch = _domino_orch(tmp_path, cp, run_id="run-proj-1")
-    out = orch.stop()
-    assert out["stopped"] is True
-    assert out["workspace_id"] == ws["id"]
-    assert cp.workspaces["proj-1"][0]["state"] == "Stopped"  # the workspace was stopped
-
-
-def test_stop_saves_but_reports_when_workspace_id_unknown(tmp_path: Path):
-    cp = FakeControlPlane()  # no workspace matching the run id -> id undiscoverable
-    orch = _domino_orch(tmp_path, cp, run_id="run-unknown")
-    out = orch.stop()
-    assert out["stopped"] is False
-    assert out["saved"] is True  # work is still saved (best-effort)
-    assert "couldn't stop" in out["detail"]
-
-
-def test_stop_uses_explicit_workspace_id_override(tmp_path: Path):
-    cp = FakeControlPlane()
-    cp.workspaces["proj-1"] = [{"id": "ws-42"}]
-    orch = _domino_orch(tmp_path, cp, workspace_id="ws-42")
-    out = orch.stop()
-    assert out["stopped"] is True
-    assert out["workspace_id"] == "ws-42"
-    assert cp.workspaces["proj-1"][0]["state"] == "Stopped"
 
 
 def _stream_in_background(events):

@@ -3,35 +3,43 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 
-def test_the_published_app_serves_the_door_not_the_chat_shell(monkeypatch):
-    """ADR-0004: the Workbench App is a door. It must not serve Chat from its scratch checkout —
-    it sends the viewer to their own Sage Builder, where their files are in a real git Project."""
+def test_the_root_scope_serves_the_projects_home_not_the_chat_shell():
+    """ONE-APP-PLAN.md §2: `/` at root scope is the Projects home, not a Workbench shell running
+    against nothing open yet — a project must be dispatched (`/p/<slug>/`) before Chat or Build can
+    run against anything real."""
     import sage.orchestrator.app as appmod
     from sage.orchestrator.brand import text as brand_text
 
     # The route templates the page it picks (#116), so which one it picked is read off the body.
-    served = lambda: appmod.ui().body.decode()
-
-    assert served() == brand_text(appmod._UI.read_text())  # a Sage Builder serves the shell, unchanged
-    monkeypatch.setattr(appmod, "proxy_is_app", lambda: True)
-    assert served() == brand_text(appmod._DOOR_UI.read_text())
-
-    door = Path(appmod._DOOR_UI).read_text()
-    assert "/door" in door and "location.replace" in door  # it opens the builder and goes there
-    assert "/door/status" in door  # and waits for the session rather than landing on a dead page
-    # A builder lives on the main host; the App is served from apps.<host>.
-    assert "apps." in door and "slice(5)" in door
+    assert appmod.ui().body.decode() == brand_text(appmod._HOME_UI.read_text())
 
 
-def test_workbench_is_the_default_ui():
+def test_a_dispatched_project_serves_the_workbench_shell():
+    import sage.orchestrator.app as appmod
+
+    client = TestClient(appmod.control_app)
+    with appmod._REGISTRY._lock:
+        appmod._REGISTRY._open["t-fake"] = object()
+    try:
+        r = client.get("/p/t-fake/")
+    finally:
+        with appmod._REGISTRY._lock:
+            appmod._REGISTRY._open.pop("t-fake", None)
+    assert r.status_code == 200
+    assert "Sage Workspace" in r.text
+    assert "//fonts.googleapis.com" not in r.text
+    assert "./vendor/react.production.min.js" in r.text
+
+
+def test_the_projects_home_is_the_default_ui():
     import sage.orchestrator.app as appmod
 
     client = TestClient(appmod.control_app)
     r = client.get("/")
     assert r.status_code == 200
-    assert "Sage Workspace" in r.text
+    assert "./vendor/react.production.min.js" not in r.text  # root scope: no project dispatched yet
     assert "//fonts.googleapis.com" not in r.text
-    assert "./vendor/react.production.min.js" in r.text
+    assert "id=\"project-list\"" in r.text
 
     gone = client.get("/builder")
     assert gone.status_code == 404
@@ -159,7 +167,7 @@ def test_workbench_is_the_default_ui():
 
     assert b"Modal.confirm" in store.content
     assert b"promoteScratch" in js.content
-    assert b"resource-tree.js" in client.get("/").content
+    assert "resource-tree.js" in appmod._UI.read_text()  # the shell's own script tag
 
     assert b"showMode: true" in build.content
     assert b"hidePhase" not in build.content

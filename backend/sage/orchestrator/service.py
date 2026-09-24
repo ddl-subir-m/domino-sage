@@ -5480,8 +5480,6 @@ class Orchestrator:
         domino_project_id: str | None = None,
         control_plane: ControlPlane | None = None,
         domino_project_name: str | None = None,
-        workspace_id: str | None = None,
-        domino_run_id: str | None = None,
         cost_project_label: str | None = None,
         gateway_ui_url: str | None = None,
         manage_url: str | None = None,
@@ -5603,15 +5601,10 @@ class Orchestrator:
         # not a copy, but the cap bounds what the agent/preview and the published dist/ pull in.
         self._attach_max_bytes = _env_int("SAGE_ATTACH_MAX_BYTES", 500 * 1024 * 1024)
         self._domino_project_id = domino_project_id
-        # Domino control-plane wiring for Publish / Stop (None off-Domino / local runs -> the
-        # endpoints report a clear "not available" instead of crashing).
+        # Domino control-plane wiring for Publish (None off-Domino / local runs -> the endpoints
+        # report a clear "not available" instead of crashing).
         self._control_plane = control_plane
         self._domino_project_name = domino_project_name
-        # Domino injects DOMINO_RUN_ID (the workspace SESSION's executionId), NOT the workspace id
-        # stop_workspace() needs. We map run id -> workspace id by matching it against the project's
-        # workspaces (mostRecentSession.executionId). `workspace_id` is a direct override (tests).
-        self._workspace_id = workspace_id
-        self._domino_run_id = domino_run_id
         # Cost attribution: the `sage-project` gateway tag, and the dashboard link the UI offers so
         # spend is read where it's authoritative rather than re-derived here. Both fall back to
         # nothing off-Domino, which hides the link instead of pointing it somewhere dead.
@@ -19415,45 +19408,6 @@ class Orchestrator:
                 list_taxonomy_tags_for=getattr(self._assets, "list_taxonomy_labels_for", None),
             )
         return self._gate
-
-    def stop(self) -> dict:
-        """Stop THIS builder's workspace so it stops consuming compute. Saves in-progress work first
-        (commit + pull/resolve + push), then stops the workspace if the workspace id is known.
-        Returns {saved, stopped, workspace_id, detail}."""
-        project = self.project()
-        saved = self._save_to_git(project, "save before stop")
-        saved_ok = saved is None or bool(saved.get("ok"))
-        wid = self._resolve_workspace_id()
-        if self._control_plane is None or not self._domino_project_id or not wid:
-            # Off-Domino, or the workspace id wasn't discoverable from the env — we can't stop the
-            # workspace ourselves, so at least the work is saved. Report clearly.
-            return {"saved": saved_ok, "stopped": False, "workspace_id": wid,
-                    "detail": "workspace id unavailable — saved work, but couldn't stop the workspace"}
-        self._control_plane.stop_workspace(self._domino_project_id, wid)
-        return {"saved": saved_ok, "stopped": True, "workspace_id": wid, "detail": "stopping workspace"}
-
-    def _resolve_workspace_id(self) -> str | None:
-        """This builder's own workspace id, needed to stop it. Prefer the explicit override; else map
-        DOMINO_RUN_ID (the session executionId) to its workspace by scanning the project's workspaces
-        for a matching mostRecentSession.executionId. Returns None when it can't be determined."""
-        if self._workspace_id:
-            return self._workspace_id
-        if self._control_plane is None or not self._domino_project_id or not self._domino_run_id:
-            return None
-        try:
-            workspaces = self._control_plane.list_workspaces(self._domino_project_id)
-        except Exception:
-            log.exception("stop: couldn't list workspaces to resolve this workspace's id")
-            return None
-        for ws in workspaces:
-            if not isinstance(ws, dict):
-                continue
-            session = ws.get("mostRecentSession") or {}
-            exec_id = session.get("executionId") or session.get("id") if isinstance(session, dict) else None
-            if exec_id and str(exec_id) == str(self._domino_run_id) and ws.get("id"):
-                self._workspace_id = str(ws["id"])  # cache for a subsequent call
-                return self._workspace_id
-        return None
 
     def stop_build(self, kind: str = "", conversation: str = "", app: str = "") -> bool:
         """Interrupt the turn in flight — Build or Chat. Both poll `stop_requested` and

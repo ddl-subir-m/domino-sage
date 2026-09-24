@@ -215,7 +215,7 @@ def save_override(patch: dict[str, Any]) -> dict[str, Any]:
 
 def _safe_name(key: str, value: object) -> str:
     """A name a person typed, checked against the one place a pack value is not just read but
-    PARSED: `ui()` substitutes the pack into `index.html` and `door.html` and escapes nothing,
+    PARSED: `ui()` substitutes the pack into `index.html` and `home.html` and escapes nothing,
     because until this file grew a writable layer every value in it was baked into an image by the
     OEM and trusted for that reason. It is not any more.
 

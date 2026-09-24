@@ -3,18 +3,16 @@ window.SW = window.SW || {};
 // The viewer's own preferences for the Workbench (#52). One record per person, and the same
 // record whichever Project they are in.
 //
-// Why the browser rather than the Builder. Each Project runs this viewer in its own Sage Builder
-// container — `/api/projects/{id}/open` says it plainly: switching Project means leaving this
-// container for another one — so anything written inside the Builder is gone after the switch.
-// The one thing in that container that does survive is the Project's git repo, and that is
-// exactly where a preference must never live: two viewers in one Project run two Builders against
-// one remote and collide on anything shared, which is why #62 spent three tickets taking the
-// Thread index (#64), the rendered history (#65) and the build log (#68) back out of it.
+// Why the browser rather than a Project's own directory. Switching Project is a same-origin
+// navigation to that project's own `/p/<slug>/` (ONE-APP-PLAN.md §2.3) — anything written into the
+// Project's git repo is exactly where a preference must never live: two viewers opening one Project
+// share that repo and would collide on anything shared, which is why #62 spent three tickets taking
+// the Thread index (#64), the rendered history (#65) and the build log (#68) back out of it.
 //
-// What does span Projects is the origin. `workspace_open_url` hands the browser a host-relative
-// path, so every Builder this viewer opens is served from the same Domino host, and localStorage
-// is scoped to that host. Keyed by viewer on top of that, so two people sharing one browser
-// profile read their own answers instead of overwriting each other's.
+// What does span Projects is the origin. Every `/p/<slug>/` this viewer opens is served from the
+// same one process (one port, one origin), so localStorage there is already scoped correctly.
+// Keyed by viewer on top of that, so two people sharing one browser profile read their own answers
+// instead of overwriting each other's.
 (function () {
   const KEY = 'sw.prefs';
 

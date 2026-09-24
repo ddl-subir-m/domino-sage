@@ -45,16 +45,6 @@ _APPS_MAX = 1000  # ceiling on the global app list, so a wrong totalCount can't 
 # Sage apps are identified by their repo name prefix (naming.repo_base -> "sage-<slug>"); the public
 # create API has no tag field, so list_apps filters on the project's git repo URI instead.
 _SAGE_REPO_PREFIX = "sage-"
-# The name every hub-created builder workspace is given (WorkspaceDto.name). The list DTO carries no
-# tool info, so the hub uses this to tell its own builder workspaces apart from a VS Code/Jupyter
-# session a user may have opened in the same project — Start/Stop/status act only on builders.
-BUILDER_WORKSPACE_NAME = "sage"
-# A pre-stop save drives the builder's commit → pull → agent-resolve → push, which can run a model
-# turn to resolve conflicts, so it needs a far longer ceiling than a plain control-plane REST call.
-_SAVE_TIMEOUT_S = 180.0
-# The readiness probe is one round trip to a workspace that may not be answering yet, and the door
-# repeats it every few seconds, so it gets a short leash of its own rather than the 30s default.
-_READY_TIMEOUT_S = 10.0
 # The apps API hands back an /apps-internal/{id} URL that 404s in a browser (verified on
 # cloud-dogfood 2026-08-07). Domino's own "Copy URL" for that same app is the /modelproducts one.
 _APPS_INTERNAL_RE = re.compile(r"/apps-internal/([^/?#]+)")
@@ -167,16 +157,9 @@ class ControlPlane(Protocol):
     def git_host(self) -> str: ...
     def git_credentials(self) -> list[CredentialRef]: ...
     def create_project(self, name: str, *, git_url: str, git_credential_id: str, branch: str = "main", description: str = "") -> ProjectRef: ...
-    def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]: ...
     def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool: ...
-    def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
-    def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
-    def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]: ...
-    def save_workspace_work(self, open_path: str) -> dict[str, Any]: ...
-    def workspace_http_ready(self, open_path: str) -> bool | None: ...
     def archive_project(self, project_id: str) -> dict[str, Any]: ...
     def list_apps(self) -> list[ProjectRef]: ...
-    def list_workspaces(self, project_id: str) -> list[dict[str, Any]]: ...
     def publish_app(self, project_id: str, *, name: str, git_ref_type: str = "head",
                     git_ref_value: str | None = None, entry_point: str = "app.sh",
                     visibility: str = "GRANT_BASED") -> PublishedApp: ...
@@ -203,7 +186,6 @@ class DominoControlPlane:
         *,
         environment_id: str,
         hardware_tier_id: str,
-        builder_tool: str = "sageBuilder",
         environment_revision_id: str | None = None,
         git_service_provider: str = "Github",  # GitServiceProviderV1 value (hub is github-only in v1)
         git_host: str = "github.com",  # domain of the Domino git credential to attach to projects
@@ -215,7 +197,6 @@ class DominoControlPlane:
         self._env_id = environment_id
         self._env_rev = environment_revision_id
         self._tier_id = hardware_tier_id
-        self._tool = builder_tool
         self._provider = git_service_provider
         self._git_host = git_host
         self._me: UserRef | None = None       # whoami's answer, and the token it answered for —
@@ -334,33 +315,6 @@ class DominoControlPlane:
         # normalize what we sent.
         return ProjectRef(id=str(pid), name=str(proj.get("name") or name), git_url=git_url)
 
-    def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
-        # CreateWorkspaceRequest (domino_private_spec). Required: name, environmentId,
-        # hardwareTierId, tools, externalVolumeMounts. The branch comes from the project's
-        # mainRepository.defaultRef, so overrideMainGitRepoRef is unnecessary.
-        #
-        # No environmentRevisionSpec, deliberately: a builder takes the Environment's ACTIVE
-        # revision. This used to pin the revision Domino injected into the caller — which is the
-        # revision the *Workbench App* was launched with, not the current one. A rebuilt Environment
-        # then never reached a new builder until somebody restarted the App, and the symptom was a
-        # builder serving Sage code weeks older than the door that created it. The App is a door
-        # that lives for seconds; the builder is where the work happens, so the builder wins.
-        # (publish_app still pins — a deployed Built App should keep running the image it was
-        # tested on. That is a different question with a different answer.)
-        body: dict[str, Any] = {
-            "name": BUILDER_WORKSPACE_NAME,
-            "environmentId": self._env_id,
-            "hardwareTierId": {"value": self._tier_id},
-            "tools": [self._tool],
-            "externalVolumeMounts": [],
-        }
-        data = self._post(f"/v4/workspace/project/{project_id}/workspace", body)
-        # LIVE-VERIFY seam: which field carries the run/session id we assemble the open URL from
-        # (see preview.prefix). Workspace metadata has no secrets, so log the shape to stdout.
-        if isinstance(data, dict):
-            log.info("workspace-create response keys: %s", sorted(data.keys()))
-        return data
-
     def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool:
         """Tag a Dataset so its rows narrow the models this Project may call (ADR-0043).
 
@@ -393,102 +347,6 @@ class DominoControlPlane:
             log.exception("tag_dataset_sensitive failed for dataset %s", dataset_id)
             return False
 
-    def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        # Stop a running builder so it stops consuming a hardware tier. Path + verb confirmed against
-        # Domino's domino_private_spec (basePath /v4): POST .../workspace/{workspaceId}/stop, no request
-        # body, path params only. A stop can return 200 with an empty body, so tolerate a non-JSON body.
-        path = f"/v4/workspace/project/{project_id}/workspace/{workspace_id}/stop"
-        with self._client() as c:
-            r = c.post(f"{self._host}{path}", headers=self._headers())
-        if r.status_code >= 400:
-            raise RuntimeError(f"POST {path} -> {r.status_code}: {r.text.strip()[:500]}")
-        try:
-            data = r.json()
-        except ValueError:
-            data = {}
-        return data if isinstance(data, dict) else {"stopped": True}
-
-    def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        # Resume a stopped builder in place by starting a NEW session on the existing workspace — the
-        # exact inverse of stop_workspace — instead of creating a fresh workspace each time (which
-        # piles up stopped records). We used to POST /v4/workspaces/relaunch, but that 404s the
-        # workspace id on the dogfood build; the session endpoint is what the Domino UI itself uses.
-        # Spec: POST /v4/workspace/project/{projectId}/workspace/{workspaceId}/sessions
-        #   ?externalVolumeMounts=... (required array; the builder mounts none). The server rejects an
-        # absent key ("Missing parameter"), so send the key present-but-empty (?externalVolumeMounts=)
-        # — an empty STRING, which httpx keeps, not an empty list, which it drops. No request body; the
-        # new session checks out the branch's LATEST commit. The WorkspaceSessionDto returned carries no
-        # owner/open-url fields, so the caller derives the open URL by polling list_workspaces.
-        path = f"/v4/workspace/project/{project_id}/workspace/{workspace_id}/sessions"
-        data = self._post(path, params={"externalVolumeMounts": ""})
-        return data if isinstance(data, dict) else {"resumed": True}
-
-    def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        # Remove a workspace entirely (not just stop it). Required before archive_project: a project
-        # that still CONTAINS a workspace — even a stopped one — is rejected with 500 "cannot be
-        # archived. It contains N workspace(s)". Spec: DELETE /v4/workspace/project/{projectId}/
-        # workspace/{workspaceId} (deleteWorkspace), path params only, no body.
-        data = self._delete(f"/v4/workspace/project/{project_id}/workspace/{workspace_id}")
-        return data if isinstance(data, dict) else {"deleted": True}
-
-    def save_workspace_work(self, open_path: str) -> dict[str, Any]:
-        # Pre-stop save: reach the running builder through its own notebookSession proxy (the same
-        # host-relative `open_path` the hub opens in the browser) and drive its POST /api/project/sync
-        # — commit in-progress edits, pull + agent-resolve any conflicts, push — so stopping the
-        # workspace never drops uncommitted work. Runs on the internal DOMINO_API_HOST, which proxies
-        # the notebookSession path just like the external origin does.
-        url = f"{self._host}{open_path.rstrip('/')}/api/project/sync"
-        with self._client() as c:
-            r = c.post(url, headers=self._headers(), timeout=_SAVE_TIMEOUT_S)
-        return self._check(r, "POST", url)
-
-    def workspace_http_ready(self, open_path: str) -> bool | None:
-        """Does the builder's own web server answer behind the workspace proxy yet?
-
-        Domino calls a session running as soon as its execution is up, which is well before the Sage
-        process inside it has bound its port — and for that whole gap Domino's proxy answers 502 Bad
-        Gateway. Sending the browser in on the session state alone is what put a 502 on the first
-        page a new viewer ever saw. So ask the same proxy the browser is about to ask, over the
-        internal host, the way save_workspace_work already reaches a running builder.
-
-        True  — the builder itself answered, so the browser gets a page rather than an error.
-        False — the proxy has no upstream yet (the gateway family): keep waiting.
-        None  — the probe could not tell (no route, a timeout, a wall in front of the proxy). The
-                caller then falls back to Domino's own answer, so a probe that cannot work leaves
-                the door exactly as it was rather than closing it.
-
-        **On Domino today this answers None every time, and that is measured, not feared.** The
-        workspace ingress authenticates by browser session cookie; anything else gets a flat 404
-        with `domino-server: nginx-ingress,workspace,` on it. Verified 2026-09-06 against a running
-        builder: identical 404 with a valid bearer token, with no auth, with a bogus run id and
-        with a project that does not exist. So this cannot separate a builder that is up from one
-        that was never created, and 404 is read as "cannot tell" rather than "ready" — the older
-        reading made this function a constant True, which is how a gate that was believed to be
-        closing the 502 was in fact never narrowing anything.
-
-        What actually closes that gap is `sage/orchestrator/boot_page.py`, which answers the port
-        from the first second of the container so there is no 502 to gate. This stays, honest and
-        logged, for the day the platform offers a path a token can read.
-        """
-        url = f"{self._host}{open_path.rstrip('/')}/healthz"
-        try:
-            with self._client() as c:
-                r = c.get(url, headers=self._headers(), timeout=_READY_TIMEOUT_S)
-        except httpx.HTTPError as e:
-            log.info("readiness probe couldn't reach %s (%s) — trusting the session state", url, type(e).__name__)
-            return None
-        # Logged on every branch. The first version logged only the two None branches, so the
-        # branch it actually took in production wrote nothing, and the log could never have shown
-        # that the gate was doing nothing.
-        log.info("readiness probe: %s -> %s", url, r.status_code)
-        if r.status_code in (502, 503, 504):
-            return False
-        if r.status_code == 404:
-            return None
-        if r.status_code < 500:
-            return True
-        return None
-
     def archive_project(self, project_id: str) -> dict[str, Any]:
         # "Delete" a Sage app = archive its Domino project (soft delete; a Domino admin can restore
         # it). Public API, same family as create_project: DELETE /api/projects/beta/projects/{id}.
@@ -504,11 +362,6 @@ class DominoControlPlane:
         data = self._get(f"/v4/environments/{self._env_id}/availableTools")
         items = data if isinstance(data, list) else (data.get("data") if isinstance(data, dict) else [])
         return [t for t in (items or []) if isinstance(t, dict)]
-
-    def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
-        data = self._get(f"/v4/workspace/project/{project_id}/workspace", params={"offset": 0, "limit": 20})
-        items = data.get("workspaces") or data.get("data") or data if isinstance(data, (list, dict)) else []
-        return items if isinstance(items, list) else []
 
     def list_apps(self) -> list[ProjectRef]:
         """The caller's Sage apps: projects whose git repo is a `sage-*` repo (the public create API
@@ -741,10 +594,12 @@ class DominoControlPlane:
 
         It used to be cached once and forever, on the reasoning that one client acts as one user
         for its lifetime. That stopped being true: `_headers` calls `self._token_provider()` on
-        every request, and this object is a process-wide singleton (`orchestrator/app.py`). On the
-        published Workbench App — a door serving many viewers — the first viewer warmed `_me`, and
-        every viewer after them was handed that name. `Door.ensure_default` builds the Default
-        Project name from it, so viewer B landed in viewer A's Project and A's Sage Builder.
+        every request, and this object is a process-wide singleton (`orchestrator/app.py`), shared
+        by every project the registry opens. On the Workbench App this pivot retired — a door
+        serving many viewers — the first viewer warmed `_me`, and every viewer after them was
+        handed that name, landing them in the wrong Project and the wrong builder. One person per
+        Sage process (ONE-APP-PLAN.md decision #1) makes that particular collision moot, but the
+        cache still has to answer correctly across a token this process re-fetches periodically.
 
         Keyed on the token now, so a different token is a different answer and the poll still costs
         one request. The key is the token itself rather than its `sub`: this client is the thing
@@ -801,13 +656,9 @@ class FakeControlPlane:
     app_statuses: dict[str, str] = field(default_factory=dict)  # app_id -> deploy status (app_status)
     app_visibilities: dict[str, str] = field(default_factory=dict)  # app_id -> sharing setting
     built: list[BuiltApp] = field(default_factory=list)  # what list_all_apps answers (Gallery)
-    saved_paths: list[str] = field(default_factory=list)  # open_paths a pre-stop save was driven for
-    unready_paths: set[str] = field(default_factory=set)  # open_paths whose proxy still has no upstream
-    probed_paths: list[str] = field(default_factory=list)  # open_paths a readiness probe was run for
     deleted_apps: list[str] = field(default_factory=list)  # app_ids a deployment delete was asked for
     renamed_apps: list[tuple[str, str]] = field(default_factory=list)  # (app_id, name) renames asked for
     rename_failures: set[str] = field(default_factory=set)  # app_ids whose deployment rename refuses
-    workspace_launch_error: str | None = None  # if set, launching/resuming a builder raises it
     user: UserRef = UserRef(id="user-1", name="tester")  # who the fake token acts as (the viewer)
     credentials: list[CredentialRef] = field(default_factory=lambda: [
         CredentialRef(id="cred-1", label="test PAT (github.com)", domain="github.com",
@@ -844,60 +695,9 @@ class FakeControlPlane:
         self.projects.append(ref)
         return ref
 
-    def create_workspace(self, project_id: str, *, branch: str = "main") -> dict[str, Any]:
-        if self.workspace_launch_error:
-            raise RuntimeError(self.workspace_launch_error)
-        ws = {
-            "id": f"ws-{project_id}",
-            "projectId": project_id,
-            "ownerName": self.user.name,
-            "project": {"name": project_id},
-            "mostRecentSession": {"executionId": f"run-{project_id}"},
-        }
-        self.workspaces.setdefault(project_id, []).append(ws)
-        return ws
-
     def tag_dataset_sensitive(self, dataset_id: str, *, snapshot_id: str | None = None) -> bool:
         self.tagged_sensitive[dataset_id] = snapshot_id or "snap"
         return True
-
-    def stop_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        for ws in self.workspaces.get(project_id, []):
-            if ws.get("id") == workspace_id:
-                ws["state"] = "Stopped"
-                session = ws.get("mostRecentSession")
-                if isinstance(session, dict) and isinstance(session.get("sessionStatusInfo"), dict):
-                    session["sessionStatusInfo"]["isRunning"] = False
-                return {"id": workspace_id, "state": "Stopped"}
-        return {"id": workspace_id, "state": "Unknown"}
-
-    def resume_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        if self.workspace_launch_error:
-            raise RuntimeError(self.workspace_launch_error)
-        for ws in self.workspaces.get(project_id, []):
-            if ws.get("id") == workspace_id:
-                ws["state"] = "running"
-                session = ws.setdefault("mostRecentSession", {})
-                if isinstance(session, dict):
-                    session.setdefault("sessionStatusInfo", {})["isRunning"] = True
-                return ws
-        return {"id": workspace_id, "state": "Unknown"}
-
-    def delete_workspace(self, project_id: str, workspace_id: str) -> dict[str, Any]:
-        kept = [w for w in self.workspaces.get(project_id, []) if w.get("id") != workspace_id]
-        self.workspaces[project_id] = kept
-        return {"deleted": True}
-
-    def save_workspace_work(self, open_path: str) -> dict[str, Any]:
-        self.saved_paths.append(open_path)
-        return {"saved": True}
-
-    def workspace_http_ready(self, open_path: str) -> bool | None:
-        self.probed_paths.append(open_path)
-        return open_path not in self.unready_paths
-
-    def list_workspaces(self, project_id: str) -> list[dict[str, Any]]:
-        return list(self.workspaces.get(project_id, []))
 
     def archive_project(self, project_id: str) -> dict[str, Any]:
         self.projects = [p for p in self.projects if p.id != project_id]

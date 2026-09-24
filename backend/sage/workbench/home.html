@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{pageTitle}</title>
+  <link rel="icon" href="{faviconUrl}" />
+  <style>
+    /* Inter from Sage's own origin (#19). Do not <link> Google fonts. */
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-weight: 100 900;
+      font-display: swap;
+      src: url('fonts/inter-latin-var.woff2') format('woff2');
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+        U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+        U+FEFF, U+FFFD;
+    }
+
+    /* This page loads none of the shell's CSS (same reason door.html doesn't — ADR-0004's spirit
+       carries over: the Projects home is reached before any project, and possibly before Settings
+       has ever been saved, so it must not depend on anything a broken or unconfigured process could
+       be missing). Its own small token block instead, values matching tokens.css so the two don't
+       drift into two different looks. */
+    :root {
+      --primary: #543FDE;
+      --primary-dark: #311EAE;
+      --heading: #2E2E38;
+      --body: #65657B;
+      --border: #E0E0E0;
+      --err: #C20A29;
+      --err-bg: #FBEAED;
+      --gray-100: #FAFAFA;
+      --gray-200: #F0F0F3;
+      --mono: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--gray-100);
+      color: var(--heading);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .page { max-width: 640px; margin: 0 auto; padding: 48px 24px 64px; }
+
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; }
+    .logo { height: 24px; }
+    h1 { margin: 0; font-size: 18px; font-weight: 600; }
+
+    .card {
+      background: #FFFFFF;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    .card .hint { margin: 0 0 16px; color: var(--body); }
+
+    label { display: block; font-weight: 600; font-size: 12.5px; margin: 12px 0 4px; }
+    label:first-of-type { margin-top: 0; }
+
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      font: inherit;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: #FFFFFF;
+      color: var(--heading);
+    }
+
+    input:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
+
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row input { flex: 1; }
+
+    button {
+      font: inherit;
+      font-weight: 600;
+      color: #FFFFFF;
+      background: var(--primary);
+      border: none;
+      border-radius: 4px;
+      padding: 8px 16px;
+      min-height: 34px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button:hover { filter: brightness(1.08); }
+    button:disabled { opacity: .55; cursor: default; filter: none; }
+
+    button.ghost {
+      background: transparent;
+      color: var(--primary);
+      border: 1px solid var(--border);
+    }
+    button.link {
+      background: none;
+      color: var(--primary);
+      padding: 0;
+      min-height: auto;
+      font-weight: 600;
+    }
+
+    .actions { margin-top: 16px; display: flex; gap: 8px; }
+
+    ul.projects { list-style: none; margin: 0; padding: 0; }
+    ul.projects li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 0;
+      border-top: 1px solid var(--gray-200);
+    }
+    ul.projects li:first-child { border-top: none; }
+    .proj-name { font-weight: 600; }
+    .proj-sub { color: var(--body); font-size: 12.5px; }
+
+    .empty { color: var(--body); padding: 8px 0 4px; }
+
+    .error {
+      margin-top: 12px;
+      padding: 8px 12px;
+      border-radius: 4px;
+      background: var(--err-bg);
+      color: var(--err);
+      font-size: 13px;
+    }
+
+    .status { margin-top: 8px; font-size: 12.5px; color: var(--body); }
+    .status.ok { color: #1B7A4B; }
+
+    footer { margin-top: 8px; text-align: right; }
+
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <img class="logo" id="logo" src="{logoUrl}" alt="{logoAlt}" />
+      <h1 id="page-heading">{projectPlural}</h1>
+    </header>
+
+    <!-- Connection: shown alone on a container with nothing configured yet (ONE-APP-PLAN.md §2.7 —
+         "First run with no host/token: the Projects home shows the Connection form and nothing
+         else"), and reachable afterwards through the "Settings" link below the project list. -->
+    <section class="card" id="connection" hidden>
+      <h2>Connection</h2>
+      <p class="hint" id="connection-hint"></p>
+
+      <label for="host">{platformName} host</label>
+      <input type="text" id="host" placeholder="https://your-domino-host" autocomplete="off" />
+
+      <label for="token">{platformName} API token</label>
+      <input type="password" id="token" autocomplete="off" />
+
+      <label for="git-token">Git token (fallback)</label>
+      <input type="password" id="git-token" autocomplete="off" />
+      <p class="hint" style="margin: 4px 0 0;">
+        Only used when this machine's own git credential helper has nothing for the host.
+      </p>
+
+      <div class="actions">
+        <button type="button" id="save-connection">Save</button>
+        <button type="button" class="ghost" id="test-connection">Test connection</button>
+        <button type="button" class="link" id="cancel-connection" hidden>Cancel</button>
+      </div>
+      <p class="status" id="connection-status"></p>
+      <p class="error" id="connection-error" hidden></p>
+    </section>
+
+    <!-- Projects: hidden until Connection has a host to list against. -->
+    <section id="projects-section" hidden>
+      <section class="card">
+        <h2>Open a {project}</h2>
+        <ul class="projects" id="project-list"></ul>
+        <p class="empty" id="project-empty" hidden>No {projectPlural} yet — create one below.</p>
+        <p class="error" id="project-list-error" hidden></p>
+      </section>
+
+      <section class="card">
+        <h2>New {project}</h2>
+        <p class="hint">
+          Creates a private {platformName} project (and its GitHub repo) and opens it here.
+        </p>
+        <div class="row">
+          <input type="text" id="new-name" placeholder="{project} name" autocomplete="off" />
+          <button type="button" id="create">Create</button>
+        </div>
+        <p class="status" id="create-status"></p>
+        <p class="error" id="create-error" hidden></p>
+      </section>
+
+      <footer>
+        <button type="button" class="link" id="open-settings">Settings</button>
+      </footer>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      var api = new URL('.', location.href).pathname.replace(/\/$/, '') + '/api';
+      var pack = { assistantName: '{assistantName}', platformName: '{platformName}', project: '{project}' };
+
+      var connectionSection = document.getElementById('connection');
+      var connectionHint = document.getElementById('connection-hint');
+      var connectionStatus = document.getElementById('connection-status');
+      var connectionError = document.getElementById('connection-error');
+      var cancelConnection = document.getElementById('cancel-connection');
+      var projectsSection = document.getElementById('projects-section');
+      var hostInput = document.getElementById('host');
+      var tokenInput = document.getElementById('token');
+      var gitTokenInput = document.getElementById('git-token');
+      var list = document.getElementById('project-list');
+      var empty = document.getElementById('project-empty');
+      var listError = document.getElementById('project-list-error');
+      var createStatus = document.getElementById('create-status');
+      var createError = document.getElementById('create-error');
+
+      async function readJson(r) {
+        try { return await r.json(); } catch (e) { return { error: 'Request failed (' + r.status + ')' }; }
+      }
+
+      async function brand() {
+        try {
+          var r = await fetch(api + '/brand');
+          if (!r.ok) return;
+          var b = await r.json();
+          if (b.assistantName) pack.assistantName = b.assistantName;
+          if (b.colors && b.colors.primary) {
+            document.documentElement.style.setProperty('--primary', b.colors.primary);
+          }
+          if (b.logoUrl) {
+            var logo = document.getElementById('logo');
+            logo.src = b.logoUrl;
+            logo.alt = b.logoAlt || '';
+          }
+        } catch (e) { /* no brand pack — Domino default */ }
+      }
+
+      function showConnectionOnly(hint) {
+        connectionHint.textContent = hint;
+        cancelConnection.hidden = true;
+        connectionSection.hidden = false;
+        projectsSection.hidden = true;
+      }
+
+      function showProjects() {
+        connectionSection.hidden = true;
+        projectsSection.hidden = false;
+        loadProjects();
+      }
+
+      async function loadSettings() {
+        var r = await fetch(api + '/settings');
+        return readJson(r);
+      }
+
+      async function saveConnection() {
+        connectionError.hidden = true;
+        connectionStatus.textContent = 'Saving…';
+        var patch = { domino_host: hostInput.value.trim() };
+        if (tokenInput.value) patch.domino_token = tokenInput.value;
+        if (gitTokenInput.value) patch.git_token = gitTokenInput.value;
+        try {
+          var r = await fetch(api + '/settings', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+          });
+          var data = await readJson(r);
+          if (!r.ok) { connectionStatus.textContent = ''; connectionError.textContent = data.error || 'Could not save.'; connectionError.hidden = false; return; }
+          connectionStatus.textContent = data.restartRequired
+            ? 'Saved. Restart ' + pack.assistantName + ' to use the new connection.'
+            : 'Saved.';
+          tokenInput.value = '';
+          gitTokenInput.value = '';
+          if (patch.domino_host) { showProjects(); }
+        } catch (e) {
+          connectionStatus.textContent = '';
+          connectionError.textContent = pack.assistantName + ' is unreachable from this page.';
+          connectionError.hidden = false;
+        }
+      }
+
+      async function testConnection() {
+        connectionError.hidden = true;
+        connectionStatus.textContent = 'Testing…';
+        connectionStatus.className = 'status';
+        var body = { domino_host: hostInput.value.trim() };
+        if (tokenInput.value) body.domino_token = tokenInput.value;
+        try {
+          var r = await fetch(api + '/settings/test', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+          });
+          var data = await readJson(r);
+          if (data.ok) { connectionStatus.textContent = 'Connected as ' + (data.name || data.id) + '.'; connectionStatus.className = 'status ok'; }
+          else { connectionStatus.textContent = ''; connectionError.textContent = data.error || 'Could not connect.'; connectionError.hidden = false; }
+        } catch (e) {
+          connectionStatus.textContent = '';
+          connectionError.textContent = pack.assistantName + ' is unreachable from this page.';
+          connectionError.hidden = false;
+        }
+      }
+
+      function projectRow(project) {
+        var li = document.createElement('li');
+        var main = document.createElement('div');
+        var name = document.createElement('div');
+        name.className = 'proj-name';
+        name.textContent = project.name;
+        var sub = document.createElement('div');
+        sub.className = 'proj-sub';
+        sub.textContent = project.local ? 'Open on this machine' : 'Not cloned to this machine yet';
+        main.appendChild(name);
+        main.appendChild(sub);
+        li.appendChild(main);
+
+        var btn = document.createElement('button');
+        if (project.local) {
+          btn.textContent = 'Open';
+          btn.addEventListener('click', function () {
+            window.location.assign('p/' + encodeURIComponent(project.slug) + '/');
+          });
+        } else {
+          btn.textContent = 'Clone';
+          btn.className = 'ghost';
+          btn.addEventListener('click', function () { cloneProject(project, btn); });
+        }
+        li.appendChild(btn);
+        return li;
+      }
+
+      async function loadProjects() {
+        listError.hidden = true;
+        try {
+          var r = await fetch(api + '/projects');
+          var data = await readJson(r);
+          if (!r.ok) { listError.textContent = data.error || 'Could not list projects.'; listError.hidden = false; return; }
+          var items = data.items || [];
+          list.innerHTML = '';
+          items.forEach(function (project) { list.appendChild(projectRow(project)); });
+          empty.hidden = items.length !== 0;
+        } catch (e) {
+          listError.textContent = pack.assistantName + ' is unreachable from this page.';
+          listError.hidden = false;
+        }
+      }
+
+      async function cloneProject(project, btn) {
+        btn.disabled = true;
+        listError.hidden = true;
+        try {
+          var r = await fetch(api + '/projects/clone', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dominoProjectId: project.dominoProjectId }),
+          });
+          var data = await readJson(r);
+          if (!r.ok) { listError.textContent = data.error || 'Could not clone that project.'; listError.hidden = false; btn.disabled = false; return; }
+          window.location.assign('p/' + encodeURIComponent(data.slug) + '/');
+        } catch (e) {
+          listError.textContent = pack.assistantName + ' is unreachable from this page.';
+          listError.hidden = false;
+          btn.disabled = false;
+        }
+      }
+
+      async function createProject() {
+        var input = document.getElementById('new-name');
+        var name = input.value.trim();
+        createError.hidden = true;
+        if (!name) { createError.textContent = 'Name the project to create it.'; createError.hidden = false; return; }
+        var btn = document.getElementById('create');
+        btn.disabled = true;
+        createStatus.textContent = 'Creating… this takes a moment the first time.';
+        try {
+          var r = await fetch(api + '/projects', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }),
+          });
+          var data = await readJson(r);
+          if (!r.ok) {
+            createStatus.textContent = '';
+            createError.textContent = data.error || 'Could not create that project.';
+            createError.hidden = false;
+            btn.disabled = false;
+            return;
+          }
+          window.location.assign('p/' + encodeURIComponent(data.slug) + '/');
+        } catch (e) {
+          createStatus.textContent = '';
+          createError.textContent = pack.assistantName + ' is unreachable from this page.';
+          createError.hidden = false;
+          btn.disabled = false;
+        }
+      }
+
+      document.getElementById('save-connection').addEventListener('click', saveConnection);
+      document.getElementById('test-connection').addEventListener('click', testConnection);
+      document.getElementById('create').addEventListener('click', createProject);
+      document.getElementById('open-settings').addEventListener('click', function () {
+        cancelConnection.hidden = false;
+        connectionHint.textContent = 'Change where ' + pack.assistantName + ' reaches ' + pack.platformName + '.';
+        connectionStatus.textContent = '';
+        connectionSection.hidden = false;
+        projectsSection.hidden = true;
+      });
+      cancelConnection.addEventListener('click', function () { showProjects(); });
+
+      (async function boot() {
+        await brand();
+        var settings = await loadSettings();
+        hostInput.value = settings.domino_host || '';
+        if (!settings.domino_host) {
+          showConnectionOnly(pack.assistantName + ' has nothing to reach ' + pack.platformName + ' with yet. Add a host and a token to get started.');
+        } else {
+          showProjects();
+        }
+      })();
+    })();
+  </script>
+</body>
+</html>
