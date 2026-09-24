@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from sage import build_diagnostics
@@ -330,3 +331,65 @@ def test_diagnostics_expose_only_safe_session_state(tmp_path: Path, caplog):
     encoded = json.dumps(approval)
     assert private not in encoded
     assert private not in caplog.text
+
+
+def test_stale_persisted_session_reports_the_replacement_lifecycle(tmp_path: Path):
+    orch, opencode = _build(tmp_path, [
+        Turn(writes={"src/App.tsx": "// direct build after stale recovery\n"}),
+    ])
+    project = orch.project(start_preview=False)
+    project.workspace.mark_built()
+    project.control.set_mode(Mode.IMPLEMENT)
+    stale_id = "stale-persisted-session"
+    project.record.write_session_id(stale_id, CONVERSATION, project.workspace.app_id)
+    messages = opencode.messages
+
+    def reject_stale(session_id: str, *, limit: int | None = None):
+        if session_id == stale_id:
+            request = httpx.Request("GET", "http://127.0.0.1/session/stale/message")
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError("404", request=request, response=response)
+        return messages(session_id, limit=limit)
+
+    opencode.messages = reject_stale
+
+    list(orch.build_stream("Add the direct change.", conversation=CONVERSATION))
+
+    assert len(opencode.sessions) == 1
+    assert project.session_id == opencode.sessions[0]["id"]
+    assert project.record.read_session_id(
+        CONVERSATION, project.workspace.app_id) == opencode.sessions[0]["id"]
+    store = build_diagnostics.Store(project.record.path)
+    summary = next(row for row in store.list(project.workspace.app_id)
+                   if row["turn"]["kind"] == "build")
+    record = store.get(summary["turn"]["turnId"], project.workspace.app_id, CONVERSATION)
+    assert record["implementationSession"] == {
+        "fresh": True, "reason": "reused", "created": True,
+        "persisted": True, "dispatchStarted": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode", "prompt", "answer"),
+    [
+        (Mode.PLAN, "Plan an orders dashboard.", DRAFT),
+        (Mode.ASK, "What should an orders dashboard show?", "It should show orders."),
+        (Mode.AUTO, "Give me an architecture for an orders dashboard.",
+         ("A design.\n\n## Diagram\n```mermaid\nflowchart TD\n  A --> B\n```\n\n"
+          "## Components\n- **Table** — holds rows.\n")),
+    ],
+)
+def test_non_implementation_turns_omit_implementation_session_diagnostics(
+    tmp_path: Path, mode: Mode, prompt: str, answer: str,
+):
+    orch, _opencode = _build(tmp_path, [Turn(text=answer)])
+    project = orch.project(start_preview=False)
+    project.control.set_mode(mode)
+
+    list(orch.build_stream(prompt, conversation=CONVERSATION))
+
+    store = build_diagnostics.Store(project.record.path)
+    summary = next(row for row in store.list(project.workspace.app_id)
+                   if row["turn"]["kind"] == "build")
+    record = store.get(summary["turn"]["turnId"], project.workspace.app_id, CONVERSATION)
+    assert "implementationSession" not in record

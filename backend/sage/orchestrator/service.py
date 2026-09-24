@@ -4901,6 +4901,10 @@ class Project:
     # spend into one bucket — which is exactly the per-phase breakdown a phased build exists to be
     # judged on). None between turns.
     active_session_id: str | None = None
+    # True while an approved unphased Build is checking its saved inputs, before it owns a new
+    # implementation session. Stop must set the request flag in this window without falling back to
+    # and interrupting the planning session selected by `session_id`.
+    fresh_session_preflight: bool = False
     # The one immutable Build task projected into every provider request in the active turn. It is
     # never persisted in OpenCode or the Project record.
     active_build_intent: BuildIntent | None = None
@@ -14592,6 +14596,7 @@ class Orchestrator:
             self._project.turn_tree_baseline = ""
             self._project.active_session_id = None
             self._project.active_build_intent = None
+            self._project.fresh_session_preflight = False
             self._project.turn_app = None
             self._project.turn_attached = None
             self._project.turn_attachment_failures.clear()
@@ -16493,6 +16498,8 @@ class Orchestrator:
         with timing.span("setup.seed"):
             project = self._ensure_seeded()
         project.active_build_intent = None
+        if fresh_session:
+            project.fresh_session_preflight = True
         mode_at_start = mode or project.control.snapshot().mode
         is_question = _looks_like_question(prompt)
         arch = not is_approval and _wants_architecture(prompt)
@@ -16562,15 +16569,11 @@ class Orchestrator:
                     persisted=False, dispatch_started=False,
                 )
             else:
-                selected_before = project.session_id is not None or project.record.read_session_id(
-                    project.build_conversation, project.app_for_turn().app_id) is not None
+                selected_before = project.session_id or project.record.read_session_id(
+                    project.build_conversation, project.app_for_turn().app_id)
                 sid = self._ensure_session(project, project.build_conversation)
-                implementation_session_created = not selected_before
-                implementation_session_persisted = not selected_before
-                timing.implementation_session(
-                    fresh=False, reason="reused", created=not selected_before,
-                    persisted=not selected_before, dispatch_started=False,
-                )
+                implementation_session_created = sid != selected_before
+                implementation_session_persisted = implementation_session_created
         if not fresh_session:
             project.active_session_id = sid
         # The plan gate's whole decision, taken here rather than beside the first line that reads it.
@@ -17500,6 +17503,26 @@ class Orchestrator:
                 )
                 plan_reference_records = [live_reference.plan_record(item)
                                           for item in prepared_references]
+            if project.stop_requested:
+                if fresh_session:
+                    self._turn_gave_up = True
+                yield handle_stop()
+                return
+            failed_references = [item for item in prepared_references
+                                 if item.status != "prepared"]
+            if is_approval and failed_references:
+                # `status` is the shared typed-reference preflight verdict. Any required reference
+                # that did not prepare stops the whole approval before a clean session exists; its
+                # own bounded text is the useful error already used in the outgoing reference block.
+                self._turn_gave_up = True
+                restore_mode()
+                yield persist({
+                    "type": "error",
+                    "message": "\n\n".join(item.prompt_block() for item in failed_references),
+                })
+                yield persist({"type": "done", "ok": False,
+                               "decision": "reference preparation failed"})
+                return
             prepared_by_source = {item.source: item for item in prepared_references}
             if is_approval:
                 listed = {str(item.get("path") or "") for item in mention_files}
@@ -17567,6 +17590,10 @@ class Orchestrator:
             if project.active_build_intent.kind != "phase":
                 current = _BUILD_CONTROL_PROMPT
         if fresh_session:
+            if project.stop_requested:
+                self._turn_gave_up = True
+                yield handle_stop()
+                return
             try:
                 with timing.span("setup.fresh_session"):
                     sid = self._replace_build_session(
@@ -17582,11 +17609,15 @@ class Orchestrator:
                                "decision": "implementation session unavailable"})
                 return
             project.active_session_id = sid
+            project.fresh_session_preflight = False
             implementation_session_reason = "approved_plan"
             implementation_session_created = True
             implementation_session_persisted = True
             # Until the first dispatch returns, a disconnect or exception has not consumed the plan.
             self._turn_gave_up = True
+            if project.stop_requested:
+                yield handle_stop()
+                return
         # client.messages(sid) returns the ENTIRE session's messages on every poll, and `seen` starts
         # empty for each user turn (this is a fresh _build_stream call). So without a baseline, this
         # turn's first poll re-walks the PREVIOUS turn's already-completed assistant parts and re-emits
@@ -17669,13 +17700,15 @@ class Orchestrator:
             # and leaves a turn exactly as slow as it was with no error anywhere to say why.
             tap = _EventTap(client, sid, directory=str(project.app_for_turn().path))
             try:
-                timing.implementation_session(
-                    fresh=implementation_session_reason != "reused",
-                    reason=implementation_session_reason,
-                    created=implementation_session_created,
-                    persisted=implementation_session_persisted,
-                    dispatch_started=True,
-                )
+                if not gate and not answer_only and not arch:
+                    timing.implementation_session(
+                        fresh=(implementation_session_created
+                               or implementation_session_reason != "reused"),
+                        reason=implementation_session_reason,
+                        created=implementation_session_created,
+                        persisted=implementation_session_persisted,
+                        dispatch_started=True,
+                    )
                 client.send_prompt(sid,
                                    # `live_read_note` leads rather than trails. Everything after
                                    # `current` is a block ABOUT this request, and the tail is load-
@@ -18228,19 +18261,21 @@ class Orchestrator:
                 implementation_session_reason = "broken_call_recovery"
                 implementation_session_created = True
                 implementation_session_persisted = False
-                timing.implementation_session(
-                    fresh=True, reason="broken_call_recovery", created=True,
-                    persisted=False, dispatch_started=False,
-                )
+                if not gate and not answer_only and not arch:
+                    timing.implementation_session(
+                        fresh=True, reason="broken_call_recovery", created=True,
+                        persisted=False, dispatch_started=False,
+                    )
                 project.active_session_id = sid
                 if owns_turn:
                     project.session_id = sid
                     project.record.write_session_id(sid, project.build_conversation,
                                                     project.app_for_turn().app_id)
-                    timing.implementation_session(
-                        fresh=True, reason="broken_call_recovery", created=True,
-                        persisted=True, dispatch_started=False,
-                    )
+                    if not gate and not answer_only and not arch:
+                        timing.implementation_session(
+                            fresh=True, reason="broken_call_recovery", created=True,
+                            persisted=True, dispatch_started=False,
+                        )
                     implementation_session_persisted = True
                 mention_files, resource_note, chat_note, unusable_note, ambiguous_note, _ = first_send_extras
                 # Every other extra is what the PERSON said, and is restored as it was said. The
@@ -20189,7 +20224,9 @@ class Orchestrator:
             project.stop_requested = True
             # Capture the LIVE session under the decision lock. The interrupt is a network call and
             # must not hold up an unrelated decline commit.
-            sid = project.active_session_id or project.session_id
+            sid = project.active_session_id
+            if sid is None and not project.fresh_session_preflight:
+                sid = project.session_id
             client = self._oc_client
         if sid and client is not None:
             try:
