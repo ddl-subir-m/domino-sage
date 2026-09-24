@@ -26,6 +26,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -232,6 +233,18 @@ _SEED_SKIP = {"node_modules", "dist", ".git", ".DS_Store", "__pycache__"}
 # Chat never had this: its AGENTS.md is inlined into `opencode.json` and voiced by
 # `brand.apply_agent_voice`. This is the copy nothing else on the way to OpenCode would resolve.
 _VOICED_SEED = {"AGENTS.md"}
+_BUILD_PROFILE_MARKER = "<!-- sage:build-profile:v1:common:begin -->"
+_LEGACY_AGENTS_SENTINELS = (
+    "> **Every turn must end with edits to `src/`.**",
+    "> **Every turn must end with edits to `static/` or `app.py`.**",
+)
+_MANAGED_AGENTS_MARKER = re.compile(
+    r"(?m)^<!-- sage:(?P<id>[a-z][a-z0-9-]*):(?P<edge>begin|end) -->[ \t]*$"
+)
+_MANAGED_AGENTS_BLOCK = re.compile(
+    r"(?ms)^<!-- sage:(?P<id>[a-z][a-z0-9-]*):begin -->[ \t]*\n"
+    r".*?^<!-- sage:(?P=id):end -->[ \t]*$"
+)
 
 
 def _seed_file(src: Path, dest: Path) -> None:
@@ -2483,7 +2496,9 @@ class WorkspaceManager:
         return self._ensure_helper(self.stack.helpers.query_path, refresh=True)
 
     def refresh_owned_sources(self) -> bool:
-        """Bring the app's copies of _OWNED_SOURCES back in line with the template. True if any changed.
+        """Bring Sage-owned sources and legacy agent instructions in line with the template.
+
+        True if any file changed.
 
         The src/ twin of refresh_entry_script, and it exists for the reason that one does: these files
         are committed when the project is seeded, so an app keeps whatever copies it was born with,
@@ -2507,7 +2522,44 @@ class WorkspaceManager:
         for rel in self.stack.owned_sources:
             if (self.app_path / names.localize(rel)).is_file() and self._ensure_helper(rel, refresh=True):
                 changed = True
+        if self.refresh_agents_profile():
+            changed = True
         return changed
+
+    def refresh_agents_profile(self) -> bool:
+        """Move a known legacy AGENTS.md onto the marked Build profile without losing its data.
+
+        Existing apps keep the template copy they were born with. #531 needs its profile markers in
+        those apps too, or a new Sage image would still send the old conflicting rules. The exact
+        old edit mandate is the version sentinel. A custom file, an already-current file, or a file
+        with a malformed managed region is left alone. Managed regions are renderings of project
+        instructions and bindings, so they move after the new static template in their current order.
+        """
+        source = self.stack.template_dir / "AGENTS.md"
+        target = self.app_path / "AGENTS.md"
+        if not source.is_file() or not target.is_file():
+            return False
+        try:
+            current = target.read_text()
+            template = apply_voice(source.read_text())
+        except (OSError, ValueError):
+            log.warning("workspace: leaving AGENTS.md unmodified; it could not be read")
+            return False
+        if (_BUILD_PROFILE_MARKER not in template or _BUILD_PROFILE_MARKER in current
+                or not any(sentinel in current for sentinel in _LEGACY_AGENTS_SENTINELS)):
+            return False
+
+        markers = list(_MANAGED_AGENTS_MARKER.finditer(current))
+        blocks = list(_MANAGED_AGENTS_BLOCK.finditer(current))
+        if len(markers) != 2 * len(blocks):
+            log.warning("workspace: leaving legacy AGENTS.md unmodified; a managed region is invalid")
+            return False
+        preserved = [match.group(0).strip() for match in blocks]
+        updated = template.rstrip() + ("\n\n" + "\n\n".join(preserved) if preserved else "") + "\n"
+        if updated == current:
+            return False
+        _write_atomic(target, updated)
+        return True
 
     def _ensure_helper(self, rel: str, *, refresh: bool = False) -> bool:
         """Copy one Sage-owned helper in. `refresh` also replaces a copy that differs from the

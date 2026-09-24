@@ -89,6 +89,7 @@ def _blank(total: int, rewrites: dict | None, *, status="complete", reason=None)
         "exactDuplicateInstructionBlocks": {"count": 0, "bytes": 0},
         "buildBytes": {"fixedBytes": total, "dynamicBuildIntentBytes": 0,
                        "toolResultBytes": 0, "mediaBytes": 0},
+        "buildInstructionProfile": _profile(rewrites),
         "implementationAssembly": _assembly(rewrites),
         "limitReason": reason,
     }
@@ -138,6 +139,41 @@ def _assembly(rewrites: dict | None) -> dict:
         "duplicateToolSchemasRemoved": number("duplicateToolSchemasRemoved"),
         "unreachableToolSchemasRemoved": number("unreachableToolSchemasRemoved"),
         "removedToolSchemasByName": removed,
+    }
+
+
+def _profile(rewrites: dict | None) -> dict:
+    raw = (rewrites or {}).get("buildInstructionProfile")
+    if not isinstance(raw, dict):
+        return {}
+
+    def number(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    profile = raw.get("profile")
+    status = raw.get("status")
+    if profile not in {"plan", "implement"} or status not in {"valid", "absent"}:
+        return {}
+    blocks = raw.get("removedStageBlocksById")
+    tools = raw.get("removedToolSchemasByName")
+    removed_tools: dict[str, int] = {}
+    for name, count in (tools.items() if isinstance(tools, dict) else ()):
+        identifier = diagnostic_tool_name(name)
+        removed_tools[identifier] = removed_tools.get(identifier, 0) + number(count)
+    implement = blocks.get("implement") if isinstance(blocks, dict) else None
+    return {
+        "profile": profile,
+        "version": number(raw.get("version")),
+        "status": status,
+        "instructionBytesBefore": number(raw.get("instructionBytesBefore")),
+        "instructionBytesAfter": number(raw.get("instructionBytesAfter")),
+        "removedStageBlocksById": {
+            "implement": {
+                "count": number(implement.get("count")),
+                "bytes": number(implement.get("bytes")),
+            }
+        } if isinstance(implement, dict) else {},
+        "removedToolSchemasByName": removed_tools,
     }
 
 
@@ -262,7 +298,14 @@ def _tool_name(tool) -> str:
 
 def diagnostic_tool_name(value: object) -> str:
     """Return a fixed public tool identifier, never a request-supplied unknown name."""
-    return value if isinstance(value, str) and value in _DIAGNOSTIC_TOOL_NAMES else "unknown"
+    if not isinstance(value, str):
+        return "unknown"
+    if value in _DIAGNOSTIC_TOOL_NAMES:
+        return value
+    for name in ("task", "todoread", "todowrite", "todo_read", "todo_write"):
+        if value.endswith(("_" + name, "-" + name, "/" + name)):
+            return name
+    return "unknown"
 
 
 def _instruction_blocks(content):

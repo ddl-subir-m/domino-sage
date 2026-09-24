@@ -1,7 +1,8 @@
-"""Canonical assembly for the implementation route's final policy request."""
+"""Canonical assembly for Build's final provider request."""
 from __future__ import annotations
 
 import json
+import re
 
 # These tools have implementations, but not on a Build implementation turn. The artifact writer
 # and delegated model call are scoped to Chat by the enforcement shim. Keep both OpenCode spellings
@@ -12,6 +13,127 @@ UNREACHABLE_TOOLS = frozenset({
     "delegated_model_call",
     "sage-delegated_delegated_model_call",
 })
+
+PROFILE_VERSION = 1
+_PROFILE_PREFIX = "<!-- sage:build-profile:"
+_MARKER = re.compile(
+    r"(?m)^<!-- sage:build-profile:v(?P<version>[0-9]+):"
+    r"(?P<block>[a-z][a-z0-9_-]*):(?P<edge>begin|end) -->[ \t]*\n?"
+)
+_EXPECTED_MARKERS = (
+    (PROFILE_VERSION, "common", "begin"),
+    (PROFILE_VERSION, "common", "end"),
+    (PROFILE_VERSION, "implement", "begin"),
+    (PROFILE_VERSION, "implement", "end"),
+)
+
+
+class BuildInstructionProfileError(ValueError):
+    """The Build request contains an invalid stage-profile contract."""
+
+
+def _content_text(block: object) -> str | None:
+    if isinstance(block, str):
+        return block
+    if (isinstance(block, dict) and block.get("type") in
+            {"text", "input_text", "output_text"}):
+        value = block.get("text")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _replace_content_text(block: object, text: str) -> object:
+    if isinstance(block, str):
+        return text
+    return {**block, "text": text}
+
+
+def _profile_text(text: str, profile: str) -> tuple[str, dict[str, int]] | None:
+    """Apply one complete marked profile, or leave unrelated instruction text alone."""
+    if _PROFILE_PREFIX not in text:
+        return None
+    matches = list(_MARKER.finditer(text))
+    found = tuple((int(match.group("version")), match.group("block"), match.group("edge"))
+                  for match in matches)
+    # This also rejects unknown ids/versions, duplicate groups, nesting, and out-of-order markers.
+    # A prefix that the strict expression did not consume is an unknown or malformed marker.
+    if found != _EXPECTED_MARKERS or text.count(_PROFILE_PREFIX) != len(matches):
+        raise BuildInstructionProfileError("Invalid Build instruction profile markers")
+
+    common = text[matches[0].end():matches[1].start()]
+    implementation = text[matches[2].end():matches[3].start()]
+    if not common.strip():
+        raise BuildInstructionProfileError("The Build common instruction profile is empty")
+
+    outside_before = text[:matches[0].start()]
+    between = text[matches[1].end():matches[2].start()]
+    outside_after = text[matches[3].end():]
+    kept = outside_before + common + between
+    removed: dict[str, int] = {}
+    if profile == "implement":
+        kept += implementation
+    elif profile == "plan":
+        removed["implement"] = _wire_bytes(implementation)
+    else:  # Callers use a fixed stage enum; keep this guard local for direct tests.
+        raise BuildInstructionProfileError("Unknown Build instruction profile")
+    kept += outside_after
+    return kept, removed
+
+
+def apply_instruction_profile(request: dict, profile: str, *,
+                              removed_tools: dict[str, int] | None = None) -> tuple[dict, dict]:
+    """Select the marked Build instructions without retaining any instruction content."""
+    before_bytes = after_bytes = 0
+    profiled_blocks = 0
+    removed_by_id: dict[str, dict[str, int]] = {}
+    result = {**request}
+    messages = result.get("messages")
+    if isinstance(messages, list):
+        updated_messages = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") not in {"system", "developer"}:
+                updated_messages.append(message)
+                continue
+            content = message.get("content")
+            blocks = content if isinstance(content, list) else [content]
+            updated_blocks = []
+            changed = False
+            for block in blocks:
+                text = _content_text(block)
+                if text is None:
+                    updated_blocks.append(block)
+                    continue
+                before_bytes += _wire_bytes(text)
+                selected = _profile_text(text, profile)
+                if selected is None:
+                    updated_blocks.append(block)
+                    after_bytes += _wire_bytes(text)
+                    continue
+                profiled_blocks += 1
+                if profiled_blocks > 1:
+                    raise BuildInstructionProfileError("Duplicate Build instruction profiles")
+                selected_text, removed = selected
+                updated_blocks.append(_replace_content_text(block, selected_text))
+                after_bytes += _wire_bytes(selected_text)
+                changed = True
+                for block_id, size in removed.items():
+                    row = removed_by_id.setdefault(block_id, {"count": 0, "bytes": 0})
+                    row["count"] += 1
+                    row["bytes"] += size
+            updated_content = updated_blocks if isinstance(content, list) else updated_blocks[0]
+            updated_messages.append({**message, "content": updated_content} if changed else message)
+        result["messages"] = updated_messages
+
+    status = "valid" if profiled_blocks == 1 else "absent"
+    return result, {
+        "profile": profile,
+        "version": PROFILE_VERSION,
+        "status": status,
+        "instructionBytesBefore": before_bytes,
+        "instructionBytesAfter": after_bytes,
+        "removedStageBlocksById": removed_by_id,
+        "removedToolSchemasByName": dict(sorted((removed_tools or {}).items())),
+    }
 
 
 def _wire_bytes(value) -> int:

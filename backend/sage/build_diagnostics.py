@@ -130,9 +130,12 @@ def _request_composition(value) -> dict | None:
     duplicates = mapping(value.get("exactDuplicateInstructionBlocks"))
     build_bytes = mapping(value.get("buildBytes"))
     assembly = mapping(value.get("implementationAssembly"))
+    profile = mapping(value.get("buildInstructionProfile"))
     removed_schemas = mapping(assembly.get("removedToolSchemasByName"))
     removed_instruction_sources = mapping(
         assembly.get("duplicateInstructionBlocksRemovedBySource"))
+    removed_profile_blocks = mapping(profile.get("removedStageBlocksById"))
+    removed_profile_tools = mapping(profile.get("removedToolSchemasByName"))
 
     def named_counts(raw):
         out = {}
@@ -147,6 +150,14 @@ def _request_composition(value) -> dict | None:
     for key, count in removed_schemas.items():
         identifier = diagnostic_tool_name(key)
         removed_by_name[identifier] = removed_by_name.get(identifier, 0) + number(count)
+
+    profile_name = profile.get("profile")
+    profile_status = profile.get("status")
+    profile_implement = mapping(removed_profile_blocks.get("implement"))
+    profile_removed_tools = {}
+    for key, count in removed_profile_tools.items():
+        identifier = diagnostic_tool_name(key)
+        profile_removed_tools[identifier] = profile_removed_tools.get(identifier, 0) + number(count)
 
     out = {
         "version": 1, "boundary": boundary, "status": status,
@@ -177,6 +188,21 @@ def _request_composition(value) -> dict | None:
             for key in ("fixedBytes", "dynamicBuildIntentBytes",
                         "toolResultBytes", "mediaBytes")
         },
+        "buildInstructionProfile": {
+            "profile": profile_name,
+            "version": number(profile.get("version")),
+            "status": profile_status,
+            "instructionBytesBefore": number(profile.get("instructionBytesBefore")),
+            "instructionBytesAfter": number(profile.get("instructionBytesAfter")),
+            "removedStageBlocksById": {
+                "implement": {
+                    "count": number(profile_implement.get("count")),
+                    "bytes": number(profile_implement.get("bytes")),
+                }
+            } if profile_implement else {},
+            "removedToolSchemasByName": profile_removed_tools,
+        } if profile_name in {"plan", "implement"}
+        and profile_status in {"valid", "absent"} else {},
         "implementationAssembly": {
             **{key: number(assembly.get(key)) for key in (
                 "beforeBytes", "afterBytes", "removedBytes",
