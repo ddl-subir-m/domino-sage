@@ -11841,7 +11841,9 @@ class Orchestrator:
         `edit`, `write`, `question` and `apply_patch` together and no `task`, and no configuration
         of 1.18.4 or 1.18.30 on a bench produces that set — they swap `apply_patch` IN PLACE OF
         `edit`/`write`, and they include `task`. A tool list is a version fingerprint, and this one
-        does not match the version we believe we are running.
+        does not match the version we believe we are running. Measured again 2026-09-24 (#539): a
+        TFL Build's recorded tool schemas were `apply_patch` and no `edit`/`write`, which IS 1.18.4
+        on the `gpt-5.4` handle — so this mismatch no longer reproduces.
 
         Never raises. A diagnostic must never be the thing that breaks the diagnostics page.
         """

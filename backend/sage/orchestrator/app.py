@@ -4855,8 +4855,14 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
             provider["npm"] = codec.as_uri()
             # One stable handle keeps OpenCode's persisted provider metadata intact.
             # Actual Alias and route selection come from the server capability resolver.
-            provider["models"] = {"gpt-5.4": {**models["gpt-5.4"], "reasoning": True}}
-            cfg["model"] = cfg["small_model"] = "sage-gateway/gpt-5.4"
+            # The DEFAULT handle is neutral (#539): OpenCode offers `apply_patch` INSTEAD of
+            # `edit`/`write` to any id containing `gpt-` (1.18.4 `ToolRegistry.tools`), and every
+            # alias travels under this one handle. `gpt-5.4` stays listed so a session saved under it
+            # still resolves, and the summarise call that names it still works.
+            handle = {**models.get("sage-model", models["gpt-5.4"]), "reasoning": True}
+            provider["models"] = {"gpt-5.4": {**models["gpt-5.4"], "reasoning": True},
+                                  "sage-model": handle}
+            cfg["model"] = cfg["small_model"] = "sage-gateway/sage-model"
     # The Live read tools are served by THIS process too (ADR-0041), so their port moves with it.
     # This is the rewrite above missing its twin: on Domino the shim serves :8888 while the
     # checked-in URL says :8080, and OpenCode drops an unreachable MCP server SILENTLY — the tools

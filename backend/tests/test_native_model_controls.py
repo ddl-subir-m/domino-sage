@@ -363,9 +363,11 @@ def test_installed_native_config_keeps_one_handle_and_local_codecs(running, tmp_
         installed = json.loads((tmp_path / 'home/.config' / folder / 'opencode.json').read_text())
         provider = installed['provider']['sage-gateway']
         assert provider['npm'] == (source / 'backend/sage/driver/provider.mjs').as_uri()
-        assert list(provider['models']) == ['gpt-5.4']
-        assert provider['models']['gpt-5.4']['reasoning'] is True
-        assert installed['model'] == installed['small_model'] == 'sage-gateway/gpt-5.4'
+        # Two handles (#539): the neutral default OpenCode reads its edit tools from, and gpt-5.4
+        # kept so a session saved under it still resolves.
+        assert list(provider['models']) == ['gpt-5.4', 'sage-model']
+        assert all(m['reasoning'] is True for m in provider['models'].values())
+        assert installed['model'] == installed['small_model'] == 'sage-gateway/sage-model'
         assert provider['options']['baseURL'] == 'http://localhost:9876/v1'
         assert provider['options']['name'] == 'google'
     assert json.loads((source / 'opencode.json').read_text()) == config

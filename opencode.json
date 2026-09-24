@@ -38,6 +38,23 @@
             "output": 16384
           }
         },
+        "sage-model": {
+          "name": "Sage model",
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 922000,
+            "output": 128000
+          }
+        },
         "gpt-5.4": {
           "name": "GPT-5.4",
           "attachment": true,
@@ -93,7 +110,7 @@
       }
     }
   },
-  "model": "sage-gateway/gpt-5.4",
+  "model": "sage-gateway/sage-model",
   "permission": {
     "skill": {
       "*": "allow"

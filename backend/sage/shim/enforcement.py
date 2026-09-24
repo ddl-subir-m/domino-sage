@@ -498,7 +498,12 @@ class EnforcementShim:
         # the rescue's own corroboration, the window is the rescue's own (cleared by a clean write),
         # and it is read off the transcript per request, so it holds for the rest of the turn and
         # costs nothing to reset. A stripped tool is a guarantee where a prompt is a request.
-        patch_withdrawn = (signals is not None
+        # Only where `edit` is on offer beside it. OpenCode offers one or the other by model handle,
+        # never both (#539), so withdrawing `apply_patch` from a request without `edit` would leave
+        # the turn no way to edit at all.
+        offers_edit = any(str((tool.get("function") or {}).get("name", "")).lower() == "edit"
+                          for tool in request.get("tools") or [])
+        patch_withdrawn = (signals is not None and offers_edit
                            and signals.patch_refusals >= ERROR_CORROBORATION)
         if patch_withdrawn:
             denied |= {PATCH_TOOL}
