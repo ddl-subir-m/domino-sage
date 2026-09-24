@@ -407,6 +407,28 @@ def test_synchronous_build_pre_edit_guard_wins_at_the_real_native_route(
     assert project.context_rollover is None
 
 
+def test_synchronous_output_limit_gets_one_clean_recovery_then_stops(tmp_path):
+    orch, oc, project = _built_orchestrator(tmp_path, [Turn(), Turn()])
+    original_send = oc.send_prompt
+
+    def output_limited(session_id, text, *args, **kwargs):
+        original_send(session_id, text, *args, **kwargs)
+        project.last_gateway_error = {
+            "message": "The model reached its output limit before it completed the turn.",
+            "code": "model_output_limit",
+            "finish_reason": "length",
+        }
+
+    oc.send_prompt = output_limited
+
+    result = orch.build("Build synchronously.", conversation="conv-sync-output-limit")
+
+    assert result["decision"] == "pre_edit_limit"
+    assert len(oc.prompts) == 2
+    assert oc.prompts[0]["session"] != oc.prompts[1]["session"]
+    assert oc.interrupted == 1
+
+
 def test_synchronous_rollover_refused_stop_preserves_lock_and_safety_state(
         tmp_path, monkeypatch):
     orch, oc, project = _built_orchestrator(tmp_path, [Turn()])
