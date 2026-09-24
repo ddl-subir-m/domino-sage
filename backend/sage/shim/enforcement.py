@@ -19,7 +19,7 @@ from typing import Any
 from ..build_policy import BuildPolicy
 from ..gateway.capabilities import legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
-from ..implementation_request import assemble_for_route
+from ..implementation_request import apply_instruction_profile, assemble_for_route
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import (
@@ -48,6 +48,15 @@ from .chat_paths import apply_withheld, strip_denied_writes
 # what it thinks the screenshot showed instead of asking.
 IMAGE_OMITTED = "[image omitted: the active model cannot process images]"
 IMAGE_AMBIGUOUS = "[image omitted: reference markers did not match image carriers]"
+
+_PLAN_LOOP_TOOLS = ("task", "todoread", "todowrite", "todo_read", "todo_write")
+
+
+def _is_plan_loop_tool(name: str) -> bool:
+    """Match OpenCode's bare task tools and any server-prefixed spelling of the same tools."""
+    value = name.lower()
+    return any(value == tool or value.endswith(("_" + tool, "-" + tool, "/" + tool))
+               for tool in _PLAN_LOOP_TOOLS)
 
 
 def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
@@ -450,9 +459,10 @@ class EnforcementShim:
             # unused schemas and their choice directive for this turn (#417).
             request = {k: v for k, v in request.items() if k not in {"tools", "tool_choice"}}
         denied = set(READ_ONLY_DENIED) if (state.mode is Mode.ASK or state.read_only_turn) else set()
+        plan_tools_removed: dict[str, int] = {}
         # An answering turn also loses tools that create a visible work loop: it answers and returns
         # without building, so a task list or sub-task on it reads as a build in progress that never
-        # arrives. A gated plan turn keeps them.
+        # arrives. A gated plan removes the same loop tools below: it owes one written plan.
         if state.read_only_reason in ("ask", "question") or state.mode is Mode.ASK:
             denied |= TODO_TOOLS | {"task"}
         # A Chat turn answers and returns too, and it cannot be the build the list implies: Chat's
@@ -489,10 +499,15 @@ class EnforcementShim:
         if patch_withdrawn:
             denied |= {PATCH_TOOL}
         if denied and "tools" in request:
-            tools = [
-                t for t in request["tools"]
-                if (t.get("function") or {}).get("name", "").lower() not in denied
-            ]
+            tools = []
+            for tool in request["tools"]:
+                name = str((tool.get("function") or {}).get("name", "")).lower()
+                plan_loop = state.read_only_reason == "plan" and _is_plan_loop_tool(name)
+                if name in denied or plan_loop:
+                    if state.read_only_reason == "plan":
+                        plan_tools_removed[name] = plan_tools_removed.get(name, 0) + 1
+                    continue
+                tools.append(tool)
             request = {**request, "tools": tools}
         if state.chat_artifact_turn and chat_id and isinstance(request.get("tools"), list):
             # `delegated_model_call` belongs on a data-artifact turn and not by extension: the turn
@@ -851,6 +866,16 @@ class EnforcementShim:
         )
         request, used = self.data_use.prepare(
             request, withheld=state.withheld, rewrite_counts=rewrite_counts)
+        build_profile = None
+        if (state.chat_thread_id is None and state.read_only_reason == "plan"):
+            request, build_profile = apply_instruction_profile(
+                request, "plan", removed_tools=plan_tools_removed)
+        elif (state.chat_thread_id is None and not state.read_only_turn
+              and (state.mode is Mode.IMPLEMENT
+                   or state.mode is Mode.AUTO and state.phase is Phase.IMPLEMENT)):
+            request, build_profile = apply_instruction_profile(request, "implement")
+        if build_profile and rewrite_counts is not None:
+            rewrite_counts["buildInstructionProfile"] = build_profile
         request, assembly = assemble_for_route(
             request, mode=state.mode.value, phase=state.phase.value,
             chat_thread_id=state.chat_thread_id)

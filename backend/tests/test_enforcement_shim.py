@@ -181,9 +181,8 @@ def test_gated_plan_turn_strips_tools_even_outside_ask_mode():
     assert [t["function"]["name"] for t in sent_request["tools"]] == ["read"]
 
 
-def test_an_answering_turn_loses_the_task_list_tool_but_a_plan_turn_keeps_it():
-    """An answering turn returns without building, so a task list on it is a build the user waits for
-    that never comes. A gated plan turn is the opposite — tracking the steps is its job."""
+def test_an_answering_turn_loses_the_task_list_tool():
+    """An answering turn returns without building, so a task list can never be completed."""
     tools = [
         {"type": "function", "function": {"name": "todowrite"}},
         {"type": "function", "function": {"name": "read"}},
@@ -198,7 +197,35 @@ def test_an_answering_turn_loses_the_task_list_tool_but_a_plan_turn_keeps_it():
 
     assert names_after("question") == ["read"]     # a question in Auto
     assert names_after("ask", Mode.ASK) == ["read"]
-    assert names_after("plan") == ["todowrite", "read"]   # the gate keeps it
+
+
+def test_a_plan_turn_loses_bare_and_namespaced_task_and_todo_tools():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.arm_read_only("plan")
+    gw = FakeGatewayClient()
+    tools = [{"type": "function", "function": {"name": name}} for name in (
+        "todowrite", "todoread", "task", "opencode_todo_write", "server-task", "read",
+    )]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    assert [t["function"]["name"] for t in gw.seen[-1][0]["tools"]] == ["read"]
+
+
+def test_a_plan_turn_keeps_approved_read_skill_and_granted_web_tools_only():
+    control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+    control.arm_read_only("plan")
+    control.arm_web()
+    gw = FakeGatewayClient()
+    keep = ("read", "glob", "grep", "live_read_files", "live_read_table", "live_read_query",
+            "skill", "webfetch")
+    remove = ("task", "todoread", "todowrite", "write", "edit", "apply_patch", "bash")
+    tools = [{"type": "function", "function": {"name": name}}
+             for name in (*keep, *remove)]
+
+    list(_shim(control, gw).handle({"messages": [], "tools": tools}, project="p"))
+
+    assert [t["function"]["name"] for t in gw.seen[-1][0]["tools"]] == list(keep)
 
 
 def test_a_chat_turn_loses_the_task_list_but_keeps_the_sub_task_tool():

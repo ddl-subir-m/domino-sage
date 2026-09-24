@@ -142,3 +142,73 @@ def test_the_reporter_is_refreshed_before_the_boundary_that_imports_it():
     order = [Path(rel).name for rel in _OWNED_SOURCES]
     assert order.index("reportRuntimeError.ts") < order.index("ErrorBoundary.tsx")
     assert 'from "./reportRuntimeError"' in (TEMPLATE / "src" / "ErrorBoundary.tsx").read_text()
+
+
+def test_attach_profiles_a_legacy_agents_file_and_preserves_every_managed_region(tmp_path: Path):
+    template = _template(tmp_path)
+    fresh = (
+        "<!-- sage:build-profile:v1:common:begin -->\ncommon rules\n"
+        "<!-- sage:build-profile:v1:common:end -->\n"
+        "<!-- sage:build-profile:v1:implement:begin -->\nimplementation rules\n"
+        "<!-- sage:build-profile:v1:implement:end -->\n"
+    )
+    (template / "AGENTS.md").write_text(fresh)
+    manager = WorkspaceManager(workspace_dir=tmp_path / "ws", template=template)
+    workspace = manager.ensure("proj1")
+    legacy = (
+        "# old static rules\n> **Every turn must end with edits to `src/`.**\n"
+        "<!-- sage:instructions:begin -->\nKeep labels short.\n"
+        "<!-- sage:instructions:end -->\n\n"
+        "<!-- sage:attached-data:begin -->\n- shell.md\n"
+        "<!-- sage:attached-data:end -->\n"
+    )
+    (workspace.path / "AGENTS.md").write_text(legacy)
+
+    assert manager.refresh_agents_profile() is True
+
+    updated = (workspace.path / "AGENTS.md").read_text()
+    assert updated.startswith(fresh.rstrip())
+    assert "# old static rules" not in updated
+    assert updated.count("Keep labels short.") == 1
+    assert updated.count("- shell.md") == 1
+    assert updated.index("Keep labels short.") < updated.index("- shell.md")
+    assert manager.refresh_agents_profile() is False
+
+
+def test_agents_profile_migration_leaves_custom_and_malformed_files_byte_identical(tmp_path: Path):
+    template = _template(tmp_path)
+    (template / "AGENTS.md").write_text(
+        "<!-- sage:build-profile:v1:common:begin -->\ncommon\n"
+        "<!-- sage:build-profile:v1:common:end -->\n"
+        "<!-- sage:build-profile:v1:implement:begin -->\nimplement\n"
+        "<!-- sage:build-profile:v1:implement:end -->\n")
+    manager = WorkspaceManager(workspace_dir=tmp_path / "ws", template=template)
+    workspace = manager.ensure("proj1")
+    path = workspace.path / "AGENTS.md"
+    cases = (
+        "# My custom agent rules\n",
+        ("# old\n> **Every turn must end with edits to `src/`.**\n"
+         "<!-- sage:instructions:begin -->\nbroken\n"),
+    )
+    for body in cases:
+        path.write_text(body)
+        assert manager.refresh_agents_profile() is False
+        assert path.read_text() == body
+
+
+def test_reattach_runs_the_agents_profile_migration_for_an_existing_app(tmp_path: Path):
+    orch = _orch(tmp_path)
+    template = tmp_path / "template" / "AGENTS.md"
+    template.write_text(
+        "<!-- sage:build-profile:v1:common:begin -->\ncommon\n"
+        "<!-- sage:build-profile:v1:common:end -->\n"
+        "<!-- sage:build-profile:v1:implement:begin -->\nimplement\n"
+        "<!-- sage:build-profile:v1:implement:end -->\n")
+    app = orch.project(start_preview=False).workspace.path
+    (app / "AGENTS.md").write_text(
+        "# old\n> **Every turn must end with edits to `src/`.**\n")
+
+    orch._project = None
+    orch.project(start_preview=False)
+
+    assert "sage:build-profile:v1:common:begin" in (app / "AGENTS.md").read_text()

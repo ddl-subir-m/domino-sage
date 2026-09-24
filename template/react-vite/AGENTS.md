@@ -1,23 +1,8 @@
+<!-- sage:build-profile:v1:common:begin -->
 # Building apps in this workspace
 
-A warm **React + TypeScript + Vite** starter. Dependencies are installed and the dev server is
-already running with live reload. **Build the user's app by editing `src/`.** The preview reloads
-automatically — there is no build step to run.
-
-> **Every turn must end with edits to `src/`.** Do the minimal planning the task needs, then write
-> code in the *same* turn — never stop at a plan, a todo list, or a question and wait for the user.
-> A turn that produces no file edits has accomplished nothing.
->
-> **One exception, and it is narrow.** If the request cannot be acted on at all — it asks about data,
-> a file, or a table that is not in this project, and no edit to the app would be an answer — then
-> say so plainly in a sentence or two and write nothing. End that reply with `NOTHING_TO_BUILD` on a
-> line by itself. {assistantName} reads that line, ends the turn cleanly, and shows the user
-> what you said.
->
-> This is for having **nothing** to build. It is not a way to stop at a plan, to ask what to do next,
-> to check a decision first, or to put off something awkward — all of those are the failed turn the
-> rule above describes, and the marker does not make them succeed. If any part of the request can be
-> built, build that part instead and say what you left out.
+This workspace supports one React + TypeScript + Vite app. Dependencies are installed and the
+preview reloads automatically. Plan screens, controls, and behavior for this stack.
 
 ## Talking to the user
 Everything you say back — plans, summaries, answers — is shown directly to the person building the
@@ -67,6 +52,33 @@ for, what you proposed, which steps ran.
 - It is a past record, **not** current intent. `.sage/plan.md` is the live plan — don't treat an old
   turn as an instruction for this one.
 - Don't edit it. It is regenerated each turn, so any change is overwritten.
+
+## Selected references
+
+A reference selected for this turn is authoritative. Read it through the supplied typed operation
+or approved path before using it. Keep its stated order, labels, and structure unless the user asks
+to change them. Do not invent source data or copy private rows, values, file contents, paths, or
+identifiers into a plan. Describe the product structure and behavior instead.
+<!-- sage:build-profile:v1:common:end -->
+
+<!-- sage:build-profile:v1:implement:begin -->
+## Implementation turn
+
+Build the user's app by editing `src/`. There is no install or build step to run.
+
+> **Every implementation turn must end with edits to `src/`.** Do the minimal planning the task
+> needs, then write code in the *same* turn — never stop at a plan, a todo list, or a question and
+> wait for the user. A turn that produces no file edits has accomplished nothing.
+>
+> **One exception, and it is narrow.** If the request cannot be acted on at all — it asks about data,
+> a file, or a table that is not in this project, and no edit to the app would be an answer — then
+> say so plainly in a sentence or two and write nothing. End that reply with `NOTHING_TO_BUILD` on a
+> line by itself. {assistantName} reads that line, ends the turn cleanly, and shows the user
+> what you said.
+>
+> This is for having **nothing** to build. It is not a way to stop at a plan, to ask what to do next,
+> to check a decision first, or to put off something awkward. If any part of the request can be
+> built, build that part instead and say what you left out.
 
 ## {project} rules
 - **Plan proportionally, then build.** Match the planning to the task. A simple app (one screen, a
@@ -384,3 +396,4 @@ There is no UI component kit — no Ant Design, no MUI, no Tailwind. Build compo
 the design tokens in `src/index.css`, the way `src/examples/StatCard.tsx` does. If a request seems
 to need a package that isn't on this list, build the nearest thing you can from what is here and
 tell the user what you left out — do not try to install it.
+<!-- sage:build-profile:v1:implement:end -->

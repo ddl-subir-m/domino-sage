@@ -51,12 +51,9 @@ READ_ONLY_DENIED = WRITE_TOOLS | SHELL_TOOLS
 # wanders off to fetch Storybook/CDN URLs mid-plan and burns turns. Names cover OpenCode plus common
 # aliases from other harnesses, same as the sets above, so the guard survives a driver swap.
 WEB_TOOLS = frozenset({"webfetch", "web_fetch", "fetch", "websearch", "web_search"})
-# The task-list tool, stripped on a turn that ANSWERS (Ask mode, or a question in Auto) — not on a
-# gated plan turn, where tracking steps is the job. An answering turn returns without building, so a
-# task list on it is a build the user is left waiting for: asked "what tech stack will be used", the
-# agent opened a two-step list and said "Next I'm replacing the starter screen…", then stopped. The
-# turn preamble already tells it not to; this is what makes that hold, on the same reasoning as
-# READ_ONLY_DENIED — the agent's own prompt is guidance, a stripped tool is a guarantee.
+# The task-list write tool. It is stripped on a turn that answers, and the plan profile also strips
+# all task/todo spellings. Both routes owe one visible document in one turn; a task loop can finish
+# without that document. The turn preamble is guidance, while a stripped tool is a guarantee.
 #
 # WRITE side only. Verified 2026-07-31 against the pinned 1.18.4 linux-x64 binary: "todowrite" is a
 # tool-name literal, and there is no read counterpart — todos persist in the session db (todo_pk,
