@@ -2800,6 +2800,42 @@ def _looks_like_recovery_retry(prompt: str) -> bool:
             or (bool(_CONTINUE_ONLY.match(text)) and bool(re.search(r"[a-z]", text, re.IGNORECASE))))
 
 
+# How a gated turn ends when it produced no plan. `model_no_action_timeout` is shared with a build
+# turn, so for that one decision the planning error beside it is what says it was a plan turn.
+_FAILED_PLAN_DECISIONS = frozenset({"no app described", "empty plan"})
+_PLANNING_STOPPED = "Planning stopped"
+
+
+def _failed_plan_request(history: list[dict], prompt: str) -> str | None:
+    """The request a failed plan turn was about, when `prompt` only asks to go on (#537).
+
+    None unless the whole prompt is a bare retry or continue AND the last turn in this Conversation
+    was a plan turn that ended with no plan. Walks back over earlier bare retries, so a second
+    "continue" after a replay that also failed still finds the person's own request."""
+    if not _looks_like_recovery_retry(prompt):
+        return None
+    rows = [row for row in (history or []) if isinstance(row, dict)]
+    end = len(rows)
+    while True:
+        done = next((i for i in range(end - 1, -1, -1) if rows[i].get("type") == "done"), -1)
+        if done < 0 or rows[done].get("ok") is not False:
+            return None
+        start = next((i for i in range(done - 1, -1, -1) if rows[i].get("type") == "done"), -1) + 1
+        window = rows[start:done]
+        decision = rows[done].get("decision")
+        planned = decision in _FAILED_PLAN_DECISIONS or (
+            decision == "model_no_action_timeout"
+            and any(row.get("type") == "error"
+                    and str(row.get("message") or "").startswith(_PLANNING_STOPPED)
+                    for row in window))
+        if not planned:
+            return None
+        asked = next((str(row.get("text") or "") for row in window if row.get("type") == "user"), "")
+        if asked and not _looks_like_recovery_retry(asked):
+            return asked
+        end = start
+
+
 def _pending_refusal_recovery_message(history: list[dict], prompt: str) -> str:
     """Ask for the recovery choice before a bare retry can resend the same refused Recall."""
     if not _looks_like_recovery_retry(prompt):
@@ -5460,6 +5496,12 @@ _PLAN_REFUSAL = (
     "change to one — a shell command, a pasted error, a stray note — write exactly "
     f"{_NO_APP_SENTINEL} on the first line, then one sentence naming what is missing, and nothing "
     "else: no headings, no plan. Never invent an app the request did not ask for.")
+
+
+# Heads the person's own words in a gated plan turn (#537). The data notes ride AFTER the request
+# (see the send in `_build_stream`), so the label also says where the request ends.
+_PLAN_REQUEST_LABEL = ("The request, in the person's own words (any blocks after it describe their "
+                       "files and data; they are background for this request, not the request):\n")
 
 
 # How far in to look for the sentinel. Not just the first line: `plan_md` is every assistant text
@@ -8557,6 +8599,15 @@ class Orchestrator:
                                 else "Approved in chat — building this plan.")}
                 yield from self._approve_locked(user_text=prompt)
                 return
+            # A bare "continue" after a PLAN turn that produced nothing re-plans the request that
+            # turn was about (#537). Sent as itself it is planned as a new request, and a planner
+            # rightly finds no app in the word "continue". The bubble keeps what they typed.
+            typed = None
+            if not live_plan:
+                replayed = _failed_plan_request(
+                    plan_app.read_history(project.build_conversation), prompt)
+                if replayed:
+                    typed, prompt = prompt, replayed
             # Before the Ask check and the gate: "remove everything you have built" is a change
             # request and a build request by every rule below, which is exactly how it used to reach
             # the build agent and come back as a page ABOUT starting over.
@@ -8710,7 +8761,7 @@ class Orchestrator:
                 # The pick wins over the three skip flags, which it can arrive carrying: a turn
                 # started by choosing a Data Source says which one, whatever gate the turn before
                 # it had also answered.
-                user_text=(picked or ("Build it." if skip_reset_gate or skip_incoming_gate
+                user_text=(picked or typed or ("Build it." if skip_reset_gate or skip_incoming_gate
                                       or skip_table_gate or skip_source_gate or skip_dataset_gate
                                       else None)))
         except TurnWedged:
@@ -17708,6 +17759,9 @@ class Orchestrator:
             # Both names now carry the same durable contract. The preference still controls only
             # execution, below: it does not change what a plan document contains.
             shape = _PLAN_SHAPE_PHASED if (phased_build and mode_at_start is Mode.AUTO) else _PLAN_SHAPE
+            # Labelled (#537). The person's sentence was ~0.4 KB of a 14 KB message, unmarked, with
+            # ~10 KB of data notes after it; a planner took the notes for the request and refused.
+            current = _PLAN_REQUEST_LABEL + current
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
@@ -17720,9 +17774,14 @@ class Orchestrator:
                 # commonest request there is. Refusing that would be a regression, and would refuse
                 # it with copy written for an empty project. The filler plan #150 reports needs a
                 # blank template to happen — there is nothing to read, so nothing anchors the plan.
+                #
+                # Not offered when the person attached files or @-mentioned data (#537): a request that
+                # arrives with its material is not a stray note, and the notes describing that material
+                # are exactly what a planner mistook for one.
+                way_out = "" if (mention_files or resource_note) else _PLAN_REFUSAL + "\n\n"
                 current = ("This is a brand-new app from a blank template — there are no existing "
                            "files worth reading, so plan straight from the request. "
-                           + _PLAN_VOICE + "\n\n" + _PLAN_REFUSAL + "\n\n" + shape + "\n\n" + current)
+                           + _PLAN_VOICE + "\n\n" + way_out + shape + "\n\n" + current)
         # Answer-only turn: answered directly and read-only, no plan card, no build (see _is_answer_only).
         # Read-only so answering a question can never quietly build or edit an app; and unlike a normal
         # Auto turn, a clean no-edit answer is the goal, so it must not be nudged to implement.
@@ -19322,7 +19381,7 @@ class Orchestrator:
                     restore_mode()
                     yield persist({
                         "type": "error",
-                        "message": ("Planning stopped because the clean retry also produced no "
+                        "message": (_PLANNING_STOPPED + " because the clean retry also produced no "
                                     "text or tool call. Try the request again."),
                     })
                     yield persist({"type": "done", "ok": False,
