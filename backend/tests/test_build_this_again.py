@@ -716,15 +716,16 @@ The trading operations analyst.
 PHASED_EDIT = PHASED_PLAN.replace("a sortable table", "a sortable table, newest first")
 
 
-def _writes(rel: str) -> Turn:
-    return Turn(writes={rel: f"// {rel}\nexport const x = 1;\n"})
+def _writes(rel: str, version: int = 1) -> Turn:
+    return Turn(writes={rel: f"// {rel}\nexport const x = {version};\n"})
 
 
 def test_a_phased_build_this_again_runs_every_phase_of_the_edited_plan(tmp_path: Path):
     orch, _oc = _build(tmp_path, [
         Turn(text=PHASED_PLAN),
         _writes("src/data.ts"), _writes("src/Table.tsx"), _writes("src/Filter.tsx"),   # first build
-        _writes("src/data.ts"), _writes("src/Table.tsx"), _writes("src/Filter.tsx"),   # the rebuild
+        _writes("src/data.ts", 2), _writes("src/Table.tsx", 2),
+        _writes("src/Filter.tsx", 2),   # the rebuild
     ], phased=True)
     list(orch.build_stream("build me a trades dashboard", conversation=CONVERSATION))
     list(orch.approve_stream(conversation=CONVERSATION))

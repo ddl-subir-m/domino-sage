@@ -77,7 +77,7 @@ def test_build_gets_current_source_paths_without_file_contents(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("broken", [False, True])
-def test_source_listing_repeats_only_when_the_retry_has_a_new_session(tmp_path, monkeypatch, broken):
+def test_source_listing_repeats_for_each_fresh_retry_session(tmp_path, monkeypatch, broken):
     from sage.orchestrator.service import Orchestrator
 
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
@@ -87,7 +87,11 @@ def test_source_listing_repeats_only_when_the_retry_has_a_new_session(tmp_path, 
     assert len(client.prompts) == 2
     marker = "Existing source paths (JSON array"
     assert marker in client.prompts[0]["text"]
-    assert (marker in client.prompts[1]["text"]) == broken
+    assert marker in client.prompts[1]["text"]
+    assert client.prompts[0]["session"] != client.prompts[1]["session"]
+    if not broken:
+        assert "only clean recovery" in client.prompts[1]["text"]
+        assert "IMPLEMENT_NUDGE" not in client.prompts[1]["text"]
 
 
 def test_source_paths_are_exact_json_strings_and_the_listing_is_bounded(tmp_path):

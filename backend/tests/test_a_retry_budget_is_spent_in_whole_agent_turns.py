@@ -45,7 +45,6 @@ ALIASES = [LlmAlias("id-sonnet", "sonnet", "Claude Sonnet 4.6", None, ["chat"], 
 # The budgets under test, restated so a change to one of them fails here with the number in hand
 # rather than in an off-by-one somewhere down the file. Not imported: they are locals of
 # `_build_stream`, and a test that could import them could not also prove the loop honours them.
-MAX_NUDGES = 3
 MAX_RUNTIME_FIXES = 3
 MAX_LEAK_FIXES = 2
 MAX_GATEWAY_FIXES = 2
@@ -169,11 +168,11 @@ def _decision(events: list[dict]) -> str:
     return [e for e in events if e.get("type") == "done"][-1]["decision"]
 
 
-# ---- the nudge: a turn that writes nothing ---------------------------------------------------
+# ---- one clean pre-edit recovery -------------------------------------------------------------
 
 
 @own_ledger
-def test_one_nudge_costs_exactly_one_extra_agent_turn(tmp_path: Path):
+def test_one_clean_recovery_costs_exactly_one_extra_agent_turn(tmp_path: Path):
     orch, oc = _orch(tmp_path, [
         _wrote_nothing(),
         Turn(text="Built it.", writes={"src/App.tsx": "export default () => null\n"}),
@@ -183,25 +182,26 @@ def test_one_nudge_costs_exactly_one_extra_agent_turn(tmp_path: Path):
 
     assert _agent_turns(oc) == 2
     assert _decision(events) == "typecheck clean"
-    # The second send is the nudge, not the user's prompt again: a re-send of the same words would
-    # cost the same turn and buy nothing, and that is the failure this budget is protecting against.
-    assert "IMPLEMENT" in oc.prompts[1]["text"]
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert "only clean recovery" in oc.prompts[1]["text"]
+    assert "IMPLEMENT_NUDGE" not in oc.prompts[1]["text"]
+    assert oc.prompts[0]["session"] != oc.prompts[1]["session"]
 
 
 @own_ledger
-def test_an_agent_that_never_writes_spends_the_whole_nudge_budget_and_stops(tmp_path: Path):
+def test_an_agent_that_never_writes_gets_one_clean_recovery_and_stops(tmp_path: Path):
     orch, oc = _orch(tmp_path, [_wrote_nothing()] * 10)
 
     events = list(orch.build_stream("add a chart"))
 
-    # MAX_NUDGES re-sends on top of the first send. The ceiling of the cheapest failure mode there
-    # is: four whole model turns to learn the agent will not write code.
-    assert _agent_turns(oc) == MAX_NUDGES + 1 == 4
-    assert _decision(events) == "the model replied but didn't change any files — try rephrasing or a smaller step"
+    assert _agent_turns(oc) == 2
+    assert _decision(events) == "pre_edit_limit"
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert [event["type"] for event in events].count("build-pre-edit-limit") == 1
 
 
 @own_ledger
-def test_a_nudge_that_lands_on_the_last_try_still_finishes_clean(tmp_path: Path):
+def test_a_scripted_edit_after_the_clean_recovery_is_not_sent(tmp_path: Path):
     orch, oc = _orch(tmp_path, [
         _wrote_nothing(), _wrote_nothing(), _wrote_nothing(),
         Turn(text="Built it.", writes={"src/App.tsx": "export default () => null\n"}),
@@ -209,8 +209,10 @@ def test_a_nudge_that_lands_on_the_last_try_still_finishes_clean(tmp_path: Path)
 
     events = list(orch.build_stream("add a chart"))
 
-    assert _agent_turns(oc) == 4
-    assert _decision(events) == "typecheck clean"
+    assert _agent_turns(oc) == 2
+    assert _decision(events) == "pre_edit_limit"
+    assert (orch.project(start_preview=False).workspace.path / "src" / "App.tsx").read_text() != (
+        "export default () => null\n")
 
 
 # ---- the runtime fix: an app that typechecks and throws on render ------------------------------
@@ -286,18 +288,11 @@ def test_a_raw_gateway_call_that_is_never_rewritten_spends_the_whole_gateway_bud
 
 
 @own_ledger
-def test_the_four_budgets_add_up_and_nothing_bounds_their_sum(tmp_path: Path, monkeypatch):
-    """The number that matters for cost, and the one nobody could name before this test.
-
-    The budgets are four separate counters on one loop, and a turn that trips all four spends all
-    four in series. The circuit breaker does not stand between them: it is asked for a decision on
-    the typecheck report, and every pass here typechecks clean, so it answers "typecheck clean"
-    before it ever looks at its own `max_iterations`. The `done` decision below is that same
-    sentence on the eleventh pass, which is how this test says so. So the ceiling is the sum of the
-    four, not the breaker's 15 — and it stays the sum if any of them is raised.
-    """
+def test_pre_edit_recovery_bounds_the_other_retry_budgets_before_first_edit(
+        tmp_path: Path, monkeypatch):
+    """Runtime, leak, and gateway repairs cannot add turns before the first real edit."""
     _crashes(monkeypatch, MAX_RUNTIME_FIXES)
-    orch, oc = _orch(tmp_path, [_wrote_nothing()] * MAX_NUDGES + [
+    orch, oc = _orch(tmp_path, [_wrote_nothing()] * 3 + [
         Turn(text="Built it.", writes={"src/sales.csv": LEAKED_CSV, "src/Chat.tsx": RAW_GATEWAY_CALL}),
     ] + [_writes(i) for i in range(12)])
     orch.upload_file("sales.csv", LEAKED_CSV.encode())
@@ -305,20 +300,8 @@ def test_the_four_budgets_add_up_and_nothing_bounds_their_sum(tmp_path: Path, mo
 
     events = list(orch.build_stream("chart the sales data and add a chat box"))
 
-    # 3 nudges + the turn that finally writes + 3 runtime fixes + 2 leak fixes + 2 gateway fixes.
-    expected = MAX_NUDGES + 1 + MAX_RUNTIME_FIXES + MAX_LEAK_FIXES + MAX_GATEWAY_FIXES
-    assert _agent_turns(oc) == expected == 11
-    assert _decision(events) == "typecheck clean"
-    # And in that order, one defect per pass: `continue` means only one fix fires per iteration, so
-    # the leak and the raw call sitting in the tree together are never folded into one message. The
-    # `why` on each span is what /api/diag/timing shows, so this is also the readout a deployment
-    # would be read back from.
-    if not timing.enabled():
-        return          # the order below is read off the ledger; the sum above is the test's name
-    whys = [s.fields.get("why") or "" for s in last_turn().spans
-            if s.name.startswith("agent-turn.")]
-    assert whys[0] == "first send"
-    kinds = [next((k for k in ("no code", "runtime", "data/", "askModel") if k in w), None)
-             for w in whys[1:]]
-    assert kinds == (["no code"] * MAX_NUDGES + ["runtime"] * MAX_RUNTIME_FIXES
-                     + ["data/"] * MAX_LEAK_FIXES + ["askModel"] * MAX_GATEWAY_FIXES), whys
+    assert _agent_turns(oc) == 2
+    assert _decision(events) == "pre_edit_limit"
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert not any(event["type"] in {"data-leak", "gateway-call"} for event in events)
+    assert all("IMPLEMENT_NUDGE" not in prompt["text"] for prompt in oc.prompts)

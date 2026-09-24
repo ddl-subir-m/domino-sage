@@ -4846,6 +4846,9 @@ class Project:
     # Serializes user-side app writes and rebaseline with every authoritative pre-edit tree check.
     # The lock order is always this lock, then PreEditGuard's private lock.
     pre_edit_tree_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    # Lets one coordinated user action use an inner, purpose-specific rebaseline without the
+    # coordination wrapper repeating the same tree hash at the outer boundary.
+    pre_edit_rebaseline_serial: int = 0
     # The Build conversation the current turn belongs to. Build used to be one session and one
     # transcript per project; it is now per conversation, the way Chat already was, so that "New
     # conversation" in the rail means something (see docs/workbench/handoff.md). Set at the top of
@@ -5529,10 +5532,12 @@ def _coordinate_user_tree_change(method):
     def coordinated(self, *args, **kwargs):
         project = self.project()
         with project.pre_edit_tree_lock:
+            before = project.pre_edit_rebaseline_serial
             try:
                 return method(self, *args, **kwargs)
             finally:
-                self._rebaseline_turn(project)
+                if project.pre_edit_rebaseline_serial == before:
+                    self._rebaseline_turn(project)
     return coordinated
 
 
@@ -22292,7 +22297,6 @@ class Orchestrator:
             Binding(KIND_DATASET, asset["id"], name, name),
             {"project": asset.get("project"), "path": asset.get("mount_path")})
 
-    @_coordinate_user_tree_change
     def bind_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",
     ) -> list[dict]:
@@ -22316,11 +22320,16 @@ class Orchestrator:
 
         Re-binding replaces in place, because `Binding.key` leaves the scope out.
         """
-        source = self._data_source(source_id)
         # Charset-checked here as well as where the SQL is built. Not belt-and-braces for its own
         # sake: this is what keeps the manifest holding only names that can be sent, so the slice that
         # builds the app's query out of this record inherits the guarantee rather than re-earning it.
         parts = [safe_identifier(p) if p else None for p in (database, schema, table)]
+        source = self._data_source(source_id)
+        return self._bind_data_source(source, parts)
+
+    @_coordinate_user_tree_change
+    def _bind_data_source(self, source: DataSource, parts: list[str | None]) -> list[dict]:
+        """Write a validated Data Source Binding under user-tree coordination."""
         # The connector type travels with the scope, because the published app cannot ask for it: what
         # a Data Source will accept as a configuration override differs per connector, and that is what
         # decides whether the scope recorded here reaches the store or has to be written into the SQL
@@ -25017,7 +25026,6 @@ class Orchestrator:
         # A Dataset Binding changes what the attached-data block has to say (ADR-0039): binding one
         # nothing is attached from opens the gap that block reports, and unbinding closes it.
         self._write_agents_data_block(project)
-        self._rebaseline_turn(project)
 
     @staticmethod
     def _read_json(path: Path) -> object:
@@ -25084,9 +25092,10 @@ class Orchestrator:
         discard_changes() that deletes the file the user just uploaded. No-op when no turn is
         running. Best-effort: if the hash can't be taken we leave the old baseline, which fails the
         safe way (a false write report, never a missed one)."""
-        if not project.turn_tree_baseline and project.pre_edit_guard is None:
-            return
         with project.pre_edit_tree_lock:
+            project.pre_edit_rebaseline_serial += 1
+            if not project.turn_tree_baseline and project.pre_edit_guard is None:
+                return
             new = project.snapshot.working_tree_hash()
             if new:
                 if project.turn_tree_baseline:

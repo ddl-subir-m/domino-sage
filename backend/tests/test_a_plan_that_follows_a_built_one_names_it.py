@@ -103,8 +103,9 @@ def _approve(orch: Orchestrator, conversation: str = CONVERSATION) -> None:
     list(orch.approve_stream(conversation=conversation))
 
 
-def _build_turn() -> Turn:
-    return Turn(writes={"src/App.tsx": "// built\n"})
+def _build_turn(version: str = "built") -> Turn:
+    """A successful scripted Build must change the authoritative tree witness."""
+    return Turn(writes={"src/App.tsx": f"// {version}\n"})
 
 
 def _planned_approved_and_planned_again(tmp_path: Path):
@@ -152,8 +153,8 @@ def test_the_first_plan_for_an_app_names_no_earlier_plan(tmp_path: Path):
 def test_a_third_plan_names_the_second_rather_than_the_first(tmp_path: Path):
     """A chain, not a flat "everything after the first build". Each plan names the one the app was
     built from when it was written, so a reader can walk backwards one step at a time."""
-    orch, _oc, _root = _orch(tmp_path, [Turn(text=_DESK), _build_turn(),
-                                        Turn(text=_FILTER), _build_turn(),
+    orch, _oc, _root = _orch(tmp_path, [Turn(text=_DESK), _build_turn("first build"),
+                                        Turn(text=_FILTER), _build_turn("second build"),
                                         Turn(text=_CHART)])
     _plan_in_build(orch, "build me a desk exposure dashboard")
     _approve(orch)
@@ -217,9 +218,9 @@ def test_a_chat_plan_confirmed_into_a_built_app_names_the_plan_it_follows(tmp_pa
 def _confirmed_from_chat_and_built(tmp_path: Path, tail: list[Turn] | None = None):
     """App built from plan 001, then a Chat plan 002 confirmed into it and built too. The state a
     second press of the confirm button lands in — the card is still on screen after the first."""
-    orch, _oc, _root = _orch(tmp_path, [Turn(text=_DESK), _build_turn(),
+    orch, _oc, _root = _orch(tmp_path, [Turn(text=_DESK), _build_turn("first build"),
                                         Turn(text="A burndown, then."), Turn(text=_BURNDOWN),
-                                        _build_turn(), *(tail or [])])
+                                        _build_turn("second build"), *(tail or [])])
     _plan_in_build(orch, "build me a desk exposure dashboard")
     _approve(orch)
     app_id = orch.project(start_preview=False).workspace.app_id
@@ -251,7 +252,7 @@ def test_confirming_the_same_sheet_twice_cannot_make_a_plan_follow_a_later_one(t
     to "what was I last built from" is now a plan written AFTER this one — 002 → 003 → 002, a cycle
     no reader walking back one step at a time can finish."""
     orch, chat, app_id = _confirmed_from_chat_and_built(
-        tmp_path, [Turn(text=_CHART), _build_turn()])
+        tmp_path, [Turn(text=_CHART), _build_turn("third build")])
     _plan_in_build(orch, "now add a chart", "conv_third")
     _approve(orch, "conv_third")
     assert orch.read_plan_doc("003")["previousPlanId"] == "002"
@@ -267,7 +268,7 @@ def test_confirming_a_sheet_into_another_app_and_back_cannot_close_a_loop(tmp_pa
     first app's history, and coming back cannot re-stamp: 002 would name 003, which already names
     002."""
     orch, chat, app_a = _confirmed_from_chat_and_built(
-        tmp_path, [Turn(text=_CHART), _build_turn()])
+        tmp_path, [Turn(text=_CHART), _build_turn("third build")])
     _plan_in_build(orch, "now add a chart", "conv_third")
     _approve(orch, "conv_third")
     app_b = orch.create_app()["id"]

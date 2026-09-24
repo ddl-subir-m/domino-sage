@@ -314,7 +314,7 @@ def test_a_repaired_plan_archives_with_the_app_heading(tmp_path: Path):
     turns = [
         Turn(text=UNNAMED),
         Turn(text="Desk Exposure"),
-        Turn(writes={"src/App.tsx": "export default function App() { return null }\n"}),
+        Turn(writes={"src/App.tsx": "export default function App() { return <main /> }\n"}),
     ]
     orch, gateway, _root = _orch(tmp_path, turns)
     gateway.word = "BUILD"
