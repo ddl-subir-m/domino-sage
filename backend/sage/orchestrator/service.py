@@ -5504,6 +5504,11 @@ _PLAN_REQUEST_LABEL = ("The request, in the person's own words (any blocks after
                        "files and data; they are background for this request, not the request):\n")
 
 
+# Said once more at the very END of a gated plan turn that carries notes or attachments (#537):
+# those follow the request, and a weaker model weighs what it read last.
+_PLAN_REQUEST_AGAIN = "The request again, in the person's own words:\n"
+
+
 # How far in to look for the sentinel. Not just the first line: `plan_md` is every assistant text
 # part joined (`plan_text_parts`), so a planner that emits "Looking at the request." as its own part
 # before refusing puts a lead-in ahead of it — and one lead-in is not the bound, a model can write
@@ -18838,7 +18843,12 @@ class Orchestrator:
                                                            resource_note,
                                                            unusable_note, ambiguous_note,
                                                            broken_retry_note) if p),
-                                   agent=agent, attachments=mention_files)
+                                   agent=agent, attachments=mention_files,
+                                   # Passed only when set, so every other client keeps its shape.
+                                   **({"tail": _PLAN_REQUEST_AGAIN + prompt}
+                                      if gate and not arch and (
+                                          mention_files or chat_note or resource_note
+                                          or unusable_note or ambiguous_note) else {}))
                 if fresh_session:
                     self._turn_gave_up = False
             except Exception:

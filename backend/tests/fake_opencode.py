@@ -196,11 +196,11 @@ class FakeOpenCode:
 
     def send_prompt(self, session_id: str, text: str, model: dict | None = None,
                     agent: str | None = None, attachments: list[dict] | None = None,
-                    chat: bool = False) -> None:
+                    chat: bool = False, tail: str = "") -> None:
         # `session` recorded too: a phased build's assertions are mostly about WHICH session saw
         # which prompt.
         self.prompts.append({"text": text, "agent": agent, "attachments": attachments,
-                             "session": session_id})
+                             "session": session_id, "tail": tail})
         # One flat script consumed in order, regardless of session — the Nth send_prompt across the
         # whole run performs the Nth scripted turn, so tests read top-to-bottom.
         turn = self.turns[self._next] if self._next < len(self.turns) else Turn()
