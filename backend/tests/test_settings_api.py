@@ -129,3 +129,63 @@ def test_test_settings_falls_back_to_the_saved_token_when_only_the_host_is_given
         assert seen == {"host": "https://typed.example", "token": "saved-tok"}
     finally:
         appmod._SETTINGS = original
+
+
+# -- `_build_control_plane()` (ONE-APP-PLAN.md Phase 3 step 3): listing/creating/cloning a Project
+# needs a host and a token but NOT the publish Environment/hardware tier ids — a real bug found by
+# the product owner's own laptop test, where `POST /api/projects` 503'd with "can't reach Domino"
+# despite a saved host+token, because this function used to require all three just to build a
+# control plane at all, and used a fresh sidecar-only token instead of the shared `_TOKEN_SOURCE`.
+
+def test_control_plane_builds_from_host_and_token_alone(monkeypatch):
+    import dataclasses
+
+    import sage.orchestrator.app as appmod
+    from sage.platform.auth import TokenSource
+
+    original_settings, original_ts = appmod._SETTINGS, appmod._TOKEN_SOURCE
+    try:
+        appmod._SETTINGS = dataclasses.replace(
+            original_settings, domino_host="https://d.example",
+            publish_environment_id="", publish_hardware_tier_id="",
+        )
+        appmod._TOKEN_SOURCE = TokenSource.static("a-pat", "https://d.example")
+        cp = appmod._build_control_plane()
+        assert cp is not None
+        assert cp.publish_configured is False  # no env/tier yet — Publish refuses, listing works
+    finally:
+        appmod._SETTINGS, appmod._TOKEN_SOURCE = original_settings, original_ts
+
+
+def test_control_plane_uses_the_shared_token_sources_header_shape(monkeypatch):
+    """The actual bug: a static PAT sent as bare `Authorization: Bearer` is refused by
+    /api/users/v1/self and /api/projects/beta/projects (`platform/auth.py`'s own live-verified
+    finding) — `_build_control_plane` must hand `DominoControlPlane` the `TokenSource.headers`
+    that already knows to send `X-Domino-Api-Key` for a static key instead."""
+    import dataclasses
+
+    import sage.orchestrator.app as appmod
+    from sage.platform.auth import TokenSource
+
+    original_settings, original_ts = appmod._SETTINGS, appmod._TOKEN_SOURCE
+    try:
+        appmod._SETTINGS = dataclasses.replace(original_settings, domino_host="https://d.example")
+        appmod._TOKEN_SOURCE = TokenSource.static("a-pat", "https://d.example")
+        cp = appmod._build_control_plane()
+        assert cp._headers() == {"X-Domino-Api-Key": "a-pat", "Accept": "application/json"}
+    finally:
+        appmod._SETTINGS, appmod._TOKEN_SOURCE = original_settings, original_ts
+
+
+def test_control_plane_is_none_with_no_token_source(monkeypatch):
+    import dataclasses
+
+    import sage.orchestrator.app as appmod
+
+    original_settings, original_ts = appmod._SETTINGS, appmod._TOKEN_SOURCE
+    try:
+        appmod._SETTINGS = dataclasses.replace(original_settings, domino_host="https://d.example")
+        appmod._TOKEN_SOURCE = None
+        assert appmod._build_control_plane() is None
+    finally:
+        appmod._SETTINGS, appmod._TOKEN_SOURCE = original_settings, original_ts

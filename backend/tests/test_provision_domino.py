@@ -16,6 +16,56 @@ def _cp(handler):
     )
 
 
+def test_environment_and_hardware_tier_are_optional():
+    """ONE-APP-PLAN.md Phase 3 step 3: listing/creating/cloning a Project needs neither — only
+    publish does. A control plane built with no env/tier (a laptop before Phase 6's picker
+    exists) must not raise at construction time."""
+    cp = DominoControlPlane("https://domino.example.com", lambda: "tok")
+    assert cp.publish_configured is False
+
+
+def test_publish_configured_true_once_both_are_set():
+    cp = _cp(lambda request: httpx.Response(200))
+    assert cp.publish_configured is True
+
+
+def test_headers_provider_overrides_the_bare_bearer_shape():
+    """A static account key and a sidecar JWT are not interchangeable on the wire
+    (`platform/auth.py`) — `headers_provider` (a `TokenSource.headers`) is what a caller supplies
+    to get the right one; the bare-Bearer fallback below is what every OTHER caller (this test
+    file's own `_cp`, in particular) still relies on, unchanged."""
+    seen = {}
+
+    def handler(request):
+        seen["headers"] = dict(request.headers)
+        return httpx.Response(200, json={"user": {"id": "u"}, "metadata": {}})
+
+    cp = DominoControlPlane(
+        "https://domino.example.com",
+        lambda: "unused",
+        transport=httpx.MockTransport(handler),
+        headers_provider=lambda: {"X-Domino-Api-Key": "static-key"},
+    )
+    cp.whoami()
+    assert seen["headers"]["x-domino-api-key"] == "static-key"
+    assert "authorization" not in seen["headers"]
+
+
+def test_with_no_headers_provider_the_bare_bearer_shape_is_unchanged():
+    seen = {}
+
+    def handler(request):
+        seen["headers"] = dict(request.headers)
+        return httpx.Response(200, json={"user": {"id": "u"}, "metadata": {}})
+
+    cp = DominoControlPlane(
+        "https://domino.example.com", lambda: "sidecar-jwt",
+        transport=httpx.MockTransport(handler),
+    )
+    cp.whoami()
+    assert seen["headers"]["authorization"] == "Bearer sidecar-jwt"
+
+
 def _creds_handler(post_response, seen):
     """Route the users/self + credentials GETs the create flow makes, then the project POST."""
     def handler(request):

@@ -2132,5 +2132,81 @@ model, already stale before this session, made worse by citing the now-deleted
    drift guard) and the ADR-0014 quotation-treatment gap on `home.html` named above.
 3. `docs/adr/0004-workbench-is-the-door.md` and the rest of `environment/README.md`/`app.sh`/the
    Dockerfile still describe the retired shape — Phase 8 and Phase 7 respectively.
-4. This session did not commit anything (CLAUDE.md: never commit unless asked) — the working tree
-   has all of the above uncommitted. Confirm with the user before committing.
+4. The above was committed and pushed by the user directly (`79f9a5a9` "ph impl", then `816d7563`
+   "sf") — not by an agent session. See the update immediately below for what shipped after that.
+
+## UPDATE 2026-09-24 (same session, continued): a real bug found on the product owner's own laptop
+## smoke test — `POST /api/projects` 503'd with "can't reach Domino" despite a saved host+token —
+## traced and fixed, not just the settings-were-wrong explanation it first looked like
+
+**What happened**: first real click on the just-shipped Projects home (`make orchestrator`,
+`http://localhost:8080/`) — Create refused with "{assistantName} can't reach {platformName} from
+this container, so it can't create a {project}." even after saving a PAT in Settings and retrying.
+This is exactly the class of bug this branch's own history keeps finding only on a real laptop
+(the `Popover` destructure typo, the `npx` resolution gap) — invisible to `TestClient` and
+`node --check`, both of which this session's own verification leaned on for the Projects home.
+
+**Traced, not assumed.** `POST /api/projects`'s 503 comes from `_provision is None`, which traces
+back to `_build_control_plane()` — and that function's OWN docstring, from Phase 1, already named
+this exact gap and deferred it to "Phase 3 (project lifecycle over Domino APIs, the first phase
+that actually calls this control plane from a laptop)" — this session's own Phase 3 step 3 work,
+which missed it. Two real bugs stacked:
+
+1. `_build_control_plane()` required `publish_environment_id`/`publish_hardware_tier_id` (the
+   Environment + hardware tier ids Domino injects into an App, meaningless on a laptop with no
+   Phase-6 picker yet) just to build a control plane AT ALL — even though listing, creating and
+   cloning a Project never touch those fields; only `publish_app`/`republish_app`
+   (`_app_version`) do. A saved host+token was never enough on its own.
+2. Even with that relaxed, `_build_control_plane()` minted its OWN fresh sidecar-only token
+   (`sidecar_token(...)`) instead of using the shared `_TOKEN_SOURCE` every other Domino call in
+   this process already goes through — so a laptop's static PAT would have been sent as a bare
+   `Authorization: Bearer`, which `platform/auth.py`'s own module docstring already records as
+   REFUSED (403 "No current user in request") by `/api/users/v1/self` and
+   `/api/projects/beta/projects` — the two calls `whoami()`/`create_project()`/`list_apps()` make.
+   A static key needs `X-Domino-Api-Key` instead; only `TokenSource.headers()` already knew that.
+
+**Fixed:**
+- `DominoControlPlane.__init__`: `environment_id`/`hardware_tier_id` now default to `""` (optional
+  — listing/create/clone need neither); new `headers_provider: Callable[[], dict[str, str]] | None`
+  param. `_headers()` uses it when given (the right shape for either token kind), else falls back
+  to the original bare-Bearer behavior unchanged — every existing caller/test that only ever passed
+  sidecar-shaped tokens is untouched. New `publish_configured` property: `bool(env_id and tier_id)`.
+- `app.py`'s `_build_control_plane()`: gate relaxed to `api_host` + a resolvable `_TOKEN_SOURCE` —
+  built FROM `_TOKEN_SOURCE` (`.bearer`, `.headers`) instead of a fresh `sidecar_token(...)` call,
+  so a laptop's static PAT gets the header shape Domino actually accepts.
+- `Orchestrator.publish()`: gate widened from `self._control_plane is None or not
+  self._domino_project_id` to also check `getattr(self._control_plane, "publish_configured", True)`
+  — a laptop with a control plane but no env/tier yet (Phase 6) now gets the same clean "Publish is
+  only available when this builder runs on {platformName}" instead of an empty field reaching a
+  real Domino API call. `getattr(..., True)`: any test double (`FakeControlPlane` included) that
+  never declares the attribute stays exactly as permissive as before this split existed.
+
+**Tests added**, all passing individually and together: `test_provision_domino.py` (+4:
+`environment_id`/`hardware_tier_id` optional + `publish_configured` false, `publish_configured`
+true once both are set, `headers_provider` overriding the bare-Bearer shape, the no-`headers_provider`
+fallback unchanged), `test_settings_api.py` (+3, calling `_build_control_plane()` directly: builds
+from host+token alone with `publish_configured is False`, sends the `TokenSource`'s own header
+shape for a static key, is `None` with no `_TOKEN_SOURCE`), `test_orchestrator.py` (+1:
+`publish()` refuses when `publish_configured` is `False` even with a real control plane and
+project id — **could not be verified to pass in this sandbox**, same as its 6 neighbors in that
+file: `publish_available()`'s own dogfood-safety check refuses first because `/mnt/code` really is
+the mounted Sage repo here; the test is written the same way as those already-accepted-as-blocked
+neighbors and needs a sandbox where `/mnt/code` isn't Sage's own tree to actually run green).
+
+**Verification:**
+- `test_provision_domino.py` + `test_settings_api.py`: 45/45 pass.
+- `test_gallery.py`, `test_whoami_follows_the_token.py`, `test_provision_service.py` (constructor
+  callers): 32/32 pass — the new optional params/kwarg don't disturb any existing construction.
+- `test_a_rename_reaches_the_deployed_app.py` + `test_publish_missing_app.py` (both already in the
+  dogfood-safety class, both also construct `DominoControlPlane` directly): diffed against baseline
+  via `git stash`/`git stash pop` — **byte-for-byte identical failing test names**, confirming the
+  constructor change disturbs nothing there either.
+- `make lint` (repo-wide): clean.
+
+**Still owed, named rather than assumed fixed**: this was traced and fixed by reading code, not by
+reproducing the product owner's exact click against a live sandbox from here (no browser, no
+reachable Domino host in this environment) — the next real test is the product owner's own retry.
+**One more thing they need to do that isn't a bug**: `PUT /api/settings` does not hot-swap
+`_control_plane`/`_provision`/`_TOKEN_SOURCE` — those are built once at import time — so saving a
+PAT in Settings requires restarting `make orchestrator` before either fix here can take effect;
+the settings route's own response already says `"restartRequired": true`, but it's easy to miss.

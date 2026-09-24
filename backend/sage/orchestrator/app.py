@@ -239,34 +239,36 @@ def _build_assets():
 
 
 def _build_control_plane():
-    """A Domino control plane for Publish / Stop when this builder runs on Domino (a host +
-    the Environment/hardware ids Domino injects), else None so those endpoints report a clear
-    "only on Domino" error instead of crashing local/fake runs.
+    """A Domino control plane for listing/creating/cloning Projects and for Publish, else None so
+    those endpoints report a clear "only on Domino" error instead of crashing local/fake runs.
 
-    Sidecar only, even when Settings has a static account key configured: `DominoControlPlane`
-    sends every request as `Authorization: Bearer`, and that header is REFUSED for a static Domino
-    account key by /api/projects/beta/projects (403 "No current user in request" — live-verified
-    2026-09-23, see `platform/auth.py`'s module docstring). Wiring a static key in here needs
-    `DominoControlPlane._headers()` fixed to send `X-Domino-Api-Key` for that case first — that is
-    Phase 3 (project lifecycle over Domino APIs, the first phase that actually calls this control
-    plane from a laptop), not this one.
+    Needs only a host and a resolvable token — NOT the publish Environment/hardware tier ids
+    (ONE-APP-PLAN.md Phase 3 step 3, fixing a gap this function's own docstring used to flag and
+    defer to this phase): listing, creating and cloning a Project never touch them, only
+    `publish_app`/`republish_app` do. `Orchestrator.publish()` checks
+    `control_plane.publish_configured` separately, so a laptop with no env/tier picker yet
+    (Phase 6) still gets a clear "publish isn't available" instead of an empty field Domino
+    rejects with its own words — but can already create and open Projects.
+
+    Built from the shared `_TOKEN_SOURCE`, not a fresh sidecar-only token: a static account key
+    (a laptop PAT) and a sidecar JWT are NOT interchangeable on the wire (`platform/auth.py`'s
+    module docstring — live-verified 2026-09-23), and `_TOKEN_SOURCE.headers` already resolves the
+    right shape for either kind, which a bare `sidecar_token(...)` call never could for a PAT.
     """
     api_host = _SETTINGS.domino_host
-    env_id = _SETTINGS.publish_environment_id
-    tier_id = _SETTINGS.publish_hardware_tier_id
-    if not (api_host and env_id and tier_id):
-        log.info("no Domino host/environment/hardware tier configured — Publish/Stop disabled (local run)")
+    if not api_host or _TOKEN_SOURCE is None:
+        log.info("no Domino host/token configured — control plane disabled (local run)")
         return None
     from ..provision.domino import DominoControlPlane
 
-    token = sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))
     return DominoControlPlane(
         api_host,
-        token,
-        environment_id=env_id,
+        _TOKEN_SOURCE.bearer,
+        environment_id=_SETTINGS.publish_environment_id,
         environment_revision_id=os.environ.get("DOMINO_ENVIRONMENT_REVISION_ID"),
-        hardware_tier_id=tier_id,
+        hardware_tier_id=_SETTINGS.publish_hardware_tier_id,
         git_host=os.environ.get("SAGE_GIT_HOST", "github.com"),
+        headers_provider=_TOKEN_SOURCE.headers,
     )
 
 

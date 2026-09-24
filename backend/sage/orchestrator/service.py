@@ -18861,7 +18861,13 @@ class Orchestrator:
                 "This is {assistantName} itself, not a {builtApp}, so it can't be published from "
                 "here."
             ))
-        if self._control_plane is None or not self._domino_project_id:
+        # `getattr(..., True)`: a control plane needs the publish Environment/hardware tier ids to
+        # publish (ONE-APP-PLAN.md Phase 3 step 3 split this from "can list/create/clone Projects
+        # at all", which needs neither) — `publish_configured` is the real `DominoControlPlane`'s
+        # own answer; any test double that never declared the attribute stays permissive, same as
+        # before this split existed.
+        if (self._control_plane is None or not self._domino_project_id
+                or not getattr(self._control_plane, "publish_configured", True)):
             raise RuntimeError(brand.text(
                 "Publish is only available when this builder runs on {platformName}."
             ))

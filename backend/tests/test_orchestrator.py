@@ -329,6 +329,18 @@ def test_publish_requires_domino(tmp_path: Path):
         orch.publish()
 
 
+def test_publish_requires_the_control_planes_env_and_tier_too(tmp_path: Path):
+    """ONE-APP-PLAN.md Phase 3 step 3: a control plane can now exist with no publish
+    Environment/hardware tier configured (a laptop before Phase 6's picker) — `publish()` must
+    still refuse with the same friendly sentence, not let an empty field reach Domino."""
+    class _NotPublishConfigured(FakeControlPlane):
+        publish_configured = False
+
+    orch = _domino_orch(tmp_path, _NotPublishConfigured())
+    with pytest.raises(RuntimeError, match="only available when this builder runs on Domino"):
+        orch.publish()
+
+
 @pytest.mark.parametrize("raw,phase", [
     ("Running", "running"), ("Failed", "failed"), ("Error", "failed"),
     ("Preparing", "pending"), ("", "pending"),

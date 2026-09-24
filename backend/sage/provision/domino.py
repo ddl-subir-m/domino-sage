@@ -184,16 +184,23 @@ class DominoControlPlane:
         api_host: str,
         token_provider: Callable[[], str],
         *,
-        environment_id: str,
-        hardware_tier_id: str,
+        environment_id: str = "",
+        hardware_tier_id: str = "",
         environment_revision_id: str | None = None,
         git_service_provider: str = "Github",  # GitServiceProviderV1 value (hub is github-only in v1)
         git_host: str = "github.com",  # domain of the Domino git credential to attach to projects
         transport: httpx.BaseTransport | None = None,  # test seam
         timeout_s: float = 30.0,
+        headers_provider: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self._host = api_host.rstrip("/")
         self._token_provider = token_provider
+        self._headers_provider = headers_provider
+        # Both optional now (ONE-APP-PLAN.md Phase 3 step 3): listing/creating/cloning a Project
+        # needs neither — only `_app_version` (publish) does. `publish_configured` is what
+        # `Orchestrator.publish()` checks so a laptop with no Settings picker for these yet
+        # (Phase 6) still gets a clear "publish isn't available" instead of an empty field Domino
+        # rejects with its own words.
         self._env_id = environment_id
         self._env_rev = environment_revision_id
         self._tier_id = hardware_tier_id
@@ -208,7 +215,20 @@ class DominoControlPlane:
         return httpx.Client(transport=self._transport, timeout=self._timeout_s)
 
     def _headers(self) -> dict[str, str]:
+        # A static account key and a sidecar JWT are NOT interchangeable on the wire (see
+        # `platform/auth.py`'s module docstring — live-verified: a static key as bare
+        # `Authorization: Bearer` is refused with 403 by /api/users/v1/self and
+        # /api/projects/beta/projects, the two calls every route through this class makes first).
+        # `headers_provider` (a `TokenSource.headers`) picks the right shape for either kind; the
+        # bare-Bearer fallback below is what every caller used before this existed, kept for the
+        # sidecar-only shape those callers (and this class's own tests) already rely on.
+        if self._headers_provider is not None:
+            return {**self._headers_provider(), "Accept": "application/json"}
         return {"Authorization": f"Bearer {self._token_provider()}", "Accept": "application/json"}
+
+    @property
+    def publish_configured(self) -> bool:
+        return bool(self._env_id and self._tier_id)
 
     @staticmethod
     def _check(r: httpx.Response, verb: str, path: str) -> Any:
