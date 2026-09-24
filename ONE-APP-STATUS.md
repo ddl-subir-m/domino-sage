@@ -1883,4 +1883,57 @@ and re-ran; `naming.candidates`' own `-N` collision retry picked
 real Domino sandbox") — for the underlying library calls. Still not done: driving them through an
 actual HTTP route (none exist yet — that's still Phase 3 step 3's job, wiring `create`/`clone` to
 real routes together with the door/home-page work).
-saves and the provisioning seed commit, the only two places this codebase ever authors a commit.
+
+## UPDATE 2026-09-24 (same session, continued): the two real-side-effect dogfood-unsafe tests fixed
+
+The live verification above surfaced a real, separate bug: `test_create_project.py`'s
+`test_a_container_that_cannot_provision_refuses_to_create` (and, found by grepping for the identical
+shape, its sibling `test_the_control_plane_routes_speak_the_packs_words.py`'s
+`test_creating_a_project_off_the_platform_names_the_pack`/`test_opening_another_project_off_the_platform_names_the_pack`,
+plus `test_gallery.py`'s `test_a_container_that_cannot_provision_has_an_empty_gallery` and
+`test_attach.py`'s `test_a_container_with_no_local_projects_offers_nothing_to_switch_to`) all
+**assumed** `app.py`'s module-level `_provision`/`_control_plane` would be `None` in a test
+environment, rather than **forcing** it. That assumption is true in normal CI (no Domino env vars)
+and false in this specific sandbox (a real, live Domino workspace) — so these tests were silently
+making REAL network calls, and two of them (the `POST /api/projects {"name": "Sales"}` ones) were
+the actual source of the 23 orphaned `sage-sales-N` repos found above: two real repo-creation
+attempts per full-suite run, not one, run 3+ times this session alone.
+
+Checked the other dogfood-class failures first rather than assume they had the same shape:
+`test_delete_app.py`/`test_publish_target.py`/etc. trip an unrelated, already-known guard
+(`publish_available()` refusing because `/mnt/code` really is Sage's own repo) and never reach a
+real network call at all — safe, a different false-positive, left alone.
+
+**Fixed, five tests across four files**, each now forcing its own precondition instead of hoping the
+ambient environment supplies it:
+- `test_create_project.py`, `test_the_control_plane_routes_speak_the_packs_words.py` (both
+  `test_creating_a_project_off_the_platform_names_the_pack` and
+  `test_opening_another_project_off_the_platform_names_the_pack`), `test_gallery.py`:
+  `monkeypatch.setattr(appmod, "_provision", None)` — sufficient because each route (`POST
+  /api/projects`, `POST /api/projects/{id}/open`, `GET /api/gallery`) reads the bare module-level
+  name directly inside the route function.
+- `test_attach.py`'s test needed a SECOND patch, found by reading the actual route rather than
+  guessing: `GET /api/projects` is registry-backed (`_REGISTRY.list(...)`), and `ProjectRegistry`
+  captures `control_plane` BY REFERENCE at construction time (`self._control_plane = control_plane`
+  in `__init__`) — so patching the module-level `appmod._control_plane` name would not reach the
+  already-built `_REGISTRY`'s own copy. Fixed by patching
+  `monkeypatch.setattr(appmod._REGISTRY, "_control_plane", None)` directly, alongside `_provision`.
+
+**Verified live, not just re-run**: listed this account's real `sage-sales*` repos via the GitHub API
+before and after running the fixed tests — **23 before, 23 after** — confirming the fix actually
+stops the real side effect, not just the test's own assertion.
+
+Full suite, reconciled: **7896 collected == 95 failed + 7791 passed + 10 skipped** — collected
+unchanged (no tests added/removed, only fixed in place); failed count dropped by exactly 5 from the
+prior update's 100, and the failure-name list lost exactly `test_attach.py`, `test_create_project.py`,
+`test_gallery.py`, and `test_the_control_plane_routes_speak_the_packs_words.py` — all four now fully
+green — with nothing new appearing anywhere. `make lint`: clean.
+
+**Not done, and worth a dedicated look later, named rather than silently left**: this was a targeted
+fix for the specific tests found to have a REAL side effect; the broader question of whether other
+tests in the ~16-file remaining dogfood-safety class have similar unenforced assumptions (even if
+their current failure mode happens to be safe, per the `publish_available()` check above) was not
+audited exhaustively. The 23 pre-existing orphaned `sage-sales-N` repos and the empty
+`sage-live-verify-registry-delete-me` (this session's own path-bug artifact) are both still real and
+still need manual deletion — nothing here cleans those up, only stops new ones from this specific
+source.

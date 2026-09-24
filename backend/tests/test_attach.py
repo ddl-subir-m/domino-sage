@@ -154,12 +154,18 @@ def test_the_chip_describes_only_the_project_it_can_read():
     assert "memberCount" not in picker and "appCount" not in picker
 
 
-def test_a_container_with_no_local_projects_offers_nothing_to_switch_to():
+def test_a_container_with_no_local_projects_offers_nothing_to_switch_to(monkeypatch):
     # A fresh laptop run has no Projects to switch between yet, and says so honestly.
     from fastapi.testclient import TestClient
 
     import sage.orchestrator.app as appmod
 
+    # Forced, not assumed: this sandbox is itself a real Domino workspace, so `_provision` is
+    # genuinely non-None here, and `GET /api/projects` reads `_REGISTRY`'s own CAPTURED
+    # `_control_plane` (set once at import time, not re-read from the module-level name) — so both
+    # have to be patched, not just the module-level name this test used to only assert about.
+    monkeypatch.setattr(appmod, "_provision", None)
+    monkeypatch.setattr(appmod._REGISTRY, "_control_plane", None)
     client = TestClient(appmod.control_app)
     assert appmod._provision is None
     assert client.get("/api/projects").json() == {"items": []}

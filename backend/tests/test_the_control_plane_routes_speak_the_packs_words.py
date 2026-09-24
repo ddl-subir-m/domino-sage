@@ -85,7 +85,12 @@ def test_the_door_names_the_pack_when_it_cannot_reach_the_platform(acme, client)
     )
 
 
-def test_creating_a_project_off_the_platform_names_the_pack(acme, client):
+def test_creating_a_project_off_the_platform_names_the_pack(acme, client, monkeypatch):
+    # Forced, not assumed: this sandbox is itself a real Domino workspace, so the real `_provision`
+    # this route reads would otherwise actually create a real GitHub repo + Domino project on every
+    # run (found live, 2026-09-24: 23+ orphaned `sage-sales-N` repos on a real account).
+    import sage.orchestrator.app as appmod
+    monkeypatch.setattr(appmod, "_provision", None)
     r = client.post("/api/projects", json={"name": "Sales"})
 
     assert r.status_code == 503
@@ -95,7 +100,9 @@ def test_creating_a_project_off_the_platform_names_the_pack(acme, client):
     )
 
 
-def test_opening_another_project_off_the_platform_names_the_pack(acme, client):
+def test_opening_another_project_off_the_platform_names_the_pack(acme, client, monkeypatch):
+    import sage.orchestrator.app as appmod
+    monkeypatch.setattr(appmod, "_provision", None)
     r = client.post("/api/projects/p-1/open")
 
     assert r.status_code == 503

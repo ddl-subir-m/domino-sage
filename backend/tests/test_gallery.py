@@ -199,10 +199,14 @@ def test_the_chip_no_longer_promises_projects_in_the_gallery():
     assert "Browse all projects in the gallery" not in picker
 
 
-def test_a_container_that_cannot_provision_has_an_empty_gallery():
+def test_a_container_that_cannot_provision_has_an_empty_gallery(monkeypatch):
     from fastapi.testclient import TestClient
 
     import sage.orchestrator.app as appmod
 
+    # Forced, not assumed: a real Domino sandbox (this one) has a genuine, live `_provision`, and
+    # this route reads the module-level name directly, so leaving it alone would list this
+    # account's real Built Apps instead of the empty gallery the test means to exercise.
+    monkeypatch.setattr(appmod, "_provision", None)
     client = TestClient(appmod.control_app)
     assert client.get("/api/gallery").json() == {"items": [], "provisioning": False}

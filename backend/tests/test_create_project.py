@@ -196,11 +196,16 @@ def test_the_seeder_leaves_the_repo_alone_when_there_is_nothing_to_plant(tmp_pat
 # --- the route -------------------------------------------------------------------------------
 
 
-def test_a_container_that_cannot_provision_refuses_to_create():
+def test_a_container_that_cannot_provision_refuses_to_create(monkeypatch):
     from fastapi.testclient import TestClient
 
     import sage.orchestrator.app as appmod
 
+    # Forced, not assumed: this sandbox is itself a real Domino workspace, so the module-level
+    # `_provision` this route reads is a genuine, live ProvisionService by the time this test runs —
+    # leaving it alone would have this test actually create a real GitHub repo + Domino project on
+    # every run (found live, 2026-09-24: 23+ orphaned `sage-sales-N` repos on a real account).
+    monkeypatch.setattr(appmod, "_provision", None)
     client = TestClient(appmod.control_app)
     r = client.post("/api/projects", json={"name": "Sales"})
     assert r.status_code == 503
