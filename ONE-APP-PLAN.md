@@ -120,6 +120,29 @@ Browser ──► Domino App proxy (strips /apps/<id>/, one port 8888)      or  
 
 Each `Orchestrator` keeps its own turn lock, `ModelControl`, shim, supervisors, caches — one turn per project, projects in parallel, like several OpenCode windows on a laptop.
 
+**Consideration, not yet decided (added 2026-09-24, see risk #13): shared vs. per-project OpenCode
+server.** Phase 2 built per-project isolation (separate `Orchestrator`, turn lock, thread store,
+preview supervisor per project — all real and correct, live-verified) but did NOT hoist a shared
+`OpenCodeServer` as this section calls for; each open project instead gets its own `opencode serve`
+child process (`opencode_cwd=~/.config/sage-opencode/<slug>/`), lazily started on first turn. This
+was a deliberate scope cut at the time ("`_ensure_opencode`'s internals were judged too risky to
+restructure in the same pass as the dispatcher"), not a rejection of the shared design — the
+question of which shape to keep permanently is still genuinely open and needs someone to actually
+verify OpenCode's own concurrency model before picking:
+- **Keep N processes** (current): full isolation — a wedged/crashed session in one project's
+  OpenCode process cannot affect another project's turn. Simpler: no shared-server session-routing
+  to get right, no shared blast radius to reason about. Cost is resource overhead that scales with
+  how many projects are open at once (N processes instead of 1), and every *new* project pays
+  OpenCode's full cold-start cost independently rather than reusing an already-warm server.
+- **Hoist to one shared server** (original target): lower footprint, faster to open an Nth project.
+  Requires refactoring `_ensure_opencode`'s health-check/restart-on-crash logic to be
+  registry-level rather than per-`Orchestrator`, and — the part nobody has verified either way yet —
+  confirming that OpenCode's own session model actually isolates one project's session from another
+  under load inside ONE server process (a wedged tool call or a worker-thread exhaustion in project
+  A's session must not stall project B's turn). OpenCode is already proven directory-agnostic for
+  ROUTING (sessions keyed by `location.directory`, #199/#202) — that is not the same claim as
+  "isolated under concurrent load," and nothing in this codebase's history has tested the latter.
+
 ### 2.3 Routing
 
 An ASGI dispatcher in `app.py` in front of `control_app`: for `path = /p/<slug>/<rest>` it appends `/p/<slug>` to `scope["root_path"]`, rewrites `path` to `/<rest>`, resolves `registry.open(slug)` and binds it in a `ContextVar`. Routes read `current_orchestrator()` instead of the module global; a thin proxy object named `orchestrator` keeps the 128 call sites textually unchanged (or, if the proxy reads as too clever, a FastAPI dependency and a one-line signature change per route — the reviewer's call at Phase 2). `_PrefixMiddleware` (`app.py:741-786`, notebookSession prefix) is deleted; `SAGE_BASE_PREFIX` stays as an optional override for a reverse proxy on a laptop.
@@ -358,6 +381,7 @@ ADRs: a new ADR "Sage is one process holding many project directories" supersedi
 | 10 | Two Sage processes on one laptop | Phase 4 | Ephemeral ports everywhere; `SAGE_HOME` and control port per instance |
 | 11 | `npx opencode` does not fall back to a same-named binary already on `PATH` (assumed it did; live-verified WRONG on a real laptop, 2026-09-23 — see ONE-APP-STATUS.md) | Every host, laptop most visibly (no global `npm install -g`) | **RESOLVED**: `driver/server.py` resolves the binary itself via `shutil.which()` and execs it directly, bypassing `npx`'s own registry-fallback judgment call; falls back to `npx opencode` only when nothing resolves |
 | 12 | A Build turn's stack-refusal gate (Phase 0 decision 4, ONE-APP-STATUS.md) had no direct test — a false refusal on a genuinely new app would have been a launch blocker indistinguishable, from the outside, from a correctly-refused legacy one | Every first Build turn, every host | **Given real coverage 2026-09-23**: `tests/test_a_build_turn_refuses_a_stack_it_no_longer_carries.py` proves a brand-new project (both Build-first and the real Chat-then-Build ordering) never trips the gate, and a genuinely legacy app still does. Root cause of the one live false alarm (product owner's laptop) is most likely a pre-pivot `apps/` leftover in the gitignored, never-cleaned `backend/workspaces/` — reasoned through and reproduced against real code, but not confirmed against that exact machine's actual prior state; reopen if it recurs on a laptop that can be confirmed to have had zero earlier Sage runs |
+| 13 | Shared vs. per-project `OpenCodeServer` (§2.2's own consideration note) — undecided since Phase 2 shipped N per-project processes instead of the one shared server this section originally called for | Phase 4 (preview) and Phase 7 (packaging) most directly, since process count shapes both | Not yet resolved. Whoever picks this up needs to actually verify OpenCode's session isolation under concurrent load inside one shared process (directory-scoped ROUTING is already proven; concurrent-load isolation is not) before trusting a shared server with multiple simultaneously-open projects — until that's checked, N processes is the safer default to keep shipping on |
 
 ## 7. Size
 
