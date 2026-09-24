@@ -146,6 +146,7 @@ class FakeOpenCode:
         # hand every phase the previous ones' transcript and quietly test the opposite of the
         # feature. Keyed by session id; `sessions` records the create calls for assertions.
         self.sessions: list[dict] = []
+        self._dirs: dict[str, str] = {}
         # session id -> directory, for the sessions the orchestrator reused rather than created.
         self.noted: dict[str, str] = {}
         self._by_session: dict[str, list[dict]] = {"fake-session": []}
@@ -167,6 +168,7 @@ class FakeOpenCode:
         # get distinct ones.
         sid = "fake-session" if not self.sessions else f"fake-session-{len(self.sessions) + 1}"
         self.sessions.append({"id": sid, "directory": directory})
+        self._dirs[sid] = directory
         self._by_session.setdefault(sid, [])
         return sid
 
@@ -174,6 +176,7 @@ class FakeOpenCode:
         # Recorded rather than acted on: the real client needs this to answer `is_running` for a
         # session it did not create, and the only thing a test can check is that it was told.
         self.noted[session_id] = directory
+        self._dirs[session_id] = directory
 
     def messages(self, session_id: str, *, limit: int | None = None) -> list[dict]:
         # A copy: the orchestrator iterates this while its own emit-once bookkeeping mutates, and a

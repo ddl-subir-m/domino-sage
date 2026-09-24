@@ -16,7 +16,7 @@ from sage.gateway.events import StreamEvents
 from sage.gateway.protocol import Protocol
 from sage.orchestrator.service import (
     Orchestrator,
-    PlanNoActionRecovery,
+    PlanRecoveryBudget,
     Project,
     _model_active_status,
 )
@@ -122,7 +122,7 @@ def test_action_at_timeout_boundary_wins_and_no_chunk_has_no_watchdog_decision()
 
 
 def test_planning_recovery_is_exactly_one_clean_retry():
-    recovery = PlanNoActionRecovery(1)
+    recovery = PlanRecoveryBudget(1)
 
     assert recovery.choose() == ("initial", "recover")
     assert recovery.choose() == ("recovery", "stop")

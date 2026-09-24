@@ -169,6 +169,7 @@ class TurnRecord:
     repeat_brake: list[dict] = field(default_factory=list)
     repeat_brake_truncated: bool = False
     implementation_session: dict = field(default_factory=dict)
+    planning_recovery: dict = field(default_factory=dict)
     pre_edit_guard: dict = field(default_factory=dict)
     context_rollover: dict = field(default_factory=dict)
     counters: dict[str, float] = field(default_factory=dict)
@@ -709,6 +710,24 @@ def model_no_action_recovery(call_id: str | None, attempt: str, action: str,
             call.no_action_recovery_action = action
 
 
+def planning_recovery(trigger: str, attempt: str, action: str,
+                      *, record=_CURRENT_RECORD) -> None:
+    """Record the bounded, content-free planning decision at turn level."""
+    if (trigger not in {"model_no_action", "invalid_execution_plan"}
+            or attempt not in {"initial", "recovery"}
+            or action not in {"recover", "stop"}):
+        return
+    rec = _current if record is _CURRENT_RECORD else record
+    if rec is None:
+        return
+    with _lock:
+        rec.planning_recovery = {
+            "attempt": attempt,
+            "trigger": trigger,
+            "action": action,
+        }
+
+
 def tool_observer() -> ToolObserver:
     with _lock:
         rec = _current if enabled() else None
@@ -800,6 +819,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "decision": rec.decision,
         "running": rec.t1 is None,
         "implementationSession": dict(rec.implementation_session),
+        "planningRecovery": dict(rec.planning_recovery),
         "preEditGuard": dict(rec.pre_edit_guard),
         "contextRollover": dict(rec.context_rollover),
         "spans": [{"name": s.name, "depth": s.depth, "atMs": round((s.t0 - rec.t0) * 1000),

@@ -135,6 +135,24 @@ def test_a_handoff_from_a_named_plan_gives_the_new_app_that_name(tmp_path: Path)
     assert _app_display_name(workspace) == "Desk Exposure"
 
 
+def test_a_handoff_plan_retries_an_invalid_contract_in_a_clean_session(tmp_path: Path):
+    malformed = "# Desk Exposure\n\nA dashboard.\n\n## Plan\n1. Add the table.\n"
+    orch, _gateway, _root = _orch(
+        tmp_path, [Turn(text="A dashboard, then."), Turn(text=malformed), Turn(text=NAMED)])
+    thread = orch.create_thread()["id"]
+    list(orch.chat_stream(thread, "build me a desk exposure dashboard"))
+
+    result = orch.draft_handoff_plan(thread)
+
+    assert result["plan"].strip() == NAMED.strip()
+    client = orch._oc_client
+    assert client.interrupted == 1
+    assert len(client.sessions) == 2  # The Thread session, then its clean planner recovery.
+    recovery_prompt = client.prompts[-1]["text"]
+    assert "required execution-plan structure" in recovery_prompt
+    assert malformed not in recovery_prompt
+
+
 # ---- an edit to the plan page -------------------------------------------------------------------
 
 
@@ -277,10 +295,10 @@ def test_a_failed_repair_call_reports_a_planning_error(tmp_path: Path, monkeypat
     orch, gateway, _root = _orch(tmp_path, turns)
     original = orch._run_sage_plan
 
-    def fail_repair(project, prompt, session):
+    def fail_repair(project, prompt, session, **kwargs):
         if "Write only a 2-4 word app name" in prompt:
             raise ValueError("model call failed: planner unavailable")
-        return original(project, prompt, session)
+        return original(project, prompt, session, **kwargs)
 
     monkeypatch.setattr(orch, "_run_sage_plan", fail_repair)
     if path == "direct":
