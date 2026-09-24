@@ -513,7 +513,7 @@ def test_synchronous_busy_cleanup_releases_a_ticket_promoted_during_the_refusal(
     orch._turn_lock.release()
 
 
-def test_chat_keeps_timing_and_ticket_ownership_through_aftercare(
+def test_chat_releases_at_done_and_keeps_aftercare_on_its_timing_record(
         tmp_path: Path, monkeypatch):
     oc = FakeOpenCode(tmp_path / "mnt" / "code", [])
     orch = _orch(tmp_path, oc, verdict="CHAT")
@@ -521,11 +521,11 @@ def test_chat_keeps_timing_and_ticket_ownership_through_aftercare(
     after_done = threading.Event()
     resume_aftercare = threading.Event()
 
-    def chat_stream(*_args, **_kwargs):
+    def chat_stream(*_args, timing_record=None, **_kwargs):
         yield {"type": "done", "ok": True, "decision": "answered"}
         after_done.set()
         assert resume_aftercare.wait(20)
-        with timing.span("after.test"):
+        with timing.span("after.test", record=timing_record):
             pass
 
     monkeypatch.setattr(orch, "_chat_stream", chat_stream)
@@ -536,9 +536,12 @@ def test_chat_keeps_timing_and_ticket_ownership_through_aftercare(
     assert after_done.wait(20)
     second, state = orch.prepare_stream_turn(
         "second-chat", kind="chat", conversation=tid)
-    assert state == "pending"
-    assert orch._turns.running() is first
+    assert state == "running"
+    assert orch._turns.running() is second
     assert second.timing_record is None
+
+    second.timing_record = timing.start_turn("chat", turn_id=second.id)
+    assert timing.current() is second.timing_record
 
     resume_aftercare.set()
     assert finished.wait(20)
@@ -546,7 +549,9 @@ def test_chat_keeps_timing_and_ticket_ownership_through_aftercare(
     assert first.timing_record.t1 is not None
     assert "after.test" in [span.name for span in first.timing_record.spans]
     assert orch._turns.running() is second
-    assert second.timing_record is None
+    assert timing.current() is second.timing_record
+    assert "after.test" not in [span.name for span in second.timing_record.spans]
+    timing.finish_turn(record=second.timing_record)
     orch.release_stream_turn(second)
 
 

@@ -32,6 +32,7 @@ from . import brand
 from .scope import _extract, _model_for
 
 log = logging.getLogger(__name__)
+_CURRENT_TIMING_RECORD = object()
 
 TIMEOUT_S = 8.0
 MAX_UNREADABLE = 3
@@ -217,6 +218,7 @@ def wants_an_app(
     session: str | None = None,
     version: str | None = None,
     timeout_s: float = TIMEOUT_S,
+    timing_record=_CURRENT_TIMING_RECORD,
 ) -> bool:
     """True when this Thread should be offered Open in Build.
 
@@ -287,7 +289,9 @@ def wants_an_app(
     # Deliberately NOT added to `project.model_calls`, again as in scope.py: that counter means
     # "inferences that reached the SHIM", and a by-design bypass inflating it would hide the broken
     # wiring the counter exists to surface.
-    call = model_call(model, "handoff")
+    call = (model_call(model, "handoff")
+            if timing_record is _CURRENT_TIMING_RECORD
+            else model_call(model, "handoff", record=timing_record))
 
     def _call() -> str:
         chunks = []

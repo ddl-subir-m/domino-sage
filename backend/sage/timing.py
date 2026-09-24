@@ -290,6 +290,25 @@ def finish_turn(ok: bool | None = None, decision: str = "", *,
         return None
 
 
+def detach_turn(record: TurnRecord | None) -> None:
+    """Stop routing implicit telemetry to an open record without closing that record.
+
+    Chat releases the turn lock at its terminal event, before its aftercare finishes. A successor
+    may therefore become the process-wide current turn while the old generator is still saving or
+    compacting. The old aftercare uses record-bound spans; detaching here leaves the global slot
+    free for that successor without stamping the old record as finished early.
+    """
+    global _current
+    if record is None:
+        return
+    try:
+        with _lock:
+            if _current is record:
+                _current = None
+    except Exception:
+        log.debug("timing: detach_turn failed", exc_info=True)
+
+
 def open_span(name: str, **fields) -> Span | None:
     """A span whose end is not a block. The build loop's iterations end at a `continue` and at seven
     different `return`s, so a `with` around one would mean restructuring the loop to measure it.
@@ -432,18 +451,28 @@ def context_rollover(value: dict) -> None:
 
 
 @contextmanager
-def span(name: str, **fields):
+def span(name: str, *, record: TurnRecord | None | object = _CURRENT_TURN_RECORD, **fields):
     """Time a named stretch of the current turn. A no-op with no turn open, so call sites that are
-    shared between a turn and the background (`_check_remote`) need no branch of their own."""
-    rec = _current
+    shared between a turn and the background (`_check_remote`) need no branch of their own.
+
+    An explicit record keeps aftercare on the turn that produced it after the turn lock is released
+    and a successor becomes current. The default preserves the established implicit behavior.
+    """
+    rec = _current if record is _CURRENT_TURN_RECORD else record
     if rec is None or not enabled():
         yield None
         return
     depth = getattr(_stack, "depth", 0)
     s = Span(name=name, depth=depth, t0=time.monotonic(), fields={k: v for k, v in fields.items()})
+    open_record = False
     try:
         with _lock:
-            rec.spans.append(s)
+            if rec.t1 is None:
+                rec.spans.append(s)
+                open_record = True
+        if not open_record:
+            yield None
+            return
         _stack.depth = depth + 1
         yield s
     finally:

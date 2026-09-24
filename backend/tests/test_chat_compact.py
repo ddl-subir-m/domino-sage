@@ -218,6 +218,25 @@ def test_compaction_leaves_a_session_the_next_turn_has_taken(tmp_path: Path):
     assert len(oc.compacts) == 1
 
 
+def test_compaction_stays_deferred_after_a_successor_finishes(tmp_path: Path):
+    """A free lock is not proof that no successor used the session after this turn ended."""
+    over = int(chat_compact.DEFAULT_CONTEXT * chat_compact.TOKEN_RATIO) + 1
+    orch, oc = _orch(tmp_path, [Turn(text="ok", tokens={"input": over, "output": 1})])
+    tid = orch.create_thread()["id"]
+
+    def successor_runs_and_finishes(*_a, **_k):
+        ticket, state = orch.prepare_stream_turn(
+            "successor", kind="chat", conversation=tid)
+        assert state == "running"
+        orch.release_stream_turn(ticket)
+
+    orch._maybe_suggest_handoff = successor_runs_and_finishes
+    list(orch.chat_stream(tid, "continue"))
+
+    assert orch._turns.running() is None
+    assert oc.compacts == []
+
+
 def test_summarize_names_an_alias_opencode_can_resolve():
     """A summarize call must name a model `provider.sage-gateway.models` lists.
 
