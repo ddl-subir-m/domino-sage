@@ -267,7 +267,8 @@ def test_unidentified_and_truncated_announcements_are_explicit(protocol):
 
 
 @pytest.mark.parametrize("approve", [False, True])
-def test_public_turn_starts_timing_before_setup_and_binds_its_actual_context(tmp_path, monkeypatch, approve):
+def test_public_turn_starts_timing_after_admission_and_binds_its_actual_context(
+        tmp_path, monkeypatch, approve):
     from sage.orchestrator.service import Orchestrator
 
     from .fake_opencode import Turn
@@ -292,7 +293,9 @@ def test_public_turn_starts_timing_before_setup_and_binds_its_actual_context(tmp
     list(orch.approve_stream(conversation="thread_fixture") if approve else
          orch.build_stream("add a chart", conversation="thread_fixture"))
     record = timing.last_finished()
-    assert project_reads[0] is record, "Project setup ran before timing started"
+    assert project_reads[0] is None, "queue admission must not start or replace timing"
+    assert record in project_reads[1:]
+    assert tickets[0].timing_record is record
     assert record.turn_id == tickets[0].id
     assert record.app_id == orch._project.workspace.app_id
     assert record.conversation_id == orch._project.build_conversation == "thread_fixture"
@@ -379,11 +382,21 @@ def test_request_body_arriving_after_turn_close_cannot_record_in_the_next_turn(r
     client, orch, gateway = running
     client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "plan"})
     monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
-    timing.start_turn("build", turn_id="original")
-    original = timing.current()
+    project = orch._project
+    original, state = orch.prepare_stream_turn(
+        "original", kind="build", conversation="thread_fixture", app=True)
+    assert state == "running"
+    original.timing_record = timing.start_turn("build", turn_id=original.id)
+    later, state = orch.prepare_stream_turn(
+        "later", kind="build", conversation="thread_fixture", app=True)
+    assert state == "pending"
+    project.active_session_id = "ses_native"
+
     async def body():
-        timing.finish_turn()
-        timing.start_turn("build", turn_id="later")
+        # Keep the same Project, root session, and request header. The ticket transition alone must
+        # make this request stale.
+        orch.release_stream_turn(original)
+        assert orch._turns.running() is later
         return json.dumps(request_body(Protocol.CHAT, "GLM 5.3 OR")).encode()
     endpoint = next(r.endpoint for r in appmod.control_app.routes if r.path == "/v1/sage/chat/completions")
     async def consume(headers):
@@ -394,14 +407,212 @@ def test_request_body_arriving_after_turn_close_cannot_record_in_the_next_turn(r
             async for _ in response.body_iterator:
                 pass
         return response
-    with active(orch) as headers:
-        response = asyncio.run(consume(headers))
-    assert response.status_code == 400
-    assert json.loads(response.body)["error"]["code"] == "sage_turn_scope_changed"
-    assert gateway.seen == []
-    assert original.calls == []
-    later = timing.finish_turn()
-    assert later.turn_id == "later" and later.calls == []
+    try:
+        response = asyncio.run(consume({"X-Session-Id": "ses_native"}))
+        assert response.status_code == 400
+        assert json.loads(response.body)["error"]["code"] == "sage_turn_scope_changed"
+        assert gateway.seen == []
+        assert original.timing_record.calls == []
+        assert later.timing_record is None
+    finally:
+        project.active_session_id = None
+        timing.finish_turn(record=original.timing_record)
+        timing.finish_turn(record=later.timing_record)
+        orch.release_stream_turn(later)
+
+
+@pytest.mark.parametrize("timing_enabled", [True, False])
+def test_queued_turn_timing_cannot_take_the_running_native_request(
+        running, monkeypatch, timing_enabled):
+    import asyncio
+
+    from sage.orchestrator import app as appmod
+
+    from .test_native_model_controls import request_body
+
+    monkeypatch.setenv("SAGE_TIMING", "1" if timing_enabled else "0")
+    client, orch, gateway = running
+    client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "plan"})
+    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
+    project = orch._project
+    original, state = orch.prepare_stream_turn(
+        "running-turn", kind="build", conversation="thread_fixture", app=True)
+    assert state == "running"
+    original.timing_record = timing.start_turn("build", turn_id=original.id)
+    project.active_session_id = "ses_native"
+    queued = None
+
+    async def body():
+        nonlocal queued
+        queued, queued_state = orch.prepare_stream_turn(
+            "queued-turn", kind="build", conversation="thread_fixture", app=True)
+        assert queued_state == "pending"
+        assert queued.timing_record is None
+        assert timing.current() is original.timing_record
+        return json.dumps(request_body(Protocol.CHAT, "GLM 5.3 OR")).encode()
+
+    endpoint = next(
+        route.endpoint for route in appmod.control_app.routes
+        if route.path == "/v1/sage/chat/completions")
+    request = SimpleNamespace(
+        headers={"x-session-id": "ses_native"}, body=body,
+        url=SimpleNamespace(path="/v1/sage/chat/completions"))
+
+    async def consume():
+        response = await endpoint(request)
+        async for _ in response.body_iterator:
+            pass
+        return response
+
+    try:
+        response = asyncio.run(consume())
+        assert response.status_code == 200
+        assert len(gateway.seen) == 1
+        if timing_enabled:
+            assert len(original.timing_record.calls) == 1
+            assert original.timing_record.calls[0].outcome == "success"
+            assert queued.timing_record is None
+        else:
+            assert original.timing_record is queued.timing_record is None
+    finally:
+        project.active_session_id = None
+        timing.finish_turn(record=original.timing_record)
+        timing.finish_turn(record=queued.timing_record if queued is not None else None)
+        orch.release_stream_turn(original)
+        if queued is not None:
+            orch.release_stream_turn(queued)
+
+
+@pytest.mark.parametrize("timing_enabled", [True, False])
+def test_native_body_rejects_a_successor_ticket_without_using_timing(
+        running, monkeypatch, timing_enabled):
+    import asyncio
+
+    from sage.orchestrator import app as appmod
+
+    from .test_native_model_controls import request_body
+
+    monkeypatch.setenv("SAGE_TIMING", "1" if timing_enabled else "0")
+    client, orch, gateway = running
+    client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "plan"})
+    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
+    project = orch._project
+    successor_intent = BuildIntent.for_direct("successor request")
+    successor_context = ContextRolloverState(BuildPolicy(), "successor-baseline")
+    original, state = orch.prepare_stream_turn(
+        "original-turn", kind="build", conversation="thread_fixture", app=True)
+    assert state == "running"
+    original.timing_record = timing.start_turn("build", turn_id=original.id)
+    successor, state = orch.prepare_stream_turn(
+        "successor-turn", kind="build", conversation="thread_fixture", app=True)
+    assert state == "pending"
+    project.active_session_id = "ses_native"
+
+    async def body():
+        orch.release_stream_turn(original)
+        assert orch._turns.running() is successor
+        project.active_session_id = "ses_successor"
+        project.active_build_intent = successor_intent
+        project.context_rollover = successor_context
+        return json.dumps(request_body(Protocol.CHAT, "GLM 5.3 OR")).encode()
+
+    endpoint = next(
+        route.endpoint for route in appmod.control_app.routes
+        if route.path == "/v1/sage/chat/completions")
+    request = SimpleNamespace(
+        headers={"x-session-id": "ses_native"}, body=body,
+        url=SimpleNamespace(path="/v1/sage/chat/completions"))
+    model_calls_before = project.model_calls
+    try:
+        response = asyncio.run(endpoint(request))
+        assert response.status_code == 400
+        assert json.loads(response.body)["error"]["code"] == "sage_turn_scope_changed"
+        assert gateway.seen == []
+        assert project.active_build_intent is successor_intent
+        assert successor_context.diagnostic()["action"] == "route"
+        assert project.model_calls == model_calls_before
+        if timing_enabled:
+            assert original.timing_record.calls == []
+            assert successor.timing_record is None
+        else:
+            assert original.timing_record is successor.timing_record is None
+    finally:
+        project.active_session_id = None
+        timing.finish_turn(record=original.timing_record)
+        timing.finish_turn(record=successor.timing_record)
+        orch.release_stream_turn(successor)
+
+
+@pytest.mark.parametrize("timing_enabled", [True, False])
+def test_running_ticket_routes_normally_with_or_without_timing(
+        running, monkeypatch, timing_enabled):
+    import asyncio
+
+    from sage.orchestrator import app as appmod
+
+    from .test_native_model_controls import request_body
+
+    monkeypatch.setenv("SAGE_TIMING", "1" if timing_enabled else "0")
+    client, orch, gateway = running
+    client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "plan"})
+    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
+    project = orch._project
+    ticket, state = orch.prepare_stream_turn(
+        "normal-turn", kind="build", conversation="thread_fixture", app=True)
+    assert state == "running"
+    ticket.timing_record = timing.start_turn("build", turn_id=ticket.id)
+    project.active_session_id = "ses_native"
+
+    async def body():
+        return json.dumps(request_body(Protocol.CHAT, "GLM 5.3 OR")).encode()
+
+    endpoint = next(
+        route.endpoint for route in appmod.control_app.routes
+        if route.path == "/v1/sage/chat/completions")
+    request = SimpleNamespace(
+        headers={"x-session-id": "ses_native"}, body=body,
+        url=SimpleNamespace(path="/v1/sage/chat/completions"))
+
+    async def consume():
+        response = await endpoint(request)
+        async for _ in response.body_iterator:
+            pass
+        return response
+
+    try:
+        response = asyncio.run(consume())
+        assert response.status_code == 200
+        assert len(gateway.seen) == 1
+        if timing_enabled:
+            assert len(ticket.timing_record.calls) == 1
+            assert ticket.timing_record.calls[0].outcome == "success"
+        else:
+            assert ticket.timing_record is None
+    finally:
+        project.active_session_id = None
+        timing.finish_turn(record=ticket.timing_record)
+        orch.release_stream_turn(ticket)
+
+
+@pytest.mark.parametrize("timing_enabled", [True, False])
+def test_raw_lock_without_a_turn_ticket_cannot_route_native_calls(
+        running, monkeypatch, timing_enabled):
+    monkeypatch.setenv("SAGE_TIMING", "1" if timing_enabled else "0")
+    client, orch, gateway = running
+    client.post("/api/project/model", json={"pick": "GLM 5.3 OR", "mode": "plan"})
+    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
+    project = orch._project
+    orch._turn_lock.acquire()
+    project.active_session_id = "ses_native"
+    try:
+        response = dispatch(
+            client, {"X-Session-Id": "ses_native"}, Protocol.CHAT, "GLM 5.3 OR")
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "sage_turn_scope_changed"
+        assert gateway.seen == []
+    finally:
+        project.active_session_id = None
+        orch._turn_lock.release()
 
 
 def test_late_native_body_cannot_read_or_mutate_successor_turn_state(running, monkeypatch):

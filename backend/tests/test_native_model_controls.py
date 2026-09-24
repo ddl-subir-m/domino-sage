@@ -5,6 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from sage import timing
 from sage.gateway.capabilities import RouteCapability, evidence, resolve
 from sage.gateway.client import FakeGatewayClient, GatewayUpstreamError
 from sage.gateway.protocol import Protocol
@@ -66,13 +67,19 @@ def running(tmp_path, monkeypatch):
 def active(orch, chat=False):
     project = orch._project
     token = project.control.arm_chat("thread_test") if chat else None
-    orch._turn_lock.acquire()
+    record = timing.current()
+    ticket, state = orch.prepare_stream_turn(
+        record.turn_id if record is not None else "turn_native",
+        kind="chat" if chat else "build",
+        conversation="thread_test", app=not chat)
+    assert state == "running"
+    ticket.timing_record = record
     project.active_session_id = "ses_native"
     try:
         yield {"X-Session-Id": "ses_native"}
     finally:
         project.active_session_id = None
-        orch._turn_lock.release()
+        orch.release_stream_turn(ticket)
         if token is not None:
             project.control.disarm_chat(token)
 

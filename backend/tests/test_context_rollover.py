@@ -355,8 +355,11 @@ def test_synchronous_build_uses_the_native_route_and_terminal_continue_lifecycle
         BuildPolicy(), build_context_non_media_max_bytes=1,
         pre_edit_model_call_limit=100, pre_edit_request_non_media_max_bytes=1_000_000)
     statuses = []
+    owners = []
 
     def routed_send(session_id, _text, *args, **kwargs):
+        ticket = orch._turns.running()
+        owners.append((ticket, timing.current()))
         response = dispatch(
             client, {"X-Session-Id": session_id}, Protocol.CHAT, "GLM 5.3 OR")
         statuses.append((response.status_code, response.json()))
@@ -367,6 +370,8 @@ def test_synchronous_build_uses_the_native_route_and_terminal_continue_lifecycle
     assert result["continuationId"]
     assert [status for status, _body in statuses] == [400, 400]
     assert all("sage_context_" in json.dumps(body) for _status, body in statuses)
+    assert owners and all(ticket is not None and record is ticket.timing_record
+                          and record.turn_id == ticket.id for ticket, record in owners)
     assert gateway.seen == []
     assert len(oc.sessions) == 2 and oc.interrupted == 2
     assert project.context_continuations.latest().intent.source_requests == (
@@ -1268,14 +1273,18 @@ def test_native_retry_from_retired_session_stays_local(native_env):
     project.context_rollover = state
     project.active_build_intent = BuildIntent.for_direct("build")
     project.active_session_id = "fresh-session"
-    orch._turn_lock.acquire()
-    timing.start_turn("build", turn_id="retired-retry", conversation_id="conversation")
+    ticket, ticket_state = orch.prepare_stream_turn(
+        "retired-retry", kind="build", conversation="conversation", app=True)
+    assert ticket_state == "running"
+    ticket.timing_record = timing.start_turn(
+        "build", turn_id=ticket.id, conversation_id="conversation")
     try:
         response = dispatch(
             client, {"X-Session-Id": "old-session"}, Protocol.CHAT, "GLM 5.3 OR")
-        record = timing.finish_turn(decision="context_rollover_required")
+        record = timing.finish_turn(
+            decision="context_rollover_required", record=ticket.timing_record)
     finally:
-        orch._turn_lock.release()
+        orch.release_stream_turn(ticket)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "sage_context_rollover_required"
     assert gateway.seen == []
@@ -1297,8 +1306,10 @@ def test_retired_native_session_rejects_invalid_body_before_decoding(native_env,
     project.context_rollover = state
     project.active_build_intent = BuildIntent.for_direct("build")
     project.active_session_id = "fresh-session"
-    orch._turn_lock.acquire()
-    timing.start_turn("build", turn_id="retired-invalid-body")
+    ticket, ticket_state = orch.prepare_stream_turn(
+        "retired-invalid-body", kind="build", conversation="conversation", app=True)
+    assert ticket_state == "running"
+    ticket.timing_record = timing.start_turn("build", turn_id=ticket.id)
     path = {
         Protocol.CHAT: "chat/completions",
         Protocol.MESSAGES: "anthropic/messages",
@@ -1307,9 +1318,10 @@ def test_retired_native_session_rejects_invalid_body_before_decoding(native_env,
     try:
         response = client.post(
             f"/v1/sage/{path}", headers={"X-Session-Id": "old-session"}, content=b"{")
-        record = timing.finish_turn(decision="context_rollover_required")
+        record = timing.finish_turn(
+            decision="context_rollover_required", record=ticket.timing_record)
     finally:
-        orch._turn_lock.release()
+        orch.release_stream_turn(ticket)
     error = {
         "type": "invalid_request_error",
         "message": native_routes._CONTEXT_ROLLOVER_REQUIRED,

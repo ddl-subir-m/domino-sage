@@ -174,6 +174,7 @@ class TurnRecord:
 _lock = threading.Lock()
 _current: TurnRecord | None = None
 _history: collections.deque[TurnRecord] = collections.deque(maxlen=_HISTORY)
+_CURRENT_TURN_RECORD = object()
 # Span nesting is per-thread: the build thread's stack must not be deepened by a /v1 request that
 # happens to open a span on another thread at the same moment.
 _stack = threading.local()
@@ -187,7 +188,9 @@ def enabled() -> bool:
 
 
 def start_turn(kind: str, prompt: str = "", *, turn_id: str | None = None,
-               app_id: str | None = None, conversation_id: str | None = None) -> None:
+               app_id: str | None = None,
+               conversation_id: str | None = None,
+               started: tuple[float, float] | None = None) -> TurnRecord | None:
     """Open a record. Any turn still open is closed first — a turn that died without finishing is
     still the most interesting one in the ring, so it is kept rather than dropped."""
     global _current
@@ -211,25 +214,43 @@ def start_turn(kind: str, prompt: str = "", *, turn_id: str | None = None,
                         c.outcome = "incomplete"
                         c.ok = False
                 _history.append(_current)
-            _current = TurnRecord(kind=kind, started_at=time.time(), t0=time.monotonic(),
+            wall, monotonic = started or (time.time(), time.monotonic())
+            _current = TurnRecord(kind=kind, started_at=wall, t0=monotonic,
                                   prompt=(prompt or "")[:200], turn_id=turn_id or uuid4().hex,
                                   app_id=app_id, conversation_id=conversation_id)
+            record = _current
         _stack.depth = 0
+        return record
     except Exception:
         log.debug("timing: start_turn failed", exc_info=True)
+        return None
+
+
+def record_span(record: TurnRecord | None, name: str, start: float, end: float) -> None:
+    """Attach elapsed work measured before this record became the active turn."""
+    if record is None or not enabled() or end < start:
+        return
+    try:
+        with _lock:
+            if record.t1 is None:
+                record.spans.append(Span(name=name, depth=0, t0=start, t1=end))
+    except Exception:
+        log.debug("timing: prior span failed", exc_info=True)
 
 
 def bind_context(turn_id: str, *, app_id: str | None = None,
-                 conversation_id: str | None = None) -> None:
+                 conversation_id: str | None = None,
+                 record: TurnRecord | None = None) -> None:
     """Bind identity after the existing context setup; never initialize an app for diagnostics."""
     with _lock:
-        rec = _current
+        rec = record if record is not None else _current
         if rec is not None and rec.t1 is None and rec.turn_id == turn_id:
             rec.app_id = app_id
             rec.conversation_id = conversation_id
 
 
-def finish_turn(ok: bool | None = None, decision: str = "") -> TurnRecord | None:
+def finish_turn(ok: bool | None = None, decision: str = "", *,
+                record: TurnRecord | None | object = _CURRENT_TURN_RECORD) -> TurnRecord | None:
     """Close the open turn and hand its record back.
 
     `None` means there was no turn to close, OR that closing it failed — `_current` is cleared on
@@ -244,9 +265,13 @@ def finish_turn(ok: bool | None = None, decision: str = "") -> TurnRecord | None
     global _current
     try:
         with _lock:
-            rec, _current = _current, None
+            rec = _current if record is _CURRENT_TURN_RECORD else record
             if rec is None:
                 return None
+            if _current is rec:
+                _current = None
+            if rec.t1 is not None:
+                return rec
             rec.t1 = time.monotonic()
             for sp in rec.spans:
                 if sp.t1 is None:

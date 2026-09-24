@@ -134,7 +134,11 @@ def install(app, get_orchestrator):
         try:
             orchestrator = get_orchestrator()
             project, session = _scope(orchestrator, request)
-            record = timing.current()
+            running_ticket = orchestrator._turns.running()
+            if running_ticket is None:
+                return _native_local_error(
+                    protocol, _TURN_SCOPE_CHANGED, "sage_turn_scope_changed")
+            record = running_ticket.timing_record
             root_session = project.active_session_id
             raw = await request.body()
             # Reading a body can yield long enough for its Build turn to finish and another one to
@@ -144,17 +148,22 @@ def install(app, get_orchestrator):
             same_owner = (
                 orchestrator._project is project
                 and orchestrator._turn_lock.locked()
+                and orchestrator._turns.running() is running_ticket
                 and project.active_session_id == root_session
                 and request.headers.get("x-session-id") == session
-                and timing.current() is record
             )
             if not same_owner:
                 return _native_local_error(
                     protocol, _TURN_SCOPE_CHANGED, "sage_turn_scope_changed")
+            diagnostic_record = record if (
+                record is not None
+                and record.turn_id == running_ticket.id
+            ) else None
             call = timing.model_call(
-                record=record, session_id=session, root_session_id=root_session,
+                record=diagnostic_record, session_id=session, root_session_id=root_session,
                 app_id=(project.app_for_turn().app_id
-                        if record is not None and record.kind != "chat" else None),
+                        if diagnostic_record is not None
+                        and diagnostic_record.kind != "chat" else None),
                 conversation_id=project.build_conversation)
             context_state = project.context_rollover
             client = getattr(get_orchestrator(), "_oc_client", None)
