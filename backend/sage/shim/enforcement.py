@@ -67,6 +67,16 @@ def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
     return out, dropped
 
 
+def _image_count(messages: list[Any]) -> int:
+    return sum(
+        1
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
+
+
 def _capture_refusal(stream: Iterator[bytes], request: dict[str, Any], on_refused) -> Iterator[bytes]:
     """Hand the payload to `on_refused` if — and only if — a guardrail is what refused it.
 
@@ -599,10 +609,17 @@ class EnforcementShim:
         # through is worse: bedrock-qwen3-coder (the default implement model) hard-400s, killing
         # the turn.
         dropped = 0
-        if not supports_vision(request["model"]) and isinstance(request.get("messages"), list):
+        image_parts = (_image_count(request["messages"])
+                       if isinstance(request.get("messages"), list) else 0)
+        vision_capable = supports_vision(request["model"])
+        if not vision_capable and isinstance(request.get("messages"), list):
             messages, dropped = _strip_images(request["messages"])
             if dropped:
                 request = {**request, "messages": messages}
+        self.data_use.resolve_image_delivery(
+            request, request["model"], capable=vision_capable,
+            sent_count=image_parts if vision_capable else 0,
+        )
 
         # Bedrock-served models only: serialise parallel tool calls the gateway's adapter can't group.
         # Same reasoning as the image strip above — the resolved model is the earliest point this is

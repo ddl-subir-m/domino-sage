@@ -219,6 +219,64 @@ def test_a_failed_document_reference_never_claims_that_content_was_prepared(stat
 
 
 @needs_node
+def test_table_and_image_references_draw_their_own_event_shapes():
+    table = {
+        "operation_id": "du_table_ref", "turn_id": "turn_a",
+        "operation": "table_reference", "source": "shape.csv", "source_type": "table",
+        "status": "prepared", "selected_fields": ["subject", "arm"],
+        "coverage": {"total": 12, "processed": 12, "failed": 0, "unfinished": 0},
+        "requests": [],
+    }
+    image = {
+        "operation_id": "du_image_ref", "turn_id": "turn_a",
+        "operation": "image_reference", "source": "design.png", "source_type": "image",
+        "status": "prepared", "delivery": "sent", "failure": None,
+        "coverage": {"failed": 0}, "requests": [],
+    }
+
+    words = _draw({"type": "data_used", "turnId": "turn_a", "events": [table, image]})["words"]
+
+    assert "Prepared bounded table structure from" in words
+    assert "12 rows described; 2 columns prepared" in words
+    assert "Rows were not copied into the prompt" in words
+    assert "Sent through the model image carrier from" in words
+    assert "The routed model received the image" in words
+    assert "Artifact:" not in words
+
+
+@needs_node
+def test_an_unsupported_image_draws_a_truthful_not_sent_result():
+    image = {
+        "operation_id": "du_image_ref", "turn_id": "turn_a",
+        "operation": "image_reference", "source": "design.png", "source_type": "image",
+        "status": "prepared", "delivery": "not_sent", "failure": "capability",
+        "coverage": {"failed": 0}, "requests": [],
+    }
+
+    words = _draw({"type": "data_used", "turnId": "turn_a", "events": [image]})["words"]
+
+    assert "Image reference was not sent from" in words
+    assert "cannot process images" in words
+    assert "Delivery: not sent" in words
+    assert "rows processed" not in words
+
+
+@needs_node
+def test_an_image_without_a_model_request_draws_a_truthful_not_sent_result():
+    image = {
+        "operation_id": "du_image_ref", "turn_id": "turn_a",
+        "operation": "image_reference", "source": "design.png", "source_type": "image",
+        "status": "prepared", "delivery": "not_sent", "failure": "no_request",
+        "coverage": {"failed": 0}, "requests": [],
+    }
+
+    words = _draw({"type": "data_used", "turnId": "turn_a", "events": [image]})["words"]
+
+    assert "No model request was made" in words
+    assert "Delivery: not sent" in words
+
+
+@needs_node
 def test_a_re_recorded_operation_updates_its_section_rather_than_adding_one():
     """`DataUse.observe` rewrites an event every time a gateway request of its own settles, and
     persists the whole event again. The card must show the later one, not both."""

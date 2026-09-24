@@ -26,6 +26,8 @@ _TEXT_SUFFIXES = frozenset({".txt", ".text"})
 _MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 _DOCX_SUFFIXES = frozenset({".docx"})
 _PDF_SUFFIXES = frozenset({".pdf"})
+_TABLE_SUFFIXES = frozenset({".csv", ".tsv"})
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PLANNING_FAILURES = frozenset({
@@ -34,6 +36,7 @@ _PLANNING_FAILURES = frozenset({
     "malformed_document", "encrypted_document", "document_xml_too_large",
     "no_extractable_text", "invalid_page_selection", "too_many_pages",
     "page_out_of_range", "page_selection_not_supported", "extraction_unavailable",
+    "carrier_unavailable",
 })
 
 
@@ -66,12 +69,33 @@ class Prepared:
     processed_pages: tuple[int, ...] = ()
     pages_truncated: bool = False
     extracted_characters: int = 0
+    selected_fields: tuple[str, ...] = ()
+    total_rows: int = 0
+    delivery: str = ""
+    failure: str = ""
 
-    def prompt_block(self) -> str:
+    def prompt_block(self, *, operation_id: str = "") -> str:
         if self.status != "prepared":
             return (
-                f"Reference preparation for {self.source} did not transfer document content.\n"
+                f"Reference preparation for {self.source} did not transfer content.\n"
                 f"Status: {self.status}. {self.text}"
+            )
+        if self.source_type == "table":
+            return (
+                f"Prepared bounded table structure from {self.source}.\n"
+                "Use this schema and shape as reference material for this turn. Use live_read_files "
+                "for a bounded sample or aggregate if values are required. Do not read or cat the "
+                "local CSV file.\n"
+                "--- BEGIN PREPARED TABLE STRUCTURE ---\n"
+                f"{self.text}\n"
+                "--- END PREPARED TABLE STRUCTURE ---"
+            )
+        if self.source_type == "image":
+            marker = f"\n[reference operation: {operation_id}]" if operation_id else ""
+            return (
+                f"Prepared image reference from {self.source}. The pixels use the image carrier "
+                "when the active model supports images. Do not read or cat the local image file."
+                f"{marker}"
             )
         coverage = f"{self.sent_characters} of {self.selected_characters} characters"
         if self.source_type == "pdf" and self.processed_pages:
@@ -156,7 +180,7 @@ def _is_withheld(root: Path, authorized: Authorized, source: str,
 
 
 def prepare(authorized: Authorized, *, selector: str = "", prompt: str = "",
-            pages: Iterable[int] | None = None) -> Prepared | None:
+            pages: Iterable[int] | None = None, descriptor: dict | None = None) -> Prepared | None:
     """Dispatch an authorized file through its typed bounded handler.
 
     `None` means no core handler owns this type.  It is not permission to read it generically.
@@ -177,6 +201,18 @@ def prepare(authorized: Authorized, *, selector: str = "", prompt: str = "",
         if pages is not None:
             return _failure(authorized.source, kind, "page_selection_not_supported", requested)
         return _prepare_docx(authorized)
+    if kind == "table":
+        if requested:
+            return _failure(authorized.source, kind, "heading_not_supported", requested)
+        if pages is not None:
+            return _failure(authorized.source, kind, "page_selection_not_supported", requested)
+        return _prepare_table(authorized, descriptor)
+    if kind == "image":
+        if requested:
+            return _failure(authorized.source, kind, "heading_not_supported", requested)
+        if pages is not None:
+            return _failure(authorized.source, kind, "page_selection_not_supported", requested)
+        return _prepare_image(authorized, descriptor)
     if requested:
         return _failure(authorized.source, kind, "heading_not_supported", requested)
     return _prepare_pdf(authorized, pages=pages)
@@ -184,7 +220,8 @@ def prepare(authorized: Authorized, *, selector: str = "", prompt: str = "",
 
 def prepare_explicit(root: Path, manifest: Iterable[dict], sources: Iterable[str], *,
                      prompt: str, withheld: Iterable[str] = (),
-                     target_for: Callable[[dict], Path | None] | None = None) -> list[Prepared]:
+                     target_for: Callable[[dict], Path | None] | None = None,
+                     descriptors: dict[str, dict] | None = None) -> list[Prepared]:
     """Prepare only exact structured file references, in mention order."""
     out: list[Prepared] = []
     seen: set[str] = set()
@@ -200,7 +237,8 @@ def prepare_explicit(root: Path, manifest: Iterable[dict], sources: Iterable[str
         prepared = (
             _failure(authorized.source, kind, "withheld", "")
             if _is_withheld(root, authorized, source, withheld)
-            else prepare(authorized, prompt=prompt)
+            else prepare(authorized, prompt=prompt,
+                         descriptor=(descriptors or {}).get(authorized.source))
         )
         if prepared is not None:
             out.append(prepared)
@@ -284,7 +322,8 @@ def plan_records(value: object) -> list[dict]:
 
 def prepare_plan_records(root: Path, manifest: Iterable[dict], records: object, *,
                          withheld: Iterable[str] = (),
-                         target_for: Callable[[dict], Path | None] | None = None) -> list[Prepared]:
+                         target_for: Callable[[dict], Path | None] | None = None,
+                         descriptors: dict[str, dict] | None = None) -> list[Prepared]:
     """Re-authorize and re-prepare only the references saved with an approved plan."""
     rows = list(manifest)
     out: list[Prepared] = []
@@ -303,7 +342,8 @@ def prepare_plan_records(root: Path, manifest: Iterable[dict], records: object, 
         if record["status"] != "prepared":
             out.append(_failure(source, kind, record["status"], selector))
             continue
-        prepared = prepare(authorized, selector=selector, pages=pages)
+        prepared = prepare(authorized, selector=selector, pages=pages,
+                           descriptor=(descriptors or {}).get(source))
         if prepared is None:
             out.append(_failure(source, kind, "handler_changed", selector))
             continue
@@ -340,9 +380,11 @@ def data_use(prepared: Prepared, *, purpose: str) -> tuple[dict, dict]:
             "pages_truncated": prepared.pages_truncated,
             "extracted_characters": prepared.extracted_characters,
         })
+    operation = ({"table": "table_reference", "image": "image_reference"}
+                 .get(prepared.source_type, "document_reference"))
     event = {
         "operation_id": operation_id,
-        "operation": "document_reference",
+        "operation": operation,
         "source": prepared.source,
         "source_type": prepared.source_type,
         "requested_selector": prepared.requested_selector,
@@ -354,6 +396,18 @@ def data_use(prepared: Prepared, *, purpose: str) -> tuple[dict, dict]:
         "status": prepared.status,
         "requests": [],
     }
+    if prepared.source_type == "table":
+        event["selected_fields"] = list(prepared.selected_fields)
+        coverage.update({"total": prepared.total_rows, "processed": prepared.total_rows})
+    if prepared.source_type == "image":
+        event["delivery"] = prepared.delivery or (
+            "pending" if prepared.status == "prepared" else "not_sent"
+        )
+        event["failure"] = prepared.failure or (
+            None if prepared.status == "prepared" else prepared.status
+        )
+    selected = (f"[reference operation: {operation_id}]"
+                if prepared.source_type == "image" else prepared.text)
     reply = {
         "data_use": operation_id,
         "source": prepared.source,
@@ -364,9 +418,70 @@ def data_use(prepared: Prepared, *, purpose: str) -> tuple[dict, dict]:
         "truncated": prepared.truncated,
         "status": prepared.status,
         # This is the deliberate transfer. DataUse keeps it in memory and persists only `event`.
-        "selected": prepared.text,
+        "selected": selected,
     }
     return event, reply
+
+
+def _source_hash(authorized: Authorized, kind: str) -> tuple[int, str] | Prepared:
+    """Hash an exact table/image source without loading it into memory."""
+    try:
+        size = authorized.path.stat().st_size
+        digest = hashlib.sha256()
+        with authorized.path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return size, digest.hexdigest()
+    except OSError:
+        return _failure(authorized.source, kind, "unavailable", "")
+
+
+def _prepare_table(authorized: Authorized, descriptor: dict | None) -> Prepared:
+    if not isinstance(descriptor, dict) or descriptor.get("reference_kind") != "tabular":
+        return _failure(authorized.source, "table", "handler_changed", "")
+    loaded = _source_hash(authorized, "table")
+    if isinstance(loaded, Prepared):
+        return loaded
+    size, source_hash = loaded
+    shape = str(descriptor.get("detail") or "").strip()
+    if not shape:
+        return _failure(authorized.source, "table", "unavailable", "", source_bytes=size,
+                        source_sha256=source_hash)
+    rows = re.search(r"([0-9][0-9,]*)\s+data rows?\b", shape, re.IGNORECASE)
+    total_rows = int(rows.group(1).replace(",", "")) if rows else 0
+    fields: list[str] = []
+    for line in shape.splitlines():
+        if line.startswith("  ") and ":" in line:
+            name = line.strip().split(":", 1)[0]
+            if name and not name.startswith("("):
+                fields.append(name)
+    return Prepared(
+        source=authorized.source, source_type="table", text=shape, requested_selector="",
+        selected_selector="", source_bytes=size, selected_characters=len(shape),
+        sent_characters=len(shape), truncated=False, status="prepared",
+        source_sha256=source_hash, selected_sha256=hashlib.sha256(shape.encode()).hexdigest(),
+        selected_fields=tuple(fields), total_rows=total_rows,
+    )
+
+
+def _prepare_image(authorized: Authorized, descriptor: dict | None) -> Prepared:
+    if not isinstance(descriptor, dict) or descriptor.get("reference_kind") != "image":
+        return _failure(authorized.source, "image", "handler_changed", "")
+    loaded = _source_hash(authorized, "image")
+    if isinstance(loaded, Prepared):
+        return loaded
+    size, source_hash = loaded
+    available = bool(descriptor.get("image_uri"))
+    if not available:
+        return _failure(authorized.source, "image", "carrier_unavailable", "",
+                        source_bytes=size, source_sha256=source_hash,
+                        delivery="not_sent", failure="carrier")
+    return Prepared(
+        source=authorized.source, source_type="image", text="", requested_selector="",
+        selected_selector="", source_bytes=size, selected_characters=0, sent_characters=0,
+        truncated=False, status="prepared", source_sha256=source_hash, selected_sha256="",
+        delivery="pending",
+    )
 
 
 def _prepare_text(authorized: Authorized, *, kind: str, selector: str, prompt: str) -> Prepared:
@@ -507,7 +622,8 @@ def _prepared_text(source: str, kind: str, selected: str, size: int, source_hash
 
 def _failure(source: str, kind: str, status: str, selector: str, *, source_bytes: int = 0,
              source_sha256: str = "", source_pages: int = 0,
-             selected_pages: tuple[int, ...] = ()) -> Prepared:
+             selected_pages: tuple[int, ...] = (), delivery: str = "",
+             failure: str = "") -> Prepared:
     messages = {
         "unavailable": "The referenced document is unavailable.",
         "source_too_large": "The referenced document exceeds the 8 MiB source limit.",
@@ -528,14 +644,16 @@ def _failure(source: str, kind: str, status: str, selector: str, *, source_bytes
         "extraction_unavailable": "PDF text extraction is unavailable in this Sage runtime.",
         "not_authorized": "The saved reference is unavailable or is no longer authorized.",
         "handler_changed": "The saved reference no longer has its approved content type.",
-        "source_changed": "The referenced document changed after the plan was prepared.",
+        "source_changed": "The referenced file changed after the plan was prepared.",
         "saved_record_invalid": (
-            "The saved reference record is incomplete or invalid, so no document content was sent."
+            "The saved reference record is incomplete or invalid, so no content was sent."
         ),
+        "carrier_unavailable": "The image could not be prepared for the model image carrier.",
     }
     text = messages[status]
     return Prepared(source, kind, text, selector, "", source_bytes, 0, 0, False, status,
-                    source_sha256, "", source_pages, selected_pages)
+                    source_sha256, "", source_pages, selected_pages,
+                    delivery=delivery, failure=failure)
 
 
 def _headings(text: str) -> list[tuple[int, str, int, int]]:
@@ -584,4 +702,8 @@ def source_type(path: Path | str) -> str:
         return "docx"
     if suffix in _PDF_SUFFIXES:
         return "pdf"
+    if suffix in _TABLE_SUFFIXES:
+        return "table"
+    if suffix in _IMAGE_SUFFIXES:
+        return "image"
     return ""

@@ -121,6 +121,51 @@ class DataUse:
             return [copy.deepcopy(event) for event, _, _ in self.operations.values()
                     if event["turn_id"] == turn_id]
 
+    def resolve_image_delivery(self, request: dict, model: str, *, capable: bool,
+                               sent_count: int) -> None:
+        """Finish pending image-reference audit rows from the actual routed request.
+
+        The router decision exists only in the shim, after OpenCode has made the request. Reference
+        preparation therefore records `pending`, and this method replaces it once with the truth
+        about the request that was sent. Image bytes and data URIs are never retained here.
+        """
+        messages = request.get("messages")
+        if not isinstance(messages, list):
+            return
+        with self.lock:
+            used = {
+                oid
+                for message in messages
+                if isinstance(message, dict)
+                for oid, _event, _reply in self._selected_operation_args(
+                    content_text(message.get("content"))
+                )
+            }
+            pending = [entry for oid, entry in self.operations.items()
+                       if oid in used
+                       and entry[0].get("operation") == "image_reference"
+                       and entry[0].get("delivery") == "pending"]
+            for index, (event, _reply, persist) in enumerate(pending):
+                sent = capable and index < sent_count
+                event["delivery"] = "sent" if sent else "not_sent"
+                event["failure"] = None if sent else ("capability" if not capable else "carrier")
+                event["serving_model"] = model
+                persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
+
+    def finish_image_delivery(self, turn_id: str) -> None:
+        """Close image audit rows when a turn ended before a model request used them."""
+        if not turn_id:
+            return
+        with self.lock:
+            pending = [entry for entry in self.operations.values()
+                       if entry[0].get("turn_id") == turn_id
+                       and entry[0].get("operation") == "image_reference"
+                       and entry[0].get("delivery") == "pending"]
+            for event, _reply, persist in pending:
+                event["delivery"] = "not_sent"
+                event["failure"] = "no_request"
+                persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
+
     def apply_restrictions(self, request, withheld=None, rewrite_counts=None):
         if not isinstance(request.get("messages"), list):
             return request
