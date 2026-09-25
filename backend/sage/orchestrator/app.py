@@ -2277,6 +2277,16 @@ async def stop() -> JSONResponse:
     return JSONResponse(content=result)
 
 
+@control_app.post("/api/preview/ack")
+async def preview_ack(request: Request) -> Response:
+    try:
+        body = await request.json()
+        orchestrator.record_preview_ack(str(body.get("validationId") or ""))
+    except (ValueError, AttributeError):
+        pass
+    return Response(status_code=204)
+
+
 @control_app.post("/api/preview/runtime-error")
 async def preview_runtime_error(request: Request) -> Response:
     """The live preview posts here when it catches an uncaught/render error (see the template's
@@ -2286,7 +2296,8 @@ async def preview_runtime_error(request: Request) -> Response:
         body = await request.json()
     except Exception:
         return Response(status_code=204)
-    orchestrator.record_runtime_error(str(body.get("message") or ""), str(body.get("stack") or ""))
+    orchestrator.record_runtime_error(str(body.get("message") or ""), str(body.get("stack") or ""),
+                                      validation_id=str(body.get("validationId") or ""))
     return Response(status_code=204)
 
 

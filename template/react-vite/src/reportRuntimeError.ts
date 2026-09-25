@@ -8,6 +8,18 @@
 // app's `api/preview/runtime-error`; both are same-origin behind the one proxy.
 const API = import.meta.env.BASE_URL.replace(/preview\/?$/, "") + "api/";
 const ENDPOINT = API + "preview/runtime-error";
+// Fixed when this document loads; a later app selection cannot retag its reports.
+const validationId = new URLSearchParams(window.location.search).get("sageValidation") || "";
+function acknowledgePage() {
+  if (!import.meta.env.DEV || !validationId || document.visibilityState === "hidden") return;
+  void fetch(API + "preview/ack", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ validationId }), keepalive: true,
+  }).catch(() => {});
+}
+if (document.readyState !== "complete") {
+  document.addEventListener("DOMContentLoaded", acknowledgePage, { once: true });
+} else { acknowledgePage(); }
 
 // Is the agent editing these files right now? The error boundary asks so it can tell a crash Sage is
 // already part-way through fixing from one the creator has to deal with themselves.
@@ -38,9 +50,9 @@ export function reportRuntimeError(message: string, stack?: string): void {
     void fetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, stack: stack || "" }),
+      body: JSON.stringify({ message, stack: stack || "", validationId }),
       keepalive: true,
-    });
+    }).catch(() => {});
   } catch {
     /* best-effort: never let the reporter itself throw */
   }

@@ -14,6 +14,18 @@ window.sage = window.sage || {};
 (function () {
   const API = sage.base.replace(/\/preview\/?$/, "").replace(/\/$/, "") + "/api/";
   const ENDPOINT = API + "preview/runtime-error";
+  // Fixed when this document loads; a later app selection cannot retag its reports.
+  const validationId = new URLSearchParams(window.location.search).get("sageValidation") || "";
+  function acknowledgePage() {
+    if (!sage.preview || !validationId || document.visibilityState === "hidden") return;
+    void fetch(API + "preview/ack", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ validationId }), keepalive: true,
+    }).catch(() => {});
+  }
+  if (document.readyState !== "complete") {
+    document.addEventListener("DOMContentLoaded", acknowledgePage, { once: true });
+  } else { acknowledgePage(); }
 
   // Is the agent editing these files right now? The error boundary asks so it can tell a crash Sage
   // is already part-way through fixing from one the creator has to deal with themselves.
@@ -44,9 +56,9 @@ window.sage = window.sage || {};
       void fetch(ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, stack: stack || "" }),
+        body: JSON.stringify({ message, stack: stack || "", validationId }),
         keepalive: true,
-      });
+      }).catch(() => {});
     } catch {
       /* best-effort: never let the reporter itself throw */
     }

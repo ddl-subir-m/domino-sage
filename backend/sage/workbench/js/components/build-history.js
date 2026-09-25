@@ -199,6 +199,7 @@ window.SW = window.SW || {};
       gateway_refusal: 'Gateway refused',
       error: 'Failed',
       success: 'Succeeded',
+      unverified: 'Runtime not verified',
     }[status] || 'Interrupted';
   }
 

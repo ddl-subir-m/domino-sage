@@ -30,7 +30,7 @@ SCHEMA_VERSION = 1
 OUTCOMES = frozenset({
     "repeat_brake", "user_stop", "gateway_refusal", "pre_edit_limit", "context_limit",
     "context_measurement_unavailable", "error", "success",
-    "no_action_timeout",
+    "no_action_timeout", "unverified",
 })
 PHASES = frozenset({"planning", "implementation"})
 CAPTURE_STATUSES = frozenset({"running", "finished", "interrupted"})
@@ -490,9 +490,30 @@ def _started_at(value: object) -> str | float | int | None:
     return None
 
 
+def _verification(value) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    allowed = {"passed", "failed", "unverified", "not_applicable"}
+    if not isinstance(value.get("overall"), str) or value["overall"] not in allowed:
+        return None
+    stages = value.get("stages")
+    result = {"overall": value["overall"], "stages": {
+        key: status for key, status in (stages.items() if isinstance(stages, dict) else [])
+        if key in {"code", "startup", "page", "runtime", "data"}
+        and isinstance(status, str) and status in allowed}}
+    for key in ("validationId", "generation", "codeGeneration"):
+        text = value.get(key)
+        if isinstance(text, str) and _TOKEN.fullmatch(text):
+            result[key] = text
+    if value.get("codeKind") in ("Typecheck", "Syntax check"):
+        result["codeKind"] = value["codeKind"]
+    return result
+
+
 def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
              terminal=False, revision=None, plan_contract: dict | None = None,
-             decision: str = "") -> dict:
+             decision: str = "", verification: dict | None = None,
+             error_code: str = "", error_stage: str = "") -> dict:
     raw = timing.as_dict(rec) if rec is not None else {}
     record = {
         "schemaVersion": SCHEMA_VERSION,
@@ -508,6 +529,12 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
                     "droppedEvents": {}, "upstreamTruncated": {}},
         "timing": _metadata(raw, ["ms", "ok", "running"]),
     }
+    checked = _verification(verification)
+    if checked is not None:
+        record["buildOutcome"]["verification"] = checked
+    for key, value in (("errorCode", error_code), ("errorStage", error_stage)):
+        if isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", value):
+            record["buildOutcome"][key] = value
     data = record["timing"]
     implementation_session = _implementation_session(raw.get("implementationSession"))
     if implementation_session is not None:
@@ -721,7 +748,9 @@ class Store:
                         "startedAt": _started_at(turn.get("startedAt")),
                     },
                     "buildOutcome": {"status": _outcome(
-                        record.get("buildOutcome", {}).get("status"))},
+                        record.get("buildOutcome", {}).get("status")),
+                        **({"verification": _verification(record.get("buildOutcome", {}).get("verification"))}
+                           if _verification(record.get("buildOutcome", {}).get("verification")) else {})},
                     "capture": {"status": status, "complete": bool(capture.get("complete"))},
                 })
             return rows
@@ -736,6 +765,9 @@ class Capture:
     terminal: bool = False
     plan_contract: dict | None = None
     decision: str = ""
+    verification: dict | None = None
+    error_code: str = ""
+    error_stage: str = ""
 
 
 _current: contextvars.ContextVar[Capture | None] = contextvars.ContextVar("build_diagnostic_capture", default=None)
@@ -769,8 +801,13 @@ def observe(event: dict) -> str | None:
         capture.terminal = True
         decision = str(event.get("decision") or "")
         capture.decision = decision
+        capture.verification = _verification(event.get("verification"))
+        capture.error_code = event.get("errorCode", "")
+        capture.error_stage = event.get("errorStage", "")
         capture.outcome = (
-            "success" if event.get("ok") is True
+            "unverified" if event.get("ok") is True and capture.verification is not None
+            and capture.verification["overall"] == "unverified"
+            else "success" if event.get("ok") is True
             else "repeat_brake" if decision in {"repeat_brake", "repeated", "looped"}
             else "gateway_refusal" if decision in {"gateway error", "model unavailable"}
             else "pre_edit_limit" if decision == "pre_edit_limit"
@@ -829,7 +866,8 @@ def finish(rec: timing.TurnRecord | None):
         capture.store.put(snapshot(rec, capture.identity, outcome=capture.outcome,
                                    terminal=capture.terminal, revision=capture.revision,
                                    plan_contract=capture.plan_contract,
-                                   decision=capture.decision))
+                                   decision=capture.decision, verification=capture.verification,
+                                   error_code=capture.error_code, error_stage=capture.error_stage))
     except Exception as exc:
         log.warning("Build diagnostic finish failed (%s)", type(exc).__name__)
     finally:
