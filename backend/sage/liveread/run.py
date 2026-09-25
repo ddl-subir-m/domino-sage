@@ -584,7 +584,8 @@ def _statement(args: dict, turn: Turn) -> str:
         # cannot express its question in SQL should offer the other lane from here (#411).
         return _no_card(str(e))
 
-    verdict = disclosure.decide(sql, answer.rows)
+    verdict = disclosure.decide(sql, answer.rows,
+                                connector_type=getattr(source, "connector_type", ""))
     title = str(args.get("title") or "Query result")
     receipt = result.record(
         turn.examples_dir,
@@ -750,10 +751,11 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
             # `SELECT COUNT(*) FROM GONG_CALLS` is a step when the question is which customers use
             # monitoring and is the answer when the question is how many calls there are — the same
             # statement, and only the caller knows which it is. An absent flag is `'answer'`.
-            "role": "working" if (catalogue_read(sql) or declared_step(args)) else "answer",
+            "role": "working" if (verdict.catalogue or catalogue_read(sql)
+                                  or declared_step(args)) else "answer",
             "artifact": receipt.path,
             "columns": list(receipt.columns),
-            "selected_fields": [receipt.columns[i] for i in verdict.derived
+            "selected_fields": [receipt.columns[i] for i in (*verdict.derived, *verdict.catalogue)
                                 if i < len(receipt.columns)] if verdict.discloses else [],
             "result_rows": receipt.rows,
             "coverage": {"total": receipt.rows, "processed": receipt.rows, "excluded": 0,
