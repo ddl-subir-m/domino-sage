@@ -4070,7 +4070,7 @@ def _at_token_hits(token: str, name: str, path: str) -> bool:
 
 
 def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = "",
-                       thread_id: str = "<threadId>") -> str:
+                       thread_id: str = "<threadId>", investigating: bool = False) -> str:
     """One context row for the Chat turn prompt.
 
     `thread_id` fills the scratch destination in the two Dataset rows, which hand the model a
@@ -4237,6 +4237,12 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             # Python is kept rather than deleted. An unbounded Chat turn has the shell and may have
             # no live-read tool at all — the MCP handshake can land after the tool list is fixed —
             # and a row that names a store while leaving the route unsaid is #370.
+            table_scope = (
+                "{dotted} is the starting table. Discover and query other relevant tables in "
+                "{name} when the question needs them. Use only sources attached to this conversation. "
+                if investigating else
+                "Either way, {dotted} is the one table in this conversation: do not query another "
+                "table in {name} — if the question needs one, say which and stop. ")
             return brand.text(
                 "- {dataSource} {name}, table {dotted}.{extra} To work a number out of it — a "
                 "count, a total, an average, a ranking, a group-by — call `live_read_query` with "
@@ -4246,8 +4252,7 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "`from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
                 '"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
-                "Either way, {dotted} is the one table in this conversation: do not query another "
-                "table in {name} — if the question needs one, say which and stop. "
+                + table_scope +
                 "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
                 "If the query errors, tell the person.",
                 name=name, dotted=dotted, extra=extra, quoted=repr(store),
@@ -6106,7 +6111,7 @@ class Orchestrator:
         self._gate: SensitivityGate | None = None
         self._resources = resources or FakeResourceProvider()
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
-        self._live_read: dict[str, tuple[str, float]] = {}
+        self._live_read: dict[str, tuple[str, float, bool]] = {}
         self._live_read_lock = threading.Lock()
         # Live reads this turn has served, per Conversation, under the same lock as the token they
         # spend. Reset when the token is minted, so a count is always about one turn.
@@ -12328,7 +12333,7 @@ class Orchestrator:
         return {"asked": True, "ok": True, "url": url, "tools": held,
                 "ours": [n for n in held if "live_read" in n]}
 
-    def _mint_live_read_token(self, thread_id: str) -> str:
+    def _mint_live_read_token(self, thread_id: str, *, include_app_bindings: bool = True) -> str:
         token = "lrt_" + secrets.token_urlsafe(15)
         self._data_use_turns[thread_id] = new_id("du_turn")
         project = self._chat_project()
@@ -12348,7 +12353,7 @@ class Orchestrator:
             project.shim.data_use.restore(workspace.read_history(thread_id),
                                           lambda ev: workspace.append_history(ev, thread_id))
         with self._live_read_lock:
-            self._live_read[thread_id] = (token, time.monotonic())
+            self._live_read[thread_id] = (token, time.monotonic(), include_app_bindings)
             self._live_reads.pop(thread_id, None)
             self._live_read_refused.pop(thread_id, None)
         # The same token names this turn for a Delegated model call, so this is the moment that
@@ -12371,7 +12376,7 @@ class Orchestrator:
         now, found = time.monotonic(), None
         expired: list[str] = []
         with self._live_read_lock:
-            for thread_id, (tok, at) in list(self._live_read.items()):
+            for thread_id, (tok, at, _) in list(self._live_read.items()):
                 if now - at > _LIVE_READ_TTL_S:
                     self._live_read.pop(thread_id, None)
                     self._live_reads.pop(thread_id, None)
@@ -12407,15 +12412,21 @@ class Orchestrator:
         Conversation while its turn runs, and "may this be read" deserves the current answer.
         """
         thread_id = self._live_read_thread(token)
-        return self._live_read_turn_for(thread_id) if thread_id else None
+        if not thread_id:
+            return None
+        with self._live_read_lock:
+            current = self._live_read.get(thread_id)
+            if current is None or current[0] != token:
+                return None
+            include_app_bindings = current[2]
+        return self._live_read_turn_for(thread_id, include_app_bindings=include_app_bindings)
 
-    def _live_read_turn_for(self, thread_id: str) -> live_read.Turn:
+    def _live_read_turn_for(self, thread_id: str, *, include_app_bindings: bool = True) -> live_read.Turn:
         """The same thing for a Conversation named directly rather than by a turn's token.
 
-        **Read again** has no turn and no token — it is a person pressing a button on a card (#256)
-        — but it reaches exactly what that Conversation's agent could reach, through the same
-        records. One builder, so the button and the agent cannot drift into two answers about what
-        is in range.
+        **Read again** has no turn and no token — it is a person pressing a button on a card (#256).
+        It and Build retain the app's bindings. Chat tokens explicitly exclude those bindings;
+        their source scope stays with the conversation even after the Chat control pin is cleared.
         """
         project = self._chat_project()
         store = ThreadStore(project.record.path)
@@ -12429,7 +12440,7 @@ class Orchestrator:
         scope_for: dict[tuple[str, str], tuple[str, str]] = {}
         for item in (store.read_context(thread_id).get("items") or []):
             kind = str(item.get("kind") or "")
-            if kind in ("data_source", "table"):
+            if kind in ("data_source", "datasource", "table"):
                 name = str(item.get("sourceName") or item.get("subtitle") or item.get("name") or "")
                 key = "datasource"
                 scope = item.get("scope") if isinstance(item.get("scope"), dict) else None
@@ -12449,7 +12460,7 @@ class Orchestrator:
         # this is per app and not per Project, which is what "what this app reads" has to mean.
         bound: dict[str, tuple[str, ...]] = {}
         binding_for: dict[tuple[str, str], str] = {}
-        for row in project.workspace.read_bindings():
+        for row in project.workspace.read_bindings() if include_app_bindings else []:
             name = str(row.get("name") or "")
             kind = "dataset" if str(row.get("kind") or "") == "dataset" else "datasource"
             if not name:
@@ -13555,7 +13566,7 @@ class Orchestrator:
                      artifacts: list[dict] | None = None,
                      handoffs: list[dict] | None = None,
                      history: list[dict] | None = None,
-                     declined: bool = False, rebuilt: str = "") -> str:
+                     declined: bool = False, rebuilt: str = "", investigating: bool = False) -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
@@ -13576,7 +13587,8 @@ class Orchestrator:
             # THING and what you would do once it is there (`template/chat/AGENTS.md:23-25`) — which
             # is why this says "what you would need" and never "which tool", since naming a tool to
             # the person stays forbidden there (:21). Same edit in the pack and in `opencode.json`.
-            (f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
+            (f"Read token: {self._mint_live_read_token(thread_id, include_app_bindings=False)}. "
+             "Pass it as `token` on every "
              "`live_read_table`, `live_read_files` or `live_read_query` call. Use those tools to look "
              "at a bound table or Dataset, and `live_read_query` to work a number out of one, "
              "rather "
@@ -13597,6 +13609,14 @@ class Orchestrator:
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]
+        if investigating:
+            lines += [
+                ("Investigation is open for this conversation. A selected table is a starting table. "
+                 "Discover and query other relevant tables when needed, using only sources attached "
+                 "to this conversation. Python and queries across those tables are available under "
+                 "the existing data disclosure rules. Do not ask to open another investigation."),
+                "",
+            ]
         # The first turn after a summary-scoped clear keeps the promise the offer made: the model
         # starts over, but is told what was said. Empty on every other turn, including the first
         # turn after a complete clear, where being told nothing is the whole point.
@@ -13635,7 +13655,7 @@ class Orchestrator:
                     # `describe()` on a directory says "Is a directory", which is true and useless.
                     folder = _context_folder_state(workspace, it)
                 lines.append(_chat_context_line(it, file_note=note, folder_note=folder,
-                                               thread_id=thread_id))
+                                               thread_id=thread_id, investigating=investigating))
             for url in urls:
                 lines.append(
                     f"- URL {url}. Read this page and answer from what it contains. "
@@ -14452,7 +14472,8 @@ class Orchestrator:
                                                 handoffs=store.read_handoffs(thread_id),
                                                 history=prompt_history,
                                                 declined=declined,
-                                                rebuilt=rebuilt)
+                                                rebuilt=rebuilt,
+                                                investigating=investigating)
                 if artifact_token is not None:
                     # Says what to do, never what this turn is or cannot do. The block is
                     # model-facing, so every word in it is a word the model can hand back to the
