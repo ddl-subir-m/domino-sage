@@ -1,6 +1,7 @@
 """Incremental SSE accounting. Retain metadata, never reasoning or tool arguments."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -13,6 +14,9 @@ MAX_EVENT_BYTES = 2 * 1024 * 1024
 # A refusal body can be as large as the event that carried it, and the diag ring holds 400
 # lines. Clip so one refusal cannot push the rest of the turn out of it.
 MAX_LOGGED_ERROR_CHARS = 2000
+# Per-call cap on argument lanes (#560). The same number as `tool_invocations`, because a lane is
+# one announced call and the two lists are read side by side.
+MAX_ARGUMENT_LANES = 40
 
 # "sage.*" -> surfaced by /api/diag's log tail and the Workspace Logs panel.
 log = logging.getLogger("sage.gateway")
@@ -62,6 +66,19 @@ class StreamEvents:
     # costs one character of state and makes the count independent of where the boundaries fall.
     _carry: dict[object, str] = field(default_factory=dict)
     _pending: bytes = b""
+    # Where each tool call's ARGUMENTS crossed this relay, one lane per announced call (#560).
+    # Facts only: counts, byte lengths, which terminal event closed the lane, whether the joined
+    # deltas and the completion agreed. The join is never held: each fragment updates a digest and
+    # is dropped, and only the comparison RESULT leaves this object. Xiaomi's malformed calls kept
+    # no deltas, so nothing could say which side of this relay first damaged an argument; this is
+    # that missing witness, and it is not an assembler. OpenCode still owns assembly (ADR-0066).
+    response_id: str | None = None
+    argument_lanes: list[dict] = field(default_factory=list)
+    argument_lanes_truncated: bool = False
+    # A fragment that named a lane nothing had announced. Ordering evidence, not an argument.
+    orphan_argument_deltas: int = 0
+    _lane_index: dict[object, dict] = field(default_factory=dict)
+    _lane_digest: dict[object, object] = field(default_factory=dict)
 
     def feed(self, chunk: bytes) -> list[bytes]:
         frames = []
@@ -166,7 +183,8 @@ class StreamEvents:
         if isinstance(name, str) and name:
             self.tool_names.add(name)
 
-    def _open_stream(self, key: object, item: dict, *, identity: str = "id") -> None:
+    def _open_stream(self, key: object, item: dict, *, identity: str = "id",
+                     output_index: object = None) -> None:
         """Remember which tool an argument stream belongs to, and start its count at zero.
 
         Zero rather than absent, so the reader can tell "this tool is streaming and has produced no
@@ -178,6 +196,119 @@ class StreamEvents:
         if isinstance(name, str) and name:
             self._streaming[key] = name
             self.tool_input_lines.setdefault(name, 0)
+        self._open_lane(key, item, identity=identity, output_index=output_index)
+
+    # --- argument lanes (#560) --------------------------------------------------------------
+
+    def _open_lane(self, key: object, item: dict, *, identity: str, output_index: object) -> None:
+        """One lane per ANNOUNCED call. A fragment that names only its index opens nothing."""
+        name = item.get("name") or (item.get("function") or {}).get("name")
+        # CHAT keys its stream by `index` and names the call by `id`; the other two lanes key
+        # and name by the same field.
+        provider = item.get("id") if identity == "index" else item.get(identity)
+        if key is None or key in self._lane_index:
+            return
+        if not (isinstance(name, str) and name) and not (isinstance(provider, str) and provider):
+            return
+        if len(self.argument_lanes) >= MAX_ARGUMENT_LANES:
+            self.argument_lanes_truncated = True
+            return
+        lane = {
+            "lane": str(key)[:200],
+            "providerId": provider[:200] if isinstance(provider, str) and provider else None,
+            "name": name[:80] if isinstance(name, str) and name else None,
+            "outputIndex": (output_index if isinstance(output_index, int)
+                            and not isinstance(output_index, bool) else None),
+            "deltaJoin": {"count": 0, "empty": 0, "bytes": 0},
+            "done": {"source": "none", "bytes": None, "jsonValidity": "absent",
+                     "agreement": "none"},
+            "boundary": "open",
+            "terminal": "open",
+        }
+        self.argument_lanes.append(lane)
+        self._lane_index[key] = lane
+        self._lane_digest[key] = hashlib.sha256()
+
+    def _lane_delta(self, key: object, fragment: object) -> None:
+        if not isinstance(fragment, str):
+            return
+        lane = self._lane_index.get(key)
+        if lane is None:
+            self.orphan_argument_deltas += 1
+            return
+        join = lane["deltaJoin"]
+        join["count"] += 1
+        if fragment:
+            join["bytes"] += len(fragment.encode("utf-8", "surrogatepass"))
+            self._lane_digest[key].update(fragment.encode("utf-8", "surrogatepass"))
+        else:
+            join["empty"] += 1
+
+    def _lane_done(self, key: object, arguments: object, *, source: str) -> None:
+        """A completion for this lane: `arguments_done` (Responses' arguments.done event) or
+        `item_done` (its output_item.done, which is what the installed codec executes from).
+        Only the category of the text survives: its length, whether it parses, and whether it
+        equals the joined deltas. `json.loads` here classifies; it never gates or repairs."""
+        lane = self._lane_index.get(key)
+        if lane is None:
+            return
+        done = lane["done"]
+        text = arguments if isinstance(arguments, str) else None
+        digest = (hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+                  if text is not None else None)
+        previous = lane.pop("_doneDigest", None)
+        sources = lane.setdefault("_doneSources", set())
+        sources.add(source)
+        done["source"] = "both" if len(sources) == 2 else source
+        # A repeated completion (the same event twice) is compared like a second kind would be.
+        if done["agreement"] == "none":
+            done["agreement"] = "single"
+        elif done["agreement"] != "disagree":
+            done["agreement"] = "agree" if previous == digest else "disagree"
+        lane["_doneDigest"] = digest
+        # The codec builds the executed call from `item_done`; report against that one.
+        if source == "item_done" or "item_done" not in sources:
+            done["bytes"] = len(text.encode("utf-8", "surrogatepass")) if text is not None else None
+            done["jsonValidity"] = self._json_validity(text)
+            if text is None:
+                lane["boundary"] = "no_done"
+            elif lane["deltaJoin"]["count"] == 0:
+                lane["boundary"] = "done_only"
+            else:
+                lane["boundary"] = ("match" if self._lane_digest[key].hexdigest() == digest
+                                    else "mismatch")
+
+    @staticmethod
+    def _json_validity(text: str | None) -> str:
+        if text is None:
+            return "absent"
+        if not text.strip():
+            return "empty"
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return "invalid"
+        return "valid_object" if isinstance(value, dict) else "valid_non_object"
+
+    def _close_lane(self, key: object) -> None:
+        lane = self._lane_index.get(key)
+        if lane is not None:
+            lane["terminal"] = "closed"
+            if lane["boundary"] == "open":
+                lane["boundary"] = "no_done"
+
+    def argument_boundaries(self) -> dict | None:
+        """The bounded lane facts for this call, or None when the stream announced no call."""
+        if not self.argument_lanes and not self.orphan_argument_deltas:
+            return None
+        lanes = []
+        for lane in self.argument_lanes:
+            copied = {k: (dict(v) if isinstance(v, dict) else v)
+                      for k, v in lane.items() if not k.startswith("_")}
+            lanes.append(copied)
+        return {"responseId": self.response_id, "lanes": lanes,
+                "lanesTruncated": self.argument_lanes_truncated,
+                "orphanDeltas": self.orphan_argument_deltas}
 
     def _count_lines(self, key: object, fragment: object) -> None:
         """Add one fragment of a tool argument to its tool's line count, and keep nothing else.
@@ -193,6 +324,7 @@ class StreamEvents:
         """
         if isinstance(fragment, str) and fragment:
             self.saw_tool_argument = True
+        self._lane_delta(key, fragment)
         name = self._streaming.get(key)
         if name is None or not isinstance(fragment, str) or not fragment:
             return
@@ -206,6 +338,7 @@ class StreamEvents:
     def _close_stream(self, key: object) -> None:
         self._streaming.pop(key, None)
         self._carry.pop(key, None)
+        self._close_lane(key)
 
     def _event(self, event: dict) -> None:
         before_action = self.first_action_kind
@@ -255,11 +388,13 @@ class StreamEvents:
                     key = tool.get("index")
                     lane = (choice.get("index", 0), key) if key is not None else None
                     self._announce(lane, tool)
-                    self._open_stream(key, tool, identity="index")
+                    self._open_stream(key, tool, identity="index", output_index=key)
                     self._count_lines(key, (tool.get("function") or {}).get("arguments"))
                 if choice.get("finish_reason"):
                     # This lane has no per-call stop event, so the choice finishing is the only
                     # boundary there is. Every stream it held is closed at once.
+                    for key in list(self._streaming):
+                        self._close_lane(key)
                     self._streaming.clear()
                     self._carry.clear()
         elif self.protocol is Protocol.MESSAGES:
@@ -267,7 +402,7 @@ class StreamEvents:
             block = event.get("content_block") or {}
             if kind == "content_block_start" and block.get("type") == "tool_use":
                 self._announce(event.get("index"), block)
-                self._open_stream(event.get("index"), block)
+                self._open_stream(event.get("index"), block, output_index=event.get("index"))
             elif kind == "content_block_start" and block.get("type") == "text":
                 self.saw_text |= bool(block.get("text"))
                 if block.get("text"):
@@ -304,6 +439,8 @@ class StreamEvents:
                     raise ValueError("The gateway did not preserve the requested Responses settings. "
                                      "A translated fallback cannot be used for this request.")
             self._usage(response.get("usage") or {})
+            if kind == "response.created" and isinstance(response.get("id"), str):
+                self.response_id = response["id"][:200]
             item = event.get("item") or {}
             if kind == "response.output_item.added" and item.get("type") == "function_call":
                 # Keyed on `item_id`, which is what the argument deltas below carry — NOT on
@@ -311,11 +448,19 @@ class StreamEvents:
                 # ids on this lane and joining on the wrong one silently counts nothing.
                 self._announce(event.get("item_id") or item.get("id") or event.get("output_index"),
                                item, identity="call_id")
-                self._open_stream(event.get("item_id") or item.get("id"), item, identity="call_id")
+                self._open_stream(event.get("item_id") or item.get("id"), item, identity="call_id",
+                                  output_index=event.get("output_index"))
             elif kind == "response.function_call_arguments.delta":
                 self._count_lines(event.get("item_id"), event.get("delta"))
             elif kind == "response.function_call_arguments.done":
+                self._lane_done(event.get("item_id"), event.get("arguments"), source="arguments_done")
                 self._close_stream(event.get("item_id"))
+            elif kind == "response.output_item.done" and item.get("type") == "function_call":
+                # The installed codec builds the executed `tool-call` from THIS item's
+                # `arguments` and ignores `arguments.done`, so this is the completion to compare.
+                key = event.get("item_id") or item.get("id")
+                self._lane_done(key, item.get("arguments"), source="item_done")
+                self._close_stream(key)
             if kind == "response.output_text.delta":
                 self.saw_text |= bool(event.get("delta"))
                 if event.get("delta"):

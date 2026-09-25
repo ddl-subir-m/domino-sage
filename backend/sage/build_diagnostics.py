@@ -344,6 +344,104 @@ def _planning_recovery(value) -> dict | None:
     }
 
 
+LANE_BOUNDARIES = frozenset({"open", "match", "mismatch", "done_only", "no_done"})
+LANE_DONE_SOURCES = frozenset({"none", "arguments_done", "item_done", "both"})
+LANE_JSON_VALIDITY = frozenset({"absent", "empty", "invalid", "valid_object", "valid_non_object"})
+LANE_AGREEMENTS = frozenset({"none", "single", "agree", "disagree"})
+LANE_TERMINALS = frozenset({"open", "closed"})
+MAX_BOUNDARY_CALLS = 64
+MAX_BOUNDARY_LANES = 200
+
+
+def _count(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _argument_lane(value) -> dict | None:
+    """One lane, admitted whole or not at all. Ids are bounded tokens; everything else is a count
+    or a closed word. A lane that carried argument text under any key is not a lane."""
+    if not isinstance(value, dict):
+        return None
+    join, done = value.get("deltaJoin"), value.get("done")
+    if not isinstance(join, dict) or not isinstance(done, dict):
+        return None
+    lane = _metadata(value, ["providerId", "name"])
+    key = value.get("lane")
+    if not (isinstance(key, str) and _TOKEN.fullmatch(key)):
+        return None
+    lane["lane"] = key
+    if value.get("outputIndex") is not None and _count(value.get("outputIndex")) is None:
+        return None
+    counts = {key: _count(join.get(key)) for key in ("count", "empty", "bytes")}
+    if any(v is None for v in counts.values()):
+        return None
+    if (value.get("boundary") not in LANE_BOUNDARIES
+            or value.get("terminal") not in LANE_TERMINALS
+            or done.get("source") not in LANE_DONE_SOURCES
+            or done.get("jsonValidity") not in LANE_JSON_VALIDITY
+            or done.get("agreement") not in LANE_AGREEMENTS
+            or (done.get("bytes") is not None and _count(done.get("bytes")) is None)):
+        return None
+    return {
+        "lane": lane["lane"],
+        "providerId": lane.get("providerId"),
+        "name": lane.get("name"),
+        "outputIndex": value.get("outputIndex"),
+        "deltaJoin": counts,
+        "done": {"source": done["source"], "bytes": done.get("bytes"),
+                 "jsonValidity": done["jsonValidity"], "agreement": done["agreement"]},
+        "boundary": value["boundary"],
+        "terminal": value["terminal"],
+    }
+
+
+def _tool_argument_boundaries(calls) -> dict | None:
+    """Per-call tool-argument boundary facts (#560), read from the recorder's calls.
+
+    A section of its own rather than a field on each `calls` row: a call can carry forty lanes,
+    and the calls section is trimmed by halves under the record cap, which would take the
+    boundary evidence down with it. Capped twice, per call and per turn, and truncation is
+    said rather than hidden. A count or a comparison result here says WHERE the wire and the
+    completion disagreed; it never says which side was at fault.
+    """
+    if not isinstance(calls, list):
+        return None
+    rows, lanes_kept, truncated = [], 0, False
+    for row in calls:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("toolArgumentBoundaries")
+        if not isinstance(raw, dict):
+            continue
+        if len(rows) >= MAX_BOUNDARY_CALLS:
+            truncated = True
+            break
+        entry = _metadata(row, ["n", "callId", "protocol"])
+        if "n" not in entry:
+            continue
+        response_id = raw.get("responseId")
+        entry["responseId"] = (response_id if isinstance(response_id, str)
+                               and _TOKEN.fullmatch(response_id) else None)
+        entry["orphanDeltas"] = _count(raw.get("orphanDeltas")) or 0
+        entry["lanesTruncated"] = raw.get("lanesTruncated") is True
+        lanes = []
+        for lane in (raw.get("lanes") if isinstance(raw.get("lanes"), list) else []):
+            if lanes_kept >= MAX_BOUNDARY_LANES:
+                entry["lanesTruncated"] = truncated = True
+                break
+            admitted = _argument_lane(lane)
+            if admitted is None:
+                entry["lanesTruncated"] = True
+                continue
+            lanes.append(admitted)
+            lanes_kept += 1
+        entry["lanes"] = lanes
+        rows.append(entry)
+    if not rows:
+        return None
+    return {"calls": rows, "truncated": truncated}
+
+
 def _progress_budget(value) -> dict | None:
     """Copy only the exact content-free progress budget schema (#544).
 
@@ -568,6 +666,11 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
     pre_edit_guard = _pre_edit_guard(raw.get("preEditGuard"))
     if pre_edit_guard is not None:
         record["preEditGuard"] = pre_edit_guard
+    # #560's section. Read from the calls BEFORE the section loop below trims them, so the
+    # boundary evidence of a late call survives a record that had to drop early calls.
+    tool_argument_boundaries = _tool_argument_boundaries(raw.get("calls"))
+    if tool_argument_boundaries is not None:
+        record["toolArgumentBoundaries"] = tool_argument_boundaries
     progress_budget = _progress_budget(raw.get("progressBudget"))
     if progress_budget is not None:
         record["progressBudget"] = progress_budget
@@ -659,6 +762,10 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
         call.get("toolsTruncated") or any(inv.get("metadataTruncated")
                                         for inv in call.get("toolInvocations", []))
         for call in raw.get("calls", []))
+    boundaries = record.get("toolArgumentBoundaries")
+    if boundaries is not None:
+        record["capture"]["upstreamTruncated"]["toolArgumentBoundaries"] = bool(
+            boundaries["truncated"] or any(c["lanesTruncated"] for c in boundaries["calls"]))
     # Cap the finished JSON too: bounded field lengths alone do not bound the sum.
     # Reserve space for the current retention metadata added by the download route.
     while len(_encode(record)) > MAX_RECORD_BYTES - 512:

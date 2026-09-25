@@ -29,6 +29,7 @@ swallows, and every call is a no-op when no turn is open.
 from __future__ import annotations
 
 import collections
+import copy
 import json
 import logging
 import os
@@ -116,6 +117,9 @@ class ModelCall:
     build_intent: dict | None = None
     tool_invocations: list[dict] = field(default_factory=list)
     tools_truncated: bool = False
+    # Per-lane argument boundary facts from `StreamEvents.argument_boundaries()` (#560): counts,
+    # byte lengths, terminal state and a join/done comparison result. No argument text.
+    tool_argument_boundaries: dict | None = None
     output_tokens: int | None = None
     reasoning_tokens: int | None = None
     first_byte: float | None = None   # monotonic, not a duration — the waterfall needs the moment
@@ -639,6 +643,9 @@ class _CallHandle:
             c.tool_invocations = [dict(t) for t in events.tool_invocations]
             c.tools = [t["name"] or "?" for t in c.tool_invocations]
             c.tools_truncated = events.tools_truncated
+            boundaries = getattr(events, "argument_boundaries", None)
+            if callable(boundaries):
+                c.tool_argument_boundaries = boundaries()
             for attr in ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens"):
                 value = getattr(events, attr)
                 if value is not None:
@@ -889,6 +896,7 @@ def as_dict(rec: TurnRecord) -> dict:
                    "buildIntent": c.build_intent,
                    "toolInvocations": [dict(t) for t in c.tool_invocations],
                    "toolsTruncated": c.tools_truncated,
+                   "toolArgumentBoundaries": copy.deepcopy(c.tool_argument_boundaries),
                    "outTokens": c.output_tokens, "reasoningTokens": c.reasoning_tokens,
                    "atMs": round((c.t0 - rec.t0) * 1000),
                    "ttfbMs": None if c.first_byte is None else round((c.first_byte - c.t0) * 1000),
