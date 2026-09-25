@@ -471,8 +471,8 @@ window.SW = window.SW || {};
       // Read off the store rather than taken as props, the way `startConversation` reads the
       // selected app: this control is handed the app list and nothing else, and passing every
       // thread through it would make each caller re-state what the store already holds.
-      const { threads, thread } = SW.store.get();
-      const next = SW.util.threadForApp(threads, app.id, thread);
+      const { thread } = SW.store.get();
+      const next = SW.store.conversationForApp(app.id);
       const here = thread ? thread.id : null;
       const there = next ? next.id : null;
       // On the click, for the reason `openConversation` closes it there (#198): the sheet covers
@@ -1329,10 +1329,11 @@ window.SW = window.SW || {};
   SW.AppDependenciesModal = AppDependenciesModal;
 
   function PreviewPane({ resumed }) {
-    const { previewSrc, previewStatus, activeApp, costUrl, buildRunning } = SW.store.get();
+    const { previewSrc, previewStatus, previewDetail, activeApp, costUrl, buildRunning } = SW.store.get();
     const starting = previewStatus === 'starting';
     const failed = previewStatus === 'err';
     const stalled = previewStatus === 'stalled';
+    const empty = previewStatus === 'empty';
 
     // Every app action in one place, grouped by what it's about rather than left spread across a
     // kebab and three loose toolbar buttons (Rename and Delete on Reset's precedent, #38: text-
@@ -1401,7 +1402,7 @@ window.SW = window.SW || {};
         // A new tab, so the Build you published from is still behind it — Gallery's cards open the
         // same way for the same reason. Opened as given: nothing here builds the URL.
         if (key === 'open' && activeApp.url) window.open(activeApp.url, '_blank', 'noopener');
-        if (key === 'reload') SW.store.refreshPreview();
+        if (key === 'reload') SW.store.refreshPreview({ retry: true });
         if (key === 'rename') renameApp(activeApp);
         if (key === 'delete') deleteApp(activeApp);
         if (key === 'dependencies') SW.store.openAppDependencies();
@@ -1410,19 +1411,18 @@ window.SW = window.SW || {};
     };
 
     useEffect(() => {
-      if (previewStatus !== 'starting') return undefined;
-      const id = setInterval(() => SW.store.refreshPreview(), 1500);
-      // Giving up used to stop the polling and leave the status alone, so the overlay went on
-      // saying `Starting preview…` with nothing behind it checking (#90). It says so now.
-      const stop = setTimeout(() => {
-        clearInterval(id);
-        SW.store.previewGaveUp();
-      }, 90000);
-      return () => {
-        clearInterval(id);
-        clearTimeout(stop);
-      };
-    }, [previewStatus]);
+      if (!activeApp) return undefined;
+      // Read status even while the page is visible: Uvicorn may lose its child on the next edit.
+      // This route does not spawn or reset a failed attempt, and it never reloads a healthy page.
+      const id = setInterval(() => SW.store.refreshPreview({ statusOnly: true }), 1500);
+      return () => clearInterval(id);
+    }, [activeApp && activeApp.id]);
+
+    useEffect(() => {
+      if (!starting) return undefined;
+      const id = setTimeout(() => SW.store.previewGaveUp(), 90000);
+      return () => clearTimeout(id);
+    }, [starting]);
 
     return h(
       'div',
@@ -1469,31 +1469,31 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-builder-canvas is-live' },
-        (starting || failed) &&
+        (starting || failed || stalled || empty) &&
           h(
             'div',
-            { className: 'sw-preview-overlay' },
-            starting ? 'Starting preview…' : "Preview didn't start — click reload to retry."
-          ),
-        // The way out is a button here rather than the toolbar's Reload (#90). Reload is an
-        // icon-only control at the other end of the row, and the person this overlay is written
-        // for has just been told the thing they were waiting for is not coming — sending them
-        // hunting for the fix is the part that made it a dead end.
-        stalled &&
-          h(
-            'div',
-            { className: 'sw-preview-overlay is-stalled' },
+            { className: 'sw-preview-overlay is-stalled', role: failed ? 'alert' : 'status' },
             h('div', { className: 'sw-preview-overlay-text' },
-              SW.brand.text("Preview didn't start in 90 seconds. A first build can take longer.")),
-            h(
+              empty ? 'No app has been built yet.'
+                : starting ? `Starting ${previewDetail && previewDetail.server || 'preview'}…`
+                  : stalled ? "Preview didn't start in 90 seconds. Select Retry to check it."
+                  : `${previewDetail && previewDetail.server || 'Preview'} is unavailable.`),
+            previewDetail && previewDetail.error &&
+              h('div', { className: 'sw-preview-overlay-text', style: { marginTop: 8 } }, previewDetail.error),
+            previewDetail && previewDetail.output && previewDetail.output.length > 0 &&
+              h('details', { style: { maxWidth: '90%', marginTop: 12, textAlign: 'left' } },
+                h('summary', null, 'Server output'),
+                h('pre', { style: { maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap' } },
+                  previewDetail.output.join('\n'))),
+            !empty && !starting && h(
               Button,
               {
                 size: 'small',
                 type: 'primary',
                 style: { marginTop: 12 },
-                onClick: () => SW.store.refreshPreview(),
+                onClick: () => SW.store.refreshPreview({ retry: true }),
               },
-              'Check again'
+              'Retry'
             )
           ),
         h('iframe', {
@@ -1507,7 +1507,7 @@ window.SW = window.SW || {};
 
   SW.BuildMode = function BuildMode({ conversationId, appId }) {
     const { thread, activeApp, buildMessages, buildTranscript, buildTyping, buildRunning, turnWedged,
-            projectPlan, runningTurn } = SW.store.get();
+            projectPlan, runningTurn, buildHistoryLoading, buildHistoryError } = SW.store.get();
     const scroller = useRef(null);
 
     // The only thing keeping app state fresh, and it moved here with the rail it used to live in
@@ -1564,23 +1564,46 @@ window.SW = window.SW || {};
     // dependency, because selecting the resolved app would re-run this and ask again.
     useEffect(() => {
       if (appId || !conversationId) return;
+      let current = true;
       SW.store
         .resolveConversationApp(conversationId)
-        .then((bound) => bound && SW.store.selectApp(bound))
+        .then((bound) => current && bound && SW.store.selectApp(bound))
         .catch(() => {});
+      return () => { current = false; };
     }, [appId, conversationId]);
 
     useEffect(() => {
+      let current = true;
       if (!conversationId) {
-        // The route named no conversation, so this is a new one. Build's transcript is per
-        // conversation now, so the old turns have to leave the screen with it.
-        SW.store.clearConversation();
+        // Explicit New stays empty; an app return uses this viewer's last conversation.
+        const next = !SW.store.get().pendingConversation
+          && SW.store.conversationForApp(appId || (activeApp && activeApp.id));
+        if (next) SW.router.replace(`#/build/${next.id}?app=${appId || activeApp.id}`);
+        else SW.store.clearConversation();
         return;
       }
       if (!thread || thread.id !== conversationId) {
-        SW.store.openThread(conversationId).catch(() => {});
+        SW.store.openThread(conversationId, { appId }).catch((error) => {
+          if (!current) return;
+          if (error.status === 404 || error.status === 403) {
+            SW.store.set({ threads: SW.store.get().threads.filter(t => t.id !== conversationId) });
+            const targetApp = appId || (SW.store.get().activeApp || {}).id;
+            const next = SW.store.conversationForApp(targetApp, conversationId);
+            const query = targetApp ? `?app=${targetApp}` : '';
+            SW.store.clearConversation();
+            SW.router.replace(next ? `#/build/${next.id}${query}` : `#/build${query}`);
+          } else SW.store.set({ buildHistoryError: "Couldn't load this conversation. Retry to read it again." });
+        });
       }
-    }, [conversationId]);
+      return () => { current = false; };
+    }, [conversationId, appId]);
+
+    useEffect(() => {
+      if (conversationId && thread && thread.id === conversationId
+          && activeApp && (!appId || activeApp.id === appId)) {
+        SW.store.rememberAppConversation(activeApp.id, conversationId);
+      }
+    }, [conversationId, appId, thread && thread.id, activeApp && activeApp.id]);
 
     // The transcript follows the open conversation rather than the mount. While the route names
     // one that is still opening, loading would replay the conversation we are leaving.
@@ -1637,7 +1660,8 @@ window.SW = window.SW || {};
     // pretend the conversation never happened, which is why it sits under the transcript below
     // rather than in place of it. Under the split view there is no transcript to sit under, and
     // this is the screen Build has always drawn.
-    const noAppTurns = buildMessages.length === 0 && !buildTyping;
+    const noAppTurns = buildMessages.length === 0 && !buildTyping
+      && !buildHistoryLoading && !buildHistoryError && !opening;
     // Two facts, and they are independent (#172). "Is there an app" is the rail row's `built`; "is
     // a plan waiting" is the pin's status. Both were read off the pin alone, which made them
     // mutually exclusive by construction — `status: built` means plan.md has been ARCHIVED, so the
@@ -1743,7 +1767,17 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-builder-chat-messages sw-scroll', ref: scroller },
-              buildTranscript.map((message) => h(SW.Message, { key: message.id, message })),
+              (opening || (buildHistoryLoading && !buildTranscript.length)) && !buildHistoryError
+                && h('div', { role: 'status' }, 'Loading conversation…'),
+              buildHistoryError && h('div', { role: 'alert' }, buildHistoryError,
+                h(Button, { onClick: async () => {
+                  if (conversationId && (!thread || thread.id !== conversationId)) {
+                    const loaded = await SW.store.openThread(conversationId, { appId }).catch(() => null);
+                    if (!loaded) return;
+                  }
+                  await SW.store.loadBuild({ keepPreview: true });
+                } }, 'Retry')),
+              !opening && buildTranscript.map((message) => h(SW.Message, { key: message.id, message })),
               noAppTurns &&
                 h(
                   'div',

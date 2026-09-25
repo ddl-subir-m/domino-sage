@@ -416,7 +416,7 @@ def test_a_shut_drawer_reads_nothing():
     step = _run([{"history": "thr_many", "select": "app_c", "closed": True}])[-1]
     assert step["drawer"]["open"] is False
     assert "GET /project/history?detail=off" not in step["calls"]
-    assert "GET /project/history?conversation=thr_many" in step["calls"]
+    assert "GET /project/history?conversation=thr_many&app=app_c" in step["calls"]
 
 
 # ---- criterion 5 --------------------------------------------------------------------------------
