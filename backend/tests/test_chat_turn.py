@@ -3039,10 +3039,11 @@ def test_the_planner_does_not_spend_the_rebuild_a_chat_turn_is_owed(tmp_path: Pa
         pass
     assert len(oc.sessions) == 2
 
+    dispatch = len(oc.prompts)
     events = list(orch.chat_stream(tid, "now try again"))
 
     assert any(e.get("type") == recall.REBUILT for e in events)
-    assert "41,002 events" in oc.prompts[-1]["text"]
+    assert "41,002 events" in oc.prompts[dispatch]["text"]
 
 
 def test_a_dispatch_that_fails_leaves_the_rebuild_owed_for_the_next_turn(tmp_path: Path):
@@ -3099,9 +3100,10 @@ def test_a_restart_after_a_clear_does_not_carry_what_the_clear_took(tmp_path: Pa
     list(orch.chat_stream(tid, "what is in the orders table?"))
 
     oc.restart()
+    dispatch = len(oc.prompts)
     events = list(orch.chat_stream(tid, "chart that"))
 
-    sent = oc.prompts[-1]["text"]
+    sent = oc.prompts[dispatch]["text"]
     # The rebuild did happen — this is a genuine loss.
     assert any(e.get("type") == recall.REBUILT for e in events)
     assert "what is in the orders table?" in sent
@@ -3164,3 +3166,90 @@ def test_the_patch_note_never_tells_the_model_what_it_is_missing(tmp_path: Path)
     for missing in ("you have no", "you do not have", "unavailable", "not available",
                     "cannot use", "no `edit`", "without `edit`"):
         assert missing not in lowered, f"the note names an absence: {missing!r}"
+
+
+@pytest.mark.parametrize("first", [Turn(), Turn(text=" \n\t"), Turn(tools=["read"])])
+def test_chat_without_a_result_recovers_once_then_records_failure(tmp_path, first):
+    orch, oc = _orch(tmp_path, [first, Turn()])
+    tid = orch.create_thread()["id"]
+    events = list(orch.chat_stream(tid, "summarize the file"))
+    assert len(oc.prompts) == 2
+    assert oc.prompts[0]["session"] == oc.prompts[1]["session"]
+    for rows in (events, orch.thread_history(tid)):
+        done = next(e for e in rows if e["type"] == "done")
+        assert done["ok"] is False
+        assert done["decision"] == "empty answer"
+        assert done["advanced"] is False
+        assert any(e.get("reason") == "empty answer" for e in rows)
+
+
+def test_chat_empty_result_recovery_keeps_its_answer(tmp_path):
+    orch, oc = _orch(tmp_path, [Turn(), Turn(text="There are three columns.")])
+    tid = orch.create_thread()["id"]
+    events = list(orch.chat_stream(tid, "summarize the file"))
+    assert len(oc.prompts) == 2
+    for rows in (events, orch.thread_history(tid)):
+        assert next(e for e in rows if e["type"] == "done")["ok"] is True
+        assert [e["text"] for e in rows if e.get("kind") == "text"] == [
+            "There are three columns."]
+
+
+@pytest.mark.parametrize("witness", ["message", "gateway"])
+def test_chat_terminal_error_with_partial_text_is_not_success(tmp_path, witness):
+    failure = {"name": "APIError", "data": {"message": "provider unavailable"}}
+    orch, oc = _orch(tmp_path, [Turn(text="I found the answer.",
+                                    error=failure if witness == "message" else None)])
+    tid = orch.create_thread()["id"]
+    if witness == "gateway":
+        send = oc.send_prompt
+        def refuse(*args, **kwargs):
+            send(*args, **kwargs)
+            orch.project(start_preview=False).last_gateway_error = {
+                "message": "provider unavailable", "code": "upstream_error"}
+        oc.send_prompt = refuse
+    events = list(orch.chat_stream(tid, "summarize the file"))
+    assert len(oc.prompts) == 1
+    for rows in (events, orch.thread_history(tid)):
+        assert next(e for e in rows if e["type"] == "done")["ok"] is False
+        assert any(e["type"] == "error" for e in rows)
+
+
+@pytest.mark.parametrize("role", ["answer", "working"])
+def test_chat_result_requires_a_visible_artifact_or_text(tmp_path, monkeypatch, role):
+    from sage.orchestrator import service
+    orch, oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    table = f"examples/{tid}/result.table.json"
+    oc.turns = [Turn(writes={table: '{"columns":["total"],"rows":[[3]]}'}), Turn()]
+    monkeypatch.setattr(service.live_data_use, "artifact_roles", lambda _events: {table: role})
+    events = list(orch.chat_stream(tid, "summarize the file"))
+    assert len(oc.prompts) == (1 if role == "answer" else 2)
+    for rows in (events, orch.thread_history(tid)):
+        done = next(e for e in rows if e["type"] == "done")
+        assert done["ok"] is (role == "answer")
+
+
+def test_chat_empty_recovery_can_be_stopped(tmp_path):
+    orch, oc = _orch(tmp_path, [Turn(), Turn()])
+    tid = orch.create_thread()["id"]
+    send = oc.send_prompt
+    def stop_recovery(*args, **kwargs):
+        send(*args, **kwargs)
+        if len(oc.prompts) == 2:
+            orch.project(start_preview=False).stop_requested = True
+    oc.send_prompt = stop_recovery
+    events = list(orch.chat_stream(tid, "summarize the file"))
+    assert len(oc.prompts) == 2
+    assert next(e for e in events if e["type"] == "done")["ok"] is False
+    assert not orch.project(start_preview=False).control.snapshot().chat_thread_id
+
+
+def test_chat_empty_recovery_and_table_repair_share_one_attempt(tmp_path):
+    orch, oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    table = f"examples/{tid}/result.table.json"
+    oc.turns = [Turn(), Turn(text="The table is ready.", writes={table: "{bad"}),
+                Turn(writes={table: '{"columns":[],"rows":[]}'})]
+    events = list(orch.chat_stream(tid, "summarize the file"))
+    assert len(oc.prompts) == 2
+    assert next(e for e in events if e["type"] == "done")["decision"] == "table generation failed"

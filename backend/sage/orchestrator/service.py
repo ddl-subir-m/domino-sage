@@ -13761,7 +13761,8 @@ class Orchestrator:
             done["reads"] = sorted(set(turn_writes))
             # The guard is load-bearing. An empty set is a subset of everything, so without "wrote
             # at least one" every ordinary conversational turn would report `advanced: false`.
-            done["advanced"] = not (turn_writes and set(turn_writes) <= turn_rewrites)
+            done["advanced"] = (done.get("decision") != "empty answer"
+                                and not (turn_writes and set(turn_writes) <= turn_rewrites))
             # What this turn's model did with the tools Chat handed it (#469). Counted here and
             # judged by `_tool_use`, which is the whole of the decision: ONE TURN CANNOT TELL
             # "this model cannot call a tool" from "this turn did not need one", so a per-turn
@@ -14222,6 +14223,7 @@ class Orchestrator:
         from ..workspace.chat_tables import ChatTables, failed_table_name, without_failed_tables
 
         tables: ChatTables | None = None
+        recovery_used = False
         primary_body = ""
         last_text = ""
         streamed_body = ""
@@ -14235,6 +14237,15 @@ class Orchestrator:
         # rather than a return value because every exit from this turn goes through
         # `publish_chat_artifacts`, and only one of them — the completed one — may draw the card.
         asked_for_the_other_lane = False
+
+        def has_chat_result(body: str, invalid: dict[str, str]) -> bool:
+            body = _take_needs_more_than_sql_marker(_take_no_build_marker(body)[0])[0]
+            if body.strip():
+                return True
+            roles = live_data_use.artifact_roles(
+                project.shim.data_use.events(self._data_use_turns.get(thread_id, "")))
+            return any(rel not in invalid and roles.get(rel, "answer") != "working"
+                       for rel in new_artifact_paths(project.record.path, thread_id, tables.before))
 
         def publish_chat_artifacts(outcome: str):
             """Every active Chat exit validates bytes before retention, text and artifacts."""
@@ -15103,15 +15114,26 @@ class Orchestrator:
                     body = _take_no_build_marker(pending_text)[0] if pending_text else ""
                     if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                         continue
-                    answered = bool(body.strip()) and not turn_failed
                     invalid = tables.check(primary_body if tables.repair_ran else body)
+                    answered = (has_chat_result(primary_body if tables.repair_ran else body, invalid)
+                                and not turn_failed and project.last_gateway_error is None)
                     repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
-                    if (repairable and not tables.repair_ran and not turn_failed and not step_error
+                    if ((repairable or (not invalid and not answered))
+                            and not recovery_used and not turn_failed and not step_error
                             and project.last_gateway_error is None):
                         if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                             continue
-                        primary_body = body
-                        tables.repair_ran = True
+                        recovery_used = True
+                        table_repair = bool(repairable)
+                        if table_repair:
+                            primary_body = body
+                            tables.repair_ran = True
+                        correction = (tables.repair_prompt(repairable) if table_repair else
+                                      "Your turn ended without an answer or an answer artifact. "
+                                      "Answer the user's question using the work already done. "
+                                      "This is the only recovery attempt. Keep the current source "
+                                      "permissions. If you cannot answer, say what prevented it. "
+                                      "Do not invent findings or claim an artifact was saved.")
                         # Ignore the first request's transcript on the next poll, while keeping
                         # the same session, Chat enforcement pin and original turn deadline.
                         for m in msgs:
@@ -15119,25 +15141,32 @@ class Orchestrator:
                                 if isinstance(part, dict):
                                     seen.add(_part_key(m, i, part))
                         try:
-                            with timing.span("chat.table_repair"):
+                            with timing.span("chat.table_repair" if table_repair else "chat.answer_repair"):
                                 client.send_prompt(sid,
-                                                   tables.repair_prompt(repairable)
+                                                   correction
                                                    + (("\n\n" + chat_patch_note)
                                                       if chat_patch_note else ""),
                                                    model=chat_handle,
                                                    agent="sage-chat", chat=True)
                         except Exception:
-                            log.warning("chat: table repair request failed")
+                            log.warning("chat: result repair request failed")
                             try:
                                 client.interrupt(sid)
                             except Exception:
                                 log.warning("chat: interrupt after repair request failed")
                             yield from publish_chat_artifacts("repair request failed")
+                            if not table_repair:
+                                err = {"type": "error", "reason": "empty answer",
+                                       "message": "No answer was produced, and the recovery attempt failed."}
+                                store.append_history(thread_id, err)
+                                yield err
                             yield finish({"type": "done", "ok": False,
-                                          "decision": "table repair failed", "artifacts": artifacts})
+                                          "decision": ("table repair failed" if table_repair
+                                                       else "empty answer"), "artifacts": artifacts})
                             return
                         appeared = False
                         last_text = ""
+                        streamed_body = ""
                         last_activity = time.monotonic()
                         running_tools.clear()
                         running_paths.clear()
@@ -15166,9 +15195,7 @@ class Orchestrator:
             # its wait; Chat never did, so a refusal the shim had already written down in full could
             # still end a Chat turn in silence.
             #
-            # Only when there is nothing to keep, the same rule the handoff planner uses: an error
-            # the shim recovered from is still recorded, and an answer that came back whole is worth
-            # more than the note of a call that went wrong on the way to it.
+            # A terminal provider error takes precedence over partial answer text.
             if not answered and not step_error and project.last_gateway_error is not None:
                 failed = project.last_gateway_error
                 if said := _chat_error_text(failed):
@@ -15178,6 +15205,12 @@ class Orchestrator:
             done = {"type": "done", "ok": True, "decision": "answered"}
             if invalid:
                 done.update(ok=False, decision="table generation failed")
+            elif not answered and not step_error:
+                err = {"type": "error", "reason": "empty answer",
+                       "message": "No answer was produced. Try the request again."}
+                store.append_history(thread_id, err)
+                yield err
+                done.update(ok=False, decision="empty answer")
             # The door onto the lane that can compute (#411, ADR-0058). AFTER the answer, and that
             # position is the decision rather than a convenience.
             #
