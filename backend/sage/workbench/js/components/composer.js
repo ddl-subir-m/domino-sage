@@ -21,12 +21,22 @@ window.SW = window.SW || {};
     return SW.util.chatCapable(resourceGroups.model_llm);
   }
 
-  // 'Model default' rather than 'Default', because `none` is now a level some aliases really
-  // offer (gpt-5.4 measured 2026-09-12, #280) and it means the opposite thing: 'Model default'
-  // sends no field and lets the alias reason as it likes, 'None' sends the field and turns
-  // reasoning off. Two menu entries a row apart cannot both be called Default.
-  function effortLabel(value) {
-    if (!value) return 'Model default';
+  // Two names for no level, because since #545 it no longer means one thing on both surfaces.
+  //
+  // On a Build plan or implement turn it means 'Automatic': Sage sends the stage's own level, High
+  // while planning and Low while building. 'Model default' was the honest name for that row right
+  // up until the level stopped being the model's.
+  //
+  // In Chat it still means the model's own default — Chat is untouched by #545 — so that row keeps
+  // the old name. One label across both would be wrong on whichever surface it did not describe.
+  //
+  // Neither is 'Default', for the reason it never was: `none` is a level some aliases really offer
+  // (gpt-5.4 measured 2026-09-12, #280) and it means the opposite thing — it SENDS the field and
+  // turns reasoning off. Two menu entries a row apart cannot both be called Default.
+  const AUTOMATIC_EFFORT = 'Automatic';
+  const MODEL_DEFAULT_EFFORT = 'Model default';
+  function effortLabel(value, unset = MODEL_DEFAULT_EFFORT) {
+    if (!value) return unset;
     if (value === 'xhigh') return 'Extra high';
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
@@ -773,7 +783,7 @@ window.SW = window.SW || {};
     // turn having already sent the level.
     const strandedFact = strandedNow
       ? `${override || pinnedModel} doesn't accept ${effortLabel(strandedNow)}. `
-        + 'Choose Model default or a supported setting before the next turn.'
+        + `Choose ${AUTOMATIC_EFFORT} or a supported setting before the next turn.`
       : '';
     // The fact PLUS the way out, for the open menu only. Clearing the pick is a real instruction
     // there and a false one on the running chip, which draws a disabled Button with no menu behind
@@ -840,11 +850,12 @@ window.SW = window.SW || {};
       return {
         ...row,
         children: [
-          // First, and not buried under the levels: running the alias at its own default is what
-          // every Build pick did before this submenu existed, so it stays the easiest thing to ask
-          // for rather than becoming the thing you have to know to look for. It is also the way out
-          // of a stranded level, which is why it is here even where `levels` is empty.
-          { key: effortKey(id, null), label: effortLabel(null) },
+          // First, and not buried under the levels: not choosing is what every Build pick did
+          // before this submenu existed, so it stays the easiest thing to ask for rather than
+          // becoming the thing you have to know to look for. It is also the way out of a stranded
+          // level, which is why it is here even where `levels` is empty. What it now asks for is
+          // the stage's level rather than the alias's own (#545) — see `effortLabel`.
+          { key: effortKey(id, null), label: effortLabel(null, AUTOMATIC_EFFORT) },
           ...levels.map((value) => ({ key: effortKey(id, value), label: effortLabel(value) })),
           // Disabled for the reason a barred model is disabled one level up: it is not a thing that
           // can be chosen, and the way out is the row above it. Drawn at all so the level the
@@ -854,8 +865,8 @@ window.SW = window.SW || {};
                 key: effortKey(id, stranded),
                 disabled: true,
                 label: `${effortLabel(stranded)} — not accepted`,
-                title: `${id} doesn't accept this level. Pick another, or go back to the model `
-                  + 'default.',
+                title: `${id} doesn't accept this level. Pick another, or go back to `
+                  + `${AUTOMATIC_EFFORT}.`,
               }]
             : []),
         ],
@@ -1585,9 +1596,10 @@ window.SW = window.SW || {};
                     // gap twice with different causes.
                     const levelWhy = !override && livePick && !collapsedStranded
                       && (pickedLevel || null) !== pinnedEffort
-                      ? `This pick runs ${pinnedModel} at ${effortLabel(pickedLevel || null)}, not `
-                        + `at the assignment's ${effortLabel(pinnedEffort)}. Clear the pick to `
-                        + "use the assignment's."
+                      ? `This pick runs ${pinnedModel} at `
+                        + `${effortLabel(pickedLevel || null, AUTOMATIC_EFFORT)}, not at the `
+                        + `assignment's ${effortLabel(pinnedEffort, AUTOMATIC_EFFORT)}. Clear the `
+                        + "pick to use the assignment's."
                       : '';
                     // All three joined rather than any of them winning. Behind a `||` the pin
                     // suppressed whichever level sentence applied — and it was the COMMONER one,

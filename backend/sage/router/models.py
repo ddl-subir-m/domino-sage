@@ -317,9 +317,10 @@ class SessionState:
     approved_order: tuple[ModelId, ...] = ()
     # A bounded data Artifact turn keeps reads and the scoped artifact writer only.
     chat_artifact_turn: bool = False
-    # Saved assignment rows present when this Build turn started. Presence is separate from the
-    # row's effort value: a row carrying `effort: null` is an explicit Model default choice, while
-    # an absent row is eligible for the automatic Build-stage default (#532).
+    # Saved assignment rows present when this Build turn started. Presence tells a level the person
+    # saved from a deployment default that happens to sit on the same slot: only the former is
+    # theirs to send as-is (#532). It no longer decides an UNSET row — a row carrying `effort: null`
+    # names no level at all, so it takes the Build-stage default like an absent one (#545).
     saved_effort_slots: frozenset[str] = frozenset()
     effort_rows_armed: bool = False
 

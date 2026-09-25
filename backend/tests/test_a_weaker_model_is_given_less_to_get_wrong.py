@@ -168,25 +168,86 @@ def test_a_stalled_call_says_what_effort_it_ran_on(running, monkeypatch):  # noq
     assert err["code"] == "model_no_action_timeout"
     assert err["model"] == "GLM 5.3 OR"
     assert err["effort_source"] == call["effortSource"]
-    assert err["efforts"] == ["low", "high", "max"]  # the measured row
+    assert err["effort"] == call["effectiveEffort"]  # what reached the WIRE, which is what the
+    assert err["efforts"] == ["low", "high", "max"]  # hint keys on (#545); the measured row
 
 
-def test_the_hint_names_model_default_and_the_levels_it_could_use():
+def test_the_hint_names_the_absent_limit_and_the_levels_it_could_use():
     from sage.orchestrator.service import _effort_hint
 
-    hint = _effort_hint({"effort_source": "provider_default", "model": "GLM 5.3 OR",
-                         "efforts": ["low", "high", "max"]})
-    assert "GLM 5.3 OR ran on Model default" in hint
-    assert "(low, high, max)" in hint
+    hint = _effort_hint({"effort": None, "effort_source": "provider_default",
+                         "model": "GLM 5.3 OR", "efforts": ["low", "high", "max"]}, "Plan")
+    assert "GLM 5.3 OR ran with no limit on its thinking" in hint
+    assert "Setting its Plan effort (low, high, max)" in hint
 
 
-def test_no_hint_for_a_chosen_effort_or_a_model_without_one():
+def test_the_hint_names_the_stage_whose_row_would_fix_it():
+    """Plan and Implement are two rows in the drawer, and a person reading an implement stall is
+    being pointed at the one they can act on (#545)."""
     from sage.orchestrator.service import _effort_hint
 
-    assert _effort_hint({"effort_source": "user", "efforts": ["low"]}) == ""
-    assert _effort_hint({"effort_source": "stage_default", "efforts": ["low"]}) == ""
-    assert _effort_hint({"effort_source": "provider_default", "efforts": []}) == ""
-    assert _effort_hint({}) == ""
+    err = {"effort": None, "effort_source": "stage_default", "model": "gpt-5.4",
+           "efforts": ["none"]}
+    assert "Setting its Implement effort (none)" in _effort_hint(err, "Implement")
+    assert "Setting its Plan effort (none)" in _effort_hint(err, "Plan")
+
+
+def test_a_dropped_stage_level_still_gets_the_hint():
+    """The case `effort_source` could not see. Since #545 an unset Build level resolves to the
+    stage default, and gpt-5.4 keeps only `none` beside tools — so the field is dropped and the
+    turn runs unlimited while carrying a source that is not `provider_default`. Keyed on the
+    source, this turn stalled in silence."""
+    from sage.orchestrator.service import _effort_hint
+
+    hint = _effort_hint({"effort": None, "effort_source": "stage_default", "model": "gpt-5.4",
+                         "efforts": ["none"]}, "Implement")
+    assert "gpt-5.4 ran with no limit on its thinking" in hint
+
+
+def test_the_implement_timeout_message_carries_the_hint(tmp_path: Path):
+    """The site, not the sentence (#545). `_effort_hint` was written for #538 and wired only into
+    the two PLAN no-action messages; the implement stall this issue reports ended with "Existing
+    app changes were kept." and no way out named. This drives the real pre-edit path: one turn
+    writes, which DISARMS the guard, and the next call produces nothing."""
+    from .fake_opencode import execution_plan
+
+    orch, oc = _build(tmp_path, [
+        Turn(text=execution_plan("Shell Table", "A table.", "Table", include_title=False)),
+        Turn(text="Shell Table"),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+    ])
+    _run(orch, "build me a table")
+    project = orch.project(start_preview=False)
+    send_prompt = oc.send_prompt
+
+    def stall_after_the_write(*args, **kwargs):
+        send_prompt(*args, **kwargs)
+        project.last_gateway_error = {
+            "code": "model_no_action_timeout", "message": "safe", "call_id": "call-1",
+            "turn_id": "turn", "elapsed_ms": 120_000, "chunk_count": 20,
+            "model": "GLM 5.3 OR", "effort": None, "effort_source": "stage_default",
+            "efforts": ["low", "high", "max"],
+        }
+
+    oc.send_prompt = stall_after_the_write
+
+    events = list(orch.approve_stream())
+
+    message = next(e["message"] for e in events
+                   if e.get("type") == "error" and "no next action" in e.get("message", ""))
+    assert "GLM 5.3 OR ran with no limit on its thinking" in message
+    assert "Setting its Implement effort (low, high, max)" in message
+
+
+def test_no_hint_once_a_level_ran_or_where_the_model_takes_none():
+    from sage.orchestrator.service import _effort_hint
+
+    assert _effort_hint({"effort": "low", "effort_source": "user", "efforts": ["low"]}, "Plan") == ""
+    assert _effort_hint(
+        {"effort": "high", "effort_source": "stage_default", "efforts": ["high"]}, "Plan") == ""
+    assert _effort_hint({"effort": None, "effort_source": "provider_default",
+                         "efforts": []}, "Implement") == ""
+    assert _effort_hint({}, "Plan") == ""
 
 
 # --- what the final check rejects, first in the implement rules ----------------------------------
