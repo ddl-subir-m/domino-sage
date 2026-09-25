@@ -18881,6 +18881,28 @@ class Orchestrator:
         agent_turn = 0
         turn_span = None
         iterate_reason = "first send"
+        # The progress budget's DIAGNOSTIC, outside the loop while its counters are inside it
+        # (#544). The counters reset per agent turn because that is the window they measure; the
+        # record is per TURN, and it is written once at the end, so a per-agent-turn high-water
+        # mark would be overwritten by every repair iteration after it — a turn whose first
+        # attempt ran to the stop would report whatever its quiet repair turn did instead.
+        progress_max_calls = 0
+        progress_limit = "none"
+        progress_programs: dict[str, int] = {}
+
+        def publish_progress() -> None:
+            """Publish on CHANGE, the way `PreEditGuard._publish` does, not once at the end.
+
+            An end-of-turn write would be reached only by the paths that finish an agent turn, and
+            the poll loop has three `return`s — the repeat brake, the quiet window, a refused stop.
+            Those are exactly the turns whose calls-since-change number is most worth having, so
+            losing them would not thin the tuning data evenly; it would bias it towards the turns
+            this budget itself ended, which is the one population that cannot say whether 4 and 8
+            are the right pair.
+            """
+            timing.progress_budget(max_calls_since_change=progress_max_calls,
+                                   limit_fired=progress_limit, programs=progress_programs)
+
         while True:
             agent_turn += 1
             if (iterate_reason != "clean context rollover"
@@ -19069,12 +19091,6 @@ class Orchestrator:
             # The tree as of this window's last threshold read, or "" before the first one. Only
             # ever set where a hash is already being paid for.
             progress_tree = ""
-            # Diagnostics only (#544): the high-water mark, which limit fired, and a tally of bash
-            # PROGRAM names. Never a command — see `program_name` for why a name that does not
-            # reduce cleanly becomes "other" rather than being truncated into the record.
-            progress_max_calls = 0
-            progress_limit = "none"
-            progress_programs: dict[str, int] = {}
             looped = ""
             poll_failures = 0
             while True:
@@ -19288,13 +19304,21 @@ class Orchestrator:
                                 progress_tree = ""
                             else:
                                 progress_calls += 1
-                                progress_max_calls = max(progress_max_calls, progress_calls)
+                                # The high-water mark is what says whether 4 and 8 are the right
+                                # pair, so it counts only while the budget is ARMED. Before the
+                                # build's first change there is no last change to count from, and
+                                # a turn that never armed would otherwise report a large number
+                                # beside `limitFired: "none"` — which reads as a limit that is too
+                                # loose when it is really a limit that was never in play.
+                                if progress_armed:
+                                    progress_max_calls = max(progress_max_calls, progress_calls)
                                 if tool == "bash":
                                     name = program_name(
                                         args.get("command") if isinstance(args, dict) else None)
                                     if name in progress_programs or len(
                                             progress_programs) < MAX_PROGRAMS:
                                         progress_programs[name] = progress_programs.get(name, 0) + 1
+                                publish_progress()
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
                             ms = _tool_duration_ms(part)
@@ -19431,7 +19455,6 @@ class Orchestrator:
                 # both tests are `>=` for the same reason, because a window can be crossed rather
                 # than landed on.
                 if progress_armed and not progress_capped:
-                    policy = self._build_policy
                     # Calls OR time, whichever comes first, and both halves are load-bearing. The
                     # two measured turns were stopped by different ones: Haiku ran ~8.9s a call and
                     # made 8 after its last landed change, so the CALL half reaches it at ~71s;
@@ -19444,13 +19467,16 @@ class Orchestrator:
                     # timeout_seconds` already says this repo expects one call to run for minutes.
                     over_time = (not tool_open
                                  and progress_calls >= _PROGRESS_TIME_MIN_CALLS
-                                 and time.monotonic() - progress_at >= policy.progress_stop_seconds)
+                                 and time.monotonic() - progress_at
+                                 >= self._build_policy.progress_stop_seconds)
                     notice_time = (not tool_open
                                    and progress_calls >= _PROGRESS_TIME_MIN_CALLS
                                    and time.monotonic() - progress_at
-                                   >= policy.progress_notice_seconds)
-                    hit_stop = progress_calls >= policy.progress_stop_call_limit or over_time
-                    hit_notice = progress_calls >= policy.progress_notice_call_limit or notice_time
+                                   >= self._build_policy.progress_notice_seconds)
+                    hit_stop = (progress_calls >= self._build_policy.progress_stop_call_limit
+                                or over_time)
+                    hit_notice = (progress_calls >= self._build_policy.progress_notice_call_limit
+                                  or notice_time)
                     if hit_stop or (hit_notice and not progress_noticed):
                         # ONE working-tree read per threshold, not per call — `working_tree_hash`
                         # is `git add -A` plus `git write-tree`, and the shell cap above pays for
@@ -19471,6 +19497,7 @@ class Orchestrator:
                             progress_tree = tree
                             progress_capped = True
                             progress_limit = "stop"
+                            publish_progress()
                             log.warning(
                                 "build: %d tool calls and %.0fs since the last change to the app "
                                 "— stopping the session and checking it (session=%s)",
@@ -19495,7 +19522,12 @@ class Orchestrator:
                         else:
                             progress_tree = tree
                             progress_noticed = True
-                            progress_limit = "notice"
+                            # Never downgrades. A turn can stop on its first attempt and then
+                            # merely notice on the repair iteration that follows, and the record
+                            # is owed the strongest thing that happened to it, not the last.
+                            progress_limit = progress_limit if progress_limit == "stop" \
+                                else "notice"
+                            publish_progress()
                             project.shim.note_no_progress(progress_calls)
                 if not appeared and time.monotonic() - start > 12:
                     break
@@ -19581,11 +19613,6 @@ class Orchestrator:
                 log.warning("build: the event stream carried nothing for %s — the turn polled "
                             "blind. Check the session directory.", sid)
             tap.close()
-            # Recorded for every agent turn, not only the ones a limit fired on: "how close did
-            # this get" is the number that says whether 4 and 8 are the right pair, and a record
-            # written only when they fire can never answer that.
-            timing.progress_budget(max_calls_since_change=progress_max_calls,
-                                   limit_fired=progress_limit, programs=progress_programs)
 
             guard = project.pre_edit_guard
             pending_pre_edit = guard.consume_pending() if guard is not None else None

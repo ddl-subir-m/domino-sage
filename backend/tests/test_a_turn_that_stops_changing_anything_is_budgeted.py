@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from sage import timing
 from sage.build_policy import BuildPolicy, load_build_policy
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator.service import _PROGRESS_TIME_MIN_CALLS, Orchestrator, _progress_armed
@@ -252,6 +253,62 @@ def _notes(orch: Orchestrator) -> list[str]:
     return [taken] if taken else []
 
 
+# ---- the diagnostic ----------------------------------------------------------------------------
+
+def _recorded(**kwargs) -> dict:
+    timing.start_turn("build", turn_id="turn", app_id="app", conversation_id="conversation")
+    timing.progress_budget(**kwargs)
+    return timing.as_dict(timing.finish_turn())["progressBudget"]
+
+
+def _build_record() -> dict:
+    """The record the build stream opened and closed for itself.
+
+    Not one this test opens: `build_stream` calls `start_turn` and `finish_turn` around its own
+    turn, so a record opened out here is already closed and detached by the time the stream
+    returns, and `finish_turn()` hands back `None`. Reading the ring is what asks the question the
+    test means — what did the build record — rather than what this test could still get hold of.
+    """
+    builds = [r for r in timing.recent(10) if r.kind == "build"]
+    assert builds, "the build stream recorded no turn"
+    return timing.as_dict(builds[0])
+
+
+def test_the_diagnostic_records_the_high_water_mark_and_which_limit_fired():
+    got = _recorded(max_calls_since_change=7, limit_fired="stop",
+                    programs={"npm": 4, "tsc": 2, "other": 1})
+    assert got == {"maxCallsSinceChange": 7, "limitFired": "stop",
+                   "programs": {"npm": 4, "other": 1, "tsc": 2}}
+
+
+def test_the_diagnostic_drops_anything_that_is_not_a_bare_program_name():
+    """Re-checked against the rule that produced it rather than trusted.
+
+    This is the last place before a record someone will read and share, and the names arrive from
+    a caller that could be changed later by somebody who has not read `program_name`.
+    """
+    got = _recorded(max_calls_since_change=1, limit_fired="notice",
+                    programs={"npm": 1, "/usr/local/bin/node": 1, "rm -rf /tmp/x": 1,
+                              "patients.internal": 1})
+    # `patients.internal` survives — it IS a bare name by the rule, which is the honest answer:
+    # the rule bounds the SHAPE of what is recorded, and a program really can be called that.
+    # What cannot survive is anything carrying a path separator or a space.
+    assert set(got["programs"]) == {"npm", "patients.internal"}
+
+
+def test_a_diagnostic_record_refuses_a_progress_budget_it_cannot_re_derive():
+    from sage.build_diagnostics import _progress_budget
+    good = {"maxCallsSinceChange": 3, "limitFired": "none", "programs": {"npm": 2}}
+    assert _progress_budget(good) == good
+    assert _progress_budget({**good, "limitFired": "gave_up"}) is None
+    assert _progress_budget({**good, "maxCallsSinceChange": -1}) is None
+    assert _progress_budget({**good, "maxCallsSinceChange": True}) is None
+    assert _progress_budget({**good, "programs": {"npm install .": 2}}) is None
+    assert _progress_budget({**good, "programs": {"npm": -2}}) is None
+    assert _progress_budget({**good, "programs": "npm"}) is None
+    assert _progress_budget(None) is None
+
+
 # ---- the note ----------------------------------------------------------------------------------
 
 def test_the_note_reaches_the_model_as_a_system_message(tmp_path: Path):
@@ -425,6 +482,32 @@ def test_a_working_tree_that_moved_resets_the_count_even_with_no_write_tool(tmp_
     assert oc.script == []
 
 
+def test_the_diagnostic_survives_a_turn_that_something_else_ended(tmp_path: Path):
+    """Published on change, so a turn the budget did NOT end still reports how close it got.
+
+    The poll loop has three `return`s — the repeat brake, the quiet window, a refused stop — and
+    none of them reaches an end-of-turn write. Those are exactly the turns whose calls-since-change
+    number is most worth having, so an end-of-turn write would bias the tuning data towards the
+    turns this budget itself ended: the one population that cannot say whether 4 and 8 are right.
+    """
+    # Three identical calls after a write: the REPEAT BRAKE ends this turn, not the budget.
+    same = {"id": "sh-same", "type": "tool", "tool": "bash",
+            "state": {"status": "completed", "input": {"command": "npm run build"}}}
+    oc = ScriptedPartsOpenCode(tmp_path / "mnt" / "code",
+                               [[_write(1)]] + [[dict(same, id=f"sh-{n}")] for n in range(4)],
+                               [Turn(text="built it", writes={"src/App.tsx": "v1\n"})])
+    policy = _replace(TEST_POLICY, progress_stop_seconds=3600.0, progress_notice_seconds=1800.0)
+    orch = _orch(tmp_path, oc, policy)
+
+    list(orch.build_stream("build me a chart"))
+    recorded = _build_record()["progressBudget"]
+
+    # The brake ended it, and the budget still said what it saw on the way past.
+    assert recorded["limitFired"] == "none"
+    assert recorded["maxCallsSinceChange"] >= 2
+    assert recorded["programs"] == {"npm": recorded["maxCallsSinceChange"]}
+
+
 def test_a_turn_that_has_not_written_is_left_to_the_shell_cap(tmp_path: Path):
     """Out of scope by the issue's own words, and the two owners must not overlap.
 
@@ -437,7 +520,14 @@ def test_a_turn_that_has_not_written_is_left_to_the_shell_cap(tmp_path: Path):
     orch = _orch(tmp_path, oc, policy)
 
     list(orch.build_stream("build me a chart"))
+    recorded = _build_record()["progressBudget"]
 
     # Twelve calls, well past the stop limit of eight, and the budget never armed.
     assert oc.emitted > policy.progress_stop_call_limit
     assert _notes(orch) == []
+    # And the high-water mark stays at zero, because before the build's first change there is no
+    # last change to count from. A large number here beside `limitFired: "none"` would read as a
+    # limit that is too loose when it is really a limit that was never in play — and that number
+    # is what the four settings get tuned from.
+    assert recorded["maxCallsSinceChange"] == 0
+    assert recorded["limitFired"] == "none"
