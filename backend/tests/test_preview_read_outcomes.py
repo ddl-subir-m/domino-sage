@@ -42,6 +42,27 @@ def test_one_empty_dataset_does_not_hide_an_omitted_requested_dataset():
     assert result["outcome"] == "passed"
 
 
+def test_capped_dataset_ids_cannot_prove_empty_tags_for_the_whole_request():
+    ids = [f"dataset_{n}" for n in range(21)]
+    request = dataset_read(",".join(ids))
+    body = [{"datasetRwDto": {"id": identifier}, "taxonomyTags": []}
+            for identifier in ids[:20]]
+    result = read_result(request, 200, json.dumps(body).encode(), bound_ids=ids[:20])
+    assert result["outcome"] == "passed"
+    assert result["resourceIdsTruncated"] is True
+    assert len(result["resourceIds"]) == 20
+    assert "reason" not in result  # The omitted ID cannot support a binding-mismatch claim.
+
+
+def test_capped_ids_do_not_claim_empty_from_a_root_list_but_duplicates_are_complete():
+    ids = [f"dataset_{n}" for n in range(20)]
+    capped = dataset_read(",".join([*ids, "another_dataset"]))
+    assert read_result(capped, 200, b"[]")["outcome"] == "passed"
+    duplicate = dataset_read(",".join([*ids, ids[0]]))
+    assert "resourceIdsTruncated" not in duplicate
+    assert read_result(duplicate, 200, b"[]")["outcome"] == "empty"
+
+
 def test_one_tagged_dataset_keeps_a_mixed_response_nonempty():
     body = [{"datasetRwDto": {"id": "dataset_1"}, "taxonomyTags": []},
             {"datasetRwDto": {"id": "dataset_2"}, "taxonomyTags": [{"label": "private"}]}]

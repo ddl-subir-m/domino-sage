@@ -32,14 +32,17 @@ def read_request(path: str, query: str = "", *, kind: str = "platform") -> dict:
         for identifier in value.split(","):
             if not _ID.fullmatch(identifier):
                 result["invalidResourceId"] = True
-            elif identifier not in result["resourceIds"] and len(result["resourceIds"]) < 20:
-                result["resourceIds"].append(identifier)
+            elif identifier not in result["resourceIds"]:
+                if len(result["resourceIds"]) < 20:
+                    result["resourceIds"].append(identifier)
+                else:
+                    result["resourceIdsTruncated"] = True
     return result
 
 
 def _empty(request: dict, body: bytes | None) -> bool:
     # Bodies too large to inspect still have their HTTP outcome. This helper retains no values.
-    if body is None or len(body) > 1024 * 1024:
+    if request.get("resourceIdsTruncated") or body is None or len(body) > 1024 * 1024:
         return False
     try:
         value = json.loads(body)
@@ -76,6 +79,8 @@ def read_result(request: dict, status: int | None, body: bytes | None = None,
                            if isinstance(value, str) and _ID.fullmatch(value)][:20]
     if request.get("invalidResourceId") is True:
         safe["invalidResourceId"] = True
+    if request.get("resourceIdsTruncated") is True:
+        safe["resourceIdsTruncated"] = True
     result = {**safe, "status": status, "outcome": "failed"}
     bound = set(bound_ids)
     if status is None:
