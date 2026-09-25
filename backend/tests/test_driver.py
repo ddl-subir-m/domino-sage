@@ -635,6 +635,8 @@ def test_busy_is_read_from_v1_and_carries_the_workspace(monkeypatch):
     c = OpenCodeClient("http://x")
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
                         lambda url, json, timeout: _JsonResp({"id": "s1"}))
+    monkeypatch.setattr("sage.driver.opencode.httpx.patch",
+                        lambda url, params, json, timeout: _Resp(200))
     c.create_session("/work/dir")
 
     assert c.is_running("s1") is True
@@ -713,22 +715,94 @@ def test_child_session_scope_is_verified_from_harness_parentage_and_directory(mo
 
 
 def test_a_new_session_is_named_so_opencode_does_not_spend_a_call_naming_it(monkeypatch):
-    """One key in the body, and a whole model call per session goes away (#496).
+    """One extra request, and a whole model call per session goes away (#496, #549).
 
     `SessionPrompt.ensureTitle` fires once per session — after the first user message, with
     `system: []` and `tools: {}`, so it can emit no tool and move nothing — and returns early when
     the session's title is not one of its OWN defaults. Measured 2026-09-11: it is the 3 KB call in
     every Build turn's ledger that does nothing. Nothing in Sage reads a session title, so the
     value only has to be outside OpenCode's default shape.
+
+    The title has to go out on v1's `PATCH /session/{id}`, NOT in the create body: v2's create
+    payload is `{id?, agent?, model?, location?}` and drops everything else, which is why #496's
+    key changed no title and the call it meant to remove kept running for two weeks. Asserting the
+    key Sage SENDS is what hid that, so this asserts the request that OpenCode acts on — and
+    `test_a_created_session_is_titled_where_opencode_will_read_it` asserts the title that lands.
     """
     import re
 
-    seen = {}
+    sent = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: seen.update(json) or _JsonResp({"id": "s1"}))
+                        lambda url, json, timeout: sent.update(create=json)
+                        or _JsonResp({"id": "s1"}))
+    monkeypatch.setattr("sage.driver.opencode.httpx.patch",
+                        lambda url, params, json, timeout: sent.update(
+                            url=url, params=params, patch=json) or _Resp(200))
     OpenCodeClient("http://x").create_session("/mnt/code/apps/app_7f3c")
 
-    assert seen["location"] == {"directory": "/mnt/code/apps/app_7f3c"}
-    title = seen["title"]
+    assert sent["create"]["location"] == {"directory": "/mnt/code/apps/app_7f3c"}
+    assert sent["url"] == "http://x/session/s1" and "/api/" not in sent["url"]
+    assert sent["params"] == {"directory": "/mnt/code/apps/app_7f3c"}
+    title = sent["patch"]["title"]
     assert title, "no title means OpenCode titles it, which costs the call this avoids"
     assert not re.match(r"^(New|Child) session - \d{4}-", title), title
+
+
+# --- and what the title request costs when it fails -----------------------------------------------
+#
+# The saving is one model call. The session is already created and usable by the time the title is
+# set, so the worst a failed title can cost is that call — the behaviour every session had before
+# #549. `create_session` has eight call sites in `service.py` including the main Build path, so a
+# raise here would fail a whole turn for a name. Two tests because there are two failure modes and
+# they arrive by different routes: a status the route returns, and a transport error `httpx.patch`
+# raises before any status exists. A handler written for one leaves the other fatal.
+
+
+def test_a_title_the_route_refuses_does_not_take_the_session_with_it(monkeypatch, caplog):
+    """Usable, not merely returned: `is_running` answers only if `create_session` recorded the
+    directory, which it does after the title request. A handler that returned `sid` early would
+    pass an id-only assertion and still leave every later `is_running` blind."""
+    import logging
+
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: _JsonResp({"id": "s1"}))
+    monkeypatch.setattr("sage.driver.opencode.httpx.patch",
+                        lambda url, params, json, timeout: _Resp(500))
+    monkeypatch.setattr("sage.driver.opencode.httpx.get",
+                        lambda url, params, timeout: seen.update(params)
+                        or _JsonResp({"s1": {"type": "busy"}}))
+
+    client = OpenCodeClient("http://x")
+    with caplog.at_level(logging.WARNING, logger="sage.driver"):
+        sid = client.create_session("/work/dir")
+
+    assert sid == "s1"
+    assert client.is_running("s1") is True and seen["directory"] == "/work/dir"
+    assert any("naming itself" in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_a_title_the_server_never_answers_does_not_take_the_session_with_it(monkeypatch, caplog):
+    """The half `raise_for_status` cannot see: a timeout or a refused connection is raised by
+    `httpx.patch` itself, so it never reaches a status to check. This is also the likelier of the
+    two — it is what the 5s budget produces when OpenCode is wedged."""
+    import logging
+
+    def _never_answers(url, params, json, timeout):
+        raise httpx.ConnectTimeout("no answer in 5s")
+
+    seen = {}
+    monkeypatch.setattr("sage.driver.opencode.httpx.post",
+                        lambda url, json, timeout: _JsonResp({"id": "s1"}))
+    monkeypatch.setattr("sage.driver.opencode.httpx.patch", _never_answers)
+    monkeypatch.setattr("sage.driver.opencode.httpx.get",
+                        lambda url, params, timeout: seen.update(params)
+                        or _JsonResp({"s1": {"type": "busy"}}))
+
+    client = OpenCodeClient("http://x")
+    with caplog.at_level(logging.WARNING, logger="sage.driver"):
+        sid = client.create_session("/work/dir")
+
+    assert sid == "s1"
+    assert client.is_running("s1") is True and seen["directory"] == "/work/dir"
+    assert any("naming itself" in r.getMessage() for r in caplog.records), caplog.text

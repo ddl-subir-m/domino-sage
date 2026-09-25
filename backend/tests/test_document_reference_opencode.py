@@ -25,6 +25,11 @@ REPO = Path(__file__).resolve().parents[2]
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
 def test_real_opencode_first_build_request_contains_typed_mixed_carriers_only(tmp_path: Path):
     calls: list[dict] = []
+    # `SessionPrompt.ensureTitle`'s request, which used to arrive on every fresh session and be
+    # answered here so the rest of the turn could proceed. A titled session ends it (#549), so the
+    # branch below should now never fire — and this is the only rig in the suite that can say so,
+    # because the title request never reaches `Gateway.route`.
+    titles: list[dict] = []
     failures: list[str] = []
     state: dict = {}
 
@@ -49,6 +54,7 @@ def test_real_opencode_first_build_request_contains_typed_mixed_carriers_only(tm
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
                 if "title generator" in str(body.get("messages", [{}])[0].get("content", "")).lower():
+                    titles.append(body)
                     frame = {"id": "title", "choices": [{"index": 0,
                              "delta": {"content": "Reference app"}, "finish_reason": "stop"}]}
                     self.wfile.write(
@@ -130,6 +136,7 @@ def test_real_opencode_first_build_request_contains_typed_mixed_carriers_only(tm
                                    [shell, table, image]))
 
             assert not failures, failures
+            assert not titles, "a fresh session still spends a model call naming itself (#549)"
             assert calls
             first_messages = json.dumps(calls[0].get("messages", []))
             assert "UNIQUE REAL OPENCODE RULE" in first_messages

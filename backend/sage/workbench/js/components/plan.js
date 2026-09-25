@@ -388,7 +388,7 @@ window.SW = window.SW || {};
             )
           );
         case 'markdown':
-          return h('div', { className: 'sw-plan-md' }, SW.util.markdown(value || ''));
+          return h('div', { className: 'sw-plan-md' }, SW.util.planMarkdown(value || ''));
         default:
           return h('p', { className: 'sw-plan-text' }, value);
       }
