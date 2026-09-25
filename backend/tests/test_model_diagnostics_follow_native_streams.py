@@ -212,9 +212,13 @@ def test_explicit_effort_absent_usage_and_child_session_are_not_guessed(running,
 
 
 def _automatic_stage_call(running, monkeypatch, *, phase, model="GLM 5.3 OR",
-                          saved_slots=frozenset(), effort=None, approved=None, recovery=False):
+                          saved_slots=frozenset(), effort=None, approved=None, recovery=False,
+                          protocol=Protocol.CHAT):
+    # `protocol` because an alias's route is a property of the ALIAS, not of the caller: `haiku` is
+    # served over `/anthropic/messages`, and `native_routes` refuses a body whose route disagrees
+    # with the capability before any of this is reached.
     client, orch, gateway = running
-    monkeypatch.setattr(gateway, "route", scripted(gateway, Protocol.CHAT))
+    monkeypatch.setattr(gateway, "route", scripted(gateway, protocol))
     project = orch._project
     project.control.pick(None)
     project.control.set_mode(Mode.AUTO)
@@ -236,12 +240,12 @@ def _automatic_stage_call(running, monkeypatch, *, phase, model="GLM 5.3 OR",
     messages = ([{"role": "assistant", "tool_calls": [
         {"id": "edit_1", "type": "function",
          "function": {"name": "edit", "arguments": "{}"}}]}]
-        if phase is Phase.IMPLEMENT else None)
+        if phase is Phase.IMPLEMENT and protocol is Protocol.CHAT else None)
     timing.start_turn("build")
     try:
         with active(orch) as headers:
             final_model = next(iter(approved)) if approved else model
-            response = dispatch(client, headers, Protocol.CHAT, final_model, messages)
+            response = dispatch(client, headers, protocol, final_model, messages)
         assert response.status_code == 200, response.text
         return gateway.seen[-1][0], timing.as_dict(timing.finish_turn())["calls"][0]
     finally:
@@ -283,18 +287,91 @@ def test_stage_default_uses_any_measured_alias_and_omits_an_unsupported_one(runn
                 "high", None, "stage_default", "unsupported")
 
 
-@pytest.mark.parametrize(("effort", "source", "status"), [
-    ("max", "user", "applied"),
-    (None, "provider_default", "provider_default"),
-])
-def test_saved_row_effort_and_explicit_model_default_beat_the_stage_default(
-        running, monkeypatch, effort, source, status):
+def test_a_level_the_person_saved_beats_the_stage_default(running, monkeypatch):
+    """A chosen level is still theirs and still goes out as-is. #545 does not touch this row."""
     outbound, call = _automatic_stage_call(
-        running, monkeypatch, phase=Phase.PLAN, saved_slots=frozenset({"plan"}), effort=effort)
+        running, monkeypatch, phase=Phase.PLAN, saved_slots=frozenset({"plan"}), effort="max")
 
-    assert outbound.get("reasoning_effort") == effort
+    assert outbound.get("reasoning_effort") == "max"
     assert (call["configuredEffort"], call["effectiveEffort"], call["effortSource"],
-            call["effortStatus"]) == (effort, effort, source, status)
+            call["effortStatus"]) == ("max", "max", "user", "applied")
+
+
+@pytest.mark.parametrize(("phase", "slot", "expected"), [(Phase.PLAN, "plan", "high"),
+                                                          (Phase.IMPLEMENT, "implement", "low")])
+def test_an_assigned_model_with_no_level_now_takes_the_stage_default(
+        running, monkeypatch, phase, slot, expected):
+    """#545, and the whole of it: the row EXISTS and names no level, which is what assigning a
+    model leaves behind. That used to read as "the person asked for the provider's own default",
+    so GLM 5.3 OR assigned to Implement reasoned for 120 s twice and ended with no edit."""
+    outbound, call = _automatic_stage_call(
+        running, monkeypatch, phase=phase, saved_slots=frozenset({slot}), effort=None)
+
+    assert outbound.get("reasoning_effort") == expected
+    assert (call["configuredEffort"], call["effectiveEffort"], call["effortSource"],
+            call["effortStatus"]) == (expected, expected, "stage_default", "applied")
+
+
+@pytest.mark.parametrize(("model", "protocol"), [("haiku", Protocol.MESSAGES),
+                                                  ("bedrock-qwen3-coder", Protocol.CHAT)])
+@pytest.mark.parametrize(("phase", "slot"), [(Phase.PLAN, "plan"), (Phase.IMPLEMENT, "implement")])
+def test_a_model_that_takes_no_level_sends_no_field_and_raises_nothing(
+        running, monkeypatch, model, protocol, phase, slot):
+    """The stage level reaches the same measured table a saved one does, and is dropped there.
+
+    `_automatic_stage_call` asserts the 200 itself, which is the "raises nothing" half — and that
+    half is not free. `haiku` carries a gateway IDENTITY, and the send path RAISES on a level an
+    identified alias will not take rather than dropping it. The exemption it is dropped under is
+    `source is not EffortSource.STAGE_DEFAULT`: without it, #545 turns every alias that never
+    listed a level into a first-turn 400, which is a worse defect than the one it fixes.
+
+    Two routes because the route is the alias's, not the caller's: `haiku` is served over
+    `/anthropic/messages`, where a surviving level would be rendered as `thinking` rather than
+    `reasoning_effort` — so both spellings are asserted absent, on both."""
+    outbound, call = _automatic_stage_call(
+        running, monkeypatch, phase=phase, model=model, protocol=protocol,
+        saved_slots=frozenset({slot}), effort=None)
+
+    assert "reasoning_effort" not in outbound and "thinking" not in outbound
+    assert (call["effectiveEffort"], call["effortSource"], call["effortStatus"]) == (
+        None, "stage_default", "unsupported")
+
+
+@pytest.mark.parametrize(("mode", "phase", "expected"), [(Mode.PLAN, Phase.PLAN, "high"),
+                                                          (Mode.IMPLEMENT, Phase.IMPLEMENT, "low")])
+def test_a_pick_made_with_no_level_takes_the_stage_default_too(running, mode, phase, expected):
+    """An override is the other way to be unset (#545). Left on the provider default, the one act
+    that replaces a model would also be the one way back to the unlimited thinking this removes."""
+    _client, orch, _gateway = running
+    catalog = replace(orch._project.shim.catalog, plan="GLM 5.3 OR", implement="GLM 5.3 OR")
+    state = SessionState(mode=mode, phase=phase, picked_model="GLM 5.3 OR", picked_effort=None,
+                         effort_rows_armed=True)
+
+    decision = llm_router.resolve(state, catalog)
+
+    assert decision.effort_source is EffortSource.STAGE_DEFAULT
+    # The router names the SOURCE and `enforcement` reads the value off the policy, which is why
+    # the decision carries None here. Asserted against the policy so the two cannot drift.
+    assert decision.effort is None
+    assert (orch._build_policy.plan_reasoning_effort if phase is Phase.PLAN
+            else orch._build_policy.implement_reasoning_effort) == expected
+
+
+def test_chat_and_ask_still_send_no_field_when_no_level_was_picked(running):
+    """Chat and Ask are untouched by #545, and they are untouched HERE rather than downstream: the
+    stage is a Build plan/implement fact, so the source they resolve to is still the provider's."""
+    _client, orch, _gateway = running
+    catalog = replace(orch._project.shim.catalog, ask="GLM 5.3 OR")
+
+    chat = llm_router.resolve(
+        SessionState(mode=Mode.AUTO, phase=Phase.PLAN, chat_thread_id="thread",
+                     effort_rows_armed=True), catalog)
+    ask = llm_router.resolve(
+        SessionState(mode=Mode.ASK, phase=Phase.PLAN, saved_effort_slots=frozenset({"ask"}),
+                     effort_rows_armed=True), catalog)
+
+    assert chat.effort_source is EffortSource.PROVIDER_DEFAULT and chat.effort is None
+    assert ask.effort_source is EffortSource.PROVIDER_DEFAULT and ask.effort is None
 
 
 def test_sensitivity_validates_the_existing_stage_decision_against_the_final_alias(

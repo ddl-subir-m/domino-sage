@@ -705,8 +705,12 @@ class EnforcementShim:
                   else EffortStatus.APPLIED)
         if effort is not None and effort not in accepted:
             if source is not EffortSource.STAGE_DEFAULT and (native or capability.identity):
+                # Names no menu row. The way back out of a saved level is spelled "Automatic" on a
+                # Build plan or implement row and "Model default" on the Chat and Ask one since
+                # #545, and this seam serves both — so it says what to DO, which is the same act on
+                # either surface, rather than a label that would be wrong on one of them.
                 raise ValueError(f"{request['model']} cannot use the saved reasoning setting {effort!r}. "
-                                 "Choose Model default or a supported setting. " + capability.reason)
+                                 "Clear it or choose a supported setting. " + capability.reason)
             # Said out loud. A dropped effort is a silent bill — the turn runs at the alias's own
             # default, costs more or thinks less than the person asked for, and looks exactly like a
             # turn nobody configured. This line is what tells a stale stored level from a slot that
@@ -725,8 +729,11 @@ class EnforcementShim:
                 )
             effort = None
             status = EffortStatus.UNSUPPORTED
-        # Model default means no override, in Chat and Build alike. A hidden Low
-        # fallback would contradict both the picker and the saved assignment.
+        # Still the only place the field is added, and still no fallback of its own: `configured`
+        # above is the whole answer, and a hidden level chosen here would contradict both the picker
+        # and the saved assignment. What changed with #545 is only where an UNSET level resolves —
+        # the stage supplies one for a Build plan or implement turn, a dozen lines up and in the
+        # open, while Chat and Ask still send no field at all.
         if effort is not None:
             request = {**request, "reasoning_effort": effort}
         effort_decision = EffortDecision(

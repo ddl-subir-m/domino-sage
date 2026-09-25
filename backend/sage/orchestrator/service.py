@@ -2836,16 +2836,27 @@ _FAILED_PLAN_DECISIONS = frozenset({"no app described", "empty plan"})
 _PLANNING_STOPPED = "Planning stopped"
 
 
-def _effort_hint(err: dict) -> str:
-    """One sentence for a planner that stalled on Model default, or "" (#538).
+def _effort_hint(err: dict, stage: str) -> str:
+    """One sentence for a call that stalled with no effort on the wire, or "" (#538, #545).
 
-    MEASURED 2026-09-24: GLM 5.3 OR on Model default reasoned for 120 s with no answer, then acted in
-    3.5 s on the same request. Said, never done: "Model default" is the person's saved choice."""
+    MEASURED 2026-09-24: GLM 5.3 OR with no effort reasoned for 120 s with no answer, then acted in
+    3.5 s on the same request.
+
+    Keyed on what reached the WIRE, not on where the level came from. `effort_source` was the key
+    while `provider_default` was the only way to send no field; #545 made an unset Build level
+    resolve to the stage default, and a stage level the alias refuses is dropped just the same
+    (gpt-5.4 keeps only `none` beside tools). Both stall for one reason, so both get one sentence,
+    and a turn that did send a level gets none — there is nothing to suggest once a limit ran.
+
+    `stage` is the person's word for the control they would set, and the reason this takes an
+    argument rather than reading the turn: the same absence is fixed on the Plan row from a plan
+    turn and on the Implement row from an implement one.
+    """
     efforts = [str(e) for e in err.get("efforts") or []]
-    if err.get("effort_source") != "provider_default" or not efforts:
+    if err.get("effort") is not None or not efforts:
         return ""
-    return (f" {err.get('model') or 'This model'} ran on Model default, which puts no limit on "
-            f"its thinking. Setting its Plan effort ({', '.join(efforts)}) can prevent this.")
+    return (f" {err.get('model') or 'This model'} ran with no limit on its thinking. Setting its "
+            f"{stage} effort ({', '.join(efforts)}) can prevent this.")
 
 
 def _failed_plan_request(history: list[dict], prompt: str) -> str | None:
@@ -19514,7 +19525,7 @@ class Orchestrator:
                         restarted = yield from restart_planning_session(
                             correction="",
                             reason=("the planner produced no action — restarting once in a "
-                                    "clean session." + _effort_hint(err)),
+                                    "clean session." + _effort_hint(err, "Plan")),
                         )
                         if restarted:
                             iterate_reason = "planning no-action recovery"
@@ -19527,7 +19538,7 @@ class Orchestrator:
                         "type": "error",
                         "message": (_PLANNING_STOPPED + " because the clean retry also produced no "
                                     "text or tool call. Try the request again."
-                                    + _effort_hint(err)),
+                                    + _effort_hint(err, "Plan")),
                     })
                     yield persist({"type": "done", "ok": False,
                                    "decision": "model_no_action_timeout"})
@@ -19565,8 +19576,11 @@ class Orchestrator:
                         restore_mode()
                         yield persist({
                             "type": "error",
+                            # The implement half of the plan sentence two branches up (#545). The
+                            # stall this ends is the same one, on the row below it, and before this
+                            # it was the only no-action terminal that named no way out.
                             "message": ("The model produced no next action. Existing app changes "
-                                        "were kept."),
+                                        "were kept." + _effort_hint(err, "Implement")),
                             "kept": True,
                         })
                         if owns_turn:

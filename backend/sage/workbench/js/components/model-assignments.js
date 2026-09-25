@@ -37,10 +37,17 @@ window.SW = window.SW || {};
   // file's IIFE and cannot be reached from here — the two files share only `util.js`, and that one
   // belongs to another ticket this week. The distinction it encodes is the load-bearing part and is
   // why the way back is NOT called "Default": `none` is a real level that sends the field and turns
-  // reasoning off, while no level at all sends no field and lets the alias reason as it likes. Two
-  // entries a row apart cannot both be "Default".
-  const effortLabel = (value) => {
-    if (!value) return 'Model default';
+  // reasoning off, while no level at all does not. Two entries a row apart cannot both be "Default".
+  //
+  // Nor can two ROWS of this drawer call no-level the same thing, since #545. On Plan and Implement
+  // it now means the stage's own level — High while planning, Low while building — so it reads
+  // "Automatic". On Ask and Chat nothing changed, so that row still means the model's own default
+  // and still says so. `unsetEffortLabel` is the one place that knows which row is which.
+  const AUTOMATIC_EFFORT = 'Automatic';
+  const MODEL_DEFAULT_EFFORT = 'Model default';
+  const unsetEffortLabel = (slot) => (slot === 'ask' ? MODEL_DEFAULT_EFFORT : AUTOMATIC_EFFORT);
+  const effortLabel = (value, unset = MODEL_DEFAULT_EFFORT) => {
+    if (!value) return unset;
     if (value === 'xhigh') return 'Extra high';
     return value.charAt(0).toUpperCase() + value.slice(1);
   };
@@ -449,14 +456,13 @@ window.SW = window.SW || {};
                 options: [
                   // The way BACK, carrying no level of its own, the way the model's own first
                   // option carries no model id: picking it CLEARS the level rather than setting
-                  // one. Named for what it does — no field is sent and the alias reasons as it
-                  // likes — and not "Default", which is the entry one row below it when a
-                  // deployment ever sets one.
+                  // one. Named for what it does on THIS row — see `unsetEffortLabel` — and not
+                  // "Default", which is the entry one row below it when a deployment ever sets one.
                   {
                     value: DEFAULT_EFFORT_KEY,
                     label: current.default_effort
                       ? `Use the default (${effortLabel(current.default_effort)})`
-                      : effortLabel(null),
+                      : unsetEffortLabel(spec.slot),
                   },
                   ...efforts.map((value) => ({ value, label: effortLabel(value) })),
                   // The saved level, when the model no longer offers it. Present so the select can
@@ -469,7 +475,7 @@ window.SW = window.SW || {};
                         disabled: true,
                         label: `${effortLabel(stranded)} — not accepted`,
                         title: `${current.model} doesn't accept this level. Pick another, or go `
-                          + 'back to the model default.',
+                          + `back to ${unsetEffortLabel(spec.slot)}.`,
                       }]
                     : []),
                 ],

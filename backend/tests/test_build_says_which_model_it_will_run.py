@@ -154,7 +154,7 @@ def test_build_offers_the_levels_that_survive_beside_tools_not_the_enum():
     """
     (row,) = _drawn([{"mode": "plan"}])
 
-    assert [c["label"] for c in _children(row, "openai/gpt-5.4")] == ["Model default", "None"]
+    assert [c["label"] for c in _children(row, "openai/gpt-5.4")] == ["Automatic", "None"]
     # And the levels it advertises but cannot keep are absent, not merely reordered.
     assert "High" not in [c["label"] for c in _children(row, "openai/gpt-5.4")]
 
@@ -184,10 +184,10 @@ def test_a_row_offers_the_levels_its_own_alias_advertises():
     (row,) = _drawn([{"mode": "implement"}])
     # Implement's pin is `claude-builder`, so `claude-planner` is here as a pickable override.
     assert [c["label"] for c in _children(row, PLAN_MODEL)] == [
-        "Model default", "Low", "Medium", "High"]
+        "Automatic", "Low", "Medium", "High"]
     # A different alias, a different list — read off the row, not off the first one drawn.
     assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
-        "Model default", "Low", "High"]
+        "Automatic", "Low", "High"]
 
 
 def test_running_the_alias_at_its_own_default_is_the_first_thing_offered():
@@ -196,7 +196,7 @@ def test_running_the_alias_at_its_own_default_is_the_first_thing_offered():
     model without choosing a level is still the common case."""
     (row,) = _drawn([{"mode": "implement"}])
     first, *rest = _children(row, PLAN_MODEL)
-    assert first == {"key": f"{PLAN_MODEL}::", "label": "Model default"}
+    assert first == {"key": f"{PLAN_MODEL}::", "label": "Automatic"}
     assert all(c["key"] != f"{PLAN_MODEL}::" for c in rest)
 
 
@@ -274,7 +274,7 @@ def test_the_chosen_level_is_marked_on_the_menu_and_the_chip():
 
 
 def test_a_pick_left_on_the_model_default_says_nothing_extra_on_the_chip():
-    """The level is only worth chip space when somebody chose one. `Model default` is what every
+    """The level is only worth chip space when somebody chose one. `Automatic` is what every
     pick did before this existed, so a chip that announced it would put new words on screen for a
     behaviour that has not changed."""
     (row,) = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::"}])
@@ -289,7 +289,7 @@ def test_a_level_the_model_stopped_offering_is_still_shown_and_still_escapable()
 
     Dropped from the menu it would be invisible, still standing, and clearable only by giving up
     the model too. This is the same call `model-assignments.js` makes for the drawer's half, and
-    the same label: shown, disabled, named for what it is, with `Model default` right there as the
+    the same label: shown, disabled, named for what it is, with `Automatic` right there as the
     way out.
     """
     _, row = _drawn([{"mode": "plan", "pick": "deepseek/deepseek-v3::high"},
@@ -302,7 +302,7 @@ def test_a_level_the_model_stopped_offering_is_still_shown_and_still_escapable()
     assert stranded["disabled"] is True
     assert "doesn't accept this level" in stranded["title"]
     assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
-        "Model default", "Low", "High — not accepted"]
+        "Automatic", "Low", "High — not accepted"]
 
 
 def test_the_chip_does_not_name_a_level_the_turn_will_not_run_at():
@@ -326,7 +326,7 @@ def test_a_model_left_with_no_levels_at_all_still_shows_the_one_being_stood_on()
                      {"mode": "plan", "narrow": {"alias": "deepseek/deepseek-v3",
                                                  "efforts": []}}])
     assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
-        "Model default", "High — not accepted"]
+        "Automatic", "High — not accepted"]
 
 
 def test_a_model_nobody_is_standing_on_gets_no_stranded_row():
@@ -434,7 +434,7 @@ def test_the_levels_are_read_from_the_resources_listing_when_the_gateway_leg_is_
                      {"mode": "plan", "listing": False, "resourceAliases": True}])
 
     assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
-        "Model default", "Low", "High"]
+        "Automatic", "Low", "High"]
     assert row["label"] == "deepseek/deepseek-v3 · High"
 
 
@@ -446,7 +446,7 @@ def test_a_row_that_carries_no_narrow_list_refuses_nothing():
     file and (for rows written before the field existed) does not. On the fallback path the row
     EXISTS while the field does not, so a guard that only checks the row would read every level as
     refused — the chip silently dropping a level the router really is sending, and a tooltip saying
-    the turn runs at the model default while it runs at High.
+    the turn runs at Automatic while it runs at High.
 
     That is the confident, specific, false sentence this control must never produce, arrived at from
     an absence of evidence rather than from evidence. `undefined` means nobody answered; `[]` means
@@ -594,7 +594,7 @@ def test_an_assignment_level_the_alias_drops_beside_tools_is_no_difference():
     a slot may legitimately hold a level the alias drops beside tools — `plan_effort="high"` on
     `gpt-5.4`, whose measured enum carries `high` and whose tool-carrying list is `["none"]`.
 
-    Then the unpicked slot and a pick carrying no level BOTH run at the model default, and comparing
+    Then the unpicked slot and a pick carrying no level are BOTH unset, and comparing
     a narrowed value against an un-narrowed one reports a difference that does not exist. Same
     falsehood cf75c76 closed, reached through the assignment half rather than the pick half.
     """
@@ -613,7 +613,7 @@ def test_an_assignment_level_the_alias_keeps_is_still_a_difference():
                      {"mode": "plan", "slots": {"plan": "deepseek/deepseek-v3"},
                       "efforts": {"plan_effort": "low"}}])
 
-    assert "at Model default, not at the assignment's Low" in row["why"]
+    assert "at Automatic, not at the assignment's Low" in row["why"]
 
 
 def test_the_pin_supplies_the_effort_only_where_it_moves_the_model():
@@ -685,10 +685,10 @@ def test_an_alias_that_keeps_no_level_beside_tools_strands_whatever_stands_on_it
     assert "anthropic/claude-builder doesn't accept High" in row["why"]
     # ...and the row grows a submenu it would not otherwise have, BECAUSE a level is stranded on
     # it: `withEfforts` draws when `levels.length || stranded`. So the level has somewhere to be
-    # read and `Model default` is a reachable exit — which is exactly the case that rule exists for,
+    # read and `Automatic` is a reachable exit — which is exactly the case that rule exists for,
     # and the reason an alias offering nothing is not simply skipped.
     kids = _children(row, "anthropic/claude-builder")
-    assert [c["label"] for c in kids] == ["Model default", "High — not accepted"]
+    assert [c["label"] for c in kids] == ["Automatic", "High — not accepted"]
     assert kids[-1]["disabled"] is True
 
 
@@ -801,11 +801,11 @@ def test_a_collapsed_pick_with_no_level_still_differs_from_an_assignment_that_ha
     _, row = _drawn([{"mode": "implement", "pick": f"{PLAN_MODEL}::"}, {"mode": "plan"}])
 
     assert row["label"] == PLAN_MODEL
-    assert "at Model default, not at the assignment's Medium" in row["why"]
+    assert "at Automatic, not at the assignment's Medium" in row["why"]
 
 
 def test_none_is_a_level_and_survives_the_whole_write_path():
-    """`Model default` and `None` sit one row apart and mean opposite things — send no field and let
+    """`Automatic` and `None` sit one row apart and mean opposite things — send no field and let
     the alias reason as it likes, versus send the field and turn reasoning off. `effortLabel`'s
     header exists for that distinction.
 
@@ -878,7 +878,7 @@ def test_the_listing_coming_back_restores_the_submenu():
                         {"mode": "plan", "listing": True}])
 
     assert [c["label"] for c in _children(row, "deepseek/deepseek-v3")] == [
-        "Model default", "Low", "High"]
+        "Automatic", "Low", "High"]
     assert row["label"] == "deepseek/deepseek-v3 · High"
 
 
@@ -1020,7 +1020,7 @@ def test_a_collapsed_pick_whose_level_is_stranded_claims_no_default():
     assert "doesn't accept High" in row["why"]
     # "Turns run", not "this turn runs" — the same sentence reaches the idle dropdown, where there
     # is no turn for a present-tense claim to be about.
-    assert "Choose Model default or a supported setting" in row["why"]
+    assert "Choose Automatic or a supported setting" in row["why"]
 
 
 def test_only_an_unpicked_slot_is_allowed_to_call_itself_the_default():
@@ -1421,7 +1421,7 @@ def test_a_marked_build_row_keeps_the_levels_under_it():
     would take a setting away as the side effect of a sentence."""
     marked = _build_rows(_MARKED)["google/gemini-3.7-flash"]
     assert [c["label"] for c in marked["children"]] == [
-        "Model default", "Low", "Medium", "High", "Max"]
+        "Automatic", "Low", "Medium", "High", "Max"]
 
 
 def test_a_build_row_whose_model_advertises_tools_carries_no_mark():

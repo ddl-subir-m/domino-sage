@@ -652,8 +652,22 @@ def test_a_row_whose_model_takes_a_level_offers_one_and_names_the_way_back():
     plan = _effort_row(drawn, "Plan")
     assert plan is not None
     assert plan["value"] == "__model_default__"
-    assert plan["options"][0] == {"value": "__model_default__", "label": "Model default",
+    assert plan["options"][0] == {"value": "__model_default__", "label": "Automatic",
                                   "disabled": False, "title": None}
+
+
+def test_the_two_rows_that_take_a_stage_level_say_so_and_the_one_that_does_not_does_not():
+    """One stored value, two meanings, since #545 — so two names (ADR-0049 amendment).
+
+    On Plan and Implement, clearing the level now asks for the STAGE's level, High while planning
+    and Low while building, which is why that row reads "Automatic". Ask and Chat did not change:
+    clearing there still sends no field and leaves the alias to reason as it likes, so that row
+    keeps the name that has always described it. One label over all three would be false on one of
+    them whichever label were chosen, which is the whole reason this is two."""
+    (drawn,) = _drawn([{}])
+    labels = {slot: (_effort_row(drawn, slot) or {}).get("options", [{}])[0].get("label")
+              for slot in ("Plan", "Ask and Chat")}
+    assert labels == {"Plan": "Automatic", "Ask and Chat": "Model default"}
 
 
 def test_a_model_that_throws_the_field_away_gets_no_control_at_all():
@@ -767,7 +781,7 @@ def test_taking_the_assignment_back_does_not_claim_a_model_refused_anything():
 def test_a_person_clearing_the_level_themselves_is_not_told_a_model_refused_it():
     """Why the two controls save on separate calls rather than one PUT of the whole row: the note is
     written from the MODEL call, so an effort call can never produce it. Folded into one call, a
-    person picking "Model default" would be handed an explanation for their own act."""
+    person picking "Automatic" would be handed an explanation for their own act."""
     *_, drawn = _drawn([{"setEffort": ["plan", "high"]},
                         {"setEffort": ["plan", "__model_default__"]}])
     assert drawn["afterEffortNotes"] == []
