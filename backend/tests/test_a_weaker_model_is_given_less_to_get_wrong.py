@@ -93,7 +93,6 @@ def test_the_approved_build_gets_the_document_whole(tmp_path: Path):
 
     orch, oc = _build(tmp_path, [
         Turn(text=execution_plan("Shell Table", "A table.", "Table", include_title=False)),
-        Turn(text="Shell Table"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     orch.upload_file("shell.md", _SPEC)
@@ -213,7 +212,6 @@ def test_the_implement_timeout_message_carries_the_hint(tmp_path: Path):
 
     orch, oc = _build(tmp_path, [
         Turn(text=execution_plan("Shell Table", "A table.", "Table", include_title=False)),
-        Turn(text="Shell Table"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
     ])
     _run(orch, "build me a table")

@@ -14,8 +14,10 @@ turn lock through `_acquire_for_door`, never `_acquire_turn`, so the number carr
 line logged was this plan's inferences ON TOP of whatever the last turn in the process left. 0 was
 therefore unreachable once any turn had run, and the line could never report half of what it is for.
 
-The second caller was worse. `_repair_plan_heading` runs `_run_sage_plan` a SECOND time, after the
-draft has already run, so its reading carried the draft's own inferences too.
+The second caller was worse, and is gone (#555): `_repair_plan_heading` used to run
+`_run_sage_plan` a SECOND time, after the draft had already run, so its reading carried the
+draft's own inferences too. The repair is one direct gateway call now, which the counter
+never sees, so the door logs exactly one reading — the test below pins that.
 
 WHERE THE RESET IS, AND WHERE IT MUST NOT BE. At the top of `_run_sage_plan`, beside the
 `last_gateway_error` clear that was already there — where the number is READ, by the thing that
@@ -55,9 +57,8 @@ from .test_model_calls_answers_this_turn_on_chat import (
 
 _READING = re.compile(r"sage-plan produced no text \(session=.*, model_calls=(\d+)\)")
 
-# A plan with no `# ` heading, which is what sends `_draft_handoff_plan` on to
-# `_repair_plan_heading` — the second `_run_sage_plan` call, whose reading used to carry the first
-# call's inferences.
+# A plan with no `# ` heading, so `_draft_handoff_plan` has to repair a name — at the gateway,
+# not through `_run_sage_plan` (#555).
 HEADLESS_PLAN = "A dashboard of trades.\n\n## Plan\n\n- Show the rows.\n"
 
 
@@ -147,23 +148,26 @@ def test_a_fresh_process_still_reads_zero(
     assert _readings(caplog) == [0], caplog.text
 
 
-def test_the_heading_repair_logs_its_own_count_not_the_drafts(
+def test_the_heading_repair_is_not_a_second_send(
         tmp_path: Path, caplog: pytest.LogCaptureFixture):
-    """The second caller, which was worse: it runs AFTER the draft, in the same door click.
+    """The second caller is gone (#555). The draft comes back with a plan that has no `# `
+    heading, and the name is asked for with one direct gateway call — never a second prompt
+    through `_run_sage_plan`. So the door logs exactly one reading, the draft's own, and the
+    prompt that asked OpenCode for a name-only answer is sent to nobody.
 
-    The draft comes back with a plan that has no `# ` heading, so `_repair_plan_heading` sends a
-    second prompt through `_run_sage_plan`; that one writes nothing. Without a per-call reset the
-    repair's line reads the Chat turn's two inferences, the draft's three and its own one, and
-    reports 6 for a send that made one call. Resetting once at the door would still report 4.
+    Before #555 this test read the repair's own line as `1`, which needed the per-call reset to
+    be true; now there is no repair line to read, because there is no repair send.
     """
-    orch, tid, _ = _door(tmp_path, chat_turns=1, per_send=[2, 3, 1],
-                         plan_texts=(HEADLESS_PLAN, ""))
+    orch, tid, oc = _door(tmp_path, chat_turns=1, per_send=[2, 3],
+                          plan_texts=(HEADLESS_PLAN,))
 
     with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
         with pytest.raises(ValueError):
             orch.draft_handoff_plan(tid)
 
-    assert _readings(caplog) == [1], caplog.text
+    assert _readings(caplog) == [], caplog.text
+    assert [p["agent"] for p in oc.prompts if p["agent"] == "sage-plan"] == ["sage-plan"]
+    assert not any("2-4 word app name" in p["text"] for p in oc.prompts)
 
 
 def test_a_second_click_does_not_inherit_the_first_ones_count(
