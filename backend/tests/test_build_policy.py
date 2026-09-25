@@ -36,6 +36,10 @@ EXPECTED = {
     "model_no_action_notice_seconds": 30.0,
     "model_no_action_timeout_seconds": 120.0,
     "plan_no_action_recovery_limit": 1,
+    "progress_notice_call_limit": 4,
+    "progress_stop_call_limit": 8,
+    "progress_notice_seconds": 90.0,
+    "progress_stop_seconds": 180.0,
     "build_context_non_media_max_bytes": 786_432,
     "build_context_automatic_rollover_limit": 1,
     "build_context_continuation_reference_max_count": 100,
@@ -70,6 +74,10 @@ ENVIRONMENT = {
     "model_no_action_notice_seconds": "SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS",
     "model_no_action_timeout_seconds": "SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS",
     "plan_no_action_recovery_limit": "SAGE_BUILD_PLAN_NO_ACTION_RECOVERY_LIMIT",
+    "progress_notice_call_limit": "SAGE_BUILD_PROGRESS_NOTICE_CALL_LIMIT",
+    "progress_stop_call_limit": "SAGE_BUILD_PROGRESS_STOP_CALL_LIMIT",
+    "progress_notice_seconds": "SAGE_BUILD_PROGRESS_NOTICE_SECONDS",
+    "progress_stop_seconds": "SAGE_BUILD_PROGRESS_STOP_SECONDS",
     "build_context_non_media_max_bytes": "SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES",
     "build_context_automatic_rollover_limit":
         "SAGE_BUILD_CONTEXT_AUTOMATIC_ROLLOVER_LIMIT",
@@ -93,7 +101,9 @@ def test_each_new_environment_key_changes_exactly_one_field(field: str, key: str
     before = load_build_policy({})
     raw = ("0.5" if field == "tool_result_head_fraction" else
            "max" if field.endswith("reasoning_effort") else "7")
-    if field == "model_no_action_timeout_seconds":
+    # The upper half of an ordered pair cannot take the probe value: 7 seconds is below the
+    # notice default that must stay under it, so the load would rightly refuse it.
+    if field in ("model_no_action_timeout_seconds", "progress_stop_seconds"):
         raw = "240"
 
     after = load_build_policy({key: raw})

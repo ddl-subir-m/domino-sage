@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
@@ -331,6 +332,13 @@ class EnforcementShim:
         # The last (model, effort, carries-tools) triple whose effort was dropped, so the line below
         # says something when the answer changes and nothing on the requests that repeat it.
         self._effort_dropped: tuple[str, str, bool] | None = None
+        # One pending progress note (#544), set by the orchestrator's poll loop and taken by the
+        # next request. Locked, unlike the two dedupe slots above: those are written and read on
+        # the same request-serving thread, and this one crosses from the turn's poll loop to that
+        # thread. An unlocked read-and-clear can drop the note, and a dropped note is a soft limit
+        # that silently did not fire.
+        self._progress_note = ""
+        self._progress_note_lock = threading.Lock()
         self.resolve_capability = legacy
 
     @property
@@ -356,6 +364,26 @@ class EnforcementShim:
         """Swap the catalog this shim's requests resolve against (e.g. a per-project override of
         which model Auto uses for plan/implement). Takes effect on the next request."""
         self._catalog = catalog
+
+    def note_no_progress(self, calls: int) -> None:
+        """Queue one progress note for the next request this shim serves (#544).
+
+        The turn has landed a change and has since made `calls` tool calls that changed nothing.
+        Overwrites rather than queues: only the newest count is worth telling the model, and an
+        unread note from a window that has already reset is worse than none.
+        """
+        with self._progress_note_lock:
+            self._progress_note = (
+                f"you have made {calls} tool calls since you last changed a file, and none of "
+                "them changed anything. Sage checks the app itself after this turn — it runs the "
+                "typecheck and opens the preview — so you do not need to verify it. Make the next "
+                "change you intend to make, or finish the turn now."
+            )
+
+    def _take_progress_note(self) -> str:
+        with self._progress_note_lock:
+            note, self._progress_note = self._progress_note, ""
+        return note
 
     def handle(self, request: dict[str, Any], project: str, session: str | None = None,
                on_resolved=None, on_refused=None) -> Iterator[bytes]:
@@ -778,6 +806,24 @@ class EnforcementShim:
             request = {**request, "messages": [*request["messages"], {
                 "role": "system", "content": f"[sage] Routing note: {what}",
             }]}
+
+        # The progress budget's soft half (#544). Its own block rather than a third branch above:
+        # the two notes answer different questions and a turn can legitimately earn both, so
+        # folding them into one `what` would silently drop whichever lost.
+        #
+        # `system`, NOT `user`, for the reason the routing note is: `_current_turn` treats a user
+        # message as a turn boundary, so a `user` note would truncate the very window the phase
+        # classifier and the rescue signals read — and the rescue would flap on the next request.
+        #
+        # Taken only once there is somewhere to put it. A request whose `messages` is not a list is
+        # a shape this cannot append to, and consuming the note there would spend the one warning
+        # the turn gets on a request that never carried it.
+        if isinstance(request.get("messages"), list):
+            progress_note = self._take_progress_note()
+            if progress_note:
+                request = {**request, "messages": [*request["messages"], {
+                    "role": "system", "content": f"[sage] Progress note: {progress_note}",
+                }]}
 
         request = self.data_use.apply_restrictions(
             request, withheld=state.withheld, rewrite_counts=rewrite_counts)
