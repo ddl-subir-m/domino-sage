@@ -21,9 +21,16 @@ def test_known_dataset_tags_are_successful_without_retaining_any_values():
                       "status": 200, "outcome": "passed"}
 
 
-@pytest.mark.parametrize("body", [[], [{"datasetRwDto": {"id": "dataset_1"}, "taxonomyTags": []}]])
-def test_only_explicit_dataset_empty_shapes_are_empty(body):
+def test_a_returned_dataset_with_explicit_empty_tags_is_empty():
+    body = [{"datasetRwDto": {"id": "dataset_1"}, "taxonomyTags": []}]
     assert read_result(dataset_read(), 200, json.dumps(body).encode())["outcome"] == "empty"
+
+
+def test_empty_dataset_list_does_not_prove_empty_tags_for_a_requested_id():
+    assert read_result(dataset_read(), 200, b"[]")["outcome"] == "passed"
+    assert read_result(read_request(DATASETS), 200, b"[]")["outcome"] == "empty"
+    query = read_request("/api/queries/summary", kind="query")
+    assert read_result(query, 200, b"[]")["outcome"] == "empty"
 
 
 @pytest.mark.parametrize("body", [b"null", b"{}", b"opaque", None,
@@ -60,7 +67,8 @@ def test_capped_ids_do_not_claim_empty_from_a_root_list_but_duplicates_are_compl
     assert read_result(capped, 200, b"[]")["outcome"] == "passed"
     duplicate = dataset_read(",".join([*ids, ids[0]]))
     assert "resourceIdsTruncated" not in duplicate
-    assert read_result(duplicate, 200, b"[]")["outcome"] == "empty"
+    body = [{"datasetRwDto": {"id": identifier}, "taxonomyTags": []} for identifier in ids]
+    assert read_result(duplicate, 200, json.dumps(body).encode())["outcome"] == "empty"
 
 
 def test_one_tagged_dataset_keeps_a_mixed_response_nonempty():
