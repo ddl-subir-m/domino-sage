@@ -406,3 +406,23 @@ def test_adding_the_patch_tool_to_the_edit_set_changes_nothing(clock, monkeypatc
 
     assert after == before
 
+
+def test_a_leading_cd_is_skipped_and_the_program_after_it_is_named():
+    """The progress budget read `programs: {"cd": 9}` on a turn that ran `npm run build` eight
+    times to "verify" (#556): every call was `cd <app> && npm run build`, and the first token is
+    `cd`. The program that ran is the one after the separator.
+
+    The `cd` target is consumed and never recorded — it is a path, which is exactly what this rule
+    exists to keep out — and every refusal past it holds as it did.
+    """
+    assert tool_timing.program_name("cd /x && npm run build") == "npm"
+    assert tool_timing.program_name("cd /x; npm run build") == "npm"
+    assert tool_timing.program_name("cd '/opt/My Tools' && npm run build") == "npm"
+    assert tool_timing.program_name('cd "/Users/someone/Client Work" && tsc --noEmit') == "tsc"
+    # A bare `cd` runs nothing else, so `cd` is what the call did.
+    assert tool_timing.program_name("cd /x") == "cd"
+    assert tool_timing.program_name("cd '/opt/My Tools'") == "cd"
+    # The refusals hold past the prefix: a quoted program, a subshell, nothing at all.
+    assert tool_timing.program_name("cd /x && '/opt/My Tools/run'") == "other"
+    assert tool_timing.program_name("(cd /Users/someone/private && ls)") == "other"
+    assert tool_timing.program_name("cd /x &&") == "other"

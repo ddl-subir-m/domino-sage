@@ -229,6 +229,12 @@ with the restart sentence.
 **Cancel is a separate control from Stop.** A pending turn can be dropped without touching what is
 running.
 
+The Build progress budget follows the same stop rule (#557, P1). Reaching a call or time limit
+requests an interrupt; it does not prove the writer stopped. Only an idle session permits code
+checks, a final save, and release to the next turn. A running or unreadable session at the stop
+deadline keeps the existing wedged lock and fails queued turns with the restart message. The
+progress limits themselves stay unchanged.
+
 **The preview is unchanged.** One `ViteSupervisor`, following the rail selection. A background
 build's result appears when you select that app. Per-app previews are now *possible* (#67 closed,
 Built Apps have their own directories) and are deliberately not in scope: building one grows this

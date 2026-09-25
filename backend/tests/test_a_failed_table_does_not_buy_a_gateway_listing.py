@@ -63,3 +63,24 @@ def test_an_ending_the_platform_really_did_cause_still_buys_one():
     ])
 
     assert result["healthCalls"] == 1, "a gateway failure is exactly what the listing is for"
+
+
+@needs_node
+def test_an_empty_answer_is_not_reported_as_a_gateway_fault():
+    result = _node("chat_stream_harness.mjs", [
+        {"type": "user", "text": "summarize the file"},
+        {"type": "error", "reason": "empty answer", "message": "No answer was produced."},
+        {"type": "done", "ok": False, "decision": "empty answer", "advanced": False},
+    ])
+    assert result["healthCalls"] == 0
+    assert any(b.get("ok") is False for b in result["final"])
+
+
+@needs_node
+def test_a_stale_question_is_not_reported_as_a_gateway_fault():
+    result = _node("chat_stream_harness.mjs", [
+        {"type": "user", "text": "summarize the file"},
+        {"type": "error", "message": "That question has changed. Use the current question."},
+        {"type": "done", "ok": False, "decision": "stale question"},
+    ])
+    assert result["healthCalls"] == 0

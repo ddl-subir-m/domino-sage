@@ -60,6 +60,12 @@ _UVICORN_SERVING = "INFO:     Application startup complete."
 _IMPORT_FAILED = 'ERROR:    Error loading ASGI app. Could not import module "app".'
 
 
+def _built_app(path):
+    (path / "package.json").write_text("{}")
+    (path / "src").mkdir()
+    (path / "src/App.tsx").write_text("// app")
+
+
 def _read(sup, lines, hang=False):
     """Run the supervisor's own output reader over `lines`, as a spawn would.
 
@@ -180,7 +186,7 @@ def _failing_spawn(self):
 
 
 def test_a_failed_start_does_not_retire_the_supervisor(tmp_path, monkeypatch):
-    (tmp_path / "package.json").write_text("{}")          # an app exists; the server is what fails
+    _built_app(tmp_path)                                # an app exists; the server is what fails
     monkeypatch.setattr(ViteSupervisor, "_spawn", _failing_spawn)
     monkeypatch.setattr(ViteSupervisor, "_kill", lambda self: None)
     sup = ViteSupervisor(tmp_path, "")
@@ -200,7 +206,7 @@ def test_a_failed_start_does_not_retire_the_supervisor(tmp_path, monkeypatch):
 def test_the_pane_can_still_come_back_after_a_failure(tmp_path, monkeypatch):
     """`retry_start` yields to `_stopped`, which is right for an owner who stopped the preview and
     was wrong when a failed start set it — the pane could then never recover."""
-    (tmp_path / "package.json").write_text("{}")
+    _built_app(tmp_path)
     monkeypatch.setattr(ViteSupervisor, "_spawn", _failing_spawn)
     monkeypatch.setattr(ViteSupervisor, "_kill", lambda self: None)
     sup = ViteSupervisor(tmp_path, "")
@@ -218,7 +224,7 @@ def test_the_pane_can_still_come_back_after_a_failure(tmp_path, monkeypatch):
 
 def test_an_owner_who_stops_the_preview_is_still_obeyed(tmp_path, monkeypatch):
     """The other half: `_stopped` must still mean something after the above."""
-    (tmp_path / "package.json").write_text("{}")
+    _built_app(tmp_path)
     tried = []
     monkeypatch.setattr(ViteSupervisor, "start",
                         lambda self, ready_timeout_s=30.0: tried.append(1))
@@ -249,7 +255,7 @@ def test_a_start_revives_a_supervisor_that_was_stopped(tmp_path, monkeypatch):
     every start wait out the full timeout. The reset is what makes `start()` mean start, so it is
     asserted here rather than left resting on the failure path staying as it is now.
     """
-    (tmp_path / "package.json").write_text("{}")
+    _built_app(tmp_path)
     monkeypatch.setattr(ViteSupervisor, "_spawn", _failing_spawn)
     monkeypatch.setattr(ViteSupervisor, "_kill", lambda self: None)
     sup = ViteSupervisor(tmp_path, "")

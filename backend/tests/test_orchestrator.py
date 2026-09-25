@@ -1387,3 +1387,30 @@ def test_a_tool_call_with_unparsed_arguments_yields_no_label():
     assert _tool_detail("write", {"state": "completed"}) == ""
     # The ordinary case still labels the file.
     assert _tool_detail("write", {"state": {"input": {"filePath": "src/App.tsx"}}}) == "src/App.tsx"
+
+
+from sage.orchestrator.service import _drop_plan_preamble
+
+_PREAMBLE = "I'll read the current app files to understand the structure before proposing the plan."
+
+
+def test_drop_plan_preamble_leaves_a_plan_that_opens_on_its_heading_alone():
+    plan = "# Desk Exposure\n\nA dashboard.\n\n## Plan\n### 1. Table\n- Do — Show it.\n"
+    assert _drop_plan_preamble(plan) == plan
+
+
+def test_drop_plan_preamble_drops_narration_ahead_of_the_heading():
+    plan = "# Desk Exposure\n\nA dashboard.\n\n## Plan\n### 1. Table\n- Do — Show it.\n"
+    assert _drop_plan_preamble(f"{_PREAMBLE}\nLooking at the request.\n{plan}") == plan
+
+
+def test_drop_plan_preamble_keeps_a_plan_that_opens_on_a_section():
+    """No `# ` heading before the first `##`: nothing is dropped, so the section-first plan reaches
+    the same refusal it always did, and a `# ` heading BELOW a section is not read as the name."""
+    plan = f"{_PREAMBLE}\n## Problem & outcome\nNo desk sees it.\n# Not a name\n## Plan\n- Show it.\n"
+    assert _drop_plan_preamble(plan) == plan
+
+
+def test_drop_plan_preamble_keeps_a_refusal():
+    refusal = "Looking at the request.\nNO APP DESCRIBED\nThe request names no app to build.\n"
+    assert _drop_plan_preamble(refusal) == refusal

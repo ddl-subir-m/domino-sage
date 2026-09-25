@@ -15,6 +15,7 @@ from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
 from sage.resources.bindings import (
     KIND_DATA_SOURCE,
+    KIND_DATASET,
     KIND_LLM_ALIAS,
     KIND_MODEL_API,
     Binding,
@@ -560,6 +561,18 @@ def test_a_kind_this_sage_does_not_know_is_still_mentionable():
     b = Binding("vector_store", "v1", "embeddings", "embeddings")
     note = mention_note([Mention(b)], [b])
     assert "vector_store **embeddings** — recorded as used by this app." in note
+
+
+def test_a_mention_of_a_dataset_names_its_platform_id_and_never_the_name():
+    """The reads table takes a Dataset's id, and the id is exactly what a name in prose does not
+    carry (#556): a turn that had the name and not the id called `datasets-v2?datasetIds=<name>`
+    and showed "no tags" over a Dataset that carries one. The same surface a Data Source's Binding
+    id has always been on."""
+    ds = Binding(KIND_DATASET, "6aadad454fd92a76b2891828", "ABC123_ADAE", "ABC123_ADAE")
+    note = mention_note([Mention(ds)], [ds])
+    assert "**`6aadad454fd92a76b2891828`**" in note
+    assert "never the name" in note
+    assert "recorded as used by this app" not in note
 
 
 def test_nothing_mentioned_costs_the_turn_nothing():

@@ -23,9 +23,7 @@ _ID_LOCK = threading.Lock()
 # column write that lands after an add (`set_context_columns`). Two POSTs for the same chip used
 # to land two rows: the composer's only guard reads its own list, which is empty while the first
 # POST is still out, so a second pick during the wait was a second append. The lock closes
-# add-vs-add, and `confirm_thread_table_candidate` writes through `update_context` under it too;
-# `write_investigation` still does its own unlocked read-modify-write of this file (ADR-0056), so
-# add-vs-that is as it was.
+# add-vs-add. Table choices, investigation decisions and pending tasks use the same lock.
 _CONTEXT_LOCK = threading.Lock()
 _last_id_ms = 0
 _TITLE_MAX = 60
@@ -477,17 +475,17 @@ class ThreadStore:
         row = self.read_context(thread_id).get("investigation")
         return dict(row) if isinstance(row, dict) else {}
 
-    def write_investigation(self, thread_id: str, row: dict) -> dict:
-        """Record the decision, keeping the chips beside it.
+    def write_investigation(self, thread_id: str, row: dict, *, task_id: str = "") -> dict:
+        """Record a decision without replacing a concurrent chip or pending-task update."""
+        def apply(ctx):
+            task = ctx.get("pendingTask") or {}
+            if task_id and task.get("id") != task_id:
+                raise ValueError("This card belongs to an earlier question. Send the current question again.")
+            if task_id:
+                ctx["pendingTask"] = {**task, "offerDecision": row.get("state", "")}
+            return {**ctx, "investigation": row}
 
-        Read-then-write, because this is the same `context.json` that `add_context`,
-        `remove_context` and `confirm_thread_table_candidate` each read and write whole. One writer
-        for THIS KEY, not for the file: those three are read-modify-write too, and none of them
-        takes a lock, so two doors pressed in the same instant can still lose one of each other's
-        edits. That race is older than this key and is not narrowed here (ADR-0056).
-        """
-        ctx = self.read_context(thread_id)
-        self.write_context(thread_id, {**ctx, "investigation": row})
+        self.update_context(thread_id, apply)
         return row
 
     def update(self, thread_id: str, *, title: str | None = None, pinned: bool | None = None) -> dict | None:
