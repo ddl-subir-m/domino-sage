@@ -153,6 +153,38 @@ def stack_of(app_path: Path) -> Stack:
     return STACKS.get(read_stack_name(app_path), REACT_VITE)
 
 
+def preview_stack_of(app_path: Path) -> Stack | None:
+    """Which SERVER to run for the app on disk, or None when there is nothing to serve yet.
+
+    Deliberately not `stack_of`. This module refuses to work the stack out from files, and the
+    reason in the header is sound: the answer decides which template `ensure` SEEDS, and a wrong
+    guess re-seeds over a real app. That danger belongs to seeding. Choosing a server is a
+    different question — a wrong answer costs a failed start and writes nothing — and it is the
+    question the record's absence got wrong.
+
+    Measured 2026-09-24 (#554): a Built App with no readable `.sage/settings.json` read as
+    `LEGACY_STACK`, which is right for an app born before the record existed and wrong for one that
+    LOST its record. Sage ran `npm run dev` on a Python app: `ENOENT ... package.json`, exit 254,
+    "max restarts reached", and a dead pane that read like a broken build.
+
+    The record still decides whenever it exists, so nothing about a recorded app changes. With no
+    record the disk decides, by each stack's own `sentinel` — so a genuine pre-record react-vite app
+    still answers react-vite, because it has the `package.json` this looks for. When no sentinel is
+    there, there is no app here to serve and the caller must spawn nothing rather than guess.
+    """
+    try:
+        settings = json.loads((app_path / ".sage" / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        settings = {}
+    name = settings.get(STACK_KEY) if isinstance(settings, dict) else None
+    if isinstance(name, str) and name.strip() in STACKS:
+        return STACKS[name.strip()]
+    for stack in STACKS.values():
+        if (app_path / stack.sentinel).is_file():
+            return stack
+    return None
+
+
 def read_stack_name(app_path: Path) -> str:
     """The stack an app's own record names, or `react-vite` when it names none.
 

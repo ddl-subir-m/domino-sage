@@ -200,7 +200,7 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import TurnSnapshot
-from ..workspace.stack import stack_of
+from ..workspace.stack import preview_stack_of, stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     FINDINGS_MAX,
@@ -514,9 +514,20 @@ def _supervisor_for(workspace: Path, base_prefix: str):
     """The preview server for the app at `workspace`, by its stack (#490): the template's Vite dev
     server for a react-vite app, the app's own uvicorn for a fastapi-antd one. Reads the two classes
     off this module at call time, so a test that stands in for `ViteSupervisor` still does."""
-    if stack_of(Path(workspace)).preview == "uvicorn":
-        return UvicornSupervisor(workspace, base_prefix)
-    return ViteSupervisor(workspace, base_prefix)
+    return _supervisor_class(workspace)(workspace, base_prefix)
+
+
+def _supervisor_class(workspace: Path):
+    """Which supervisor an app of this kind needs, for a caller comparing against one it holds.
+
+    By the record and then by what is on disk — see `preview_stack_of`. Both class names are read
+    off this module at call time, so a test that swaps one for a stand-in gets its stand-in here
+    and can compare `type(supervisor)` against this.
+    """
+    stack = preview_stack_of(Path(workspace))
+    if stack is not None and stack.preview == "uvicorn":
+        return UvicornSupervisor
+    return ViteSupervisor
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
@@ -7031,7 +7042,16 @@ class Orchestrator:
         if self._project is None:
             return self.project(start_preview=False, seed_app=True)
         self._wm.ensure(self._project_id, seed_app=True)
-        if self._prepare_app_files():
+        # The app is BORN on the line above, and the server was picked when the Project ATTACHED.
+        # Chat attaches first and with `seed_app=False`, so at pick time there was no app directory
+        # — no record to read and no files to read it from — and the pick fell back to the build
+        # stack. Nothing downstream re-picked: the config refresh below cannot, because a
+        # fastapi-antd app has no preview config to change (`preview_config=None`), so its only
+        # re-pick never fires for the stack that needs it. A Vite supervisor therefore survived and
+        # ran `npm run dev` in a Python app directory: ENOENT on package.json, exit 254 (#554).
+        wrong_server = type(self._project.supervisor) is not _supervisor_class(
+            self._project.workspace.path)
+        if self._prepare_app_files() or wrong_server:
             self._restart_preview_for_config_change(self._project)
         # The app may have been seeded just now, from a template that carries the pack's tokens and
         # no instructions block.
