@@ -2181,7 +2181,7 @@ def test_a_handoff_plan_without_execution_details_is_not_persisted(tmp_path: Pat
     tid = orch.create_thread()["id"]
     list(orch.chat_stream(tid, "put this on a dashboard colleagues can open"))
 
-    with pytest.raises(ValueError, match="required product sections"):
+    with pytest.raises(ValueError, match="the '## Problem & outcome' section"):
         orch.draft_handoff_plan(tid)
 
     assert orch.project(start_preview=False).record.list_plan_docs() == []

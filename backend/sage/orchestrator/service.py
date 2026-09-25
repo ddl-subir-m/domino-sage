@@ -4517,6 +4517,34 @@ def _tidy_plan(plan_md: str) -> str:
     return _drop_empty_questions(_drop_i_will_openers("\n\n".join(out)))
 
 
+_PLAN_NAME_HEADING = re.compile(r"^#[ \t]+\S")
+_PLAN_SECTION_HEADING = re.compile(r"^##")
+
+
+def _drop_plan_preamble(plan_md: str) -> str:
+    """Drop the planner's narration ahead of the plan's `# ` heading (#555).
+
+    A weak planner writes a sentence before every tool call — "I'll read the current app files
+    before proposing the plan." — and the gated turn joins every text part into the plan, so that
+    sentence lands ABOVE the `# Name` the model then wrote. `plan_doc.parse_sections` takes a `# `
+    heading as the title only when no prose precedes it, so the model's own name was demoted to an
+    unknown heading, a repair ran for a name that was already there, and once `# Repaired` was
+    prepended the narration became the document's summary.
+
+    The rule: a line matching `^#[ \\t]+\\S` BEFORE the first `^##` line names the app, and every
+    line before it is dropped. No such heading, and the plan comes back exactly as written — so a
+    `NO APP DESCRIBED` refusal and a plan that opens on `## Problem & outcome` reach the same
+    checks they always did, and a `# ` heading BELOW a section is never read as the name.
+    """
+    lines = plan_md.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if _PLAN_SECTION_HEADING.match(line):
+            return plan_md
+        if _PLAN_NAME_HEADING.match(line):
+            return "".join(lines[i:]) if i else plan_md
+    return plan_md
+
+
 _PLAN_HEADING = re.compile(r"^#{1,6}[ \t]*plan\b", re.IGNORECASE)
 _PLAN_STEP = re.compile(r"^[ \t]*(?:\*\*[ \t]*)?\d{1,2}[.)]")
 
@@ -5518,11 +5546,29 @@ def _execution_contract_error(check: PlanContractCheck) -> str:
     return "The plan is missing or has invalid " + detail + "."
 
 
+# What a missing part of the plan is called, in the words `_PLAN_OPENER` and `_PLAN_DOC_SECTIONS`
+# asked for it in (#555). The validator's own keys — `summary`, `users`, `outcomes` — appear in no
+# prompt, so a person reading "required product sections: summary" could not act on the word, and
+# neither could the clean retry, which reads the same function. `title` and `summary` are not
+# sections (`plan_doc.SECTIONS` has no such keys), so they are named here; every other key is the
+# heading the plan shape asked for, straight off `plan_doc.SECTION_BY_KEY`.
+_MISSING_PART_LABELS = {
+    "title": "the '# ' heading naming the app",
+    "summary": "exactly one sentence under that heading saying what the app is",
+}
+
+
+def _missing_part_label(key: str) -> str:
+    if key in _MISSING_PART_LABELS:
+        return _MISSING_PART_LABELS[key]
+    return f"the '## {plan_doc.SECTION_BY_KEY[key].label}' section"
+
+
 def _execution_contract_problems(check: PlanContractCheck) -> tuple[str, ...]:
     """Return only fixed validator categories, never text copied from the plan."""
     problems = []
     if check.missing_sections:
-        problems.append("required product sections: " + ", ".join(check.missing_sections))
+        problems.append(", ".join(_missing_part_label(key) for key in check.missing_sections))
     if check.malformed_steps:
         problems.append("steps with unique labels and nonempty Files, Do, and Verify fields")
     if check.invalid_file_fields:
@@ -5586,17 +5632,19 @@ _PLAN_HEADING_REPAIR_FAILED = (
     "Planning wrote a plan without an app name, and the repair couldn't name it. Send the "
     "request again — adding the app name you want can help."
 )
-_PLAN_HEADING_REPAIR_PROMPT = """\
-The build plan below is missing its required top-level app-name heading.
-
-Write only a 2-4 word app name for this plan.
-No leading A, An, or The, and no trailing full stop.
-Do not write Markdown.
-Do not rewrite, summarize, or explain the plan.
-
-Plan:
-{plan}
-"""
+# The name repair is one direct gateway call, and this is its whole system prompt (#555). It was a
+# second `sage-plan` turn in the same OpenCode session, whose agent prompt says "produce the plan
+# and nothing else" — and a weak model follows the system prompt over a user message asking for a
+# name, so it answered 1114 tokens of plan and `_repair_heading_name` refused it. Here the system
+# prompt IS the ask, the plan is the user message, and there is no agent prompt to outrank it.
+_PLAN_NAME_SYSTEM = (
+    "You name apps. The message below is a build plan whose app-name heading is missing.\n"
+    "Answer with the name only: 2-4 words, the way a product is named.\n"
+    "No leading A, An or The, no trailing full stop, and no Markdown."
+)
+# How long the repair waits for the gateway. Bounded the way `_withhold_probe` is, because the
+# gateway client sets no read timeout on streams by design and a hung repair would hang the turn.
+_PLAN_NAME_TIMEOUT_S = 30.0
 
 
 def _repair_heading_name(answer: str) -> str:
@@ -10929,7 +10977,7 @@ class Orchestrator:
                             continue
                         if part.get("type") == "text" and part.get("text"):
                             parts.append(part["text"])
-                plan_md = _tidy_plan("\n".join(parts))
+                plan_md = _drop_plan_preamble(_tidy_plan("\n".join(parts)))
                 if plan_md:
                     return plan_md, sid
                 error = project.last_gateway_error
@@ -10993,8 +11041,7 @@ class Orchestrator:
                 project, current_prompt, sid, recovery=recovery)
             if not plan_md:
                 return plan_md, sid
-            plan_md, sid = self._repair_plan_heading(
-                project, plan_md, sid, where, recovery=recovery)
+            plan_md = self._repair_plan_heading(project, plan_md, where)
             contract = validate_execution_contract(plan_md)
             _record_execution_contract(contract, source_request_count)
             if contract.valid:
@@ -11030,28 +11077,80 @@ class Orchestrator:
                 original_prompt + "\n\n" +
                 _execution_contract_recovery_prompt(contract, _plan_example_for(project)))
 
-    def _repair_plan_heading(self, project: Project, plan_md: str, session_id: str,
-                             where: str, *,
-                             recovery: PlanRecoveryBudget | None = None) -> tuple[str, str]:
-        """Ask the planner for the missing app-name heading, once."""
+    def _repair_plan_heading(self, project: Project, plan_md: str, where: str) -> str:
+        """Ask for the missing app-name heading, once, with one direct gateway call (#555).
+
+        Not a second `_run_sage_plan`. That was a second OpenCode turn in the same session, and it
+        failed twice over: the agent's system prompt outranked the name-only ask on a weak model,
+        and its own `arm_read_only("plan")` DISARMED in `finally` — clearing the live token the
+        gated turn had armed for its whole duration, so every request the clean retry then made
+        carried the implement block and the write tools (measured: 39862 instruction bytes and 9
+        tool schemas against 12303 and 7 on the calls either side). A gateway call arms nothing.
+
+        Every failure — a bad name, a transport error, the bounded wait running out — is the one
+        sentence `_PLAN_HEADING_REPAIR_FAILED`, which is what the callers already turn into a
+        failed planning turn.
+        """
         if chat_handoff.plan_heading(plan_md):
-            return plan_md, session_id
+            return plan_md
         try:
-            answer, session_id = self._run_sage_plan(
-                project,
-                _PLAN_HEADING_REPAIR_PROMPT.replace("{plan}", plan_md),
-                session_id,
-                recovery=recovery,
-            )
-        except ValueError as e:
-            log.warning("%s: plan heading repair failed: %s", where, e)
+            answer = self._ask_for_app_name(project, plan_md)
+        except Exception as e:
+            log.warning("%s: plan heading repair failed: %s: %s", where, type(e).__name__, e)
             raise ValueError(_PLAN_HEADING_REPAIR_FAILED) from None
         repaired = _prepend_repaired_heading(plan_md, answer)
         if not repaired:
             log.warning("%s: plan heading repair returned no valid app name: %r",
                         where, answer[:120])
             raise ValueError(_PLAN_HEADING_REPAIR_FAILED)
-        return repaired, session_id
+        return repaired
+
+    def _ask_for_app_name(self, project: Project, plan_md: str) -> str:
+        """The gateway half of the repair: the plan in, the model's text out. Raises on any fault.
+
+        The model is the one the plan turn runs on — `Phase.PLAN` through `llm_router.resolve`,
+        the way `_tool_handle` reads it — so the plan model assignment and the sensitivity lock
+        (ADR-0043) are honoured. Tagged `component="repair"` and recorded as its own `repair` call
+        on the timing ledger, so a diagnostics download shows the repair as a row of its own rather
+        than as one more plan call. The body is read the way `scope.start` reads its verdict.
+        """
+        state = replace(project.control.snapshot(), phase=Phase.PLAN)
+        model = llm_router.resolve(state, project.shim.catalog).model
+        labels = CostLabels(phase="plan", mode="auto", component="repair",
+                            session=project.session_id, version=project.shim.version)
+        request = {
+            "model": model,
+            "messages": [{"role": "system", "content": _PLAN_NAME_SYSTEM},
+                         {"role": "user", "content": plan_md}],
+            "max_tokens": 32,
+            "temperature": 0,
+            "stream": True,
+        }
+        gateway = project.shim.gateway
+
+        def _call() -> str:
+            call = timing.model_call(model, "repair")
+            chunks = []
+            try:
+                for chunk in gateway.route(request, labels):
+                    call.first_byte()
+                    call.chunk()
+                    chunks.append(chunk)
+            except BaseException as e:
+                call.done(ok=False, error=f"{type(e).__name__}: {e}")
+                raise
+            call.done()
+            return scope._extract(b"".join(chunks))
+
+        # A timeout releases the TURN, not the thread: the worker stays on the gateway read until
+        # the stream ends, and process exit joins it. `_withhold_probe` accepts the same, and both
+        # retire together when the gateway client gains a read timeout or a cancel on `route`.
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="sage-plan-name")
+        try:
+            return pool.submit(_call).result(timeout=_PLAN_NAME_TIMEOUT_S)
+        finally:
+            pool.shutdown(wait=False)
 
     def _confirm_handoff(self, thread_id: str, include: dict, target: dict) -> dict:
         # Read and refuse BEFORE anything is created: this is where a Built App is born (ADR-0008),
@@ -20323,6 +20422,9 @@ class Orchestrator:
             # violation check below and is reverted.
             if gate and not agent_wrote():
                 plan_md = _tidy_plan("\n".join(plan_text_parts))
+                # An architecture document may open with prose; a plan opens with its name.
+                if not arch:
+                    plan_md = _drop_plan_preamble(plan_md)
                 # A weak planner can finish this read-only turn without emitting any plan text,
                 # leaving nothing to approve. Don't persist a blank plan or present an approve card
                 # that would build from an empty plan; report it as a failed planning turn, with the
@@ -20375,8 +20477,7 @@ class Orchestrator:
                     return
                 if not arch:
                     try:
-                        plan_md, sid = self._repair_plan_heading(
-                            project, plan_md, sid, "plan gate", recovery=plan_recovery)
+                        plan_md = self._repair_plan_heading(project, plan_md, "plan gate")
                     except ValueError as e:
                         restore_mode()
                         yield persist({"type": "error", "message": str(e)})

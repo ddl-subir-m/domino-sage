@@ -31,7 +31,14 @@ from pathlib import Path
 import pytest
 
 from sage.feedback.runner import FeedbackReport
-from sage.orchestrator.service import _PLAN_REFUSAL, _PLAN_SHAPE, Orchestrator, _refuses_to_plan, _tidy_plan
+from sage.orchestrator.service import (
+    _PLAN_NAME_SYSTEM,
+    _PLAN_REFUSAL,
+    _PLAN_SHAPE,
+    Orchestrator,
+    _refuses_to_plan,
+    _tidy_plan,
+)
 from sage.router.models import Mode, ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn, execution_plan
@@ -43,13 +50,19 @@ class OkFeedback:
 
 
 class ScriptedGateway:
-    def __init__(self, verdict: str = "BUILD") -> None:
+    """The scope classifier's verdict, and — since the name repair is a direct gateway call rather
+    than a second OpenCode turn (#555) — the app name for a plan written without its heading."""
+
+    def __init__(self, verdict: str = "BUILD", name: str = "Desk Dashboard") -> None:
         self.verdict = verdict
+        self.name = name
         self.calls = 0
 
     def route(self, request, labels):
         self.calls += 1
-        body = json.dumps({"choices": [{"delta": {"content": self.verdict}}]})
+        system = next((m["content"] for m in request["messages"] if m["role"] == "system"), "")
+        answer = self.name if system == _PLAN_NAME_SYSTEM else self.verdict
+        body = json.dumps({"choices": [{"delta": {"content": answer}}]})
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
@@ -141,8 +154,7 @@ def test_a_real_first_build_still_gets_its_plan_card(tmp_path: Path):
     orch, _oc = _build(tmp_path, [Turn(text=execution_plan(
         "Desk Dashboard", "A desk dashboard.", "Desk table",
         work="Show notional by desk.", include_title=False,
-    )),
-        Turn(text="Desk Dashboard")])
+    ))])
 
     events = _run(orch, "build me a dashboard of notional by desk")
 
@@ -188,11 +200,9 @@ def test_a_built_app_is_not_offered_the_way_out(tmp_path: Path):
     orch, oc = _build(tmp_path, [
         Turn(text=execution_plan("Desk Dashboard", "A dashboard.", "Table",
                                  include_title=False)),
-        Turn(text="Desk Dashboard"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text=execution_plan("Rows Fix", "A fix for missing rows.", "Guard rows",
                                  work="Handle the undefined case.", include_title=False)),
-        Turn(text="Rows Fix"),
     ])
     list(orch.build_stream("build me a dashboard"))
     list(orch.approve_stream())
@@ -423,7 +433,6 @@ def test_a_gated_turn_that_does_plan_still_replaces_the_earlier_card(tmp_path: P
     orch, _oc = _build(tmp_path, [
         Turn(text=execution_plan("Desk Dashboard", "A dashboard.", "Table",
                                  include_title=False)),
-        Turn(text="Desk Dashboard"),
     ])
 
     assert "plan-proposed" in _kinds(_run(orch, "build me a dashboard", Mode.PLAN))
@@ -435,7 +444,6 @@ def test_a_build_turn_that_changes_the_app_still_marks_the_plan_stale(tmp_path: 
     orch, _oc = _build(tmp_path, [
         Turn(text=execution_plan("Desk Dashboard", "A dashboard.", "Table",
                                  include_title=False)),
-        Turn(text="Desk Dashboard"),
         Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
         Turn(text="Done.", writes={"src/App.tsx": "// v2, sortable\n"}),
     ])
