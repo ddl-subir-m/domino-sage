@@ -221,8 +221,13 @@ def test_an_ignore_rule_still_lands_in_a_gitignore_that_is_not_utf8(tmp_path: Pa
 
 
 def test_a_non_utf8_legacy_root_agents_md_does_not_stop_the_workspace_seeding(tmp_path: Path):
-    """`ensure()` voices this file unconditionally — the FIRST step of opening a Project, so this
-    one bricked earlier than the manifest did."""
+    """`ensure()` handles this file unconditionally — the FIRST step of opening a Project, so this
+    one bricked earlier than the manifest did.
+
+    It used to be voiced in place, which meant READING it, which is how these bytes bricked the
+    open. Since #548 it is renamed out of OpenCode's walk-up instead, so nothing decodes it at all
+    and the defect cannot come back by that route. Kept pointed at the open rather than at the
+    method, so it still covers whatever `ensure()` does to this file next."""
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_template(tmp_path))
     mgr.ensure("proj1")
     (tmp_path / "ws" / "AGENTS.md").write_bytes(NOT_UTF8)
