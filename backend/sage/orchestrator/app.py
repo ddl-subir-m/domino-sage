@@ -4415,6 +4415,7 @@ async def chat_completions(request: Request):
     import json
 
     project = orchestrator.project()
+    recovered = planning_error_recovery(orchestrator, project, request.headers.get("x-session-id"))
     # Read as bytes and parse here, rather than `await request.json()`, so the ledger can record how
     # big this step's request was without re-serialising it. The size is the whole point: a first
     # byte that grew while the payload grew is a conversation getting heavier, and one that grew on
@@ -4521,6 +4522,23 @@ async def chat_completions(request: Request):
     )
 
     def stream():
+        # Observe only an eligible planning recovery. The legacy relay keeps its existing wire
+        # behavior; invalid/incomplete streams simply cannot erase the captured earlier failure.
+        from ..gateway.events import StreamEvents
+        from ..gateway.protocol import Protocol
+
+        recovery_events = StreamEvents(Protocol.CHAT) if recovered is not None else None
+
+        def complete_recovery():
+            if recovery_events is None:
+                return
+            try:
+                recovery_events.finish()
+            except ValueError:
+                return
+            if not recovery_events.error and not recovery_events.refused:
+                recovered()
+
         # Flag once if this response carries a tool call (streamed as choices[].delta.tool_calls, or
         # finish_reason "tool_calls"). Substring sniff is enough — we only need "did the model try a
         # tool this turn", and it stays harness-agnostic (no SSE parsing).
@@ -4574,7 +4592,12 @@ async def chat_completions(request: Request):
         stopped = False
 
         def relay(chunk: bytes):
-            nonlocal stopped
+            nonlocal stopped, recovery_events
+            if recovery_events is not None:
+                try:
+                    recovery_events.feed(chunk)
+                except (ValueError, TypeError):
+                    recovery_events = None
             upstream_msg = ka.upstream_error(chunk)
             if upstream_msg:
                 log.error("gateway returned an error frame inside a 200 stream: %s", upstream_msg)
@@ -4597,6 +4620,7 @@ async def chat_completions(request: Request):
             yield chunk
 
         if first is ka.DONE:
+            complete_recovery()
             call.done()
             return
         if first is not ka.EMPTY:
@@ -4609,6 +4633,7 @@ async def chat_completions(request: Request):
                 yield ka.KEEPALIVE  # SSE comment: ignored by the parser, resets the client's read timer
                 continue
             if item is ka.DONE:
+                complete_recovery()
                 call.done()
                 return
             if ka.is_error(item):
@@ -4632,6 +4657,7 @@ async def chat_completions(request: Request):
 
 
 from .native_routes import install as _install_native_routes
+from .native_routes import planning_error_recovery
 
 _install_native_routes(control_app, lambda: orchestrator)
 
