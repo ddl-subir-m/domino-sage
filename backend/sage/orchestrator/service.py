@@ -218,7 +218,17 @@ from ..workspace.threads import (
     title_from_prompt,
     withhold_table_rows,
 )
-from . import attachment_repair, brand, chat_compact, chat_intent, recall, scope, table_rank, withhold
+from . import (
+    attachment_repair,
+    brand,
+    chat_compact,
+    chat_intent,
+    chat_task,
+    recall,
+    scope,
+    table_rank,
+    withhold,
+)
 from . import handoff as chat_handoff
 from .describe import describe, fit_image
 from .plan_steps import (
@@ -9592,7 +9602,7 @@ class Orchestrator:
     _INVESTIGATION_DECISIONS = ("open", "decline", "close")
 
     def decide_thread_investigation(self, thread_id: str, decision: str,
-                                    reason: str = "") -> dict:
+                                    reason: str = "", *, task_id: str = "") -> dict:
         """Open an investigation on this Thread, decline one, or close the one that is open.
 
         WHAT OPENING GRANTS is the whole of it: every turn in this Thread keeps its shell and its
@@ -9618,6 +9628,7 @@ class Orchestrator:
         # The stamp every other row on this record carries (`threads._now`), so a reader of
         # `context.json` meets one time format rather than two.
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_task.require(store.read_context(thread_id), task_id)
         current = store.read_investigation(thread_id)
         if decision == "open":
             if current.get("state") == "open":
@@ -9636,7 +9647,7 @@ class Orchestrator:
                 # a state the first already reached.
                 return {"investigation": current}
             row = {**current, "state": "closed", "closedAt": now}
-        store.write_investigation(thread_id, row)
+        store.write_investigation(thread_id, row, task_id=task_id)
         # In the conversation, not only in the record. The review that rejected #381's design named
         # this exactly: nothing told the person their Thread was now unbounded, and nothing took it
         # back. A `decline` writes no row — the card it answers is already in the transcript, and a
@@ -10013,7 +10024,7 @@ class Orchestrator:
                     already_asked: bool = False, skip_table_gate: bool = False,
                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                     skip_investigation_gate: bool = False, declined: bool = False,
-                    other_lane_grant: str = "", turn_id: str | None = None,
+                    other_lane_grant: str = "", task_id: str = "", turn_id: str | None = None,
                     turn_ticket: _TurnTicket | None = None,
                     _already_granted: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
@@ -10116,6 +10127,7 @@ class Orchestrator:
                                         skip_investigation_gate=skip_investigation_gate,
                                         declined=declined,
                                         other_lane_grant=other_lane_grant,
+                                        task_id=task_id,
                                         timing_record=timing_record,
                                         turn_generation=turn_generation):
                 if ev.get("type") == "done":
@@ -11986,6 +11998,8 @@ class Orchestrator:
                 self.decide_thread_investigation(thread_id, "close", reason="clear")
             if state:
                 store.write_investigation(thread_id, {})
+            store.update_context(thread_id, lambda ctx: {
+                key: value for key, value in ctx.items() if key != "pendingTask"})
         store.clear_session_id(thread_id)
         ev = {"type": recall.CLEARED, "scope": scope}
         offers = [e for e in store.read_history(thread_id) if e.get("type") == recall.SUGGEST]
@@ -13701,7 +13715,7 @@ class Orchestrator:
                      already_asked: bool = False, skip_table_gate: bool = False,
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                      skip_investigation_gate: bool = False, declined: bool = False,
-                     other_lane_grant: str = "", timing_record=None,
+                     other_lane_grant: str = "", task_id: str = "", timing_record=None,
                      turn_generation: int = 0):
         import time
 
@@ -13830,6 +13844,22 @@ class Orchestrator:
         if asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
+
+        try:
+            prompt = chat_task.resolve(
+                store, thread_id, prompt, task_id=task_id, asking=asking,
+                needs_source=(_looks_investigative(prompt)
+                              and not _plain_chat_answer_only(prompt)
+                              and not chat_handoff.looks_like_build_request(prompt)
+                              and not any(i.get("kind") in {"data_source", "datasource", "table",
+                                                            "file", "dataset", "artifact"}
+                                          for i in items)))
+        except ValueError as exc:
+            error = {"type": "error", "message": str(exc)}
+            store.append_history(thread_id, error)
+            yield error
+            yield finish({"type": "done", "ok": False, "decision": "stale question"})
+            return
 
         recovery_message = _pending_refusal_recovery_message(
             store.read_history(thread_id), prompt)
@@ -14124,6 +14154,7 @@ class Orchestrator:
             finish(done)
             yield done
 
+        chat_task.started(store, thread_id, prompt)
         chat_token = project.control.arm_chat(thread_id)
         # What this Conversation has stopped sending, read back out of its own transcript (ADR-0022).
         # Derived per turn rather than held, so it survives a Sage Builder restart — which matters
@@ -16517,6 +16548,7 @@ class Orchestrator:
                                       binding: Binding, ranking: table_search.Ranking,
                                       skipped: list[str] | None = None):
         """The card itself, written to the Thread rather than to a Built App's transcript."""
+        task = chat_task.await_input(store, thread_id, prompt, "table")
         name = binding.display_name
         if ranking.matched:
             # What the pick actually buys, rather than a fence it does not hold (#392, ADR-0059).
@@ -16544,7 +16576,7 @@ class Orchestrator:
                    # What tells the click which door to write through. The Build card carries the
                    # gates its turn was already past instead; a Chat turn has none to carry, and
                    # the record it writes is this Thread's.
-                   "threadId": thread_id,
+                   "threadId": thread_id, "taskId": task["id"],
                    "groups": table_search.grouped(shortlist),
                    "allGroups": table_search.grouped(ranking.candidates),
                    "total": len(ranking.candidates), "matched": ranking.matched},
@@ -16664,6 +16696,7 @@ class Orchestrator:
         settles for every reader of the stream. `ok: False` because nothing was answered — the
         question is still open, and it is the click that runs it.
         """
+        task = chat_task.await_input(store, thread_id, prompt, "investigation")
         message = brand.text(
             "This question looks like it needs more than one answer. {assistantName} can open an "
             "investigation for this conversation: {turnPlural} here can query your "
@@ -16682,7 +16715,7 @@ class Orchestrator:
         events = ({"type": "investigation-offer", "prompt": prompt, "message": message,
                    # What tells the click which conversation to record the decision on, the way the
                    # table card carries the same for the same reason.
-                   "threadId": thread_id},
+                   "threadId": thread_id, "taskId": task["id"]},
                   {"type": "done", "ok": False, "decision": "investigation offer"})
         for ev in events:
             store.append_history(thread_id, ev)
@@ -24195,6 +24228,7 @@ class Orchestrator:
 
     def confirm_thread_table_candidate(
         self, thread_id: str, source_id: str, database: str, schema: str, table: str,
+        *, task_id: str = "",
     ) -> dict:
         """A candidate clicked in Chat: prove the table is still there, record it on the Thread.
 
@@ -24212,6 +24246,7 @@ class Orchestrator:
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         ctx = store.read_context(thread_id)
+        chat_task.require(ctx, task_id)
         items = ctx.get("items") or []
         rows = [i for i in items
                 if str(i.get("kind") or "") in ("data_source", "datasource", "table")
@@ -24237,6 +24272,7 @@ class Orchestrator:
         columns = self._columns_for_context(source, scope)
 
         def apply(body: dict) -> dict | None:
+            chat_task.require(body, task_id)
             live = next((i for i in body.get("items") or [] if str(i.get("id") or "") == row_id),
                         None)
             if live is None:

@@ -3654,7 +3654,8 @@ async def decide_thread_investigation(thread_id: str, request: Request) -> JSONR
         return JSONResponse(status_code=400, content={"error": "Send a JSON body naming a decision."})
     try:
         return JSONResponse(content=orchestrator.decide_thread_investigation(
-            thread_id, str((body or {}).get("decision") or "")))
+            thread_id, str((body or {}).get("decision") or ""),
+            task_id=str((body or {}).get("taskId") or "")))
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "unknown thread"})
     except ValueError as e:
@@ -3862,6 +3863,7 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     dset = bool((body or {}).get("skipDatasetGate"))
     dropped = str((body or {}).get("datasetDismissed") or "")
     invq = bool((body or {}).get("investigationAnswered"))
+    task_id = str((body or {}).get("taskId") or "")
     turn_id = new_id("turn")
     turn_ticket, turn_state = orchestrator.prepare_stream_turn(
         turn_id, kind="chat", conversation=thread_id)
@@ -3869,7 +3871,7 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
         _turn_sse(orchestrator.chat_stream(
             thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
             skip_dataset_gate=dset, dismissed_dataset=dropped,
-            skip_investigation_gate=invq,
+            skip_investigation_gate=invq, task_id=task_id,
             other_lane_grant=grant, turn_ticket=turn_ticket), "chat_stream"),
         media_type="text/event-stream",
         headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
@@ -3895,7 +3897,8 @@ async def confirm_thread_table_candidate(thread_id: str, resource_id: str,
         )})
     try:
         return JSONResponse(content=orchestrator.confirm_thread_table_candidate(
-            thread_id, resource_id, database, schema, table))
+            thread_id, resource_id, database, schema, table,
+            task_id=str((body or {}).get("taskId") or "")))
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "unknown thread"})
     except ResourceNotBound:
