@@ -65,7 +65,7 @@ def test_invalid_content_gets_one_repair_and_a_persisted_failure(tmp_path, raw, 
     assert next(e for e in events if e["type"] == "done")["ok"] is False
     for rows in (events, orch.get_thread(tid)["history"]):
         texts = " ".join(e.get("text", "") for e in rows if e["type"] == "agent")
-        assert "The total is 42." in texts
+        assert texts == ""
         assert table not in texts
         assert "table is ready" not in texts
         failures = [e for e in rows if e.get("reason") == "table generation failed"]
@@ -75,8 +75,7 @@ def test_invalid_content_gets_one_repair_and_a_persisted_failure(tmp_path, raw, 
             "The chart is ready, but I could not generate the table: moves."]
         assert [a["path"] for e in rows if e["type"] == "artifacts" for a in e["items"]] == [chart]
     assert [a["path"] for a in orch.get_thread(tid)["artifacts"]] == [chart]
-    if not kept_rows and raw is not None:
-        assert json.loads((root / table).read_text())["keptRows"] is False
+    assert not (root / table).exists()
     spans = [s.fields for s in timing.last_finished().spans if s.name == "chat.table_validation"]
     assert len(spans) == 1
     assert spans[0]["path"] == table and spans[0]["repair_ran"] is True
@@ -124,7 +123,8 @@ def test_multiple_tables_share_one_repair_and_keep_the_successes(tmp_path):
     assert good not in oc.prompts[1]["text"]
     assert {a["path"] for a in orch.get_thread(tid)["artifacts"]} == {table, good}
     assert next(e for e in events if e["type"] == "done")["ok"] is False
-    for rel in (table, good, second):
+    assert not (root / second).exists()
+    for rel in (table, good):
         assert "private-cell" not in (root / rel).read_text()
         assert json.loads((root / rel).read_text())["keptRows"] is False
 
@@ -226,14 +226,14 @@ def test_shell_completion_status_does_not_replace_file_validation(tmp_path, fina
     assert next(e for e in events if e["type"] == "done")["ok"] is final_valid
 
 
-def test_a_reference_to_an_old_blank_table_is_reported_without_rewriting_it(tmp_path):
+def test_a_reference_to_an_old_blank_table_gets_one_repair_then_reports_failure(tmp_path):
     orch, oc, tid, root, table = setup_turn(tmp_path, kept_rows=False)
     path = root / table
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(" ")
     oc.turns = [Turn(text=f"Total: 42. See the table: [file:{table}]")]
     events = list(orch.chat_stream(tid, "summarize the file"))
-    assert len(oc.prompts) == 1
+    assert len(oc.prompts) == 2
     assert path.read_text() == " "
     assert next(e for e in events if e["type"] == "done")["ok"] is False
     assert any(e.get("reason") == "table generation failed" for e in events)
@@ -293,7 +293,7 @@ def test_table_offers_do_not_stream_before_file_validation(tmp_path):
     assert "table is ready" not in " ".join(e.get("text", "") for e in events)
 
 
-def test_removing_a_failed_table_offer_keeps_the_total_and_chart_link(tmp_path):
+def test_a_failed_table_removes_unverified_prose_and_keeps_the_chart_card(tmp_path):
     orch, oc, tid, _, table = setup_turn(tmp_path)
     chart = f"examples/{tid}/trend.png"
     oc.turns = [Turn(text=f"Total: 42; chart: [file:{chart}]; table: [file:{table}]",
@@ -301,9 +301,8 @@ def test_removing_a_failed_table_offer_keeps_the_total_and_chart_link(tmp_path):
     events = list(orch.chat_stream(tid, "summarize the file"))
     for rows in (events, orch.get_thread(tid)["history"]):
         text = " ".join(e.get("text", "") for e in rows if e["type"] == "agent")
-        assert "Total: 42" in text
-        assert f"[file:{chart}]" in text
-        assert table not in text
+        assert text == ""
+        assert [a["path"] for e in rows if e["type"] == "artifacts" for a in e["items"]] == [chart]
 
 
 def test_a_table_changed_after_a_stream_reference_still_gets_repaired(tmp_path):
@@ -397,3 +396,101 @@ def test_failed_replacement_does_not_damage_an_earlier_turns_table(tmp_path):
     assert [a["path"] for e in events if e["type"] == "artifacts" for a in e["items"]] == [chart]
     assert orch.get_thread(tid)["artifacts"][:len(prior_artifacts)] == prior_artifacts
     assert any(e.get("reason") == "table generation failed" for e in events)
+
+
+def test_failed_table_replaces_unrestricted_success_prose(tmp_path):
+    orch, oc, tid, _, table = setup_turn(tmp_path)
+    chart = f"examples/{tid}/trend.png"
+    claim = "Done. I found 36 customers and saved all results successfully."
+    oc.turns = [Turn(text=claim, writes={table: "[local data withheld]", chart: "chart"}), Turn()]
+    events = list(orch.chat_stream(tid, "summarize the file"))
+    for rows in (events, orch.thread_history(tid)):
+        text = " ".join(e.get("text", "") for e in rows if e.get("kind") == "text")
+        assert "36 customers" not in text
+        assert "successfully" not in text
+        assert any(e.get("reason") == "table generation failed" for e in rows)
+        assert [a["path"] for e in rows if e["type"] == "artifacts" for a in e["items"]] == [chart]
+
+
+@pytest.mark.parametrize("kept_rows", [False, True])
+def test_an_unpublished_failed_table_remains_repairable_on_a_later_turn(tmp_path, kept_rows):
+    orch, oc, tid, root, table = setup_turn(tmp_path, kept_rows=kept_rows)
+    valid = '{"columns":["total"],"rows":[[42]]}'
+    oc.turns = [Turn(text="Saved successfully.", writes={table: "[local data withheld]"}), Turn(),
+                Turn(text=f"The result: [file:{table}]"), Turn(writes={table: valid})]
+    first = list(orch.chat_stream(tid, "summarize the file"))
+    assert next(e for e in first if e["type"] == "done")["ok"] is False
+    assert not (root / table).exists(), "failed bytes must not become an empty valid receipt"
+    assert not orch.get_thread(tid)["artifacts"]
+    second = list(orch.chat_stream(tid, "repair the failed table"))
+    assert len(oc.prompts) == 4
+    for rows in (second, orch.thread_history(tid)):
+        assert [e for e in rows if e["type"] == "done"][-1]["ok"] is True
+    assert [a["path"] for a in orch.get_thread(tid)["artifacts"]] == [table]
+    assert json.loads((root / table).read_text())["rows"] == ([[42]] if kept_rows else [])
+
+
+def test_an_old_invalid_table_reference_can_be_repaired(tmp_path):
+    orch, oc, tid, root, table = setup_turn(tmp_path)
+    path = root / table
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[local data withheld]")
+    valid = '{"columns":[],"rows":[]}'
+    oc.turns = [Turn(text=f"The result: [file:{table}]"), Turn(writes={table: valid})]
+    events = list(orch.chat_stream(tid, "repair the failed table"))
+    assert len(oc.prompts) == 2
+    assert path.read_text() == valid
+    assert next(e for e in events if e["type"] == "done")["ok"] is True
+
+
+@pytest.mark.parametrize("prior", [False, True])
+@pytest.mark.parametrize("repaired", [False, True])
+def test_a_rejected_controlled_write_cannot_claim_success_without_a_file_reference(
+        tmp_path, prior, repaired):
+    from .test_chat_turn import IntentGateway
+
+    orch, oc = _orch(tmp_path, gateway=IntentGateway({"label": "data_artifact", "confidence": 0.92}))
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    project.record.set_kept_rows(True)
+    source = project.record.path / ".sage" / "scratch" / "totals.csv"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("total\n42\n")
+    orch.add_thread_context(tid, {"kind": "file", "name": "totals.csv",
+                                  "path": ".sage/scratch/totals.csv"})
+    table = f"examples/{tid}/result.table.json"
+    path = project.record.path / table
+    old = '{"columns":["total"],"rows":[[1]]}'
+    valid = '{"columns":["total"],"rows":[[42]]}'
+    if prior:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(old)
+    claim = "Saved all 42 results successfully."
+    oc.turns = [Turn(text=claim), Turn(), Turn(text="A later answer.")]
+    send = oc.send_prompt
+    def write_then_answer(*args, **kwargs):
+        request = len(oc.prompts)
+        if request == 0:
+            with pytest.raises(ValueError, match="table"):
+                orch.write_chat_artifact({"thread_id": tid, "path": f"examples/{tid}/./result.table.json",
+                                         "content": "[local data withheld]"})
+        elif request == 1 and repaired:
+            orch.write_chat_artifact({"thread_id": tid, "path": table, "content": valid})
+        send(*args, **kwargs)
+    oc.send_prompt = write_then_answer
+
+    events = list(orch.chat_stream(tid, "make the table"))
+    assert len(oc.prompts) == 2
+    assert table in oc.prompts[1]["text"]
+    for rows in (events, orch.thread_history(tid)):
+        assert next(e for e in rows if e["type"] == "done")["ok"] is repaired
+        assert (claim in " ".join(e.get("text", "") for e in rows)) is repaired
+        assert any(e.get("reason") == "table generation failed" for e in rows) is not repaired
+    if repaired or prior:
+        assert path.read_text() == (valid if repaired else old)
+    else:
+        assert not path.exists()
+
+    later = list(orch.chat_stream(tid, "explain the result"))
+    assert len(oc.prompts) == 3, "a rejected write belongs only to the turn that attempted it"
+    assert next(e for e in later if e["type"] == "done")["ok"] is True

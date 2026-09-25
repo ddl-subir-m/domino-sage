@@ -3194,6 +3194,35 @@ def test_chat_empty_result_recovery_keeps_its_answer(tmp_path):
             "There are three columns."]
 
 
+@pytest.mark.parametrize("fails_after", [False, True])
+@pytest.mark.parametrize("transcript_arrived", [False, True])
+def test_a_completed_stream_answer_counts_before_its_transcript_arrives(
+        tmp_path, fails_after, transcript_arrived):
+    events = [_live("message", text="There are three columns.", final=True)]
+    if fails_after:
+        events.append(_live("error", error={"data": {"message": "provider unavailable"}}))
+    events.append(_live("phase", finish="stop"))
+
+    class LateTranscript(StreamingFake):
+        def is_running(self, session_id):
+            if len(self.prompts) > 1:
+                return FakeOpenCode.is_running(self, session_id)
+            return super().is_running(session_id)
+
+    first = Turn(text="There are three columns." if transcript_arrived else "")
+    orch, oc = _orch(tmp_path, client=lambda ws: LateTranscript(ws, [first, Turn()], events))
+    tid = orch.create_thread()["id"]
+    output = list(orch.chat_stream(tid, "summarize the file"))
+    assert len(oc.prompts) == 1
+    for rows in (output, orch.thread_history(tid)):
+        assert next(e for e in rows if e["type"] == "done")["ok"] is not fails_after
+        if fails_after:
+            assert any(e["type"] == "error" for e in rows)
+        else:
+            assert [e["text"] for e in rows if e.get("kind") == "text"] == [
+                "There are three columns."]
+
+
 @pytest.mark.parametrize("witness", ["message", "gateway"])
 def test_chat_terminal_error_with_partial_text_is_not_success(tmp_path, witness):
     failure = {"name": "APIError", "data": {"message": "provider unavailable"}}
@@ -3253,3 +3282,90 @@ def test_chat_empty_recovery_and_table_repair_share_one_attempt(tmp_path):
     events = list(orch.chat_stream(tid, "summarize the file"))
     assert len(oc.prompts) == 2
     assert next(e for e in events if e["type"] == "done")["decision"] == "table generation failed"
+
+
+@pytest.mark.parametrize("raw", ["[local data withheld]", "{bad", "null", '{"sheets":{}}',
+                                 '{"columns":["value"],"rows":[[NaN]]}',
+                                 '{"columns":["value"],"rows":[[Infinity]]}'])
+@pytest.mark.parametrize("prior", [False, True])
+def test_controlled_table_write_validates_before_replacing_any_file(tmp_path, raw, prior):
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    path = f"examples/{tid}/result.table.json"
+    dest = project.record.path / path
+    valid = b'{"columns":["total"],"rows":[[42]]}'
+    if prior:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(valid)
+    chat = project.control.arm_chat(tid)
+    grant = project.control.arm_chat_artifact()
+    try:
+        with pytest.raises(ValueError, match="table"):
+            orch.write_chat_artifact({"thread_id": tid, "path": path, "content": raw})
+    finally:
+        project.control.disarm_chat_artifact(grant)
+        project.control.disarm_chat(chat)
+    assert dest.read_bytes() == valid if prior else not dest.exists()
+
+
+@pytest.mark.parametrize("content", [
+    '{"columns":["total"],"rows":[[42]]}', '{"columns":[],"rows":[]}',
+    '{"columns":["total"],"rows":[],"keptRows":false,"rowCount":42}',
+])
+def test_controlled_table_replacement_is_atomic(tmp_path, monkeypatch, content):
+    from sage.orchestrator import service
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    path = f"examples/{tid}/result.table.json"
+    dest = project.record.path / path
+    old = b'{"columns":[],"rows":[]}'
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(old)
+    replace = service.os.replace
+    replacements = []
+    def checked_replace(candidate, target):
+        assert Path(target) == dest
+        assert dest.read_bytes() == old
+        assert Path(candidate).read_text() == content
+        replacements.append(Path(candidate))
+        replace(candidate, target)
+    monkeypatch.setattr(service.os, "replace", checked_replace)
+    chat = project.control.arm_chat(tid)
+    grant = project.control.arm_chat_artifact()
+    try:
+        result = orch.write_chat_artifact({"thread_id": tid, "path": path, "content": content})
+    finally:
+        project.control.disarm_chat_artifact(grant)
+        project.control.disarm_chat(chat)
+    assert result == {"path": path, "bytes": len(content.encode())}
+    assert len(replacements) == 1
+    assert not replacements[0].exists()
+    assert dest.read_text() == content
+
+
+def test_failed_atomic_table_replace_keeps_the_prior_file_and_removes_candidate(tmp_path, monkeypatch):
+    from sage.orchestrator import service
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    path = f"examples/{tid}/result.table.json"
+    dest = project.record.path / path
+    old = b'{"columns":["value"],"rows":[[1]]}'
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(old)
+    def fail_replace(_candidate, _target):
+        raise OSError("replacement refused")
+    monkeypatch.setattr(service.os, "replace", fail_replace)
+    chat = project.control.arm_chat(tid)
+    grant = project.control.arm_chat_artifact()
+    try:
+        with pytest.raises(OSError, match="replacement refused"):
+            orch.write_chat_artifact({"thread_id": tid, "path": path,
+                                     "content": '{"columns":["value"],"rows":[[2]]}'})
+    finally:
+        project.control.disarm_chat_artifact(grant)
+        project.control.disarm_chat(chat)
+    assert dest.read_bytes() == old
+    assert list(dest.parent.iterdir()) == [dest]

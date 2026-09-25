@@ -39,6 +39,7 @@ import httpx
 
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
+    from ..workspace.chat_tables import ChatTables
 
 from .. import build_diagnostics, degraded, timing
 from ..assets.provider import (
@@ -6149,6 +6150,8 @@ class Orchestrator:
         # not possible — the tuple is replaced, never mutated.
         self._alias_listing_at: tuple[float, dict[str, LlmAlias]] | None = None
         self._data_use_turns: dict[str, str] = {}
+        # The controlled writer and Chat finalization share this turn's validation evidence.
+        self._chat_tables: dict[str, ChatTables] = {}
         # Reads that ended in the model querying the table itself. ADR-0041 permits it — "a
         # read-only turn may read the world", and Chat queries Data Sources every day — but it is a
         # DIFFERENT door from the one the person bound the table for, and rows go into the model's
@@ -12671,6 +12674,7 @@ class Orchestrator:
         if (not state.chat_artifact_turn or state.read_only_turn
                 or not thread_id or thread_id != state.chat_thread_id):
             raise ValueError("Artifact writes require the active data artifact Chat turn.")
+        tables = self._chat_tables.get(thread_id)
         path = body.get("path")
         content = body.get("content")
         if not isinstance(path, str) or not isinstance(content, str):
@@ -12679,12 +12683,17 @@ class Orchestrator:
         if (rel.is_absolute() or ".." in rel.parts or "\\" in path
                 or not path.startswith(f"examples/{thread_id}/")):
             raise ValueError(f"Artifact writes must stay under examples/{thread_id}/.")
+        path = rel.as_posix()
         folder = project.record.path.resolve() / "examples" / thread_id
         dest = (project.record.path / path).resolve()
         if folder.resolve() != folder or dest == folder or not dest.is_relative_to(folder):
             raise ValueError("Artifact path escapes its thread folder.")
         if not path.endswith((".png", ".table.json")):
             raise ValueError("Artifact writes must use .png or .table.json so row protection applies.")
+        # Keep a rejected attempt even when it leaves no file for the final scan to find.
+        # Clear only after replacement succeeds, including an unchanged valid replacement.
+        if path.endswith(".table.json") and tables is not None:
+            tables.write_failures[path] = "table write did not complete"
         encoding = body.get("encoding", "utf8")
         if encoding == "svg" and path.endswith(".png"):
             import xml.etree.ElementTree as ET
@@ -12742,11 +12751,29 @@ class Orchestrator:
             except ValueError as e:
                 raise ValueError("Artifact content is not valid base64.") from e
         elif encoding == "utf8" and path.endswith(".table.json"):
+            from ..workspace.chat_tables import validate_table_bytes
+
             data = content.encode("utf-8")
+            if reason := validate_table_bytes(data):
+                if tables is not None:
+                    tables.write_failures[path] = reason
+                raise ValueError(f"Invalid table JSON: {reason}.")
         else:
             raise ValueError("Use utf8 for table JSON, or svg/base64 for PNG charts.")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
+        if path.endswith(".table.json"):
+            with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", delete=False) as candidate:
+                temporary = Path(candidate.name)
+                try:
+                    candidate.write(data)
+                    candidate.close()
+                    os.replace(temporary, dest)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            if tables is not None:
+                tables.write_failures.pop(path, None)
+        else:
+            dest.write_bytes(data)
         return {"path": path, "bytes": len(data)}
 
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
@@ -14220,13 +14247,14 @@ class Orchestrator:
                 chat_approved.names, chat_approved.order
             )
         tap: _EventTap | None = None
-        from ..workspace.chat_tables import ChatTables, failed_table_name, without_failed_tables
+        from ..workspace.chat_tables import ChatTables, failed_table_name, validate_table_bytes
 
         tables: ChatTables | None = None
         recovery_used = False
         primary_body = ""
         last_text = ""
         streamed_body = ""
+        completed_stream_body = ""
         artifacts_finished = False
         # #418. Read at the turn's end to decide whether the workspace is worth re-reading: a turn
         # that ran no tool cannot have written a file, so there is nothing for the revert scan to
@@ -14276,13 +14304,17 @@ class Orchestrator:
                     revert_denied_writes(project.record.path, thread_id, tables.before)
                 invalid = tables.check(body)
                 tables.diagnose(invalid, outcome)
-                # A failed replacement must not turn an earlier turn's valid card into an empty
-                # receipt. Restore only this turn's damage; unchanged prior files stay untouched.
+                # Restore an earlier valid table after a bad replacement. Remove only failed
+                # candidates written by this turn; retention must not turn them into valid-looking
+                # empty receipts. An unchanged invalid file stays eligible for a later repair.
                 for rel in invalid:
-                    if rel in tables.before and rel not in tables.prior_paths:
-                        path = project.record.path / rel
+                    path = project.record.path / rel
+                    previous = tables.before.get(rel)
+                    if previous is not None and not validate_table_bytes(previous):
                         path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(tables.before[rel])
+                        path.write_bytes(previous)
+                    elif previous is None or not path.exists() or path.read_bytes() != previous:
+                        path.unlink(missing_ok=True)
                 withhold_table_rows(project.record.path, thread_id, tables.before,
                                     kept_rows=project.record.kept_rows())
                 runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
@@ -14306,8 +14338,11 @@ class Orchestrator:
                 turn_rewrites.update(rel for rel in written if rel in tables.before)
             events = []
             if body.strip() or invalid:
+                # The failure text below is authoritative. A phrase filter cannot remove every
+                # possible success claim or know which surrounding numbers remain supported. An
+                # empty final text event also removes provisional streamed prose in Workbench.
                 ev = {"type": "agent", "kind": "text",
-                      "text": without_failed_tables(body, set(invalid))}
+                      "text": "" if invalid else body}
                 events.append(ev)
             if artifacts:
                 immediate = immediate or "artifacts"
@@ -14388,6 +14423,7 @@ class Orchestrator:
                 # unlink on `prev is None`.
                 before = snapshot_files(project.record.path)
                 tables = ChatTables(project.record.path, thread_id, before)
+                self._chat_tables[thread_id] = tables
             # Cleared here so what is read at the end of this turn belongs to this turn. Every build
             # entry point already does this; Chat never did, because Chat never read the field —
             # which is the gap, not the clearing. The turn lock means no other turn is running to
@@ -14518,6 +14554,7 @@ class Orchestrator:
             # question that was never the problem.
             step_error = ""
             step_reason = ""
+            unanswered_stream_error = False
             answered = False
             idle_quiet = _CHAT_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
             tool_quiet = _CHAT_TOOL_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
@@ -14860,6 +14897,8 @@ class Orchestrator:
                             # anything arrive AFTER this went wrong" — a step that fails and is
                             # retried still says something afterwards and still stays quiet.
                             answered = False
+                            completed_stream_body = ""
+                            unanswered_stream_error = True
                         log.warning("chat: step failed — %s", ev.payload.get("error"))
                         # A turn refused at its first step may never register as running, and
                         # `finished` needs to have seen it run. Without this the loop cannot end on
@@ -14932,10 +14971,14 @@ class Orchestrator:
                     if live is not None:
                         answered = answered or bool(live.get("text"))
                         if live.get("type") == "delta":
+                            if live.get("final") and live.get("text", "").strip():
+                                unanswered_stream_error = False
                             if tables.repair_ran:
                                 continue
                             streamed_body = (live.get("text", "") if live.get("final")
                                              else streamed_body + live.get("text", ""))
+                            if live.get("final"):
+                                completed_stream_body = streamed_body
                             tables.check(streamed_body)
                             # A table answer is held until its files have been checked. Ordinary
                             # Chat still streams. Repair prose never replaces the useful answer.
@@ -15111,12 +15154,15 @@ class Orchestrator:
                     # well as this session's, so the chat agent is told the rule it belongs to; the
                     # Thread must not show it either way. Stripped here, where the reply is both
                     # persisted and replayed, so a reload does not bring it back.
-                    body = _take_no_build_marker(pending_text)[0] if pending_text else ""
+                    # A final stream message is an answer even if the transcript copy is late.
+                    # Partial narration and words before a failed step do not meet that test.
+                    body = _take_no_build_marker(pending_text or completed_stream_body)[0]
                     if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                         continue
                     invalid = tables.check(primary_body if tables.repair_ran else body)
                     answered = (has_chat_result(primary_body if tables.repair_ran else body, invalid)
-                                and not turn_failed and project.last_gateway_error is None)
+                                and not turn_failed and not unanswered_stream_error
+                                and project.last_gateway_error is None)
                     repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
                     if ((repairable or (not invalid and not answered))
                             and not recovery_used and not turn_failed and not step_error
@@ -15167,6 +15213,7 @@ class Orchestrator:
                         appeared = False
                         last_text = ""
                         streamed_body = ""
+                        completed_stream_body = ""
                         last_activity = time.monotonic()
                         running_tools.clear()
                         running_paths.clear()
@@ -15290,6 +15337,8 @@ class Orchestrator:
             yield finish({"type": "done", "ok": False, "decision": "session failed",
                           "artifacts": artifacts})
         finally:
+            if self._chat_tables.get(thread_id) is tables:
+                self._chat_tables.pop(thread_id, None)
             # Generator close and exceptions also end the retention window. In particular Stop
             # used to save straight from this finally without removing generated table rows.
             if tables is not None and not artifacts_finished:
