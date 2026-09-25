@@ -7082,7 +7082,7 @@ class Orchestrator:
             # supervisor on the next request, and `upstream()` goes on raising until one comes up,
             # which the proxy already renders (#504).
             try:
-                supervisor.start()
+                supervisor.retry_start()
             except Exception:
                 log.exception("preview: the dev server could not start; the pane will show a 502")
             try:

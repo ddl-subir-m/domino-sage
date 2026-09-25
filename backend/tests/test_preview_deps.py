@@ -149,6 +149,10 @@ class _DeadSupervisor:
         self.starts += 1
         raise RuntimeError("vite exited (code 127); max restarts reached")
 
+    def retry_start(self) -> None:
+        # Inline only in this attach fixture; real startup is on the supervisor's worker thread.
+        self.start()
+
     def upstream(self) -> str:
         raise RuntimeError("vite not ready")
 
