@@ -38,6 +38,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import build_diagnostics
+from ..implementation_request import carries_profile_markers
 from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import HelperNames, helpers_for
 from ..router.models import ASSIGNABLE_SLOTS
@@ -2353,13 +2354,34 @@ class WorkspaceManager:
         `AGENTS.md`, `CLAUDE.md` and `CONTEXT.md` by exact name), so the copy is out of the walk-up
         from both sessions while staying somewhere a person can find it.
 
-        Never read, only renamed, so bytes that are not UTF-8 cannot raise here — the thing that
-        bricked the open at #303 when this method still voiced the file in place.
+        **Only a file Sage seeded.** Presence at this path is NOT the test. A person may keep their
+        own AGENTS.md at the Project root, and moving that would silently disable their standing
+        instructions to every turn in their own Project — a much worse act than the one being
+        repaired. A Sage-seeded copy carries the Build instruction profile markers and a
+        hand-written one does not, so the markers are the discriminator. They are a durable test
+        rather than a template-hash list, because the v1 four-marker shape has to stay valid
+        forever anyway (`implementation_request._REQUIRED_BLOCKS`) — a hash list would need a new
+        entry per template revision and would fail silently the first time somebody forgot.
+
+        Reading is guarded on both sides. Bytes that are not UTF-8 raise `ValueError` and are left
+        alone, which keeps #303 closed — that defect was this method bricking the open by reading
+        this exact file. And `carries_profile_markers` is the parser's only entry point that does
+        not raise `BuildInstructionProfileError` (#552); a file that will not parse is not a file
+        this may move.
         """
         path = self._dir / "AGENTS.md"
         if not path.is_file():
             # Absent on every Project seeded since `36c8167`, and the second run of a Project this
             # already moved.
+            return
+        try:
+            body = path.read_text()
+        except (ValueError, OSError):
+            log.warning("workspace: cannot read %s, so cannot tell whose it is; leaving it", path)
+            return
+        if not carries_profile_markers(body):
+            log.warning("workspace: %s carries no Build profile markers, so Sage did not seed it; "
+                        "leaving it where the person put it", path)
             return
         kept = self._dir / CHAT_WORK.parent / "legacy-root-AGENTS.md"
         if kept.exists():

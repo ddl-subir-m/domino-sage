@@ -23,7 +23,18 @@ import pytest
 
 from sage.workspace.manager import WorkspaceManager
 
-LEGACY = "# Legacy\nSay **{dataSource}** when you mean a connection.\n"
+# A Sage-seeded copy: it carries the Build instruction profile markers. That is what makes it
+# Sage's to move, not the path it sits at — see `test_a_hand_written_root_agents_md_stays_put`.
+LEGACY = ("<!-- sage:build-profile:v1:common:begin -->\n"
+          "Say **{dataSource}** when you mean a connection.\n"
+          "<!-- sage:build-profile:v1:common:end -->\n"
+          "<!-- sage:build-profile:v1:implement:begin -->\n"
+          "Build rules, from whichever stack this copy came from.\n"
+          "<!-- sage:build-profile:v1:implement:end -->\n")
+
+#: No markers, so Sage did not write it. Moving this would silently disable a person's own
+#: standing instructions to every Chat and Build turn in their own Project.
+HAND_WRITTEN = "# House rules\nAlways label the axis in Warehouse charts.\n"
 
 
 def _template(tmp: Path) -> Path:
@@ -159,14 +170,43 @@ def test_a_move_that_fails_does_not_stop_the_project_opening(tmp_path: Path, mon
     assert _root(tmp_path).read_text() == LEGACY, "a failed move must not lose the file"
 
 
-def test_bytes_that_are_not_utf8_are_moved_rather_than_read(tmp_path: Path):
-    """The voicer this replaced read the file, so a non-UTF-8 one raised out of the first step of
-    opening a Project (#303). A rename never decodes."""
+def test_bytes_that_are_not_utf8_leave_the_file_alone_and_the_project_opens(tmp_path: Path):
+    """#303 was this method bricking the open by READING this exact file. Deciding whose the file
+    is means reading it again, so the decode is guarded and an undecodable file is left alone:
+    "I cannot read it" is not "it is mine"."""
     _manager(tmp_path).ensure("proj1")
     _root(tmp_path).write_bytes(b"\xff\xfe# not utf-8\n")
 
     assert _manager(tmp_path).ensure("proj1") is not None
-    assert _kept(tmp_path).read_bytes() == b"\xff\xfe# not utf-8\n"
+    assert _root(tmp_path).read_bytes() == b"\xff\xfe# not utf-8\n"
+    assert not _kept(tmp_path).exists()
+
+
+# --- only a file Sage seeded ---------------------------------------------------------------
+
+def test_a_hand_written_root_agents_md_stays_put(tmp_path: Path):
+    """The person's own file. Moving it would silently disable their standing instructions to
+    every turn in their own Project — worse than the duplicate this repair exists to remove."""
+    _manager(tmp_path).ensure("proj1")
+    _root(tmp_path).write_text(HAND_WRITTEN)
+
+    _manager(tmp_path).ensure("proj1")
+
+    assert _root(tmp_path).read_text() == HAND_WRITTEN
+    assert not _kept(tmp_path).exists()
+
+
+def test_a_root_file_whose_markers_do_not_parse_stays_put(tmp_path: Path):
+    """Half a marker set is not a Sage file, and the parser's other entry point would raise
+    `BuildInstructionProfileError` here — uncaught anywhere in `sage/` (#552). This method's whole
+    job is to shrug, so it asks through `carries_profile_markers`, which never raises."""
+    broken = "<!-- sage:build-profile:v1:common:begin -->\nno end marker\n"
+    _manager(tmp_path).ensure("proj1")
+    _root(tmp_path).write_text(broken)
+
+    assert _manager(tmp_path).ensure("proj1") is not None
+    assert _root(tmp_path).read_text() == broken
+    assert not _kept(tmp_path).exists()
 
 
 # --- the prompt no longer carries it -------------------------------------------------------------
@@ -194,7 +234,7 @@ def test_the_walk_up_no_longer_reaches_a_duplicate_after_the_move(tmp_path: Path
 
     assert found == [Path(workspace.path) / "AGENTS.md"], (
         f"the walk-up still reaches more than the app's own instructions: {found}")
-    assert LEGACY not in "".join(p.read_text() for p in found)
+    assert all(LEGACY not in p.read_text() for p in found)
 
 
 @pytest.mark.parametrize("session", [Path("apps") / "an-app", Path(".sage") / "chat-work"])

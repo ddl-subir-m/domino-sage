@@ -88,6 +88,26 @@ def _marked_blocks(text: str) -> tuple[list, list[tuple[str, str]]]:
     return matches, blocks
 
 
+def carries_profile_markers(text: str) -> bool:
+    """True when `text` is a complete, valid Build instruction profile — i.e. Sage seeded it.
+
+    This is the one entry point that answers the question WITHOUT raising. `apply_instruction_profile`
+    raises `BuildInstructionProfileError`, which nothing in `sage/` catches (#552), so a caller that
+    only wants to know whose file this is must not go through it.
+
+    A file that does not parse answers False. That is deliberate and it is the safe direction: the
+    caller uses this to decide whether a file is Sage's to move, and "I could not read it" is not
+    "it is mine".
+    """
+    if _PROFILE_PREFIX not in text:
+        return False
+    try:
+        _marked_blocks(text)
+    except BuildInstructionProfileError:
+        return False
+    return True
+
+
 def _profile_text(text: str, profile: str,
                   sections: frozenset[str]) -> tuple[str, dict[str, int]] | None:
     """Apply one complete marked profile, or leave unrelated instruction text alone."""
