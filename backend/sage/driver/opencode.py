@@ -406,9 +406,30 @@ class OpenCodeClient:
         payload = r.json()
         # /api/* responses wrap the resource in {"data": {...}}.
         sid = (payload.get("data") or payload)["id"]
-        named = httpx.patch(f"{self.base_url}/session/{sid}", params={"directory": directory},
-                            json={"title": Path(directory).name or "sage"}, timeout=30)
-        named.raise_for_status()
+        # A TITLE THAT DOES NOT LAND IS THE OLD BEHAVIOUR AND NOTHING WORSE. The session is already
+        # created and complete at this point — `sid` is in hand, and nothing in Sage ever reads a
+        # title. So a PATCH that 500s or never answers costs the one model call this saves, and must
+        # not take the turn down with it: `create_session` has eight call sites in `service.py`,
+        # including the main Build path, and an unhandled raise here would fail every one of them
+        # for a name. That is a worse trade than the one the ticket set out to make.
+        #
+        # 5s, not the 30s the calls above take. Measured 2026-09-25 against the pinned binary on a
+        # loaded box: this PATCH answers in 4.7 ms median and 112 ms worst of twelve, so 5s is ~45x
+        # the worst seen and will not fire on a slow machine. It is also short enough to keep the
+        # bad case bounded — 5s wasted and then OpenCode names the session itself — against the
+        # 8-20s on the Build model that it saves when it works.
+        #
+        # `httpx.HTTPError` is the base of BOTH `HTTPStatusError` and the transport errors
+        # (`ConnectError`, `TimeoutException`), and the transport ones are raised by `patch` itself,
+        # before `raise_for_status` is ever reached. Catching the status alone would leave the
+        # likelier half of the failure surface fatal.
+        try:
+            named = httpx.patch(f"{self.base_url}/session/{sid}", params={"directory": directory},
+                                json={"title": Path(directory).name or "sage"}, timeout=5)
+            named.raise_for_status()
+        except httpx.HTTPError as error:
+            log.warning("session %s kept OpenCode's own title, so OpenCode will spend a model call "
+                        "naming itself: %s", sid, error)
         self._dirs[sid] = directory
         return sid
 
