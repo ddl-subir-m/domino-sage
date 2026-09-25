@@ -279,6 +279,8 @@ class SessionState:
     # the user is left waiting for. "" when nothing armed it (including Ask, which is read-only by
     # mode alone); read_only_turn stays the flag to test for the write/shell guarantee.
     # "greeting" is a whole-message Chat greeting and withholds all tools for that turn only.
+    # "source" is a Chat turn that asks for the Data Source its question needs (#566); it withholds
+    # all tools the same way.
     read_only_reason: str = ""
     # This turn may reach the public internet (webfetch/websearch). Default-deny: the orchestrator
     # arms it only when the current prompt actually asked for the web (a URL or an intent verb), and

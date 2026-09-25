@@ -14144,6 +14144,37 @@ class Orchestrator:
         lines.append(prompt)
         return "\n".join(lines)
 
+    def _chat_source_request_prompt(self, thread_id: str, prompt: str, rebuilt: str = "") -> str:
+        """The turn prompt for a known source clarification (#566): ask, and keep the question.
+
+        Deliberately not `_chat_prompt` with parts removed. That prompt teaches Live read, the
+        delegated models, the Artifact contract and the invention guard, and every one of those is
+        about a turn that has data to read. This turn has none and knows it, so each of those
+        sections is an invitation to go and look — which is what the measured turn did.
+
+        The question is the last line, as in `_chat_prompt`, so a test that reads the prompt's tail
+        reads the same thing on both. `rebuilt` keeps ADR-0060's promise: the row that tells the
+        person a memory was rebuilt is written after this dispatch, so when there is a summary to
+        carry, this prompt carries it too.
+        """
+        lines = [f"Thread id: {thread_id}"]
+        if rebuilt:
+            lines += [("What was said in this Conversation already, summarised. This conversation "
+                       "is continuing, not starting: answer as though you had been part of it."),
+                      rebuilt, ""]
+        lines += [
+            brand.text(
+                "This question needs data from a {dataSource} or a table, and none is attached to "
+                "this conversation yet. Do not answer it, and do not look for the data anywhere "
+                "else: no file, folder or store outside this conversation holds it. In one or two "
+                "plain sentences, ask the person to attach the {dataSource} or table that holds "
+                "what the question is about, and say what you would do once it is there. The "
+                "question below stays open and runs once a source is attached."),
+            "",
+            prompt,
+        ]
+        return "\n".join(lines)
+
     def _chat_stream(self, thread_id: str, prompt: str, *, timeout_s: float | None = None,
                      already_asked: bool = False, skip_table_gate: bool = False,
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
@@ -14623,21 +14654,42 @@ class Orchestrator:
         # extension but `.png`/`.table.json`, and a `data_answer` turn still holds no write tool at
         # all. That is now a fact about what a bounded turn can write, not the thing holding the
         # exemption shut.
+        # A KNOWN source clarification (#566): the turn that must ask for a store it does not have.
+        # Two existing facts and no new judgement. `chat_task.resolve` wrote the pending task at the
+        # top of this turn from the question's shape, and `chat_task.started` above left it waiting
+        # because nothing of the source kinds is on the Thread; the classifier then said this is a
+        # data question. Both, because the pending task alone is wide — `needs_source` is true of
+        # "Investigate why the sky is blue" — and a general question on this lane would be asked
+        # for a store it never wanted. Either fact missing, and the turn is today's general one.
+        #
+        # What the lane changes is the REQUEST and nothing after it: the short prompt below asks
+        # for the source and keeps the question, and `arm_read_only("source")` makes the shim send
+        # no tools. Measured in one run, the general request on this same turn spent 232 seconds
+        # loading a skill and listing folders before it asked. The attach → offer → accept path is
+        # untouched: `resolve` matches the reply to the kept question, the funnel draws the one
+        # card, and the accepted replay runs the question under the grant.
+        source_request = (
+            intent.valid and intent.label in {"data_answer", "data_artifact"} and not unbounded
+            and chat_task.awaiting_source(store, thread_id, prompt)
+        )
         artifact_token = (
             project.control.arm_chat_artifact()
-            if intent.valid and intent.label == "data_artifact" and not unbounded else None
+            if intent.valid and intent.label == "data_artifact" and not unbounded
+            and not source_request else None
         )
         # The else branch scans the ask, not the binding: `items` is already bound above, and its
         # names are masked out of the text the data-ask scan reads (#421). Without that, a store
         # called `Snowflake-Data-Warehouse` satisfied `\bdata\b` from its own name and the identical
         # question took a different tool lane than it did on `Snowflake_Data_Warehouse`.
-        answer_only = (
+        answer_only = source_request or ((
             intent.label in {"plain_answer", "data_answer"}
             if intent.valid and intent.label != "other_chat"
             else _plain_chat_answer_only(prompt, [str(i.get("name") or "") for i in items])
-        ) and not unbounded
+        ) and not unbounded)
         plain_answer_token = (
-            project.control.arm_read_only("greeting" if chat_intent.is_greeting(prompt) else "question")
+            project.control.arm_read_only(
+                "source" if source_request
+                else "greeting" if chat_intent.is_greeting(prompt) else "question")
             if answer_only else None
         )
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
@@ -14899,14 +14951,18 @@ class Orchestrator:
                 # with nine events and a live session is indistinguishable here from one with nine
                 # events whose session just died. Only `_ensure_thread_session` knows.
                 rebuilt = recall.reseed(prompt_history) if owed else ""
-                turn_prompt = self._chat_prompt(thread_id, prompt, ctx, urls,
-                                                workspace=Path(work),
-                                                artifacts=store.read_artifacts(thread_id),
-                                                handoffs=store.read_handoffs(thread_id),
-                                                history=prompt_history,
-                                                declined=declined,
-                                                rebuilt=rebuilt,
-                                                investigating=investigating)
+                if source_request:
+                    turn_prompt = self._chat_source_request_prompt(thread_id, prompt,
+                                                                   rebuilt=rebuilt)
+                else:
+                    turn_prompt = self._chat_prompt(thread_id, prompt, ctx, urls,
+                                                    workspace=Path(work),
+                                                    artifacts=store.read_artifacts(thread_id),
+                                                    handoffs=store.read_handoffs(thread_id),
+                                                    history=prompt_history,
+                                                    declined=declined,
+                                                    rebuilt=rebuilt,
+                                                    investigating=investigating)
                 if artifact_token is not None:
                     # Says what to do, never what this turn is or cannot do. The block is
                     # model-facing, so every word in it is a word the model can hand back to the

@@ -520,9 +520,14 @@ class EnforcementShim:
         # read-only: OpenCode's per-agent permission is inert on the headless path, so stripping the
         # tool from the request is the only thing that stops the agent wandering off to fetch URLs.
         chat_id = state.chat_thread_id
-        if chat_id and state.read_only_turn and state.read_only_reason == "greeting":
+        if chat_id and state.read_only_turn and state.read_only_reason in ("greeting", "source"):
             # Exact greetings need no tools. Keep the model, history and output budget; omit only
             # unused schemas and their choice directive for this turn (#417).
+            # A known source request is the same shape (#566): the turn asks the person for the
+            # store the question needs, and there is nothing for a tool to reach until it arrives.
+            # Measured once, a turn that kept the read-only list spent 232 seconds loading a skill
+            # and listing folders before it asked. Per turn and per reason, not a Chat-wide removal:
+            # the 2026-09-14 rejection of hiding `skill`/`task` from Chat stands.
             request = {k: v for k, v in request.items() if k not in {"tools", "tool_choice"}}
         denied = set(READ_ONLY_DENIED) if (state.mode is Mode.ASK or state.read_only_turn) else set()
         plan_tools_removed: dict[str, int] = {}
