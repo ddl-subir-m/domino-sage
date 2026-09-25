@@ -3065,7 +3065,7 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push({
           type: 'status',
           ok: ev.ok,
-          value: ev.ok ? 'Typecheck passed' : `Typecheck: ${ev.errors} error(s)`,
+          value: ev.ok ? `${ev.kind || 'Typecheck'} passed` : `${ev.kind || 'Typecheck'}: ${ev.errors} error(s)`,
         });
       } else if (ev.type === 'build-recovery') {
         ensureAssistant().blocks.push({
@@ -3114,8 +3114,11 @@ window.SW = window.SW || {};
         if (!GATE_DECISIONS[ev.decision]) {
           ensureAssistant().blocks.push({
             type: 'status',
-            ok: ev.ok,
-            value: ev.decision === 'answered'
+            ok: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified' ? null : ev.ok,
+            warn: !!(ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'),
+            value: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'
+              ? 'Code checks passed; runtime not verified'
+              : ev.decision === 'answered'
               ? 'Answered'
               : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),
           });
@@ -4231,6 +4234,20 @@ window.SW = window.SW || {};
       state.buildTyping = null;
       return;
     }
+    if (ev.type === 'preview-validation') {
+      const running = state.runningTurn;
+      if (ev.appId === (state.activeApp && state.activeApp.id)
+          && (!running || !running.turnId || running.turnId === ev.turnId)
+          && SW.router.get().mode === 'build' && document.visibilityState !== 'hidden') {
+        // Retire a status probe issued before this document request.
+        previewProbe += 1;
+        state.previewSrc = `./preview/?sageValidation=${encodeURIComponent(ev.validationId)}`;
+        state.previewStatus = 'ok';
+        state.previewDetail = null;
+        state.buildTyping = 'Checking the changed page…';
+      }
+      return;
+    }
     if (ev.type === 'user') return;
     if (ev.type === 'model-active') {
       state.buildTyping = ev.active === false ? null
@@ -4242,7 +4259,7 @@ window.SW = window.SW || {};
       const labels = TOOL_LABELS[ev.tool] || {};
       state.buildTyping = (ev.tool === 'bash' ? labels.doing : (ev.detail || labels.doing)) || 'Working';
     } else if (ev.type === 'typecheck-start') {
-      state.buildTyping = 'Typechecking…';
+      state.buildTyping = `${ev.kind || 'Typecheck'}…`;
     } else if (ev.type === 'iterate') {
       state.buildTyping = ev.reason || 'Fixing errors…';
     } else if (ev.type === 'build-recovery') {

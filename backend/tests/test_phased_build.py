@@ -115,7 +115,8 @@ def _build(tmp: Path, turns: list[Turn], *, phased: bool = True,
                         catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
                         opencode_client=oc,
                         build_policy=replace(BuildPolicy(),
-                                             no_edit_nudge_limit=no_edit_nudge_limit))
+                                             no_edit_nudge_limit=no_edit_nudge_limit,
+                                             page_ack_wait_seconds=0.0))
     project = orch.project(start_preview=False)
     if phased:
         project.record.write_settings({"phased_build": True})
@@ -246,9 +247,10 @@ def test_a_failed_phase_aborts_the_build_but_keeps_finished_work(tmp_path: Path,
     # Phase 1's work stays: throwing away finished phases because a later one broke is the worst
     # available behaviour, and a follow-up turn is the cheapest recovery.
     assert (project.workspace.path / "src" / "data.ts").exists()
-    # But the build never happened, so no commit and no "built" latch.
+    # Written work is retained and recorded as code, even though the result failed verification.
+    # This fixture has no project Git repository, so there is no save receipt.
     assert not _of(events, "saved")
-    assert not project.workspace.has_built()
+    assert project.workspace.has_built()
     # Which makes the NEXT turn plan first, via the existing failure-replan gate.
     assert project.workspace.read_last_turn_failed()
     # Phase 3 was never attempted — its brief assumed phase 2's "Done when" held.
