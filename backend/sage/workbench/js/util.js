@@ -1319,6 +1319,19 @@ window.SW = window.SW || {};
     // synonym that parser accepts, so a step the executor can read is a step this can fold.
     // `Do`, `Change`, `Work`, `Done`, `Done when` and `Verify` are deliberately absent: those
     // say what the step is FOR, which is the thing being decided on.
+    //
+    // The patterns are the parser's; the SCOPE is not, and only at one of the two call sites.
+    // `plan.js` hands over the `plan` section, which is what `validate_execution_contract` reads.
+    // The approve card hands over the whole document, so a numbered heading in another section —
+    // a numbered Screens list is the realistic one — turns `inStep` on here and would not over
+    // there. That is deliberate: a bullet spelled `Files — src/x.ts` is file bookkeeping wherever
+    // it is written, and hiding it is what #542 asks for. It is only the "same population as the
+    // parser" reading that is narrower than this, so do not derive one from the other.
+    //
+    // Two lines of divergence from `markdown` proper, both wanted: whitespace-only input renders
+    // nothing rather than a blank paragraph, because a chunk boundary would otherwise leave one
+    // behind; and a step heading written with no blank line before it renders as a heading rather
+    // than being swallowed into the paragraph above, which only happens on malformed markdown.
     planMarkdown(text) {
       if (!text) return null;
       const HEADING = /^#{2,4}[ \t]*\d{1,2}[.)]?[ \t]+.+$/;

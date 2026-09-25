@@ -99,7 +99,18 @@ def test_every_field_spelling_the_parser_accepts_lands_on_the_right_side(separat
     # spellings the parser keeps apart, and a value derived from the name would give them the
     # same one — so a fold that recognised only one of the two would read as covering both.
     fields = {name: f"sentinel/{i}.ts" for i, name in enumerate(FOLDED_FIELDS + KEPT_FIELDS)}
-    body = "\n".join(f"- {name.capitalize()} {separator} {value}" for name, value in fields.items())
+    lines = {name: f"- {name.capitalize()} {separator} {value}" for name, value in fields.items()}
+
+    # The other half of the mirror. Without this the test is one-sided: it would still pass over
+    # lines the parser does not recognise at all, and then it says nothing about whether the fold
+    # and the executor agree — it only says the fold is self-consistent.
+    for name, line in lines.items():
+        match = plan_steps._FIELD.match(line)
+        assert match, line
+        canon = plan_steps._CANON[match.group(1).lower().replace("’", "'")]
+        assert (canon in {"files", "dont_touch"}) == (name in FOLDED_FIELDS), line
+
+    body = "\n".join(lines.values())
     view = drawn("util", f"### 1. One step\n{body}\n")
 
     assert view["folds"] == 1
@@ -127,6 +138,50 @@ def test_editing_the_plan_still_shows_the_file_line_for_line():
 
     assert view["folds"] == 0
     assert view["textarea"] == WELL_FORMED
+
+
+def test_an_older_bold_numbered_step_folds_too():
+    # `plan_steps._BOLD_HEADING` exists for plans written before the `### n.` shape was pinned, and
+    # those are exactly the plans nobody is rewriting. Without this, deleting the bold alternative
+    # from `planMarkdown` leaves every other test in this file green.
+    view = drawn(
+        "util",
+        "**1. Sample data module**\n"
+        "- Files — src/data/trades.ts\n"
+        "- Do — Define a typed Trade record.\n"
+        "- Done when — The app compiles.\n",
+    )
+
+    assert view["folds"] == 1
+    assert "src/data/trades.ts" in view["hidden"]
+    assert "src/data/trades.ts" not in view["visible"]
+    assert "Define a typed Trade record." in view["visible"]
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        pytest.param("Plain prose.\n\nA second paragraph.", id="paragraphs"),
+        pytest.param("## Heading\n\n- one\n- two\n\n1. first\n2. second", id="lists"),
+        pytest.param("| Desk | Rows |\n|---|---|\n| EMEA | 200 |", id="table"),
+        pytest.param(
+            "### 1. Wire the filter\n- Do — Add a dropdown.\n- Done when — Rows narrow.",
+            id="step-with-no-files",
+        ),
+        pytest.param(
+            "# Trade Explorer\n\nText with **bold** and `code`.\n\n## Plan\n\n### 1. Only prose\n"
+            "Just words, no fields.",
+            id="whole-document",
+        ),
+    ],
+)
+def test_text_with_nothing_to_fold_draws_exactly_as_it_did_before(plan: str):
+    # `planMarkdown` now sits on both paths that draw a plan, and almost none of a plan is a file
+    # field. Compared as trees: a bullet list collapsed into a paragraph, a dropped pipe table or a
+    # stray empty paragraph would pass every other assertion in this file.
+    view = drawn("parity", plan)
+
+    assert view["same"], f"\nbefore: {view['before']}\nafter:  {view['after']}"
 
 
 def test_a_field_line_outside_a_step_is_left_alone():

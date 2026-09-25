@@ -14,6 +14,9 @@
 //             not a second call of the first one.
 //   `edit`  — the same card with "Edit plan" pressed. Nothing is stored differently, so the box
 //             a person types in must still hold the file line for line, folded fields included.
+//   `parity`— `planMarkdown` against `markdown` on text with nothing to fold. This one is about
+//             the 99% of plan prose that is not a file field: it now goes through a second
+//             function, and a regression there would be silent in every mode above.
 //
 // The tree is partitioned by walking it once and remembering whether the walk is inside a fold,
 // rather than by reading the markdown back: a fold that renders its `<summary>` and drops its
@@ -105,7 +108,7 @@ vm.createContext(sandbox);
 
 // `util.js` alone for the `util` mode; the rest is what `plan.js` and `message-blocks.js` need to
 // be the real components rather than a copy of them.
-const files = mode === 'util'
+const files = mode === 'util' || mode === 'parity'
   ? ['util.js']
   : ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
      'components/plan.js', 'components/message-blocks.js'];
@@ -138,7 +141,10 @@ function collect(node, inFold) {
         .filter((c) => typeof c === 'string')
         .join('')
     );
-    opens.push(Object.hasOwn(node.p, 'open'));
+    // The disclosure's STATE, not whether the prop was written. `Object.hasOwn` is satisfied by an
+    // implementation that simply never passes `open`, and it fails the correct-but-explicit
+    // `open: false` — so it answers a question about the code rather than about the screen.
+    opens.push(Boolean(node.p.open));
     (node.c || []).flat(Infinity)
       .filter((c) => !(c && c.t === 'summary'))
       .forEach((c) => collect(c, true));
@@ -166,6 +172,32 @@ async function mount(component, props) {
   effects.forEach((fn) => fn());
   await settle();
   return tree;
+}
+
+// `planMarkdown` now sits on both paths that draw a plan, so text with nothing to fold has to come
+// out of it exactly as `markdown` drew it before. Compared as trees rather than as visible words:
+// a lost pipe table, a bullet list collapsed into a paragraph or an extra empty paragraph are all
+// invisible to a check that only joins the strings back together. Keys differ by construction
+// (each chunk is keyed inside its own Fragment), so they are stripped before comparing.
+if (mode === 'parity') {
+  const strip = (n) => {
+    if (n === null || n === undefined || typeof n !== 'object') return n;
+    if (Array.isArray(n)) return n.map(strip);
+    const { key, ...rest } = n.p || {};
+    return { t: typeof n.t === 'function' ? n.t.name : n.t, p: rest, c: strip(n.c) };
+  };
+  const before = SW.util.markdown(PLAN_MD);
+  const after = SW.util.planMarkdown(PLAN_MD);
+  // One Fragment wraps the single chunk when nothing folded; unwrap it, or report the shape that
+  // turned up instead so a parity failure says what happened rather than just "not equal".
+  const unwrapped =
+    Array.isArray(after) && after.length === 1 && after[0].t === 'Fragment' ? after[0].c : after;
+  console.log(JSON.stringify({
+    same: JSON.stringify(strip(before)) === JSON.stringify(strip(unwrapped).flat(Infinity)),
+    before: JSON.stringify(strip(before)),
+    after: JSON.stringify(strip(unwrapped).flat(Infinity)),
+  }));
+  process.exit(0);
 }
 
 let tree;
