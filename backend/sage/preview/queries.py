@@ -139,7 +139,7 @@ class PreviewQueries:
     proxy in front of it only has to know a port.
     """
 
-    def __init__(self, workspace: Path, template: Path, ttl_s: float = CACHE_TTL_S) -> None:
+    def __init__(self, workspace: Path, template: Path | None, ttl_s: float = CACHE_TTL_S) -> None:
         self._workspace = workspace
         self._template = template
         self._ttl = ttl_s
@@ -179,6 +179,8 @@ class PreviewQueries:
         not be reachable from anywhere the creator's own browser session is not already trusted —
         and the proxy above it is the only thing that should ever dial it.
         """
+        if self._template is None:
+            return
         try:
             module = serve_module(self._template)
             if module is None:
