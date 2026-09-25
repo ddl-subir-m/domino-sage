@@ -63,6 +63,32 @@ def _two_tabs() -> dict:
     )[-1]
 
 
+@needs_node
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_pending_app_selection_cannot_rewrite_the_route_or_old_app_preference(outcome):
+    result = _run([{"delayedSelection": outcome}])[-1]
+    assert result["pending"]["view"]["hash"] == "#/build/thr_twice?app=app_d"
+    assert result["pending"]["prefs"]["project"]["app_a"] == "thr_many"
+    assert result["after"]["selecting"] is None
+    assert result["after"]["prefs"]["project"]["app_a"] == "thr_many"
+    if outcome == "success":
+        assert result["after"]["view"]["app"] == "app_d"
+    else:
+        assert result["after"]["view"]["app"] == "app_a"
+        assert result["after"]["view"]["hash"].endswith("?app=app_a")
+
+
+@needs_node
+def test_an_older_selection_of_the_same_app_cannot_clear_the_latest_request():
+    assert _run([{"selectionABA": True}])[-1] == {
+        "afterFirst": "app_b", "afterMiddle": "app_b", "final": None}
+
+
+@needs_node
+def test_a_deliberate_conversation_choice_after_following_an_app_is_remembered():
+    assert _run([{"followThenChoose": True}])[-1]["project"]["app_b"] == "thr_twice"
+
+
 def _effects() -> list[tuple[str, str]]:
     """Every effect `BuildMode` schedules, as (body, dependency list).
 
