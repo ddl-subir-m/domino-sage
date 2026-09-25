@@ -23,7 +23,8 @@ arrives in a ticket. A download is exactly `build_diagnostics.Store.get` seriali
 `api.js downloadBuildDiagnostics`, so every field named below is one `sage/build_diagnostics.py`
 admits by name. That module keeps a closed contract -- "no catch-all copy" -- so a field this
 script does not recognise means the writer grew one, and the scorecard says so under NOTES instead
-of dropping it quietly.
+of dropping it quietly. That check covers the top level, `timing`, and the `calls`/`spans`/`tools`
+ROWS, which is where every number below actually comes from.
 
 MISSING IS NOT ZERO. A fact the record does not carry prints as `-`, never as `0`. `0 edits` and
 `edits not observed` are different findings and the difference is the whole point of the run.
@@ -39,7 +40,8 @@ number that looks like a result:
     kind/phase order -- that is not the fixed pair.
   * one model's turns spread over more than one app, so the pair was not one app plus a follow-up.
   * files captured by different `sourceRevision`s -- that compares two builds of Sage, not two
-    models. `null` means the capture could not read its own revision.
+    models. `null` means the capture could not read its own revision, which is NOT agreement: if
+    every file is null the scorecard says the check could not run rather than passing it.
   * the same turn handed in twice.
 
 Exit 1 means a file could not be read at all; exit 2 means they were read and are not comparable.
@@ -54,12 +56,21 @@ from collections import Counter
 
 SCHEMA_VERSION = 1  # build_diagnostics.SCHEMA_VERSION
 
-# Mirrored from `sage/tool_timing.py`, which decides these things about a tool run as the record is
-# written. A landed edit here is a completed call to an edit tool. `tool_timing` additionally
-# requires a `targetFingerprint` before it books an edit, because it keys edits by file to answer a
-# later read; counting is a different question, and an edit whose path argument never reached the
-# stream still landed. So this counts a few that `tool_timing` does not, and never the reverse.
-EDIT_TOOLS = {"edit", "write"}  # tool_timing._EDITS
+# A landed edit is a completed call to a tool that writes a file.
+#
+# This set is DELIBERATELY WIDER than `tool_timing._EDITS`, which is `{"edit", "write"}` and so
+# cannot see `apply_patch` -- the only edit tool OpenCode offers a `gpt-` handle (#539). The rows
+# are not missing from the download: `tool_timing.py:125-126` stores the tool name verbatim, so an
+# `apply_patch` run is in `timing.tools` as an ordinary completed row. `_EDITS` only gates that
+# module's own per-file bookkeeping, and inheriting it here would print `0 edits landed` for a GPT
+# run that did exactly the work a Sonnet run did -- the precise comparison this script exists to
+# make, reported backwards.
+#
+# `_EDITS` is being widened under #551. Until that lands the two sets differ ON PURPOSE, and for
+# COUNTING this one is authoritative. Do not "fix" the divergence by narrowing this set.
+# (`request_composition._DIAGNOSTIC_TOOL_NAMES` also lists a bare `patch`; no evidence OpenCode
+# offers it, so it is left out rather than guessed in.)
+EDIT_TOOLS = {"edit", "write", "apply_patch"}
 SHELL_TOOLS = {"bash", "shell", "sh", "run", "run_command", "execute", "exec", "terminal"}
 
 # What `native_routes.py` gives one model call, plus `timing._CallHandle.done`'s own defaults.
@@ -77,6 +88,30 @@ TIMING_KEYS = {"ms", "ok", "running", "calls", "spans", "tools", "intervals", "r
                "counters", "observations", "toolsTruncated", "intervalsTruncated",
                "repeatBrakeTruncated"}
 
+# The ROW contracts, which is where every number above actually comes from. A new field on a call
+# is the one most likely to matter and the one least likely to be noticed, so these are checked
+# too: `build_diagnostics.CALL_FIELDS` alone has 40 entries and this script reads about twelve.
+# Each set is `<SECTION>_FIELDS` plus the extras `snapshot()` attaches to that section by hand.
+CALL_ROW = {
+    "n", "model", "requestedAlias", "phase", "reason", "callId", "turnId", "protocol",
+    "routeVerified", "configuredEffort", "effectiveEffort", "effortSource", "effortStatus",
+    "requestedEffort", "sessionId", "rootSessionId", "firstTextMs", "firstToolArgumentMs",
+    "firstActionMs", "firstActionKind", "noActionNoticeMs", "noActionTimeoutMs",
+    "reasoningOnlyChunks", "noActionRecoveryAttempt", "noActionRecoveryAction", "lastChunkMs",
+    "maxChunkGapMs", "outcome", "forwardedReqBytes", "toolsTruncated", "outTokens",
+    "reasoningTokens", "atMs", "ttfbMs", "prepMs", "ms", "chunks", "reqBytes", "inTokens",
+    "cachedTokens", "ok",
+    "toolInvocations", "tools", "requestComposition", "buildIntent", "responseReportedModel"}
+SPAN_ROW = {"name", "depth", "atMs", "ms", "open", "no_edit_attempt", "wrote_code",
+            "retry_exhausted", "errors",
+            "retryCategory", "errorCodes", "stack", "retry_reason"}
+TOOL_ROW = {"sessionId", "harnessCallId", "partId", "identitySource", "tool", "firstObservedMs",
+            "lastObservedMs", "completedObservedMs", "observationSource", "startUnixMs",
+            "endUnixMs", "startSource", "endSource", "executionMs", "completionLagMs",
+            "targetFingerprint", "queryFingerprint", "targetMetadataFinal", "editSincePreviousRead",
+            "opaqueOperationSincePreviousRead", "targetState", "status", "observedMs", "startAtMs",
+            "endAtMs", "clockPlacement", "range"}
+
 
 def load(path: str):
     """One downloaded `build-<turnId>.json`, or the reason it is not one."""
@@ -88,13 +123,22 @@ def load(path: str):
         return None, f"is not JSON: {exc}"
     if not isinstance(doc, dict):
         return None, "is not a diagnostics download: its top level is not an object"
+    # Name the file you were actually given. The Build history LIST body is `{"records": [...]}`
+    # with no `schemaVersion` at all, so testing the version first told that case it had drifted
+    # from the contract, and kept the "download the individual turn" message for the raw store
+    # file -- the one shape that is not what a person downloads.
+    if "records" in doc and "timing" not in doc:
+        return None, ("is a Build history listing, not one turn. That body holds bounded summaries; "
+                      "open a turn and download its diagnostics.")
     version = doc.get("schemaVersion")
     if version != SCHEMA_VERSION:
         return None, (f"has schemaVersion {version!r}; this scorecard reads {SCHEMA_VERSION} only. "
                       "Check it against sage/build_diagnostics.py before trusting any number.")
     if not isinstance(doc.get("timing"), dict):
-        return None, ("carries no `timing` section, so it is not a per-turn download. The Build "
-                      "history list gives summaries; download the individual turn.")
+        return None, "carries no `timing` section, so it is not a per-turn download."
+    for section in ("calls", "spans", "tools"):
+        if not isinstance(doc["timing"].get(section, []), list):
+            return None, f"has a `timing.{section}` that is not a list, so it is not a download."
     return doc, ""
 
 
@@ -131,9 +175,15 @@ def facts(doc: dict, path: str) -> dict:
     # over the same calls: `usage()` fills in only what a provider reported, and totalling each
     # field over whatever rows happen to carry it can put a cache read over a smaller denominator
     # and print a share above 100%.
-    counted = [c for c in calls if _num(c, "inTokens") is not None]
-    in_tokens = sum(_num(c, "inTokens") for c in counted) if counted else None
-    reporting = [c for c in counted if _num(c, "cachedTokens") is not None]
+    # The share therefore runs over the calls that reported BOTH. `usage()` records only what the
+    # provider sent and `_metadata` admits an explicit null, so one real turn routinely mixes calls
+    # that carried a cache figure with calls that did not. Dividing a cache read by every call's
+    # input total states an UNREPORTED cache as zero -- the rule this module opens with, broken in
+    # the commoner direction: nine silent calls beside one 90% call printed 9%.
+    with_in = [c for c in calls if _num(c, "inTokens") is not None]
+    reporting = [c for c in with_in if _num(c, "cachedTokens") is not None]
+    in_total = sum(_num(c, "inTokens") for c in with_in) if with_in else None
+    in_measured = sum(_num(c, "inTokens") for c in reporting) if reporting else None
     cached = sum(_num(c, "cachedTokens") for c in reporting) if reporting else None
 
     # The longest stretch of tool calls with no landed edit at the end of it, including the tail
@@ -182,7 +232,10 @@ def facts(doc: dict, path: str) -> dict:
                                         if isinstance(c.get("protocol"), str))),
         "verified": bool(calls) and all(c.get("routeVerified") is True for c in calls),
         "cached": cached,
-        "inTokens": in_tokens,
+        "inMeasured": in_measured,   # denominator: only the calls that reported a cache figure
+        "inTokens": in_total,        # display: every call that reported an input total
+        "cacheCalls": len(reporting),
+        "tokenCalls": len(with_in),
         "edits": sum(1 for r in tools if _landed_edit(r)),
         "bash": sum(1 for r in tools if r.get("tool") in SHELL_TOOLS),
         "longestRun": longest,
@@ -200,6 +253,11 @@ def facts(doc: dict, path: str) -> dict:
         "truncated": sorted(k for k, v in (capture.get("upstreamTruncated") or {}).items() if v),
         "unknownTop": sorted(set(doc) - TOP_LEVEL),
         "unknownTiming": sorted(set(timing) - TIMING_KEYS),
+        "unknownRows": sorted({f"{section}.{key}"
+                               for section, known in (("calls", CALL_ROW), ("spans", SPAN_ROW),
+                                                      ("tools", TOOL_ROW))
+                               for r in {"calls": calls, "spans": spans, "tools": tools}[section]
+                               for key in set(r) - known}),
         "unknownOutcomes": sorted({c["outcome"] for c in calls
                                    if isinstance(c.get("outcome"), str)
                                    and c["outcome"] not in CALL_OUTCOMES}),
@@ -228,6 +286,18 @@ def _counts(counter: Counter) -> str:
     return " ".join(f"{k}x{v}" for k, v in sorted(counter.items())) or "-"
 
 
+def _cache(row: dict) -> str:
+    """The share over the calls that measured it, and the shortfall said out loud."""
+    if row["inMeasured"] is None:
+        total = "-" if row["inTokens"] is None else format(row["inTokens"], ",")
+        return f"- of {total} in-tokens (no call reported a cache figure)"
+    share = f"{_share(row['cached'], row['inMeasured'])} of {row['inMeasured']:,} in-tokens"
+    if row["cacheCalls"] == row["tokenCalls"]:
+        return share
+    return (f"{share} measured ({row['cacheCalls']} of {row['tokenCalls']} calls reported; "
+            f"{row['inTokens']:,} in-tokens in total)")
+
+
 def _session(row: dict) -> str:
     """`-` only when the record carried no implementation session at all."""
     reason = row["sessionReason"]
@@ -238,8 +308,9 @@ def _session(row: dict) -> str:
 
 def render_turn(row: dict, out) -> None:
     flag = "" if row["complete"] else "   [INCOMPLETE CAPTURE]"
+    revision = (row["revision"] or "?")[:12]
     print(f"\n{row['turnId']}  {row['kind']}  {label(row)}  {row['status']}  "
-          f"{_secs(row['ms'])}  app {row['appId']}{flag}", file=out)
+          f"{_secs(row['ms'])}  app {row['appId']}  sage {revision}{flag}", file=out)
     print(f"    calls    {row['calls']} model calls · session {_session(row)} · "
           f"no-action timeouts {row['noAction']} · "
           f"recoveries {_counts(row['recoveries'])}", file=out)
@@ -248,11 +319,9 @@ def render_turn(row: dict, out) -> None:
           f"{'-' if row['reasoningOnly'] is None else row['reasoningOnly']}", file=out)
     route = "+".join(row["protocols"]) or "?"
     print(f"    route    effort {' '.join(row['efforts']) or '-'} · "
-          f"{route}{'' if row['verified'] else '?'} · cached "
-          f"{_share(row['cached'], row['inTokens'])} of "
-          f"{'-' if row['inTokens'] is None else format(row['inTokens'], ',')} in-tokens", file=out)
-    print(f"    work     {row['edits']} edits landed · {row['bash']} bash · longest run with no "
-          f"landed edit: {row['longestRun']} tool calls", file=out)
+          f"{route}{'' if row['verified'] else '?'} · cached {_cache(row)}", file=out)
+    print(f"    work     {row['edits']} edits landed · {row['bash']} bash calls (any outcome) · "
+          f"longest run with no landed edit: {row['longestRun']} tool calls", file=out)
     plan = "-" if row["planValid"] is None else f"{'valid' if row['planValid'] else 'INVALID'}"
     steps = "" if row["planSteps"] is None else f", {row['planSteps']} steps"
     print(f"    checks   typecheck "
@@ -268,9 +337,10 @@ HEADINGS = ("model", "turns", "ok", "secs", "calls", "fresh", "noact", "wait", "
 def summary_line(name: str, rows: list[dict]) -> tuple:
     ms = [r["ms"] for r in rows if r["ms"] is not None]
     waits = [r["wait"] for r in rows if r["wait"] is not None]
-    # Numerator and denominator over the same turns, for the same reason as inside a turn.
-    paired = [(r["cached"], r["inTokens"]) for r in rows
-              if r["cached"] is not None and r["inTokens"]]
+    # Numerator and denominator over the same calls, for the same reason as inside a turn.
+    paired = [(r["cached"], r["inMeasured"]) for r in rows
+              if r["cached"] is not None and r["inMeasured"]]
+    partial = any(r["cacheCalls"] != r["tokenCalls"] for r in rows)
     errs = [r["errors"] for r in rows if r["errors"] is not None]
     sessions = [r for r in rows if r["sessionReason"] is not None]
     return (name, str(len(rows)),
@@ -280,7 +350,8 @@ def summary_line(name: str, rows: list[dict]) -> tuple:
             str(sum(1 for r in sessions if r["sessionFresh"])) if sessions else "-",
             str(sum(r["noAction"] for r in rows)),
             _secs(max(waits)) if waits else "-",
-            _share(sum(c for c, _ in paired), sum(i for _, i in paired)) if paired else "-",
+            (_share(sum(c for c, _ in paired), sum(i for _, i in paired)) + ("~" if partial else ""))
+            if paired else "-",
             str(sum(r["edits"] for r in rows)),
             str(sum(r["bash"] for r in rows)),
             str(max(r["longestRun"] for r in rows)),
@@ -291,8 +362,8 @@ def summary_line(name: str, rows: list[dict]) -> tuple:
 def render_summary(groups: dict, out) -> None:
     lines = [HEADINGS] + [summary_line(name, rows) for name, rows in groups.items()]
     widths = [max(len(line[i]) for line in lines) for i in range(len(HEADINGS))]
-    print("\nPER MODEL  (the last eleven columns are totals over that model's turns; `wait` and "
-          "`runrun` are its worst single turn)", file=out)
+    print("\nPER MODEL  (totals over that model's turns, except: `wait` and `runrun` are its worst "
+          "single turn, and `cached` is a ratio -- `~` means not every call reported one)", file=out)
     for index, line in enumerate(lines):
         cells = [line[0].ljust(widths[0])] + [c.rjust(w) for c, w in zip(line[1:], widths[1:])]
         print("  " + "  ".join(cells), file=out)
@@ -326,7 +397,15 @@ def comparability(rows: list[dict], groups: dict) -> list[str]:
             notes.append(f"{row['turnId']} was handed in twice ({seen[key]} and {row['path']}).")
         seen[key] = row["path"]
     revisions = {row["revision"] for row in rows}
-    if len(revisions) > 1:
+    # `null` is "the capture could not read its own revision", not "the same revision". A deployed
+    # workspace has no git checkout, so `source_revision()` returns None there -- which is exactly
+    # where these downloads come from. Treating that unknown as agreement claims a check that never
+    # ran, so the all-null case gets its own note rather than passing silently.
+    if revisions == {None}:
+        notes.append("No capture recorded a `sourceRevision`, so nothing here shows the turns ran "
+                     "against the same build of Sage. A deployed workspace has no git checkout; "
+                     "pair these downloads with the build you ran them on yourself.")
+    elif len(revisions) > 1:
         shown = ", ".join(sorted(str(r) for r in revisions))
         notes.append(f"These turns were captured by different builds of Sage ({shown}); that "
                      "compares revisions, not models.")
@@ -347,7 +426,8 @@ def comparability(rows: list[dict], groups: dict) -> list[str]:
 
 def render_notes(rows: list[dict], out) -> None:
     for row in rows:
-        for keys, where in ((row["unknownTop"], "top level"), (row["unknownTiming"], "`timing`")):
+        for keys, where in ((row["unknownTop"], "top level"), (row["unknownTiming"], "`timing`"),
+                            (row["unknownRows"], "a record row")):
             if keys:
                 print(f"  {row['turnId']}: {where} carries {', '.join(keys)}, which this scorecard "
                       "does not read. sage/build_diagnostics.py grew a field.", file=out)
@@ -388,8 +468,8 @@ def main() -> int:
     render_summary(groups, out)
 
     notes = comparability(rows, groups)
-    unknown = any(row["unknownTop"] or row["unknownTiming"] or row["unknownOutcomes"]
-                  for row in rows)
+    unknown = any(row["unknownTop"] or row["unknownTiming"] or row["unknownRows"]
+                  or row["unknownOutcomes"] for row in rows)
     if notes:
         print("\nNOT A VALID COMPARISON", file=out)
         for note in notes:
@@ -397,7 +477,13 @@ def main() -> int:
     if unknown:
         print("\nNOTES", file=out)
         render_notes(rows, out)
-    if not notes:
+    if not notes and len(groups) < 2:
+        # Every cross-model clause is vacuous over one model, so claiming them would be a check
+        # that never ran.
+        print("\nOne model here, so there is nothing to compare it against. Its captures are "
+              "complete and successful; hand in another model's turns to get a comparison.",
+              file=out)
+    elif not notes:
         print("\nComparable: same turn count, same kind/phase order, one app per model, one Sage "
               "revision, every capture complete and successful. The prompts themselves are not in "
               "the download, so check those yourself.", file=out)
