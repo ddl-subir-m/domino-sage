@@ -68,7 +68,8 @@ def test_an_app_with_no_record_is_react_vite(tmp_path: Path):
 
 
 def test_the_record_answers_and_the_files_do_not(tmp_path: Path):
-    """Deleting the sentinel leaves an incomplete app; it is not permission to seed again."""
+    """Deleting the sentinel of a RECORDED app is not permission to seed again: the record says
+    which template, so the one missing file comes back and the person's files are not touched."""
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
     ws = mgr.ensure("proj1")
     (ws.path / "package.json").unlink()
@@ -76,7 +77,7 @@ def test_the_record_answers_and_the_files_do_not(tmp_path: Path):
 
     again = mgr.ensure("proj1")
 
-    assert not (again.path / "package.json").exists(), "only explicit reset may restore the template"
+    assert (again.path / "package.json").exists(), "the recorded template's file is restored"
     assert (again.path / "src" / "App.tsx").read_text() == "the person's app", "entry by entry"
     assert _settings(again)["stack"] == "react-vite"
 

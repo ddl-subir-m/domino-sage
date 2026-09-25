@@ -75,6 +75,10 @@ SW.store.set({
   turnWedged: wedged,
   projectPlan: plan,
 });
+// The transcript is read through `loadBuild`, off an effect this harness never runs, and until a
+// read lands the mode says "Loading conversation…" rather than any greeting (#557 P4). What this
+// file asserts on is the greeting, so the read this state stands for has landed and found nothing.
+SW.store.set({ buildHistoryLoading: false });
 
 // The tree as data. Function components are stepped OVER rather than called: the greeting is the
 // mode's own markup, and the children draw the rail and the composer.

@@ -64,15 +64,19 @@ def test_unresolved_app_is_not_seeded_or_rewritten(tmp_path, fault):
         stack_of(app.path)
 
 
-def test_recorded_app_with_missing_entry_is_preserved(tmp_path):
+def test_recorded_app_with_missing_entry_gets_it_back_and_nothing_else_moves(tmp_path):
+    """The record names the template, so the missing file is not a guess. The person's edits are:
+    a restore that touched one of them would be the reseed this file exists to forbid."""
     manager = _manager(tmp_path)
     app = manager.ensure("project", stack=FASTAPI_ANTD.name)
+    (app.path / "static/app.js").write_text("// the person's own page\n")
     (app.path / "app.py").unlink()
     before = _files(app.path)
     manager.ensure("project")
-    assert _files(app.path) == before
+    after = _files(app.path)
     assert app.stack is FASTAPI_ANTD
-    assert not (app.path / "app.py").exists()
+    assert (app.path / "app.py").exists()
+    assert {k: v for k, v in after.items() if k != "app.py"} == before
 
 
 def test_incomplete_recorded_app_does_not_spawn_a_server(tmp_path, monkeypatch):

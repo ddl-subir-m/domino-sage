@@ -2266,8 +2266,9 @@ class WorkspaceManager:
     def ensure(self, project_id: str, seed_app: bool = True, stack: str | None = None) -> Workspace:
         """Seed a confirmed new app, or resume Sage's recorded interrupted seed.
 
-        Existing apps are preserved, including incomplete or unresolved ones. A missing record
-        can recover only metadata from an unambiguous complete layout; it never authorizes seed.
+        Existing apps are preserved. A recorded app missing a template file gets that file back and
+        nothing else; an unresolved one is left alone. A missing record can recover only metadata
+        from an unambiguous complete layout; it never authorizes a seed.
 
         `stack` is the kind of app to seed if this call is the app's birth (#490); it is ignored for
         an app that already exists, whose kind is the one its record holds.
@@ -2302,12 +2303,17 @@ class WorkspaceManager:
                 resolution = resolve_stack(app)
             elif resolution.state == "recovered":
                 born.record_stack(resolution.require_stack().name)
-            if resolution.seed_pending:
+            if resolution.seed_pending or resolution.state == "incomplete":
+                # A recorded app names its template, so putting back only what is missing cannot
+                # replace anything of the person's. An interrupted seed and a template file the
+                # agent deleted (`package.json` is one it can) are the same repair; an UNRECORDED
+                # app with a partial layout never reaches here, because nothing says which template.
                 kind = self.stack
                 self._seed_missing(kind.template_dir, app)
-                settings = _read_settings_file(born._settings_path)
-                settings["seedState"] = "complete"
-                _write_settings_file(born._settings_path, settings)
+                if resolution.seed_pending:
+                    settings = _read_settings_file(born._settings_path)
+                    settings["seedState"] = "complete"
+                    _write_settings_file(born._settings_path, settings)
             if resolve_stack(app).ready:
                 self.link_warm_deps()
         return Workspace(project_id, app, self.selected_app_id())

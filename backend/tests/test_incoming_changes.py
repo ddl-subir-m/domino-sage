@@ -62,6 +62,11 @@ class FakeVite:
             raise RuntimeError("Vite not ready")
         return "http://127.0.0.1:5173"
 
+    def status(self) -> dict:
+        # What `_validate_page` reads at the end of every build turn that wrote code (#557 P9).
+        return {"appId": self.workspace.name, "generation": "fake:1",
+                "state": "ready" if self.running else "failed", "error": None}
+
     def stop(self) -> None:
         self.running = False
 

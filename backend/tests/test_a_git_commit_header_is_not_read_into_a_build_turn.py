@@ -284,8 +284,9 @@ def test_chat_is_told_the_named_table_is_the_only_table_in_both_copies():
     md = (ROOT / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
     prompt = json.loads((ROOT / "opencode.json").read_text(encoding="utf-8"))[
         "agent"]["sage-chat"]["prompt"]
+    # #557 P6 opened the rule for an investigation; the ordinary-Chat clause is what is pinned.
     for probe in ("do not query a table the context does not name through the shell",
-                  "is in\n  context FOR that table",
-                  "against\n  the table the context names, and only that one"):
+                  "in ordinary {chat}, use only the selected table",
+                  "against\n  the table the context names. In an open investigation"):
         assert probe in md, probe
         assert probe in prompt, probe

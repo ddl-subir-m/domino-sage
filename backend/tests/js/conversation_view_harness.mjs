@@ -536,6 +536,8 @@ for (const step of steps) {
       // full of talk answers no, and is still right to say so (#74).
       appTurns: (now.buildMessages || []).length,
       app: (now.activeApp && now.activeApp.id) || null,
+      // What a read that fell over left on screen in place of a transcript (#557 P4).
+      error: now.buildHistoryError || null,
       calls: calls.slice(),
     });
   } else if (step.echo) {

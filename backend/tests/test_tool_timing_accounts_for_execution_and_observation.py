@@ -213,13 +213,15 @@ def test_public_build_records_tool_lifecycle_poll_health_and_slow_tail(tmp_path,
     from sage.orchestrator.service import Orchestrator
 
     from .fake_opencode import Turn
+    from .test_a_retry_budget_is_spent_in_whole_agent_turns import _with_page_acks
     from .test_a_turn_records_where_its_time_went import _orch
 
     orch = _orch(tmp_path, [Turn(text="Built", writes={"src/App.tsx": "export default () => null\n"})])
     def runtime(*args, **kwargs):
         clock[0] += 6
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", runtime)
-    list(orch.build_stream("add a chart"))
+    # The runtime wait sits behind the page ack since #557 (P9); the helper answers it.
+    _with_page_acks(orch, monkeypatch)
     rec = timing.as_dict(timing.last_finished())
     assert any(tool["tool"] == "write" and tool["status"] == "completed" for tool in rec["tools"])
     assert any(interval["name"] == "poll.read" and interval["ok"] for interval in rec["intervals"])

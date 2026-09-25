@@ -34,10 +34,14 @@ Updated by #503 / #557: a missing record no longer means React. One pure resolve
 manager, preview, instructions, scope and feedback. Only one complete layout (the stack's sentinel
 and entry file), with no evidence of another stack, permits metadata recovery. The manager writes
 only the missing stack field. Mixed or incomplete unrecorded apps, malformed settings and unknown
-stack names are preserved and need recovery. Readers never write metadata.
+stack names are preserved and need recovery. Readers never write metadata. A directory with no
+stack file at all — whatever else Chat has recorded in it, a bindings manifest or a display
+name — is an app not yet born, and seeds.
 
-Deleting a sentinel no longer reseeds an existing app. It reports an incomplete app. Explicit
-Reset still restores the recorded stack, and resolves it before removing any files. New apps get
+Deleting a sentinel from an UNRECORDED app no longer reseeds it: the app reads as ambiguous and
+is left alone. A recorded app that lost a template file gets the missing files back on the next
+attach, without replacing anything else — the record names the template, so nothing is guessed.
+Explicit Reset still restores the recorded stack, and resolves it before removing any files. New apps get
 one atomic birth record with `seedState: pending` before the copy. Only this marker permits an
 interrupted copy to resume, recursively copying missing files without replacing edits. Completion
 records `seedState: complete`. Old apps without this marker are never assumed to be interrupted

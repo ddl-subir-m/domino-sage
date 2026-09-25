@@ -25,7 +25,7 @@ const sandbox = {
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
-for (const file of ['util.js', 'store.js', 'modes/builder.js']) {
+for (const file of ['util.js', 'store.js', 'prefs.js', 'modes/builder.js']) {
   vm.runInContext(fs.readFileSync(root + file, 'utf8'), sandbox, { filename: file });
 }
 const { SW } = sandbox;

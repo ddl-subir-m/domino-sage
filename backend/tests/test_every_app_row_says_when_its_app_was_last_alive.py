@@ -137,7 +137,7 @@ def test_a_seed_that_died_half_way_still_left_the_app_dated(tmp_path: Path):
     `ensure` can never call a birth again — and so one that carries no date for the rest of its
     life, which is the state this ticket exists to remove."""
     mgr = _mgr(tmp_path)
-    with mock.patch.object(manager.shutil, "copytree", side_effect=OSError("disk went away")):
+    with mock.patch.object(manager.shutil, "copy2", side_effect=OSError("disk went away")):
         with pytest.raises(OSError):
             mgr.create_app("p")
 

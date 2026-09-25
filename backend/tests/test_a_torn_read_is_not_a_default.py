@@ -164,12 +164,11 @@ _EXEMPT = {
     # that file is `AGENTS.md`, which nothing executes.
     ("_seed_file", "shutil.copy2"),
     ("refresh_entry_script", "shutil.copy2"),
-    # `copytree` materialises the template into a directory that does not exist yet — `ensure`
-    # seeds it, `reset` re-seeds it after removing everything but `_RESET_KEEP`. There is no
-    # previous content for a reader to lose, the unit is a tree rather than a file, and it carries
-    # the same mode bits `copy2` does one level down. A per-file staged publish here would be a
-    # different operation, not a safer one.
-    ("ensure", "shutil.copytree"),
+    # `copytree` materialises the template into a directory that does not exist yet — `reset`
+    # re-seeds it after removing everything but `_RESET_KEEP`. (`ensure` copies file by file since
+    # #503, through `_seed_file` above.) There is no previous content for a reader to lose, the
+    # unit is a tree rather than a file, and it carries the same mode bits `copy2` does one level
+    # down. A per-file staged publish here would be a different operation, not a safer one.
     ("reset", "shutil.copytree"),
 }
 

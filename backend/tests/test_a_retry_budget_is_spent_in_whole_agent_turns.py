@@ -23,6 +23,7 @@ deployment counts them (`project.model_calls`, /api/diag/timing). So the cost of
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,40 @@ def _crashes(monkeypatch, times: int) -> None:
                 "ts": since, "app": project.app_for_turn().app_id}
 
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", crashed)
+
+
+class _Preview:
+    """The restarted preview P9 asks for before it will read a runtime error (#557): it comes up,
+    and the page acks. Not the thing under test — the budget is."""
+
+    def __init__(self, app_id: str) -> None:
+        self.app_id, self.generation = app_id, 0
+
+    def retry_start(self, *, explicit: bool = False) -> bool:
+        self.generation += 1
+        return True
+
+    def status(self) -> dict:
+        return {"appId": self.app_id, "generation": f"preview:{self.generation}",
+                "state": "ready", "error": None}
+
+    def stop(self) -> None:
+        pass
+
+
+def _with_page_acks(orch: Orchestrator, monkeypatch) -> list[dict]:
+    """Drive a build whose page reports back. Since #557 (P9) a runtime error is read only off a
+    page the browser acknowledged, so a budget test for the runtime fix answers the ack itself."""
+    project = orch.project(start_preview=False)
+    project.supervisor = _Preview(project.workspace.app_id)
+    monkeypatch.setattr(orch, "_restart_preview_for_config_change", lambda project: None)
+    orch._build_policy = replace(orch._build_policy, page_ack_wait_seconds=1.0)
+    events = []
+    for event in orch.build_stream("add a chart"):
+        events.append(event)
+        if event["type"] == "preview-validation":
+            orch.record_preview_ack(event["validationId"])
+    return events
 
 
 def _template(tmp: Path) -> Path:
@@ -226,7 +261,7 @@ def test_one_runtime_fix_costs_exactly_one_extra_agent_turn(tmp_path: Path, monk
         _writes(1),
     ])
 
-    events = list(orch.build_stream("add a chart"))
+    events = _with_page_acks(orch, monkeypatch)
 
     assert _agent_turns(oc) == 2
     assert _decision(events) == "typecheck clean"
@@ -242,12 +277,15 @@ def test_a_crash_that_is_never_fixed_spends_the_whole_runtime_budget(tmp_path: P
         Turn(text="Built it.", writes={"src/App.tsx": "export default () => null\n"}),
     ] + [_writes(i) for i in range(10)])
 
-    events = list(orch.build_stream("add a chart"))
+    events = _with_page_acks(orch, monkeypatch)
 
     assert _agent_turns(oc) == MAX_RUNTIME_FIXES + 1 == 4
-    # Nothing is reverted and the build is not failed over it: a crash Sage cannot get the agent to
-    # fix still leaves the app the person can see and keep working on.
-    assert _decision(events) == "typecheck clean"
+    # Nothing is reverted: a crash Sage cannot get the agent to fix still leaves the app the person
+    # can see and keep working on. What it is no longer called is clean — since #557 (P9) a crash
+    # still standing when the budget is spent is the turn's verdict, with the code kept.
+    assert _decision(events) == "runtime failed"
+    # Three fixes were spent, so the third one's write is there; nothing took it back.
+    assert (orch.project(start_preview=False).workspace.path / "src" / "note2.ts").exists()
 
 
 # ---- the leak fix: attached data copied into src/ ----------------------------------------------

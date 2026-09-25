@@ -7122,6 +7122,8 @@ class Orchestrator:
             # kept on the record, not in the file (ADR-0008).
             self._voice_agents_md(self._project)
             self._splice_instructions(self._project)
+            # What Chat bound before there was an app to write it into (`_write_app_resources`).
+            self._write_app_resources(self._project)
         self._rehydrate_attached(self._project)
         # Once per Project, on the way in rather than on the way to the rail: a migration belongs to
         # opening the thing it repairs, and `list_project_resources` promises it never writes to the
@@ -7170,9 +7172,10 @@ class Orchestrator:
         if getattr(self._project.queries, "_template", self._wm.template) is None:
             self._project.queries = PreviewQueries(self._project.workspace.path, self._wm.template)
         # The app may have been seeded just now, from a template that carries the pack's tokens and
-        # no instructions block.
+        # no instructions block — and no source for what Chat bound before it existed.
         self._voice_agents_md(self._project)
         self._splice_instructions(self._project)
+        self._write_app_resources(self._project)
         return self._project
 
     # ---- Built Apps ----
@@ -17780,14 +17783,17 @@ class Orchestrator:
         files. A rule keyed on a second, slightly different glob would disagree with the listing
         the model was given, which is the one thing that must not happen here.
         """
-        kind = stack_of(root)
+        # `ValueError` is an app with no stack to say which files are its own (#503) — unborn, or
+        # one whose files argue — and its map is empty, which is what `scope.py` answers for the
+        # same glob.
         try:
+            kind = stack_of(root)
             return sorted({p.relative_to(root).as_posix() for glob in kind.source_globs
                            for p in root.glob(glob)
                            if p.is_file() and not any(part.startswith(".")
                                                       for part in p.relative_to(root).parts)
                            and not p.relative_to(root).as_posix().startswith(kind.vendored)})
-        except OSError:
+        except (OSError, ValueError):
             return []
 
     @staticmethod
@@ -21725,8 +21731,10 @@ class Orchestrator:
             if not validation.acknowledged or not current():
                 return validation
             validation.stages["page"] = "passed"
-            error = self._await_runtime_error(
-                project, since=time.monotonic(), timeout=self._build_policy.runtime_error_wait_seconds)
+            with timing.span("after.runtime_wait"):
+                error = self._await_runtime_error(
+                    project, since=time.monotonic(),
+                    timeout=self._build_policy.runtime_error_wait_seconds)
             if error is not None:
                 validation.error = error
                 validation.stages["runtime"] = "failed"
@@ -27360,7 +27368,14 @@ class Orchestrator:
         One entry point because a Binding change can move any of the pins, and because rebaselining
         once per change keeps a mid-build bind from being counted as several separate writes by the
         agent.
+
+        Nothing is written into an app that is not born yet (#503). Chat can bind into a Project
+        before Build seeds its app; the manifest is the app's record and is kept, but there is no
+        source to pin the Resource into and no AGENTS.md to tell. The two doors that seed the
+        selected app call this again once it is, so what was recorded is derived then.
         """
+        if not resolve_stack(project.workspace.path).ready:
+            return
         self._write_app_model(project)
         self._write_app_model_api(project)
         self._write_app_data(project)

@@ -3032,12 +3032,15 @@ def test_the_planner_does_not_spend_the_rebuild_a_chat_turn_is_owed(tmp_path: Pa
     list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
 
     oc.restart()
+    minted = len(oc.sessions)
     try:
         orch.draft_handoff_plan(tid)
     except Exception:
         # Whether the planner produces a plan is not this test's business. It minted, which is.
         pass
-    assert len(oc.sessions) == 2
+    # Grew, not "by one": a reply that is not a plan buys the bounded planning recovery a clean
+    # session of its own (#557 P2), and how many is the planner's business too.
+    assert len(oc.sessions) > minted
 
     dispatch = len(oc.prompts)
     events = list(orch.chat_stream(tid, "now try again"))

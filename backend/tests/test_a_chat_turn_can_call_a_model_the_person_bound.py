@@ -112,9 +112,9 @@ def _ask(orch, token, **args) -> str:
     return reply["result"]["content"][0]["text"]
 
 
-def _ready(tmp: Path, gateway=None, resources=None):
+def _ready(tmp: Path, gateway=None, resources=None, turns=None):
     """A Conversation with `opus` in it and one turn already run, so a token exists."""
-    orch, oc = _orch(tmp, gateway=gateway, resources=resources)
+    orch, oc = _orch(tmp, gateway=gateway, resources=resources, turns=turns)
     tid = orch.create_thread()["id"]
     _chip(orch, tid)
     list(orch.chat_stream(tid, "classify these support cases"))
@@ -352,7 +352,9 @@ def test_the_next_turn_starts_the_count_over(tmp_path: Path):
     the last one ended: a turn that was stopped, timed out or took the process with it would
     otherwise leave its count standing, and the next question would meet a cap it never spent."""
     gateway = AnswerGateway()
-    orch, oc, tid = _ready(tmp_path, gateway=gateway)
+    # Two answers for two turns: an unanswered one is asked again (#557 P3), and the token this
+    # reads is on the LAST prompt sent.
+    orch, oc, tid = _ready(tmp_path, gateway=gateway, turns=[Turn(text="ok"), Turn(text="ok")])
     for _ in range(_DELEGATED_CALLS_MAX):
         _ask(orch, _token(oc), alias=OPUS_NAME, prompt="x")
 

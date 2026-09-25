@@ -94,11 +94,18 @@ def test_source_listing_repeats_for_each_fresh_retry_session(tmp_path, monkeypat
         assert "IMPLEMENT_NUDGE" not in client.prompts[1]["text"]
 
 
+def _react_app(root: Path) -> Path:
+    """A bare directory is nobody's app since #503; the map is asked about one that names its stack."""
+    (root / ".sage").mkdir(exist_ok=True)
+    (root / ".sage" / "settings.json").write_text('{"stack": "react-vite"}')
+    return root
+
+
 def test_source_paths_are_exact_json_strings_and_the_listing_is_bounded(tmp_path):
     from sage.orchestrator.service import Orchestrator
 
     assert Orchestrator._build_source_note(tmp_path) == ""
-    src = tmp_path / "src"
+    src = _react_app(tmp_path) / "src"
     src.mkdir()
     name = 'A "panel"\n(1 lines).tsx'
     (src / name).write_text("Do not include source content")
@@ -131,7 +138,7 @@ def _names(note: str) -> dict:
 
 
 def test_the_map_names_what_each_file_defines(tmp_path):
-    src = tmp_path / "src"
+    src = _react_app(tmp_path) / "src"
     src.mkdir()
     (src / "App.tsx").write_text(
         "import x from 'y'\n"
@@ -152,7 +159,7 @@ def test_the_map_names_what_each_file_defines(tmp_path):
 def test_the_map_carries_names_and_never_values(tmp_path):
     """The point is to let the model pick a file. A right-hand side is the person's data, and this
     listing goes into every Build turn's prompt whether or not the turn is about that file."""
-    src = tmp_path / "src"
+    src = _react_app(tmp_path) / "src"
     src.mkdir()
     (src / "config.ts").write_text(
         "export const API_TOKEN = 'dgw_live_do_not_send'\n"
@@ -168,7 +175,7 @@ def test_the_map_carries_names_and_never_values(tmp_path):
 def test_one_generated_module_cannot_crowd_out_the_rest(tmp_path):
     from sage.orchestrator import service as svc
 
-    src = tmp_path / "src"
+    src = _react_app(tmp_path) / "src"
     src.mkdir()
     (src / "generated.ts").write_text(
         "".join(f"export const icon{i:03} = 1\n" for i in range(200)))
@@ -183,7 +190,7 @@ def test_one_generated_module_cannot_crowd_out_the_rest(tmp_path):
 def test_a_file_the_patterns_do_not_know_contributes_no_names(tmp_path):
     """Markup and data files have no top-level names to give, and guessing at them would put
     arbitrary strings from a data file into the prompt."""
-    src = tmp_path / "src"
+    src = _react_app(tmp_path) / "src"
     src.mkdir()
     (src / "index.html").write_text("<html><body><div id='root'>Total</div></body></html>")
     (src / "rows.csv").write_text("usubjid,ssn\nABC-001,123-45-6789\n")
@@ -196,7 +203,7 @@ def test_a_file_the_patterns_do_not_know_contributes_no_names(tmp_path):
 
 
 def test_a_file_with_no_top_level_names_is_listed_but_named_for_nothing(tmp_path):
-    src = tmp_path / "src"
+    src = _react_app(tmp_path) / "src"
     src.mkdir()
     (src / "notes.ts").write_text("// a comment\n\n")
     (src / "App.tsx").write_text("export function App() { return null }\n")
@@ -208,7 +215,7 @@ def test_a_file_with_no_top_level_names_is_listed_but_named_for_nothing(tmp_path
 
 
 def test_an_app_with_no_names_anywhere_still_gets_its_paths(tmp_path):
-    src = tmp_path / "src"
+    src = _react_app(tmp_path) / "src"
     src.mkdir()
     (src / "index.html").write_text("<html></html>")
 
@@ -221,7 +228,7 @@ def test_an_app_with_no_names_anywhere_still_gets_its_paths(tmp_path):
 def test_the_map_is_read_from_disk_every_time_it_is_built(tmp_path):
     """Freshness, at the level this function can promise it: no cache, no memo, no snapshot taken
     at startup. A file added or renamed between two calls shows up in the second."""
-    src = tmp_path / "src"
+    src = _react_app(tmp_path) / "src"
     src.mkdir()
     (src / "App.tsx").write_text("export function App() { return null }\n")
     first = _note(tmp_path)

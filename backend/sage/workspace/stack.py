@@ -196,11 +196,12 @@ def resolve_stack(app_path: Path) -> StackResolution:
         kind = evidence[0]
         if all((app_path / p).is_file() for p in (kind.sentinel, kind.entry_file)):
             return StackResolution(kind, "recovered")
-    try:
-        empty = not app_path.exists() or not any(app_path.iterdir())
-    except OSError:
-        empty = False
-    if empty:
+    if not evidence:
+        # No stack has left a file here, so there is no identity to guess at: this is an app that
+        # has not been born yet, whatever else the directory holds. Chat writes into `apps/<id>/`
+        # before Build ever seeds it — a bindings manifest, a display name — and each of those made
+        # the directory non-empty, which read as "mixed" and left the app unseedable for the rest
+        # of its life. "Ambiguous" is for files that ARGUE: a partial layout, or two stacks' worth.
         return StackResolution(None, "empty", "No app has been built yet.")
     return StackResolution(None, "ambiguous", "This app's stack needs recovery: its files are incomplete or mixed.")
 

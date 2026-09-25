@@ -408,9 +408,9 @@ components outside what was asked.
   before using its JSON as data. A rejected request, 401/403, ambiguous 404, timeout, or unavailable
   credentials is an error with a retry action, never “No tags” or zero results. Show an empty state
   only after a successful response explicitly supplies an empty collection. For taxonomy tags,
-  require the requested Dataset row and an explicit `taxonomyTags: []`; absent/null tags mean the
+  require the requested {dataset} row and an explicit `taxonomyTags: []`; absent/null tags mean the
   response did not establish whether tags exist. Keep the seeded preview reporter loaded before
-  app startup so Sage can observe the page's own requests and errors.
+  app startup so {assistantName} can observe the page's own requests and errors.
 - **A screen whose whole data source is unreachable is NOT an empty collection.** An empty list is
   one region with nothing in it; this is every control on the screen going inert at once, and the
   two need opposite treatments. Do not reach for the empty state above by analogy — if this app

@@ -60,6 +60,20 @@ def _no_wait_for_a_preview_that_never_reports(monkeypatch):
     still found, and none arrives during it."""
     policy = replace(BuildPolicy(), runtime_error_wait_seconds=0.0, page_ack_wait_seconds=0.0)
     monkeypatch.setattr(service, "load_build_policy", lambda: policy)
+    # A test that hands the Orchestrator a policy of its own steps around the line above, and since
+    # #557 the page-ack wait is a second poll on the same preview nobody runs: an explicit
+    # `BuildPolicy(no_edit_nudge_limit=0)` paid the default ten seconds per build turn and
+    # restarted a real dev server to spend them. Zero it there too — unless the test set it, which
+    # is how the tests OF the wait opt in.
+    default_ack = BuildPolicy().page_ack_wait_seconds
+    original_init = service.Orchestrator.__init__
+
+    def init(self, *args, build_policy=None, **kwargs):
+        if build_policy is not None and build_policy.page_ack_wait_seconds == default_ack:
+            build_policy = replace(build_policy, page_ack_wait_seconds=0.0)
+        original_init(self, *args, build_policy=build_policy, **kwargs)
+
+    monkeypatch.setattr(service.Orchestrator, "__init__", init)
 
 
 # Spread through the collection, slowest file first, so a `-n auto` run does not end on one worker
