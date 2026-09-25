@@ -17,6 +17,7 @@ from sage.gateway.protocol import Protocol
 from sage.orchestrator.service import (
     Orchestrator,
     PlanRecoveryBudget,
+    PlanRetryInput,
     Project,
     _model_active_status,
 )
@@ -178,15 +179,20 @@ def test_run_sage_plan_retries_the_immutable_request_in_the_same_directory():
     orchestrator._oc_client = client
     orchestrator._build_policy = BuildPolicy()
     orchestrator._stop_wedged_session = lambda *args, **kwargs: True
+    retry = PlanRetryInput(request="IMMUTABLE REQUEST", stack="react-vite", voice="VOICE",
+                           shape="SHAPE")
 
-    plan, sid = orchestrator._run_sage_plan(project, "IMMUTABLE REQUEST", "old")
+    plan, sid = orchestrator._run_sage_plan(project, "IMMUTABLE REQUEST", "old", retry=retry)
 
     assert plan.startswith("# App") and sid == "fresh"
     assert client.created == ["/same/app"]
+    # The retry is the concise send built from the same request (#561): the request is in it
+    # exactly once, and it is not the prompt that drew nothing.
     assert client.sent == [
         ("old", "IMMUTABLE REQUEST", "sage-plan"),
-        ("fresh", "IMMUTABLE REQUEST", "sage-plan"),
+        ("fresh", retry.prompt(), "sage-plan"),
     ]
+    assert retry.prompt().count("IMMUTABLE REQUEST") == 1 and retry.prompt() != "IMMUTABLE REQUEST"
 
 
 def test_no_action_timing_and_export_are_bounded(monkeypatch):

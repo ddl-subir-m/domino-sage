@@ -305,6 +305,36 @@ def test_a_read_only_turn_that_wrote_and_then_stalled_is_still_reverted(tmp_path
     assert "not allowed" in offer["message"]
 
 
+def test_a_planning_retry_that_goes_quiet_is_given_up_on_with_no_cause(tmp_path: Path):
+    """Deadline expiry on the clean no-action retry (#561). The quiet window ends it the way it
+    ends any wedged turn — an offer, no plan — and the rows carry no `cause`: a session that
+    stalled is not one that confirmed it was idle at a terminal Sage chose."""
+    orch, oc = _wedged(tmp_path, turns=[Turn(), Turn()])
+    orch.project(start_preview=False).record.write_settings({"skip_planning": False})
+    project = orch.project(start_preview=False)
+    original = oc.send_prompt
+    sends = {"n": 0}
+
+    def first_no_action_then_silence(*args, **kwargs):
+        sends["n"] += 1
+        original(*args, **kwargs)
+        if sends["n"] == 1:
+            project.last_gateway_error = {
+                "code": "model_no_action_timeout", "message": "safe", "call_id": "call-1",
+                "turn_id": "turn", "elapsed_ms": 120_000, "chunk_count": 8}
+        else:
+            oc.stay_running = True   # the retry never comes back
+
+    oc.send_prompt = first_no_action_then_silence
+
+    events = list(orch.build_stream("plan me a dashboard"))
+
+    assert _of(events, "build-stalled")
+    assert not _of(events, "plan-proposed")
+    assert len(oc.prompts) == 2 and len(oc.sessions) == 2
+    assert all("cause" not in row for row in _of(events, "done"))
+
+
 def test_a_transient_poll_failure_after_the_interrupt_does_not_brick_the_workspace(tmp_path: Path):
     """One 30-second httpx timeout on a busy OpenCode is the main loop's routine, not a verdict.
     Reading it as "it never stopped" would condemn the workspace to a restart over a slow read."""

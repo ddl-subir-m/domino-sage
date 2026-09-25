@@ -5916,11 +5916,15 @@ _PLAN_EXAMPLES = {
 }
 
 
+def _plan_stack_name(project: Project) -> str:
+    """The recorded app stack, or the new-app default before a Chat handoff creates one."""
+    resolution = resolve_stack(project.app_for_turn().path)
+    return default_stack_name() if resolution.state == "empty" else resolution.require_stack().name
+
+
 def _plan_example_for(project: Project) -> str:
     """Use the recorded app stack, or the new-app default before a Chat handoff creates one."""
-    resolution = resolve_stack(project.app_for_turn().path)
-    name = default_stack_name() if resolution.state == "empty" else resolution.require_stack().name
-    return _PLAN_EXAMPLES.get(name, _PLAN_EXAMPLES["react-vite"])
+    return _PLAN_EXAMPLES.get(_plan_stack_name(project), _PLAN_EXAMPLES["react-vite"])
 
 
 # Heads the person's own words in a gated plan turn (#537). The data notes ride AFTER the request
@@ -5932,6 +5936,51 @@ _PLAN_REQUEST_LABEL = ("The request, in the person's own words (any blocks after
 # Said once more at the very END of a gated plan turn that carries notes or attachments (#537):
 # those follow the request, and a weaker model weighs what it read last.
 _PLAN_REQUEST_AGAIN = "The request again, in the person's own words:\n"
+
+
+# The one sentence the clean no-action retry adds (#561). It names what happened and what to do,
+# and nothing else: the retry is not the place to teach the shape a second time.
+_PLAN_RETRY_CORRECTION = (
+    "The previous planning attempt returned no text and no tool action. Return the required plan "
+    "directly: write it as the first thing in your answer, from the request and the notes here, "
+    "without investigating first.")
+
+
+@dataclass(frozen=True, slots=True)
+class PlanRetryInput:
+    """What the one clean no-action planning retry is rebuilt from (#561).
+
+    MEASURED 2026-09-25 (Xiaomi, #557): the recovery re-sent the same composed prompt into a fresh
+    session, and a model that had produced nothing on it for 120 s was handed it again. This holds
+    the INPUTS that prompt was composed from — the person's request, the stack, the plan contract,
+    the identities of the attached files and mentioned Resources, the existing source paths — so
+    the retry can be composed shorter without scraping the composed prompt or asking a model to
+    summarise its own silence. Everything here is a constraint or an identity; what the retry
+    drops (the worked example, the refusal way-out, the Chat background, the dropped-mention
+    notes, the second copy of the request) is a repetition of one of these or background to it.
+
+    `label` heads the request: the gated turn's `_PLAN_REQUEST_LABEL`, or the handoff's own line
+    when the request is a Thread digest rather than one typed sentence.
+    """
+
+    request: str
+    stack: str
+    voice: str
+    shape: str
+    label: str = _PLAN_REQUEST_LABEL
+    resource_note: str = ""
+    source_note: str = ""
+    attachments: tuple[dict, ...] = ()
+
+    def body(self) -> str:
+        """Everything but the request, for a send whose attachment listing must precede it."""
+        return "\n\n".join(p for p in (
+            _PLAN_RETRY_CORRECTION, f"Stack: {self.stack}.", self.voice, self.shape,
+            self.source_note, self.resource_note) if p)
+
+    def prompt(self) -> str:
+        """The whole retry, request last, for a send that carries no attachment listing."""
+        return self.body() + "\n\n" + self.label + self.request
 
 
 # How far in to look for the sentinel. Not just the first line: `plan_md` is every assistant text
@@ -10943,8 +10992,15 @@ class Orchestrator:
         # file, for the implement turn that reads it (chat_handoff.implement_note).
         # Voiced for the same reason the gated turn voices its own copy: the shape's Data bullet
         # names the platform's nouns as tokens (#543).
-        prompt = chat_handoff.plan_prompt(thread_id, digest, voice=_PLAN_VOICE,
-                                          shape=brand.apply_voice(_PLAN_SHAPE))
+        plan_shape = brand.apply_voice(_PLAN_SHAPE)
+        prompt = chat_handoff.plan_prompt(thread_id, digest, voice=_PLAN_VOICE, shape=plan_shape)
+        # The same inputs, held for the one clean no-action retry (#561). This planner has no
+        # attachments and no mentions: the digest IS the request, so it is labelled as one.
+        plan_retry = PlanRetryInput(
+            request=digest, stack=_plan_stack_name(project), voice=_PLAN_VOICE, shape=plan_shape,
+            label=(f"The request: a Chat Thread in this project produced the digest below and the "
+                   f"files under examples/{thread_id}/. No app exists yet. Write the plan for an "
+                   "app colleagues can open from this work.\n"))
         client = self._ensure_opencode()
         # This planner runs in the THREAD'S OWN session, which is what makes a refusal here a
         # Conversation-level fact rather than one click's bad luck: whatever the gateway refused in
@@ -10968,7 +11024,7 @@ class Orchestrator:
             original_session_id = session_id
             plan_md, session_id = self._run_sage_execution_plan(
                 project, prompt, session_id, where="chat handoff",
-                source_request_count=len(source_request_messages))
+                source_request_count=len(source_request_messages), retry=plan_retry)
             if session_id != original_session_id:
                 record = store.read_session(thread_id) or {}
                 store.write_session_id(
@@ -11026,11 +11082,18 @@ class Orchestrator:
         return self._handoff_sheet_payload(store, thread_id, project, plan_md, handoff)
 
     def _run_sage_plan(self, project: Project, prompt: str, session_id: str, *,
-                       recovery: PlanRecoveryBudget | None = None) -> tuple[str, str]:
-        """Run one bounded planner with one shared clean recovery budget."""
+                       recovery: PlanRecoveryBudget | None = None,
+                       retry: PlanRetryInput | None = None) -> tuple[str, str]:
+        """Run one bounded planner with one shared clean recovery budget.
+
+        `retry` is what the clean no-action recovery sends instead of `prompt` (#561): the same
+        task, composed shorter. Without one the recovery re-sends `prompt`, which is the
+        behaviour every caller had before and the one the tests of other subjects still script.
+        """
         client = self._ensure_opencode()
         sid = session_id
         original_prompt = prompt
+        send_text = original_prompt
         recovery = recovery or PlanRecoveryBudget(
             self._build_policy.plan_no_action_recovery_limit)
         token = project.control.arm_read_only("plan")
@@ -11040,7 +11103,7 @@ class Orchestrator:
                 project.last_gateway_error = None
                 project.model_calls = 0
                 seen = self._seen_baseline(client, sid)
-                client.send_prompt(sid, original_prompt, model=_tool_handle(project), agent="sage-plan")
+                client.send_prompt(sid, send_text, model=_tool_handle(project), agent="sage-plan")
                 client.wait_for_idle(sid)
                 parts: list[str] = []
                 turn_failure = None
@@ -11071,13 +11134,15 @@ class Orchestrator:
                     timing.model_no_action_recovery(
                         error.get("call_id"), attempt, action, record=timing.current())
                     timing.planning_recovery(
-                        "model_no_action", attempt, action, record=timing.current())
+                        "model_no_action", attempt, action, record=timing.current(),
+                        limit=recovery.limit)
                     log.warning(
                         "model no-action terminal: turn_id=%s call_id=%s elapsed_seconds=%.1f "
-                        "chunks=%s action=%s attempt=%s",
+                        "chunks=%s reasoning_only=%s action=%s attempt=%s",
                         error.get("turn_id", ""), error.get("call_id", ""),
                         error.get("elapsed_ms", 0) / 1000,
-                        error.get("chunk_count", 0), action, attempt)
+                        error.get("chunk_count", 0), error.get("reasoning_only_chunks", ""),
+                        action, attempt)
                     if action == "stop":
                         raise ValueError(
                             "Planning stopped because the clean retry also produced no text or "
@@ -11088,11 +11153,15 @@ class Orchestrator:
                         raise ValueError(
                             "Planning could not stop the timed-out session safely. Restart Sage "
                             "before trying again.")
+                    if project.stop_requested:
+                        raise ValueError("Planning was stopped.")
                     directory = getattr(client, "_dirs", {}).get(sid)
                     if not directory:
                         raise ValueError(
                             "Planning could not locate its session directory for a clean retry.")
                     sid = client.create_session(directory=directory)
+                    # The concise retry, not the prompt that drew nothing (#561).
+                    send_text = retry.prompt() if retry is not None else original_prompt
                     continue
                 if error is not None:
                     raise PlanCallFailed(error)
@@ -11113,6 +11182,7 @@ class Orchestrator:
         *,
         where: str,
         source_request_count: int,
+        retry: PlanRetryInput | None = None,
     ) -> tuple[str, str]:
         """Produce one validated plan with one budget across generation and title repair."""
         client = self._ensure_opencode()
@@ -11122,7 +11192,7 @@ class Orchestrator:
         recovery = PlanRecoveryBudget(self._build_policy.plan_no_action_recovery_limit)
         while True:
             plan_md, sid = self._run_sage_plan(
-                project, current_prompt, sid, recovery=recovery)
+                project, current_prompt, sid, recovery=recovery, retry=retry)
             if not plan_md:
                 return plan_md, sid
             contract = validate_execution_contract(plan_md)
@@ -11132,7 +11202,7 @@ class Orchestrator:
             attempt, action = recovery.choose()
             timing.planning_recovery(
                 "invalid_execution_plan", attempt, action,
-                record=timing.current())
+                record=timing.current(), limit=recovery.limit)
             problems = _execution_contract_problems(contract)
             log.warning(
                 "planning recovery: turn_id=%s trigger=invalid_execution_plan "
@@ -18454,6 +18524,7 @@ class Orchestrator:
         # answers "what will you do", an architecture answers "what are the parts and how do they
         # talk". Asked for the latter, the planner produced the former ("Define queue model", "Add
         # queue panel"), which is a fine plan and not what was asked for.
+        plan_contract = ""
         _ARCH_SHAPE = ("Format it exactly like this, in Markdown, and write nothing outside it:\n"
                        "- One short sentence saying what the design is for.\n"
                        "- Then a '## Diagram' heading and ONE ```mermaid code block — a `flowchart "
@@ -18485,6 +18556,9 @@ class Orchestrator:
             # Labelled (#537). The person's sentence was ~0.4 KB of a 14 KB message, unmarked, with
             # ~10 KB of data notes after it; a planner took the notes for the request and refused.
             current = _PLAN_REQUEST_LABEL + current
+            # The contract alone, before the example rides beside it: what the no-action retry
+            # states once (#561). The example is a second statement of this shape.
+            plan_contract = shape
             shape += "\n\n" + _plan_example_for(project)
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
@@ -18777,10 +18851,33 @@ class Orchestrator:
             tap.close()
             raise TurnWedged()
 
-        def restart_planning_session(*, correction: str, reason: str):
-            """Replace one failed planner without carrying its answer or tool history."""
+        def plan_done(*, ok: bool, decision: str, cause: str = "") -> dict:
+            """A plan-path `done` row carrying the ADR-0069 fields (#561).
+
+            `turnId` always; `recoveries` on every failed row and on a successful one that spent
+            any; `cause` and `stage` only when the caller confirmed the turn is terminal and the
+            old session idle, which is the promise `cause` makes to the reader (#569).
+            """
+            row = {"type": "done", "ok": ok, "decision": decision,
+                   "turnId": turn_ticket.id if turn_ticket is not None else ""}
+            if not ok or plan_recovery.recoveries:
+                row["recoveries"] = plan_recovery.recoveries
+            if cause:
+                row["cause"] = cause
+                row["stage"] = "planning"
+            return persist(row)
+
+        def restart_planning_session(*, correction: str, reason: str,
+                                     retry: PlanRetryInput | None = None):
+            """Replace one failed planner without carrying its answer or tool history.
+
+            `retry` is the no-action recovery's send (#561): the same task composed shorter, in
+            place of `initial_current` plus every first-send note. A `correction` rides the
+            invalid-plan recovery instead, appended to the first send, because that failure is a
+            shape failure and the shape is what it restates.
+            """
             nonlocal sid, seen, current, mention_files, resource_note, chat_note
-            nonlocal unusable_note, ambiguous_note, source_note, broken_retry_note
+            nonlocal unusable_note, ambiguous_note, source_note, broken_retry_note, retry_tail
             if project.stop_requested:
                 yield handle_stop()
                 return False
@@ -18790,6 +18887,18 @@ class Orchestrator:
                 if owns_turn:
                     self._turn_gave_up = True
                 yield from refused_to_stop(in_tool=False, quiet_for=0.0)
+            if self._turns.running() is not turn_ticket:
+                log.error("planning recovery: the turn changed owner — no clean retry")
+                if owns_turn:
+                    self._turn_gave_up = True
+                restore_mode()
+                yield persist({
+                    "type": "error",
+                    "message": ("Sage could not confirm this turn still owns the workspace, so it "
+                                "did not retry the plan. Try again."),
+                })
+                yield plan_done(ok=False, decision="planning session unavailable")
+                return False
             try:
                 sid = self._replace_build_session(
                     project, client, project.build_conversation,
@@ -18806,15 +18915,25 @@ class Orchestrator:
                     "type": "error",
                     "message": "Sage could not start the clean planning session. Try again.",
                 })
-                yield persist({
-                    "type": "done", "ok": False,
-                    "decision": "planning session unavailable",
-                })
+                yield plan_done(ok=False, decision="planning session unavailable")
                 return False
             project.last_gateway_error = None
-            current = initial_current + (("\n\n" + correction) if correction else "")
-            (mention_files, resource_note, chat_note, unusable_note,
-             ambiguous_note, source_note) = first_send_extras
+            if retry is not None:
+                # The attachment listing rides between text and tail, so with attachments the
+                # request goes in the tail (said once, last, as #537 asks); without, the whole
+                # retry is the text and there is no tail.
+                if retry.attachments:
+                    current = retry.body()
+                    retry_tail = retry.label + retry.request
+                else:
+                    current = retry.prompt()
+                    retry_tail = ""
+                mention_files = list(retry.attachments)
+                resource_note = chat_note = unusable_note = ambiguous_note = source_note = ""
+            else:
+                current = initial_current + (("\n\n" + correction) if correction else "")
+                (mention_files, resource_note, chat_note, unusable_note,
+                 ambiguous_note, source_note) = first_send_extras
             broken_retry_note = ""
             plan_text_parts.clear()
             emitted_text.clear()
@@ -19158,6 +19277,21 @@ class Orchestrator:
         # doesn't repeat the user's attachments back at them. A broken-call retry is not a nudge —
         # it re-sends the same turn into a session that heard none of this — so it puts them back.
         first_send_extras = (mention_files, resource_note, chat_note, unusable_note, ambiguous_note, source_note)
+        # The canonical inputs of the gated plan turn, held for the one clean no-action retry
+        # (#561). Built here, after every note exists, from the same values the first send is
+        # composed from below — never from the composed prompt. `prompt` is the request the turn
+        # plans: the person's words, or the request a bare "continue" replays (#537).
+        plan_retry = (PlanRetryInput(
+            request=prompt, stack=_plan_stack_name(project), voice=_PLAN_VOICE,
+            shape=plan_contract, resource_note=resource_note, source_note=source_note,
+            attachments=tuple(mention_files or ()))
+            if gate and not arch else None)
+        # The tail the retry send carries in place of the first send's rule, or None for the rule.
+        retry_tail: str | None = None
+        # The turn this planner started under. A retry is granted only to the same owner (#561):
+        # the check is cheap, and a session replaced under a turn that has moved on would be the
+        # second writer the turn lock exists to prevent.
+        turn_ticket = self._turns.running()
         if not gate and not answer_only and not arch:
             project.active_build_intent = build_intent or BuildIntent.for_direct(prompt)
             if continuation_note:
@@ -19613,10 +19747,15 @@ class Orchestrator:
                                    model=handle, agent=agent,
                                    attachments=mention_files,
                                    # Passed only when set, so every other client keeps its shape.
-                                   **({"tail": _PLAN_REQUEST_AGAIN + prompt}
+                                   # A no-action retry brings its own tail (#561): the request
+                                   # once, after the listing, or nothing.
+                                   **({"tail": retry_tail} if retry_tail else {}
+                                      if retry_tail is not None else
+                                      {"tail": _PLAN_REQUEST_AGAIN + prompt}
                                       if gate and not arch and (
                                           mention_files or chat_note or resource_note
                                           or unusable_note or ambiguous_note) else {}))
+                retry_tail = None
                 if fresh_session:
                     self._turn_gave_up = False
             except Exception:
@@ -20306,17 +20445,19 @@ class Orchestrator:
                     timing.model_no_action_recovery(
                         err.get("call_id"), attempt, action, record=record)
                     timing.planning_recovery(
-                        "model_no_action", attempt, action, record=record)
+                        "model_no_action", attempt, action, record=record,
+                        limit=plan_recovery.limit)
                     log.warning(
                         "model no-action terminal: turn_id=%s call_id=%s elapsed_seconds=%.1f "
-                        "chunks=%s action=%s attempt=%s",
+                        "chunks=%s reasoning_only=%s action=%s attempt=%s",
                         err.get("turn_id", ""), err.get("call_id", ""),
                         err.get("elapsed_ms", 0) / 1000,
-                        err.get("chunk_count", 0), action, attempt)
+                        err.get("chunk_count", 0), err.get("reasoning_only_chunks", ""),
+                        action, attempt)
                     yield {"type": "model-active", "active": False}
                     if action == "recover":
                         restarted = yield from restart_planning_session(
-                            correction="",
+                            correction="", retry=plan_retry,
                             reason=("the planner produced no action — restarting once in a "
                                     "clean session." + _effort_hint(err, "Plan")),
                         )
@@ -20326,6 +20467,16 @@ class Orchestrator:
                         return
                     if owns_turn:
                         self._turn_gave_up = True
+                    # `cause` is the promise that the old session is idle (ADR-0069): ask it to
+                    # stop, and write the field only on a confirmed idle reading. A session that
+                    # will not confirm gets the same rows with no `cause`, so the reader offers
+                    # nothing on top of it. The planner is read-only, so this is a promise about
+                    # the reader's action and not about the tree.
+                    idle = self._stop_wedged_session(
+                        client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
+                    if not idle:
+                        log.warning("planning no-action terminal: session %s did not confirm "
+                                    "idle — no cause written", sid)
                     restore_mode()
                     yield persist({
                         "type": "error",
@@ -20333,8 +20484,8 @@ class Orchestrator:
                                     "text or tool call. Try the request again."
                                     + _effort_hint(err, "Plan")),
                     })
-                    yield persist({"type": "done", "ok": False,
-                                   "decision": "model_no_action_timeout"})
+                    yield plan_done(ok=False, decision="model_no_action_timeout",
+                                    cause="model_no_action" if idle else "")
                     return
                 if (err.get("code") == "model_no_action_timeout"
                         and project.pre_edit_guard is not None):
@@ -20618,7 +20769,7 @@ class Orchestrator:
                         attempt, action = plan_recovery.choose()
                         timing.planning_recovery(
                             "invalid_execution_plan", attempt, action,
-                            record=timing.current())
+                            record=timing.current(), limit=plan_recovery.limit)
                         log.warning(
                             "planning recovery: turn_id=%s trigger=invalid_execution_plan "
                             "attempt=%s action=%s failures=empty_recovery",
@@ -20627,8 +20778,7 @@ class Orchestrator:
                         yield persist({"type": "error", "message": (
                             "The clean planning retry did not return a complete plan. "
                             "Try the request again.")})
-                        yield persist({"type": "done", "ok": False,
-                                       "decision": "invalid execution plan"})
+                        yield plan_done(ok=False, decision="invalid execution plan")
                         return
                     restore_mode()
                     yield persist({"type": "error", "message": (
@@ -20638,7 +20788,7 @@ class Orchestrator:
                         "Planning didn't produce a plan this time. Send the request again — adding "
                         "a bit more detail about what you want can help — or switch to Implement to "
                         "build it directly.")})
-                    yield persist({"type": "done", "ok": False, "decision": "empty plan"})
+                    yield plan_done(ok=False, decision="empty plan")
                     return
                 # The planner looked at the request and found no app in it (#150). The same class of
                 # outcome as the empty plan above — nothing to approve — so the same events and no
@@ -20654,7 +20804,7 @@ class Orchestrator:
                         (refusal + " " if refusal else "")
                         + "Say what the app should show or let someone do, then send the request "
                           "again — or switch to Implement to run it directly.")})
-                    yield persist({"type": "done", "ok": False, "decision": "no app described"})
+                    yield plan_done(ok=False, decision="no app described")
                     return
                 if not arch:
                     source_request_messages = (prompt,)
@@ -20665,7 +20815,7 @@ class Orchestrator:
                         problems = _execution_contract_problems(contract)
                         timing.planning_recovery(
                             "invalid_execution_plan", attempt, action,
-                            record=timing.current())
+                            record=timing.current(), limit=plan_recovery.limit)
                         log.warning(
                             "planning recovery: turn_id=%s trigger=invalid_execution_plan "
                             "attempt=%s action=%s failures=%s",
@@ -20686,8 +20836,7 @@ class Orchestrator:
                             _execution_contract_error(contract)
                             + " The clean planning retry was also invalid. Try the request again."
                         )})
-                        yield persist({"type": "done", "ok": False,
-                                       "decision": "invalid execution plan"})
+                        yield plan_done(ok=False, decision="invalid execution plan")
                         return
                     plan_md = self._repair_plan_heading(project, plan_md, "plan gate")
                 restore_mode()
@@ -20751,8 +20900,8 @@ class Orchestrator:
                                "kind": "architecture" if arch else "plan",
                                "planId": plan_id,
                                "steps": steps if steps >= MIN_STEPS else 0})
-                yield persist({"type": "done", "ok": True,
-                               "decision": "architecture ready" if arch else "awaiting approval"})
+                yield plan_done(ok=True,
+                                decision="architecture ready" if arch else "awaiting approval")
                 return
 
             # The agent said this request cannot be acted on (NO_BUILD_MARKER) and, true to that,
