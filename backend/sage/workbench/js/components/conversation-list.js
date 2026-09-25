@@ -134,8 +134,8 @@ window.SW = window.SW || {};
   }
 
   // The tags are the whole navigation story for a flat list: they say what a
-  // conversation changed, and clicking one narrows the list to that app. Earned
-  // by changes only, so a tag is a fact rather than a topic.
+  // conversation changed or attempted, and clicking one narrows the list to that app.
+  // An attempt is labelled separately so a failed plan never looks like a change receipt.
   function AppTags({ touched, onFilter }) {
     if (!touched || touched.length === 0) return null;
     return h(
@@ -146,7 +146,7 @@ window.SW = window.SW || {};
           Tooltip,
           {
             key: tag.appId,
-            title: `${tag.kind === 'built' ? 'Built' : 'Changed'} ${tag.appName} — click to show only this app`,
+            title: `${tag.kind === 'built' ? 'Built' : tag.kind === 'attempted' ? 'Attempted' : 'Changed'} ${tag.appName} — click to show only this app`,
           },
           h(
             'button',
@@ -157,7 +157,7 @@ window.SW = window.SW || {};
                 onFilter(tag.appId);
               },
             },
-            tag.appName
+            tag.kind === 'attempted' ? `Attempted ${tag.appName}` : tag.appName
           )
         )
       )
@@ -200,7 +200,7 @@ window.SW = window.SW || {};
               SW.util.relativeTime(thread.updatedAt),
               thread.planId && h('span', { className: 'sw-thread-flag' }, 'plan')
             ),
-        h(AppTags, { touched: thread.touched, onFilter })
+        h(AppTags, { touched: SW.util.appAssociations(thread), onFilter })
       ),
       h(
         Dropdown,
@@ -337,11 +337,11 @@ window.SW = window.SW || {};
       // under a transcript that is still on screen. Picking an app in the Build header would
       // otherwise do exactly that to the conversation you were mid-way through.
       const standingIn = thread && thread.id === t.id;
-      if (railAppFilter && !standingIn && !(t.touched || []).some((x) => x.appId === railAppFilter)) return false;
+      if (railAppFilter && !standingIn && !SW.util.appAssociations(t).some((x) => x.appId === railAppFilter)) return false;
       if (!needle) return true;
       return (
         t.title.toLowerCase().includes(needle) ||
-        (t.touched || []).some((x) => x.appName.toLowerCase().includes(needle))
+        SW.util.appAssociations(t).some((x) => x.appName.toLowerCase().includes(needle))
       );
     });
 
@@ -366,7 +366,7 @@ window.SW = window.SW || {};
       railAppFilter &&
       ((apps.find((a) => a.id === railAppFilter) || {}).name ||
         (threads
-          .flatMap((t) => t.touched || [])
+          .flatMap((t) => SW.util.appAssociations(t))
           .find((x) => x.appId === railAppFilter) || {}).appName ||
         'an app');
 

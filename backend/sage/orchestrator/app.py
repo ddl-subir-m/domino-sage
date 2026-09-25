@@ -2025,14 +2025,15 @@ def unpin_project_resource(
 
 
 @control_app.get("/api/project/history")
-def project_history(conversation: str = "", detail: str = "full") -> JSONResponse:
+def project_history(conversation: str = "", detail: str = "full", app: str = "") -> JSONResponse:
     """The chat transcript persisted in the workspace, so the UI can replay it after a reload or
     restart (see Workspace.append_history / Orchestrator.history). Reads disk without starting the
     preview.
 
     `conversation` is a Thread id: Build's transcript is per conversation (ADR-0005). Naming none
-    returns the selected Built App's whole log, which is what the agent's own archive renders. It
-    is never another app's: the log lives in the app's directory (ADR-0008).
+    returns the selected Built App's whole log, which is what the agent's own archive renders.
+    `app` addresses that app's log without changing the selection, so a delayed read cannot
+    silently follow a newer selection (ADR-0008).
 
     `detail=off` keeps every row and drops what each tool was CALLED WITH, which on a real log is
     six bytes in seven. The Build history drawer asks that way: it names no conversation, so it
@@ -2041,7 +2042,8 @@ def project_history(conversation: str = "", detail: str = "full") -> JSONRespons
     `/project/history/row/{index}`. The default is unchanged, because the transcript beside it
     draws those cards open."""
     return JSONResponse(content={
-        "history": orchestrator.history(conversation or None, tool_detail=detail != "off"),
+        "history": orchestrator.history(conversation or None, tool_detail=detail != "off",
+                                        **({"app_id": app} if app else {})),
     })
 
 

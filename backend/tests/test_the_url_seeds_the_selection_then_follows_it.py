@@ -366,7 +366,7 @@ def test_the_resolution_effect_still_fires_once():
 def test_the_url_follows_through_replace_state_rather_than_a_push():
     """Following somebody else's selection is not a place the Back button should return to, and
     `SW.router.replace` is the only thing in the Workbench that writes a URL without one."""
-    body, _ = _effect_calling("SW.router.replace")
+    body, _ = _effect_calling("followed.current = shown")
     assert "SW.router.go" not in body
     assert "replaceState" in (_JS / "router.js").read_text()
 
@@ -374,7 +374,7 @@ def test_the_url_follows_through_replace_state_rather_than_a_push():
 def test_the_rewrite_uses_the_one_route_grammar():
     """`SW.appRoute` is Build's route grammar and lives beside the router that reads it. A second
     copy of the template here would be a second place for `#/build?app=` to lose its conversation."""
-    body, _ = _effect_calling("SW.router.replace")
+    body, _ = _effect_calling("followed.current = shown")
     assert "SW.appRoute(" in body
     assert "#/build" not in body
 

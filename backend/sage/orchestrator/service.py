@@ -8104,6 +8104,7 @@ class Orchestrator:
                 project.record.path, turn_id=ticket.id,
                 app_id=project.app_for_turn().app_id,
                 conversation_id=str(conversation or ""), kind="build")
+            self._record_build_attempt(project, conversation)
             project.context_continuations.invalidate_available()
             self._adopt_legacy_build_history(project.app_for_turn(), project.record)
         # Same reason as the streaming turns: neither the archive nor the Artifacts link is
@@ -8910,6 +8911,7 @@ class Orchestrator:
             build_diagnostics.begin(project.record.path, turn_id=ticket.id,
                                     app_id=project.app_for_turn().app_id,
                                     conversation_id=project.build_conversation, kind="build")
+            self._record_build_attempt(project, project.build_conversation)
             # The model gate's listing, kicked off here so the gate below reads a local answer
             # instead of paying 2.5-2.9s for one (#125). A no-op when it is already warm, which the
             # rail's own poll usually keeps it.
@@ -9190,6 +9192,7 @@ class Orchestrator:
                 project.record.path, turn_id=turn_ticket.id,
                 app_id=continuation.app_id,
                 conversation_id=continuation.conversation, kind="build")
+            self._record_build_attempt(project, project.build_conversation)
             explicit_references = live_reference.plan_records(
                 continuation.file_references())
             resources = continuation.resource_references()
@@ -9532,8 +9535,12 @@ class Orchestrator:
         `_recross_handoff` — an entry naming an app that has since been deleted names nothing.
         """
         store = ThreadStore(self._chat_project().record.path)
+        apps = {app_id: self._wm.app_workspace(self._project_id, app_id)
+                for app_id in self._wm.app_ids()}
+        store.backfill_attempts({app_id: (app.display_name(), app.history_path)
+                                 for app_id, app in apps.items()})
         rows = store.list()
-        live = set(self._wm.app_ids())
+        live = set(apps)
         for row in rows:
             bound = [r for r in store.read_handoffs(str(row.get("id") or ""))
                      if r.get("status") == "bound" and str(r.get("appId") or "") in live]
@@ -17404,6 +17411,14 @@ class Orchestrator:
             log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
         return seen
 
+    def _record_build_attempt(self, project: Project, conversation: str | None) -> None:
+        thread_id = str(conversation or "")
+        if not thread_id:
+            return
+        app = project.app_for_turn()
+        ThreadStore(project.record.path).record_attempt(
+            thread_id, app_id=app.app_id, app_name=app.display_name())
+
     def _tag_conversation(self, project: Project, ev: dict) -> None:
         """Name the app on the conversation's own record, so the rail can tag, filter and search it.
 
@@ -20679,6 +20694,7 @@ class Orchestrator:
             build_diagnostics.begin(project.record.path, turn_id=ticket.id,
                                     app_id=project.app_for_turn().app_id,
                                     conversation_id=project.build_conversation, kind="approve")
+            self._record_build_attempt(project, project.build_conversation)
             yield from self._approve_locked(
                 answers, plan_edits, plan_id=plan_id, build_again=build_again,
                 # The transcript replays what the person did, and this is a different act from
@@ -22781,10 +22797,10 @@ class Orchestrator:
         return self._wm.app_workspace(self._project_id).history_row_detail(index)
 
     def history(self, conversation: str | None = None,
-                tool_detail: bool = True) -> list[dict]:
+                tool_detail: bool = True, app_id: str = "") -> list[dict]:
         """Reads straight from the app's directory on the volume, so the transcript is available
         without starting the preview (attaching the project) — a plain GET must not spin up Vite."""
-        workspace = self._wm.app_workspace(self._project_id)
+        workspace = self._wm.app_workspace(self._project_id, app_id or None)
         self._adopt_legacy_build_history(workspace, self._wm.project_record(self._project_id))
         history = workspace.read_history(conversation, tool_detail=tool_detail)
         _warn_if_history_lossy(history, "Orchestrator.history")

@@ -326,6 +326,8 @@ window.SW = window.SW || {};
     // Build is the project's history.jsonl, not the Chat Thread. Chat ↔ Build
     // is turning your head: the Thread stays selected, this transcript is the app's.
     buildHistory: [],
+    buildHistoryLoading: false,
+    buildHistoryError: null,
     buildMessages: [],
     // The Conversation's Chat turns, for Build to draw above its own (#57). Empty under the split
     // view, which is what keeps that arm the screen it is today. Kept apart from `buildMessages`
@@ -673,6 +675,7 @@ window.SW = window.SW || {};
       }
       state[key] = fields[key];
     }
+    syncBuildTarget();
   }
 
   function applyResourceGroups(groups, extras = {}) {
@@ -3737,6 +3740,8 @@ window.SW = window.SW || {};
   // Chat turns it came after: without it `buildHistoryToMessages` falls back to the row's index in
   // this app's log, which is a number from a different scale entirely.
   function appendBuildRow(ev) {
+    buildReadGeneration += 1;
+    state.buildHistoryLoading = false;
     if (buildSeq !== null) ev.order = buildSeq++;
     state.buildHistory = state.buildHistory.concat([ev]);
     applyBuildTranscript();
@@ -3747,46 +3752,105 @@ window.SW = window.SW || {};
   // that rather than deriving a second one. Split asks the question Build has always asked: this
   // app's log, for this Conversation.
   //
-  // A merged read that fell over drops to the split read rather than to nothing. Build without its
-  // Chat turns is half the story; Build without its own turns is a blank screen, and a blank screen
-  // is the failure this ticket was filed about.
-  //
-  // Both keys always come back, one of them null, so the caller reads which read it got rather than
-  // guessing from which key happens to exist.
-  async function readBuildTranscript(conversation) {
-    if (SW.prefs.get('conversationView') === 'unified') {
-      const merged = await SW.api.conversation(conversation).catch(() => null);
-      if (merged) return { merged, history: null };
-    }
-    const own = await SW.api.history(conversation).catch(() => ({ history: [] }));
-    return { merged: null, history: own.history || [] };
+  // Every reader shares this order, including the watcher and Recall. A target switch changes
+  // the generation even if the person comes straight back. Same-target failures keep the last
+  // good transcript and offer Retry; they never turn a failed read into an empty conversation.
+  let buildReadGeneration = 0;
+  let buildReadOrder = 0;
+  let buildLoadOrder = 0;
+  let buildTarget = '';
+  const buildReads = new Map();
+  const buildCache = new Map();
+
+  function buildTargetKey() {
+    return JSON.stringify([state.scope && state.scope.id, state.activeApp && state.activeApp.id,
+      state.thread && state.thread.id]);
   }
 
-  // One read, applied. The load and the mid-build poll both come through here, so a tick during a
-  // running turn cannot quietly swap the merged transcript for this app's half alone.
-  async function applyBuildRead(read) {
-    if (read.merged) {
-      // After the app list, never before it: which app is selected decides which build turns are
-      // this pane's.
-      const halves = splitConversationHalves(read.merged, state.activeApp && state.activeApp.id);
-      // The Chat half is read by the reader that knows how — but its handoff OFFER is Chat's alone.
-      // It offers a way over to Build, and this is Build. Dropped on the block rather than the
-      // message id, because the offer arrives in two shapes: the live callout appended at the end,
-      // and a suggestion persisted mid-history. Both draw the same control.
-      const handoff = state.thread && state.thread.handoff;
-      const chat = (await historyToMessages(halves.chat, handoff)).filter((m) => !isHandoffOffer(m));
-      // The folds carry their own `order`, so they sort into the gaps they came out of rather than
-      // stacking at the top.
-      state.conversationChat = chat.concat(
-        await leadInFoldMessages(halves.hidden, handoff, state.activeApp && state.activeApp.id));
-      state.buildHistory = halves.build;
-      buildSeq = read.merged.length;
-    } else {
-      state.conversationChat = [];
-      state.buildHistory = read.history || [];
-      buildSeq = null;
-    }
+  function syncBuildTarget() {
+    const key = buildTargetKey();
+    if (key === buildTarget) return;
+    if (buildTarget) buildCache.set(buildTarget, {
+      history: state.buildHistory, chat: state.conversationChat, seq: buildSeq,
+      error: state.buildHistoryError,
+    });
+    buildReadGeneration += 1;
+    buildTarget = key;
+    const cached = buildCache.get(key);
+    state.buildHistory = cached ? cached.history : [];
+    state.conversationChat = cached ? cached.chat : [];
+    buildSeq = cached ? cached.seq : null;
+    state.buildHistoryError = cached ? cached.error : null;
+    state.buildHistoryLoading = !!state.thread;
     applyBuildTranscript();
+  }
+
+  function beginBuildRead() {
+    syncBuildTarget();
+    const ticket = { key: buildTarget, generation: buildReadGeneration, order: ++buildReadOrder,
+      conversation: state.thread && state.thread.id, app: state.activeApp && state.activeApp.id,
+      handoff: state.thread && state.thread.handoff };
+    buildReads.set(ticket.key, ticket.order);
+    state.buildHistoryLoading = true;
+    notify();
+    return ticket;
+  }
+
+  function buildReadCurrent(ticket) {
+    return ticket.key === buildTargetKey() && ticket.generation === buildReadGeneration
+      && buildReads.get(ticket.key) === ticket.order;
+  }
+
+  async function readBuildTranscript(conversation, app) {
+    if (!conversation) return { merged: null, history: [] };
+    try {
+      if (SW.prefs.get('conversationView') === 'unified') {
+        const merged = await SW.api.conversation(conversation);
+        if (!Array.isArray(merged)) throw new Error('Invalid conversation history.');
+        return { merged, history: null };
+      }
+      const own = await SW.api.history(conversation, app);
+      if (!own || !Array.isArray(own.history)) throw new Error('Invalid Build history.');
+      return { merged: null, history: own.history };
+    } catch (error) {
+      return { error: "Couldn't load this conversation. Retry to read it again." };
+    }
+  }
+
+  async function applyBuildRead(read, ticket) {
+    if (!buildReadCurrent(ticket)) return false;
+    if (read.error) {
+      state.buildHistoryError = read.error;
+      state.buildHistoryLoading = false;
+      notify();
+      return true;
+    }
+    let chat = [], history = read.history || [], sequence = null;
+    if (read.merged) {
+      const halves = splitConversationHalves(read.merged, ticket.app);
+      chat = (await historyToMessages(halves.chat, ticket.handoff))
+        .filter(m => !isHandoffOffer(m));
+      if (!buildReadCurrent(ticket)) return false;
+      chat = chat.concat(await leadInFoldMessages(halves.hidden, ticket.handoff, ticket.app));
+      history = halves.build;
+      sequence = read.merged.length;
+    }
+    if (!buildReadCurrent(ticket)) return false;
+    state.conversationChat = chat;
+    state.buildHistory = history;
+    buildSeq = sequence;
+    state.buildHistoryError = null;
+    state.buildHistoryLoading = false;
+    applyBuildTranscript();
+    return true;
+  }
+
+  async function refreshBuildTranscript(ticket = beginBuildRead()) {
+    try {
+      return await applyBuildRead(await readBuildTranscript(ticket.conversation, ticket.app), ticket);
+    } catch (error) {
+      return applyBuildRead({ error: "Couldn't load this conversation. Retry to read it again." }, ticket);
+    }
   }
 
   // How many turns this tab currently has open, per mode — running or still waiting in line (#79).
@@ -4471,6 +4535,7 @@ window.SW = window.SW || {};
 
     set(patch) {
       Object.assign(state, patch);
+      syncBuildTarget();
       // The index is a view of the groups, and two readers ask it whether a Resource is in the
       // working set at all — the drawer's `inProject`, and `bindToApp` deciding whether a bind
       // just changed membership. Assigning the groups through here without rebuilding it left
@@ -7001,6 +7066,7 @@ window.SW = window.SW || {};
     async newThread() {
       const thread = await SW.api.createThread();
       state.thread = thread;
+      syncBuildTarget();
       // The conversation the rail's placeholder was standing in for now exists, so the flag has
       // done its job. Clearing it HERE and not in `clearConversation` is the whole distinction:
       // this is a conversation opening, that is one closing, and only the first ends a pending
@@ -7102,7 +7168,7 @@ window.SW = window.SW || {};
       return bound || null;
     },
 
-    async openThread(threadId) {
+    async openThread(threadId, options = {}) {
       // Click B then A and two of these are in flight. Unguarded, whichever server response lands
       // last wins, so the store can settle on B while the route and the rail say A — and
       // `sendMessage` reads `state.thread`, so the next message is posted into the conversation
@@ -7118,6 +7184,8 @@ window.SW = window.SW || {};
       // Not `pendingConversation`, which means a conversation that does not exist yet and is read
       // with `!thread` — set here it would draw the new-conversation empty state over a Thread.
       const gen = ++openSeq;
+      buildReadGeneration += 1;
+      const appId = options.appId;
       state.openingThreadId = threadId;
       notify();
       try {
@@ -7128,6 +7196,7 @@ window.SW = window.SW || {};
         const messages = await store.conversationMessages(thread);
         if (gen !== openSeq) return null;
         state.thread = thread;
+        syncBuildTarget();
         store.noteSaveFailed(thread);
         state.pendingConversation = false;
         // In the single write, so the marker and the view it describes move in the same frame.
@@ -7152,9 +7221,16 @@ window.SW = window.SW || {};
         dropSessionLock();
         refreshSensitivity();
         await refreshAttachments();
-        if (gen !== openSeq) return thread;
+        if (gen !== openSeq) return null;
         if (thread.planId) await store.loadPlan(thread.planId);
+        if (gen !== openSeq) return null;
+        if (state.activeApp && state.activeApp.id === appId) {
+          store.rememberAppConversation(appId, thread.id);
+        }
         return thread;
+      } catch (error) {
+        if (gen !== openSeq) return null;
+        throw error;
       } finally {
         // The two ways out that never reach the write above. A `thread` read that 404s throws, and
         // `modes/chat.js` catches it and routes to `#/chat` — a marker left set there is a spinner
@@ -7178,7 +7254,10 @@ window.SW = window.SW || {};
     // in, and the button would look dead again. What ends a pending conversation is a real one
     // opening (`openThread`) or leaving the Project (`switchScope`).
     clearConversation() {
+      openSeq += 1;
+      buildReadGeneration += 1;
       state.thread = null;
+      syncBuildTarget();
       state.messages = [];
       // Unlike `pendingConversation` above, this one IS cleared: "no conversation open" and "a
       // conversation is arriving" cannot both be true, and the skeleton it draws would otherwise
@@ -7222,6 +7301,21 @@ window.SW = window.SW || {};
       // it, through the `collapseRail` that happens to follow it.
       state.railAppFilter = null;
       notify();
+    },
+
+    rememberAppConversation(appId, threadId) {
+      const projectId = state.scope && state.scope.id;
+      if (!projectId || !appId || !threadId || !state.thread || state.thread.id !== threadId) return;
+      const all = SW.prefs.get('lastAppConversations');
+      SW.prefs.set('lastAppConversations', { ...all,
+        [projectId]: { ...(all[projectId] || {}), [appId]: threadId } });
+    },
+
+    conversationForApp(appId, excludedId = null) {
+      const all = SW.prefs.get('lastAppConversations');
+      const preferred = (all[(state.scope || {}).id] || {})[appId];
+      return SW.util.threadForApp((state.threads || []).filter(t => t.id !== excludedId),
+        appId, preferred);
     },
 
     loadApps: loadAppList,
@@ -7285,6 +7379,7 @@ window.SW = window.SW || {};
         return state.activeApp;
       }
       selecting = id;
+      buildReadGeneration += 1;
       try {
         await SW.api.selectApp(id);
         // Reloads the app list with it: the transcript, the Bindings, the plan pin and the preview
@@ -8418,6 +8513,9 @@ window.SW = window.SW || {};
     },
 
     async loadBuild(options = {}) {
+      const loadOrder = ++buildLoadOrder;
+      const opening = openSeq;
+      const scope = state.scope && state.scope.id;
       // One ticket for the whole load, not one per read: the attachments, the Bindings and the
       // selected app are three parts of one answer taken at one moment, and a newer answer has to
       // beat all three of them or none (#101).
@@ -8441,19 +8539,15 @@ window.SW = window.SW || {};
       applyAppScope(ticket, project ? { appAttachments: project.attached || [] } : {});
       // No conversation open means a new one: nothing to replay. Asking for the whole project
       // here is what used to make "New conversation" look dead — the transcript never changed.
-      const conversation = state.thread && state.thread.id;
-      const [hist, running] = await Promise.all([
-        conversation
-          ? readBuildTranscript(conversation)
-          : Promise.resolve({ merged: null, history: [] }),
+      const [running] = await Promise.all([
         readAuthoritativeTurnState(),
         refreshBindings(ticket),
         refreshProjectPlan(),
-        // The cascade would be this function's own work done twice: `attached` is off the read
-        // above and `/bindings` is in this very list.
         loadAppList({ cascade: false, ticket }),
       ]);
-      await applyBuildRead(hist);
+      if (loadOrder !== buildLoadOrder || opening !== openSeq || scope !== (state.scope && state.scope.id)) return;
+      const readTicket = beginBuildRead();
+      if (!await refreshBuildTranscript(readTicket)) return;
       if (running) {
         state.buildRunning = applyTurnState(running);
         state.buildTyping = state.buildRunning ? (state.buildTyping || 'Working…') : null;
@@ -8491,25 +8585,15 @@ window.SW = window.SW || {};
       // large transcript a tick's `history` can land after a later tick's, and installing it
       // rolls the Build transcript back to an older snapshot until the next poll — losing the
       // newest tool cards, and the `live: true` flag the reset-offer buttons render from.
-      let polled = 0;
-      let settled = 0;
       const tick = async () => {
-        const mine = ++polled;
+        const ticket = beginBuildRead();
         const running = await readAuthoritativeTurnState();
         // The rail rides along: which app a build is running in is a row's state, and someone who
         // switched away from that app has no other way to see the turn still going (#77).
         await loadAppList();
         // Same scope as loadBuild: polling the whole project here would pull other
         // conversations' turns into the one on screen.
-        const watched = state.thread && state.thread.id;
-        // The same read the load makes, so a tick mid-build refreshes this app's turns without
-        // dropping the Chat turns above them. Under the split view this is the read it always was.
-        const hist = watched ? await readBuildTranscript(watched) : { merged: null, history: [] };
-        // An answer that arrived out of order is stale by definition. Drop it; the next tick is
-        // 2s away and carries everything this one would have.
-        if (mine < settled) return;
-        settled = mine;
-        await applyBuildRead(hist);
+        if (!await refreshBuildTranscript(ticket)) return;
         if (!running) {
           notify();
           return;
@@ -9189,10 +9273,16 @@ window.SW = window.SW || {};
       const keys = (block.carriers || []).map((c) => c.key);
       const labels = (block.carriers || []).map((c) => c.label);
       if (!keys.length) return;
+      const readTicket = onBuild ? beginBuildRead() : null;
       try {
         if (onBuild) await SW.api.withholdBuildContent(id, keys, labels, block.prompt);
         else await SW.api.withholdContent(id, keys, labels, block.prompt);
       } catch (e) {
+        if (onBuild) {
+          if (!buildReadCurrent(readTicket)) return;
+          state.buildHistoryLoading = false;
+          notify();
+        }
         antd.message.error(e && e.message ? e.message : "Couldn't stop sending that.");
         return;
       }
@@ -9205,8 +9295,9 @@ window.SW = window.SW || {};
         // the life of the Conversation, so without this a card answered once would come back
         // answerable on any later poll that redrew it. Same reason `resetApp` forgets by hand: the
         // path that starts no turn is the one `sendBuildPrompt` never gets to clean up after.
+        if (!buildReadCurrent(readTicket)) return;
         forgetLiveCards();
-        await applyBuildRead(await readBuildTranscript(id));
+        if (!await refreshBuildTranscript(readTicket)) return;
         notify();
       } else {
         await store.openThread(id);
@@ -9225,18 +9316,20 @@ window.SW = window.SW || {};
     // the session filed under whichever Built App is selected, which is the one this transcript
     // belongs to (ADR-0022).
     async clearBuildRecall(scope) {
+      const ticket = beginBuildRead();
       try {
-        await SW.api.clearBuildRecall(state.thread && state.thread.id, scope);
+        await SW.api.clearBuildRecall(ticket.conversation, scope);
       } catch (e) {
+        if (!buildReadCurrent(ticket)) return;
+        state.buildHistoryLoading = false;
+        notify();
         antd.message.error("Couldn't clear recall.");
         return;
       }
       // Re-read rather than push the divider in from here, for the reason Chat re-opens: the server
       // wrote the event and the transcript is what renders it. One copy of the truth. The card goes
       // with it — the `recall-cleared` row the server just wrote retires the offer above it.
-      const watched = state.thread && state.thread.id;
-      await applyBuildRead(
-        watched ? await readBuildTranscript(watched) : { merged: null, history: [] });
+      if (!await refreshBuildTranscript(ticket)) return;
       notify();
     },
 

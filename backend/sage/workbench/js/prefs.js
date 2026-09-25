@@ -22,7 +22,15 @@ window.SW = window.SW || {};
   // min and max: any integer in that range is legal, and everything else is treated as absent.
   // localStorage is editable by hand and outlives the build that wrote it, so a value with no
   // branch behind it would leave the UI drawing nothing.
+  function conversationMap(value) {
+    const map = asRecord(value);
+    return !!map && Object.entries(map).every(([project, apps]) =>
+      project && asRecord(apps) && Object.entries(apps).every(([app, thread]) =>
+        app && typeof thread === 'string' && thread.length <= 64 && /^thr_[a-zA-Z0-9_-]+$/.test(thread)));
+  }
+
   const PREFS = {
+    lastAppConversations: { fallback: {}, validate: conversationMap },
     // Two views of one Conversation: split keeps Chat and Build as separate halves, which is what
     // the Workbench does today, and unified shows one transcript in both (#50). Nothing reads this
     // yet — this ticket only gives the answer somewhere to live.
@@ -139,6 +147,7 @@ window.SW = window.SW || {};
   // beside a range — the dock's width uses that to mean "never dragged" without making null a
   // number.
   function recognised(spec, value) {
+    if (spec.validate) return spec.validate(value);
     if (spec.values && spec.values.includes(value)) return true;
     if (typeof spec.min === 'number' && typeof spec.max === 'number') {
       return Number.isInteger(value) && value >= spec.min && value <= spec.max;
