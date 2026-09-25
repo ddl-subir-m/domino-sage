@@ -127,8 +127,14 @@ def facts(doc: dict, path: str) -> dict:
     waits = [v for v in (_num(c, "firstActionMs") for c in calls) if v is not None]
     # `cachedTokens` is a part of `inTokens`, not an extra: gateway/events.py rebuilds the Messages
     # protocol's `input_tokens` as input + cache_read + cache_creation, and a chat-completions
-    # `prompt_tokens` already counts its cached part. So this share is between 0 and 1.
-    cached, in_tokens = _total(calls, "cachedTokens"), _total(calls, "inTokens")
+    # `prompt_tokens` already counts its cached part. That holds PER CALL, so the two must be summed
+    # over the same calls: `usage()` fills in only what a provider reported, and totalling each
+    # field over whatever rows happen to carry it can put a cache read over a smaller denominator
+    # and print a share above 100%.
+    counted = [c for c in calls if _num(c, "inTokens") is not None]
+    in_tokens = sum(_num(c, "inTokens") for c in counted) if counted else None
+    reporting = [c for c in counted if _num(c, "cachedTokens") is not None]
+    cached = sum(_num(c, "cachedTokens") for c in reporting) if reporting else None
 
     # The longest stretch of tool calls with no landed edit at the end of it, including the tail
     # after the last one. File order is the order `tool_timing` first observed each run.
@@ -140,8 +146,13 @@ def facts(doc: dict, path: str) -> dict:
             run += 1
     longest = max(longest, run)
 
+    # `service.py` opens one `typecheck` span per agent turn inside the repair loop, so a turn that
+    # checked three times has three. Both the count and the codes come from the LAST one, which is
+    # what the turn was left with. Taking the count from the last and the codes from all of them
+    # reads as "one error (three codes)", two of which were already fixed.
     checks = [s for s in spans if s.get("name") == "typecheck"]
-    codes = sorted({c for s in checks for c in s.get("errorCodes", []) if isinstance(c, str)})
+    final = checks[-1] if checks else {}
+    codes = sorted(c for c in final.get("errorCodes", []) if isinstance(c, str))
     return {
         "path": path,
         "turnId": turn.get("turnId") or "?",
@@ -154,7 +165,11 @@ def facts(doc: dict, path: str) -> dict:
         "status": (doc.get("buildOutcome") or {}).get("status") or "?",
         "ms": _num(timing, "ms"),
         "calls": len(calls),
-        "fresh": session.get("reason") if session.get("fresh") else None,
+        # `_implementation_session` admits the block all-or-nothing, and `fresh` is a real bool with
+        # `reason` covering "reused". So a measured reuse and a turn that carries no block at all
+        # are different findings and must not render the same. Keep both parts.
+        "sessionReason": session.get("reason") if session else None,
+        "sessionFresh": session.get("fresh") if session else None,
         "noAction": sum(1 for c in calls if c.get("outcome") == "no_action_timeout"),
         "recoveries": Counter(c["noActionRecoveryAction"] for c in calls
                               if "noActionRecoveryAction" in c),
@@ -171,7 +186,7 @@ def facts(doc: dict, path: str) -> dict:
         "edits": sum(1 for r in tools if _landed_edit(r)),
         "bash": sum(1 for r in tools if r.get("tool") in SHELL_TOOLS),
         "longestRun": longest,
-        "errors": _num(checks[-1], "errors") if checks else None,
+        "errors": _num(final, "errors") if checks else None,
         "errorCodes": codes,
         "repairs": Counter(s["retry_reason"] for s in spans
                            if str(s.get("name", "")).startswith("agent-turn.")
@@ -213,12 +228,20 @@ def _counts(counter: Counter) -> str:
     return " ".join(f"{k}x{v}" for k, v in sorted(counter.items())) or "-"
 
 
+def _session(row: dict) -> str:
+    """`-` only when the record carried no implementation session at all."""
+    reason = row["sessionReason"]
+    if reason is None:
+        return "-"
+    return f"fresh ({reason})" if row["sessionFresh"] else f"reused ({reason})"
+
+
 def render_turn(row: dict, out) -> None:
     flag = "" if row["complete"] else "   [INCOMPLETE CAPTURE]"
     print(f"\n{row['turnId']}  {row['kind']}  {label(row)}  {row['status']}  "
           f"{_secs(row['ms'])}  app {row['appId']}{flag}", file=out)
-    print(f"    calls    {row['calls']} model calls · fresh session "
-          f"{row['fresh'] or '-'} · no-action timeouts {row['noAction']} · "
+    print(f"    calls    {row['calls']} model calls · session {_session(row)} · "
+          f"no-action timeouts {row['noAction']} · "
           f"recoveries {_counts(row['recoveries'])}", file=out)
     print(f"    waiting  longest {_secs(row['wait'])} before a first action · "
           f"reasoning-only chunks "
@@ -245,17 +268,19 @@ HEADINGS = ("model", "turns", "ok", "secs", "calls", "fresh", "noact", "wait", "
 def summary_line(name: str, rows: list[dict]) -> tuple:
     ms = [r["ms"] for r in rows if r["ms"] is not None]
     waits = [r["wait"] for r in rows if r["wait"] is not None]
-    cached = [r["cached"] for r in rows if r["cached"] is not None]
-    in_tokens = [r["inTokens"] for r in rows if r["inTokens"] is not None]
+    # Numerator and denominator over the same turns, for the same reason as inside a turn.
+    paired = [(r["cached"], r["inTokens"]) for r in rows
+              if r["cached"] is not None and r["inTokens"]]
     errs = [r["errors"] for r in rows if r["errors"] is not None]
+    sessions = [r for r in rows if r["sessionReason"] is not None]
     return (name, str(len(rows)),
             str(sum(1 for r in rows if r["status"] == "success")),
             _secs(sum(ms)) if ms else "-",
             str(sum(r["calls"] for r in rows)),
-            str(sum(1 for r in rows if r["fresh"])),
+            str(sum(1 for r in sessions if r["sessionFresh"])) if sessions else "-",
             str(sum(r["noAction"] for r in rows)),
             _secs(max(waits)) if waits else "-",
-            _share(sum(cached), sum(in_tokens)) if cached and in_tokens else "-",
+            _share(sum(c for c, _ in paired), sum(i for _, i in paired)) if paired else "-",
             str(sum(r["edits"] for r in rows)),
             str(sum(r["bash"] for r in rows)),
             str(max(r["longestRun"] for r in rows)),

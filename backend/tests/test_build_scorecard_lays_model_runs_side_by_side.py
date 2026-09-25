@@ -69,17 +69,24 @@ def _run(*paths):
 
 
 def _pair(tmp_path, model, app, prefix, **kw):
-    """The fixed pair: a new app, then one follow-up change on it."""
+    """The fixed pair: a new app, then one follow-up change on it.
+
+    `build_diagnostics._phase` derives the turn's phase from its calls' phases, so a `planning`
+    turn must carry a `plan` call. Pairing `phase="planning"` with an `implement` call is a record
+    the writer can never produce.
+    """
     first = _doc(f"turn_{prefix}1", model=model, app=app, kind="build", phase="planning",
-                 started=1790269775.0, **kw)
+                 started=1790269775.0, calls=[_call(1, model, phase="plan")], **kw)
     second = _doc(f"turn_{prefix}2", model=model, app=app, kind="approve", phase="implementation",
                   started=1790269999.0, **kw)
     return [_write(tmp_path, f"{prefix}1", first), _write(tmp_path, f"{prefix}2", second)]
 
 
 def test_a_valid_pair_on_two_models_reports_each_turn_and_totals_per_model(tmp_path):
-    work = {"tools": [_tool("edit"), _tool("bash"), _tool("read"), _tool("read"),
-                      _tool("grep"), _tool("write")],
+    # The failed `edit` is the point: it did not land, so it must not count and must not end the
+    # run of tool calls that have no landed edit behind them.
+    work = {"tools": [_tool("edit"), _tool("bash"), _tool("read"), _tool("edit", status="error"),
+                      _tool("read"), _tool("grep"), _tool("write")],
             "spans": [{"name": "typecheck", "atMs": 100, "ms": 900, "open": False, "errors": 2,
                        "errorCodes": ["TS2304"]},
                       {"name": "agent-turn.2", "depth": 0, "atMs": 0, "ms": 900, "open": False,
@@ -90,16 +97,21 @@ def test_a_valid_pair_on_two_models_reports_each_turn_and_totals_per_model(tmp_p
     assert done.returncode == 0, done.stdout + done.stderr
     out = done.stdout
     assert "4 turns, 2 models" in out
-    # A landed edit, then bash/read/read/grep, then the second landed edit: the longest run with
-    # no landed edit at the end of it is those four. `read` and `grep` are tool calls too.
-    assert "2 edits landed · 1 bash · longest run with no landed edit: 4 tool calls" in out
+    # A landed edit, then bash/read/edit-that-failed/read/grep, then the second landed edit. Only
+    # two edits landed, and the failed one counts towards the run rather than ending it: five.
+    assert "2 edits landed · 1 bash · longest run with no landed edit: 5 tool calls" in out
     assert "typecheck 2 errors (TS2304) · repairs typecheck_repairx1 · plan -" in out
     assert "cached 40% of 100,000 in-tokens" in out
     summary = [line.split() for line in out.splitlines() if line.strip().startswith("glm-5.3")]
     # model turns ok secs calls fresh noact wait cached edits bash runrun errs repairs
-    assert summary == [["glm-5.3", "2", "2", "120.0s", "2", "0", "0", "1.2s", "40%",
-                        "4", "2", "4", "4", "2"]]
+    assert summary == [["glm-5.3", "2", "2", "120.0s", "2", "-", "0", "1.2s", "40%",
+                        "4", "2", "5", "4", "2"]]
     assert "Comparable:" in out
+    # A clean download must raise no NOTES at all: that section fires on a field the scorecard
+    # does not know, so a wrong TOP_LEVEL or TIMING_KEYS would warn on every real run.
+    assert "NOTES" not in out
+    # No implementation session was recorded, which is not the same as one that was reused.
+    assert "session - ·" in out
 
 
 def test_an_unknown_schema_version_is_refused_by_name_instead_of_read(tmp_path):
@@ -140,6 +152,46 @@ def test_a_field_the_writer_grew_is_named_rather_than_dropped(tmp_path):
     assert "grew a field" in done.stdout
 
 
+def test_a_session_that_was_reused_reads_differently_from_one_never_recorded(tmp_path):
+    """`fresh: false, reason: reused` is a measurement. No block at all is not."""
+    reused = _doc("turn_r", implementationSession={
+        "fresh": False, "reason": "reused", "created": False, "persisted": True,
+        "dispatchStarted": True})
+    silent = _doc("turn_s", model="glm-5.3", app="app-b", started=1790269999.0)
+    out = _run(_write(tmp_path, "r", reused), _write(tmp_path, "s", silent)).stdout
+    assert "session reused (reused)" in out
+    assert "session - ·" in out
+    # The per-model `fresh` column: sonnet recorded one session and none of them were fresh, so
+    # `0`. glm recorded none at all, so `-` -- a silence is not nought fresh sessions.
+    fresh = {line.split()[0]: line.split()[5] for line in out.splitlines()
+             if line.strip().startswith(("sonnet", "glm-5.3"))}
+    assert fresh == {"sonnet": "0", "glm-5.3": "-"}, out
+
+
+def test_the_error_count_and_the_codes_come_from_the_same_typecheck(tmp_path):
+    """One `typecheck` span per agent turn, so a repaired turn carries several."""
+    spans = [{"name": "typecheck", "atMs": 10, "ms": 90, "open": False, "errors": 3,
+              "errorCodes": ["TS2304", "TS2551"]},
+             {"name": "typecheck", "atMs": 99, "ms": 90, "open": False, "errors": 1,
+              "errorCodes": ["TS7006"]}]
+    out = _run(_write(tmp_path, "checked", _doc("turn_c", spans=spans))).stdout
+    # The turn was left with one error, and it is TS7006. The two codes it already fixed are
+    # not evidence about what remains.
+    assert "typecheck 1 errors (TS7006)" in out
+    assert "TS2304" not in out and "TS2551" not in out
+
+
+def test_a_cache_share_is_summed_over_the_calls_that_reported_both(tmp_path):
+    """A cache read over a denominator that skipped its own call printed above 100%."""
+    cached_only = _call(1, "sonnet", cachedTokens=90_000)
+    del cached_only["inTokens"]
+    measured = _call(2, "sonnet", inTokens=100_000, cachedTokens=25_000)
+    out = _run(_write(tmp_path, "tok", _doc("turn_t", calls=[cached_only, measured]))).stdout
+    assert "cached 25% of 100,000 in-tokens" in out
+    share = [line.split()[8] for line in out.splitlines() if line.strip().startswith("sonnet")]
+    assert share == ["25%"], out
+
+
 def test_a_fact_the_record_never_carried_prints_as_unknown_not_as_zero(tmp_path):
     bare = _call(1, "sonnet")
     # A provider that reports no cache read simply omits `cachedTokens`; `inTokens` still arrives.
@@ -150,7 +202,8 @@ def test_a_fact_the_record_never_carried_prints_as_unknown_not_as_zero(tmp_path)
     assert "longest - before a first action · reasoning-only chunks -" in done.stdout
     assert "cached - of 100,000 in-tokens" in done.stdout
     # The summary agrees with the row above it: a share nothing measured is not a share of nought.
-    row = [line.split() for line in done.stdout.splitlines() if line.strip().startswith("sonnet")]
-    assert [cell for cell in row[0] if "%" in cell or cell == "-"] == ["-", "-", "-"]
+    row = next(line.split() for line in done.stdout.splitlines()
+               if line.strip().startswith("sonnet"))
+    assert row[8] == "-", row  # the `cached` column, by its position in HEADINGS
     # A tool list that really is empty is still a measured zero, and says zero.
     assert "0 edits landed · 0 bash" in done.stdout
