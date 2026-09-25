@@ -110,9 +110,10 @@ def _lock_sensitivity(
         return replace(decision, locked=True)
     final_model = _nearest_approved(state, catalog, approved)
     # An armed Build turn keeps the configured decision and validates it against the model that
-    # actually receives the request. This preserves an explicit Model default and lets an automatic
-    # stage apply its default to the final approved alias (#532). Other callers keep the established
-    # Chat/Ask behavior: the lock chose no assignment, so it carries no effort.
+    # actually receives the request. This preserves a level the person chose and lets an automatic
+    # stage apply its default to the final approved alias (#532, and since #545 an unset level is
+    # the stage's too). Other callers keep the established Chat/Ask behavior: the lock chose no
+    # assignment, so it carries no effort.
     if state.effort_rows_armed:
         return replace(decision, model=final_model, reason=Reason.SENSITIVITY, locked=True)
     return ModelDecision(model=final_model, reason=Reason.SENSITIVITY, locked=True)
