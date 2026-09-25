@@ -635,6 +635,8 @@ def test_busy_is_read_from_v1_and_carries_the_workspace(monkeypatch):
     c = OpenCodeClient("http://x")
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
                         lambda url, json, timeout: _JsonResp({"id": "s1"}))
+    monkeypatch.setattr("sage.driver.opencode.httpx.patch",
+                        lambda url, params, json, timeout: _Resp(200))
     c.create_session("/work/dir")
 
     assert c.is_running("s1") is True
@@ -713,22 +715,34 @@ def test_child_session_scope_is_verified_from_harness_parentage_and_directory(mo
 
 
 def test_a_new_session_is_named_so_opencode_does_not_spend_a_call_naming_it(monkeypatch):
-    """One key in the body, and a whole model call per session goes away (#496).
+    """One extra request, and a whole model call per session goes away (#496, #549).
 
     `SessionPrompt.ensureTitle` fires once per session — after the first user message, with
     `system: []` and `tools: {}`, so it can emit no tool and move nothing — and returns early when
     the session's title is not one of its OWN defaults. Measured 2026-09-11: it is the 3 KB call in
     every Build turn's ledger that does nothing. Nothing in Sage reads a session title, so the
     value only has to be outside OpenCode's default shape.
+
+    The title has to go out on v1's `PATCH /session/{id}`, NOT in the create body: v2's create
+    payload is `{id?, agent?, model?, location?}` and drops everything else, which is why #496's
+    key changed no title and the call it meant to remove kept running for two weeks. Asserting the
+    key Sage SENDS is what hid that, so this asserts the request that OpenCode acts on — and
+    `test_a_created_session_is_titled_where_opencode_will_read_it` asserts the title that lands.
     """
     import re
 
-    seen = {}
+    sent = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: seen.update(json) or _JsonResp({"id": "s1"}))
+                        lambda url, json, timeout: sent.update(create=json)
+                        or _JsonResp({"id": "s1"}))
+    monkeypatch.setattr("sage.driver.opencode.httpx.patch",
+                        lambda url, params, json, timeout: sent.update(
+                            url=url, params=params, patch=json) or _Resp(200))
     OpenCodeClient("http://x").create_session("/mnt/code/apps/app_7f3c")
 
-    assert seen["location"] == {"directory": "/mnt/code/apps/app_7f3c"}
-    title = seen["title"]
+    assert sent["create"]["location"] == {"directory": "/mnt/code/apps/app_7f3c"}
+    assert sent["url"] == "http://x/session/s1" and "/api/" not in sent["url"]
+    assert sent["params"] == {"directory": "/mnt/code/apps/app_7f3c"}
+    title = sent["patch"]["title"]
     assert title, "no title means OpenCode titles it, which costs the call this avoids"
     assert not re.match(r"^(New|Child) session - \d{4}-", title), title

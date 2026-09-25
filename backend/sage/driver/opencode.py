@@ -384,8 +384,21 @@ class OpenCodeClient:
         # 2026-09-11: it is the 3 KB call in every Build turn's ledger that emits no tool and moves
         # nothing. Nothing in Sage ever reads a session title, so any non-default value ends it;
         # the directory's name is the one that means something to a person reading the OpenCode log.
-        body: dict = {"location": {"directory": directory},
-                      "title": Path(directory).name or "sage"}
+        #
+        # THE TITLE CANNOT RIDE ON THE CREATE. v2's payload schema is `{id?, agent?, model?,
+        # location?}` and nothing else, so the `title` key #496 put in this body was dropped and
+        # every session kept `New session - <ISO>` — which is exactly the shape `isDefaultTitle`
+        # matches, so the call #496 meant to remove ran anyway. Measured 2026-09-25 against the
+        # pinned 1.18.4: create, then read the session back, and the title is OpenCode's (#549).
+        # v1's `PATCH /session/{id}` does take one, and the two APIs share the session row, so the
+        # title is set in a second call. It is cheap — no model, no provider — and it has to land
+        # before the first prompt, which is where `ensureTitle` looks.
+        #
+        # `directory` on that PATCH is convention, not a measured requirement: dropping it left the
+        # test below green against a rig whose project is `global`. It is sent because every other
+        # v1 call here sends it, and because v1 has answered wrong without a workspace before — see
+        # `is_running`. If it is ever proven pointless, the assertion in the driver test goes too.
+        body: dict = {"location": {"directory": directory}}
         if model:
             body["model"] = model
         r = httpx.post(f"{self.base_url}/api/session", json=body, timeout=30)
@@ -393,6 +406,9 @@ class OpenCodeClient:
         payload = r.json()
         # /api/* responses wrap the resource in {"data": {...}}.
         sid = (payload.get("data") or payload)["id"]
+        named = httpx.patch(f"{self.base_url}/session/{sid}", params={"directory": directory},
+                            json={"title": Path(directory).name or "sage"}, timeout=30)
+        named.raise_for_status()
         self._dirs[sid] = directory
         return sid
 
