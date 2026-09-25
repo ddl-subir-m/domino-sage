@@ -202,6 +202,38 @@ a route of its own. There is nothing to install, compile, or bundle.
   the component's name, or an Ant Design prop. Keep the `:root` tokens and the `@font-face` at the
   top of `static/app.css` as they are.
 
+## What exists
+- `static/app.js` — the app (currently a placeholder to replace). `static/app.css` — its styles.
+- `app.py` — the server. Add routes under the `sage_serve.mount(app)` line.
+- `static/components/` — put reusable components here, one script each, listed in `index.html`.
+- `public/data/` — the files the user attached, served at `sage.url("data/...")`.
+
+### On the page — this is the whole toolbox
+Everything below is a global the page already carries. Nothing else is, and nothing else can be added.
+
+| Global | Use it for |
+|--------|-----------|
+| `React`, `ReactDOM` | Everything. `React.createElement` builds elements; `React.useState` and friends are the hooks. |
+| `antd` | Every component: `antd.Table`, `Form`, `Input`, `Select`, `DatePicker`, `Card`, `Tabs`, `Modal`, `Drawer`, `Tag`, `Alert`, `Empty`, `Spin`, `Statistic`, `Typography`, `Space`, `Flex`, `Layout`. |
+| `icons` | Ant Design's icons, by name: `icons.SearchOutlined`, `icons.PlusOutlined`. |
+| `dayjs` | Formatting, parsing and date ranges; what `antd.DatePicker` gives and takes. |
+| `Highcharts` | Charts. Line, area, column, bar, pie, and the `more` and `funnel` modules are loaded. |
+| `sage` | {assistantName}'s helpers: `sage.url`, `sage.runQuery`, `sage.askModel`, `sage.checkModel`, `sage.callModelApi`, `sage.theme`, `sage.accents`, `sage.ErrorBoundary`. |
+
+### URLs: always relative, always through `sage.url`
+A published app is served under a path its own code cannot know. `static/sage/appBase.js` works it
+out at runtime and `sage.url("...")` builds every URL from it — attached data, the app's own
+routes, the platform relay. A leading-slash path (`/api/...`, `/data/...`) asks the apps host for a
+file with no app id in it, and works in the preview only to break once published. If the app has
+more than one view, keep it on one page and switch views in state or with a `#hash`; do not use
+`history.pushState` paths.
+
+There is no bundler, no TypeScript and no JSX here, and no second UI kit: everything is built from
+Ant Design with `React.createElement`. If a request seems to need a package that isn't on the page,
+build the nearest thing you can from what is here and tell the user what you left out — do not try
+to install it.
+<!-- sage:build-profile:v1:implement:end -->
+<!-- sage:build-profile:v1:design:begin -->
 ## Design system — build a polished product, not a prototype
 
 Every app must look intentional and consistent. These rules are what separate a crafted UI from a
@@ -302,7 +334,8 @@ components outside what was asked.
 - Icon-only buttons need an `aria-label` (and a `title` for the tooltip).
 - No gratuitous gradients, no clashing accent colors, no inconsistent corner radii. Restraint reads
   as quality.
-
+<!-- sage:build-profile:v1:design:end -->
+<!-- sage:build-profile:v1:platform:begin -->
 ## The server, and the {platformName} platform API
 `app.py` is FastAPI. The page and its data are already served — `sage_serve.mount(app)` does that —
 so a route of your own is only for something the browser cannot do itself: a computation over the
@@ -378,35 +411,4 @@ GET only, and only these families; anything else answers 403 or 405:
   say what the app could not reach.
 - `DOMINO_API_HOST`, `DOMINO_PROJECT_ID`, `DOMINO_PROJECT_NAME` and `DOMINO_PROJECT_OWNER` are in
   the server's environment when it runs on the platform, and absent on a laptop.
-
-## What exists
-- `static/app.js` — the app (currently a placeholder to replace). `static/app.css` — its styles.
-- `app.py` — the server. Add routes under the `sage_serve.mount(app)` line.
-- `static/components/` — put reusable components here, one script each, listed in `index.html`.
-- `public/data/` — the files the user attached, served at `sage.url("data/...")`.
-
-### On the page — this is the whole toolbox
-Everything below is a global the page already carries. Nothing else is, and nothing else can be added.
-
-| Global | Use it for |
-|--------|-----------|
-| `React`, `ReactDOM` | Everything. `React.createElement` builds elements; `React.useState` and friends are the hooks. |
-| `antd` | Every component: `antd.Table`, `Form`, `Input`, `Select`, `DatePicker`, `Card`, `Tabs`, `Modal`, `Drawer`, `Tag`, `Alert`, `Empty`, `Spin`, `Statistic`, `Typography`, `Space`, `Flex`, `Layout`. |
-| `icons` | Ant Design's icons, by name: `icons.SearchOutlined`, `icons.PlusOutlined`. |
-| `dayjs` | Formatting, parsing and date ranges; what `antd.DatePicker` gives and takes. |
-| `Highcharts` | Charts. Line, area, column, bar, pie, and the `more` and `funnel` modules are loaded. |
-| `sage` | {assistantName}'s helpers: `sage.url`, `sage.runQuery`, `sage.askModel`, `sage.checkModel`, `sage.callModelApi`, `sage.theme`, `sage.accents`, `sage.ErrorBoundary`. |
-
-### URLs: always relative, always through `sage.url`
-A published app is served under a path its own code cannot know. `static/sage/appBase.js` works it
-out at runtime and `sage.url("...")` builds every URL from it — attached data, the app's own
-routes, the platform relay. A leading-slash path (`/api/...`, `/data/...`) asks the apps host for a
-file with no app id in it, and works in the preview only to break once published. If the app has
-more than one view, keep it on one page and switch views in state or with a `#hash`; do not use
-`history.pushState` paths.
-
-There is no bundler, no TypeScript and no JSX here, and no second UI kit: everything is built from
-Ant Design with `React.createElement`. If a request seems to need a package that isn't on the page,
-build the nearest thing you can from what is here and tell the user what you left out — do not try
-to install it.
-<!-- sage:build-profile:v1:implement:end -->
+<!-- sage:build-profile:v1:platform:end -->
