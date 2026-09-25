@@ -1153,6 +1153,23 @@ def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
             "added_by": added_by, "conversation_id": conversation_id, "sage_upload": sage_upload}
 
 
+def _platform_id(entry: dict) -> str:
+    """The id the platform API knows this entry's Dataset by, or "" (#556).
+
+    A Dataset file's entry carries it and the reads table takes it — `datasets-v2?datasetIds=<id>`
+    — and it was never on the surface the agent reads, so a turn holding the name and nothing else
+    sent the name. An upload's entry carries the id of the Dataset its bytes sit in and answers ""
+    here on purpose: the platform does not know the upload by any id a call takes, and a line that
+    named one would hand the agent an id for a thing it cannot read that way.
+    """
+    return str(entry.get("dataset_id") or "") if entry.get("source") == "dataset" else ""
+
+
+def _dataset_credit(name: str, platform_id: str) -> str:
+    """`**name**`, with the platform id beside it when there is one."""
+    return f"**{name}** (platform id `{platform_id}`)" if platform_id else f"**{name}**"
+
+
 def _context_author(row: dict) -> str:
     """Who a Conversation's context row says put it there, as the author an Attachment records.
 
@@ -5204,6 +5221,10 @@ class Project:
     # after a clean typecheck to catch runtime crashes that tsc can't see (a blank preview) and feed
     # them back to the agent to autofix. ts-gated so a stale error from a prior turn is ignored.
     runtime_error: dict | None = None
+    # Set by the preview proxy's `on_platform_read` when the app's own relay refused a platform read
+    # (#556). Carries {"status", "path", "ts", "app"}, stamped as `runtime_error` is and read in the
+    # same window: the page catches the failed fetch and logs it where the model cannot read it.
+    platform_read_failure: dict | None = None
     # Per-turn model-call telemetry, wired by the /v1/chat/completions stream wrapper and read by
     # build_stream() to explain why a turn wrote nothing, and `tool_call_responses` also by
     # chat_stream()'s terminal row, which feeds it to `_tool_use` (#469). model_calls = model
@@ -18578,6 +18599,12 @@ class Orchestrator:
         # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
         runtime_fixes = 0
         max_runtime_fixes = self._build_policy.runtime_repair_limit
+        # A platform read the app's own relay refused (#556): the page catches the failed fetch and
+        # logs it in the browser, so without this the turn never hears that `datasetIds=<name>` was
+        # a 404. Once, and not a setting: one nudge says what a 404 on a named path means, and a
+        # second copy of it would not say more.
+        platform_fixes = 0
+        max_platform_fixes = 1
         leak_fixes = 0
         max_leak_fixes = self._build_policy.leak_repair_limit
         # An app that declares a model has a live gateway URL in its own source, and nothing stops
@@ -18616,6 +18643,12 @@ class Orchestrator:
             "The app compiled but threw a runtime error when it rendered in the browser, so the "
             "preview is blank. Fix the code so it renders without throwing. Do not just guard the "
             "symptom — find and fix the root cause.\n\nError: {message}\n\nStack:\n{stack}"
+        )
+        PLATFORM_READ_NUDGE = (
+            "The app's read of the platform API was refused while the preview ran it: {status} on "
+            "`{path}`. A 404 on a path the reads table names is a wrong id — use the platform id "
+            "from the attached-data block in AGENTS.md, never the name. Fix the call; do not hide "
+            "the failure and do not substitute values for what the platform did not answer."
         )
         # What the retry below adds to the turn it re-sends. It is orientation, not instruction: the
         # retry runs in a FRESH session that heard none of the broken one, so the note says what
@@ -20535,6 +20568,22 @@ class Orchestrator:
                         yield {"type": "iterate", "reason": iterate_reason}
                         current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
                         continue
+                # The relay refused a platform read while this turn's code ran (#556). No wait of
+                # its own: the runtime wait above is the window, and a refusal that landed inside
+                # it is here to read. Its own block, for the reason the gateway one below is: one
+                # `continue` fires per iteration, so a turn that both crashed and misread gets the
+                # crash first and this on the next pass.
+                if report.ok and wrote_code and platform_fixes < max_platform_fixes:
+                    refused = self._fresh_platform_read_failure(project, since=send_ts)
+                    if refused is not None:
+                        platform_fixes += 1
+                        project.platform_read_failure = None  # consume so a later turn starts clean
+                        iterate_reason = (f"platform read refused — fixing ({refused['status']} "
+                                          f"{refused['path'][:140]})")
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = PLATFORM_READ_NUDGE.format(status=refused["status"],
+                                                             path=refused["path"])
+                        continue
                 # The agent may have copied attached data into src/ — that leaks it into git
                 # (public/data/ is gitignored on purpose) and is why deleting the attachment leaves the
                 # dashboard still working. Treat it like a build error: nudge the agent to remove the
@@ -21282,6 +21331,30 @@ class Orchestrator:
             return
         self._project.runtime_error = {"message": message, "stack": stack, "ts": time.monotonic(),
                                        "app": self._project.workspace.app_id}
+
+    def record_platform_read_failure(self, status: int, path: str) -> None:
+        """Store a platform read the app's own relay refused in the preview (the proxy's
+        `on_platform_read`, #556), stamped exactly as `record_runtime_error` stamps a crash: the
+        time, so build_stream can tell this turn's refusal from a stale one, and the app, because
+        the preview serves whichever app is ON SCREEN (#77). Best-effort: no active project, dropped."""
+        import time
+
+        if self._project is None:
+            return
+        self._project.platform_read_failure = {"status": int(status), "path": str(path),
+                                               "ts": time.monotonic(),
+                                               "app": self._project.workspace.app_id}
+
+    def _fresh_platform_read_failure(self, project: Project, since: float) -> dict | None:
+        """The refusal recorded after `since` (this turn's send time) for the app this turn is
+        building, or None. The same two rules `_await_runtime_error` applies to a crash, and no
+        wait of its own: that wait is the window, and this reads what landed in it."""
+        refused = project.platform_read_failure
+        app_id = project.app_for_turn().app_id
+        if (refused is not None and refused.get("ts", 0.0) >= since
+                and refused.get("app", app_id) == app_id):
+            return refused
+        return None
 
     def _await_runtime_error(self, project: Project, since: float, timeout: float = 4.0) -> dict | None:
         """Poll up to `timeout`s for a preview-reported runtime error newer than `since` (this turn's
@@ -26341,7 +26414,7 @@ class Orchestrator:
         path = entry["path"]
         return (f"- disk `{path}` — {self._descriptor(project, entry)['summary']} "
                 f"— fetch `{path.removeprefix('public/')}` (relative to base) "
-                f"— from dataset **{entry['dataset']}**")
+                f"— from dataset {_dataset_credit(entry['dataset'], _platform_id(entry))}")
 
     @staticmethod
     def _shared_shape(descriptors: list[dict]) -> str:
@@ -26389,7 +26462,13 @@ class Orchestrator:
             # because `_slug` collapses punctuation, so two Datasets named `my data` and `my-data`
             # share a slug and land in one tree — and naming only the first would credit one
             # Dataset for the other's files.
-            sources = sorted({e["dataset"] for e in entries})
+            # One id per source, when its entries agree on it (#556): the line stands for every
+            # file in the group, and a group whose files name two ids under one name is two
+            # Datasets sharing a slug — say the name and no id rather than the wrong one.
+            sources = []
+            for name in sorted({e["dataset"] for e in entries}):
+                ids = {_platform_id(e) for e in entries if e["dataset"] == name} - {""}
+                sources.append(_dataset_credit(name, ids.pop() if len(ids) == 1 else ""))
             # `<name>` only when the files really sit in this folder. `_by_folder` rolls the deepest
             # level up into its parent, so a group's key can be an ANCESTOR of where its files are —
             # a Dataset partitioned to the day rolls `raw/2026/01/part.csv` up to `raw/2026`, and a
@@ -26401,7 +26480,7 @@ class Orchestrator:
             lines.append(
                 f"- {len(entries)} files in `{folder}` — {shape} "
                 f"— fetch `{folder.removeprefix('public/')}/{leaf}` (relative to base) "
-                f"— from dataset **{'**, **'.join(sources)}**"
+                f"— from dataset {', '.join(sources)}"
                 # The collapse is right (per-file lines grow with file count, forever) but it leaves
                 # the agent holding a folder and a placeholder. Grep is banned three lines up and
                 # would find nothing anyway, so without this sentence the only move left is to list

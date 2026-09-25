@@ -199,7 +199,8 @@ def _what_the_app_does_with(b: Binding, first: Binding | None) -> str:
     An LLM Alias is picked per call, so the first is only a default (#34). A Data Source is picked
     per query, so the first is not even that — each query carries its Binding's id (#33). A Model API
     is one url and one token in the app's source, so a second one is a record the app cannot act on,
-    and an agent not told that writes a call with no config behind it.
+    and an agent not told that writes a call with no config behind it. A Dataset is read by id on
+    the platform reads table, and the id is exactly what a name in prose does not carry (#556).
     """
     if b.kind == KIND_LLM_ALIAS:
         if first is None or first.key == b.key:
@@ -216,6 +217,11 @@ def _what_the_app_does_with(b: Binding, first: Binding | None) -> str:
                               "reaches.")
         return (f'Also callable by name — pass `model: "{b.display_name}"` for the predictions this '
                 f"request means for it. The default stays **{first.display_name}**.")
+    if b.kind == KIND_DATASET:
+        # Handed the name alone, a turn called `datasets-v2?datasetIds=<name>` and showed "no tags"
+        # over a Dataset that carries one. The same surface a Data Source's Binding id is on.
+        return brand.text("The platform API knows it as `datasetId` **`{id}`**; use that id, never "
+                          "the name, on the {dataset} rows of the reads table.", id=b.id)
     return "recorded as used by this app."
 
 

@@ -4655,6 +4655,13 @@ def _preview_platform():
     return domino_module(orchestrator._wm.template)
 
 
+# What the relay refused, told to the turn (#556). The page catches the failed fetch and logs it in
+# the browser, where the model cannot read it; the proxy sees every status, and this is the record
+# the build loop reads in the same window it reads a crash.
+def _preview_platform_read(status: int, path: str) -> None:
+    orchestrator.record_platform_read_failure(status, path)
+
+
 # The previewed app's own model calls (#7). A published app calls the gateway straight from the
 # viewer's browser because both sit on `apps.<domino-host>` — same origin. The preview is served from
 # here instead, so that call is cross-origin and the browser blocks it; the proxy makes it instead.
@@ -4726,7 +4733,8 @@ def _preview_mount_base() -> str:
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
                                                _preview_llm, _preview_approve_model,
                                                get_platform=_preview_platform,
-                                               get_mount_base=_preview_mount_base))
+                                               get_mount_base=_preview_mount_base,
+                                               on_platform_read=_preview_platform_read))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of
