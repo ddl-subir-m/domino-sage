@@ -422,6 +422,7 @@ def test_an_overlapping_turn_waits_rather_than_running_concurrently(tmp_path: Pa
     finally:
         orch._release_turn()
     assert [e["type"] for e in events] == ["pending", "done"]
+    assert events[-1].pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
     assert events[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
 
 
@@ -470,6 +471,7 @@ def test_an_approve_asked_for_mid_turn_waits_like_any_other_turn(tmp_path: Path)
         assert finished.wait(5) is True
     finally:
         orch._release_turn()
+    assert events[-1].pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
     assert events[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
 
 
@@ -1306,6 +1308,7 @@ def test_ask_mode_refuses_a_change_request_before_running_the_turn(tmp_path: Pat
     assert ran == []  # the turn never started
     blocked = next(e for e in events if e["type"] == "ask-blocked")
     assert blocked["prompt"] == "remove @synthetic_adverse_events.csv from the UI"
+    assert events[-1].pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
     assert events[-1] == {"type": "done", "ok": False, "decision": "ask mode (read-only)"}
     # The transcript must replay as a real turn: the user's words, then why nothing happened.
     kinds = [e["type"] for e in project.workspace.read_history()]

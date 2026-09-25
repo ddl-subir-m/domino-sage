@@ -19,6 +19,8 @@ the give-up asked for a smaller write, generalised from a single 2026-09-05 obse
 characters is not a write that was too big, and asking for a smaller piece changes nothing when the
 gateway dropped the stream. That assumption already cost real time: it produced the escape-heavy
 400-record repro in #205, which streamed perfectly and proved only that the hypothesis was wrong.
+(The note then named the gateway, which #565 removed for the same reason: a second observation had
+the same shape with the gateway silent. It names no cause now.)
 
 What is deliberately NOT here: a refusal. A cut answer is still the best answer there is, the chunks
 still go to OpenCode unchanged, and the automatic retry is the right response.
@@ -149,7 +151,10 @@ def test_the_retry_note_does_not_send_the_agent_after_the_size_of_the_write(tmp_
     """The note rides the automatic retry, so a wrong cause here is work the agent does for nothing.
 
     It used to say one very large write was the usual cause and point at `public/data/` — which sends
-    the agent to restructure a step that was never the problem. The honest version names the gateway.
+    the agent to restructure a step that was never the problem. It then named the gateway instead,
+    and that was a second guess (#565, #558 decision 9): the #557 trials produced the same shape
+    with the gateway silent and the arguments whole. The note now names no cause at all — the
+    tool, the closed category, and what to do — so a wrong one cannot be acted on.
     """
     orch, oc = _orch(tmp_path, [Turn(writes={"src/MetricCard.tsx": "card\n"}, broken_write=True),
                                 Turn(text="Added dashboard.", writes={"src/App.tsx": "app\n"})])
@@ -157,9 +162,9 @@ def test_the_retry_note_does_not_send_the_agent_after_the_size_of_the_write(tmp_
     list(orch.build_stream("build me a dashboard"))
 
     note = oc.prompts[1]["text"][len(oc.prompts[0]["text"]):]
-    assert "gateway" in note
-    for claim in ("very large", "enormous", "smaller", "public/data/"):
-        assert claim not in note, f"the retry note still blames size: {claim!r}"
+    assert "did not parse" in note and "did not run" in note
+    for claim in ("very large", "enormous", "smaller", "public/data/", "gateway", "upstream"):
+        assert claim not in note, f"the retry note still names a cause: {claim!r}"
 
 
 def test_the_give_up_does_not_ask_the_person_for_a_smaller_piece(tmp_path: Path):

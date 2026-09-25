@@ -73,6 +73,23 @@ class Turn:
     # AttributeError of 2026-09-05 reproduces from this shape). True appends one still-running
     # `write` after this turn's other parts, which is where the live one sat: last, and open.
     broken_write: bool = False
+    # The other shape a malformed call takes, and the one OpenCode 1.18.4 actually emits (pinned
+    # by test_an_invalid_tool_call_never_ran_in_the_pinned_opencode.py): the AI SDK cannot parse
+    # or validate the arguments, `experimental_repairToolCall` rewrites the call to the built-in
+    # `invalid` tool with `{tool, error}` as its input, that tool runs, and the part lands
+    # COMPLETED. The session goes on; the intended tool never executed. Each name here is one such
+    # part, in order, ahead of `tools_after` and the writes. `invalid_error` is the SDK's message,
+    # which live carries the model's raw arguments — so the default holds argument-like content on
+    # purpose, and a test that asserts nothing of it leaks is asserting against the real shape.
+    invalid_calls: list[str] = field(default_factory=list)
+    invalid_error: str = ('Invalid input for tool write: Type validation failed: Value: '
+                          '{"filePath":"src/Dashboard.tsx","conte')
+    # `completed` is what the binary emits. Another status is a shape the classifier must treat
+    # as uncertain, and a test sets it to prove that.
+    invalid_status: str = "completed"
+    # Completed calls with no file effect that land AFTER the invalid ones: a different tool
+    # finishing is not proof the invalid call was recovered from, and this is how a test plants it.
+    tools_after: list[str] = field(default_factory=list)
     # Tool calls left IN FLIGHT with a WELL-FORMED input, as {tool: subject} — a path for
     # write/edit/read, a command for bash. `broken_write` above is the other shape, where OpenCode
     # hands over a raw unparsed string; this one is the ordinary case and it is where the time goes.
@@ -220,6 +237,21 @@ class FakeOpenCode:
                           "time": {"created": 1_700_000_000_000, "ran": 1_700_000_000_100,
                                    "completed": 1_700_000_000_350},
                           "state": {"status": "completed"}})
+        for j, intended in enumerate(turn.invalid_calls):
+            parts.append({"id": f"m{n}-i{j}", "type": "tool", "callID": f"call-m{n}-i{j}",
+                          "tool": "invalid",
+                          "time": {"created": 1_700_000_000_000, "ran": 1_700_000_000_100,
+                                   "completed": 1_700_000_000_350},
+                          "state": {"status": turn.invalid_status,
+                                    "input": {"tool": intended, "error": turn.invalid_error},
+                                    "output": ("The arguments provided to the tool are invalid: "
+                                               + turn.invalid_error),
+                                    "title": "Invalid Tool", "metadata": {}}})
+        for j, tool in enumerate(turn.tools_after):
+            parts.append({"id": f"m{n}-a{j}", "type": "tool", "tool": tool,
+                          "time": {"created": 1_700_000_000_000, "ran": 1_700_000_000_100,
+                                   "completed": 1_700_000_000_350},
+                          "state": {"status": "completed", "input": {}}})
         # Writes land where the real agent's would: relative to the directory the session was
         # opened in. A Build session stands in the Built App (`apps/<appId>/`) and a Chat session
         # in `.sage/chat-work`, whose links are what make a Chat path resolve at all.

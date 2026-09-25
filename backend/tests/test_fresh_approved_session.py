@@ -293,8 +293,10 @@ def test_session_setup_failure_sends_nothing_keeps_the_old_selection_and_plan(
     assert project.record.read_session_id(CONVERSATION, project.workspace.app_id) == old_id
     assert project.workspace.read_plan()
     assert project.pre_edit_guard is None
-    assert _done(events) == {"type": "done", "ok": False,
-                             "decision": "implementation session unavailable"}
+    done = dict(_done(events))
+    assert done.pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
+    assert done == {"type": "done", "ok": False,
+                    "decision": "implementation session unavailable"}
     errors = [event for event in events if event["type"] == "error"]
     assert [event["message"] for event in errors] == [
         ("Sage could not start a clean implementation session. "

@@ -419,7 +419,9 @@ def test_a_request_that_cannot_be_acted_on_ends_the_turn_instead_of_writing_the_
 
     events = _run(orch, "i attached it")
 
-    assert _done(events) == {"type": "done", "ok": True, "decision": "nothing to build"}
+    done = dict(_done(events))
+    assert done.pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
+    assert done == {"type": "done", "ok": True, "decision": "nothing to build"}
     assert _app(orch) == "// v1\n"
     # Not nudged. The nudge is what turned a correct refusal into a write: it force-switches the
     # turn to Implement and pushes until something lands in src/.
