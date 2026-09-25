@@ -35,8 +35,9 @@ from ..router.models import (
     supports_vision,
 )
 from ..router.phase_classifier import (
-    ERROR_CORROBORATION,
-    PATCH_TOOL,
+    # ERROR_CORROBORATION and PATCH_TOOL were imported here for #494's patch withdrawal, retired
+    # in #551. Both still live in phase_classifier with their meaning unchanged: the bar is still
+    # the rescue's, and `patch_refusals` is still counted and logged.
     READ_ONLY_DENIED,
     READ_TOOLS,
     TODO_TOOLS,
@@ -518,23 +519,22 @@ class EnforcementShim:
             denied |= TODO_TOOLS
         if not state.web_allowed:
             denied |= WEB_TOOLS
-        # A turn that keeps failing `apply_patch` loses `apply_patch`, not its model. The rescue
-        # below swaps the model, and with one model on both slots that swap is a no-op — measured
-        # 2026-09-21 (#494): 32 patches, 25 refused by OpenCode's parser, thirteen minutes, and
-        # `rescued=<the same model>` on every line. What the same model CAN do differently is take
-        # `edit` — nine times out of nine on the same prompt, once `edit` was on offer. The bar is
-        # the rescue's own corroboration, the window is the rescue's own (cleared by a clean write),
-        # and it is read off the transcript per request, so it holds for the rest of the turn and
-        # costs nothing to reset. A stripped tool is a guarantee where a prompt is a request.
-        # Only where `edit` is on offer beside it. OpenCode offers one or the other by model handle,
-        # never both (#539), so withdrawing `apply_patch` from a request without `edit` would leave
-        # the turn no way to edit at all.
-        offers_edit = any(str((tool.get("function") or {}).get("name", "")).lower() == "edit"
-                          for tool in request.get("tools") or [])
-        patch_withdrawn = (signals is not None and offers_edit
-                           and signals.patch_refusals >= ERROR_CORROBORATION)
-        if patch_withdrawn:
-            denied |= {PATCH_TOOL}
+        # #494 used to withdraw `apply_patch` here after two corroborated refusals, so the model
+        # would fall back on `edit`. RETIRED (#551, owner's call 2026-09-24), and deliberately not
+        # replaced. #539 solves the same problem one layer earlier and structurally: OpenCode picks
+        # the edit tools from the model HANDLE, so a GPT turn is offered `apply_patch` and no
+        # `edit`/`write`, and every other turn is offered `edit`/`write` and no `apply_patch`. The
+        # withdrawal required BOTH on one request, which OpenCode cannot emit — it could not fire,
+        # and on the only requests that can refuse a patch it would have taken away the turn's one
+        # edit tool and left it unable to edit at all.
+        #
+        # The DETECTOR stays. `signals.patch_refusals` is still counted and still printed on the
+        # rescue line below, because a GPT model that repeatedly refuses its own envelope has never
+        # been observed and would need to be seen before anything is built for it. Acting on the
+        # handle — two refusals stop sending `gpt-`, so OpenCode offers `edit`/`write` — is the
+        # route that would give such a turn a real escape; it was considered and refused as
+        # speculative. If the log line ever shows it happening, that is the evidence to build on.
+        # Do not re-add a runtime tool-stripper here.
         if denied and "tools" in request:
             tools = []
             for tool in request["tools"]:
@@ -733,8 +733,12 @@ class EnforcementShim:
                   else EffortStatus.APPLIED)
         if effort is not None and effort not in accepted:
             if source is not EffortSource.STAGE_DEFAULT and (native or capability.identity):
+                # Names no menu row. The way back out of a saved level is spelled "Automatic" on a
+                # Build plan or implement row and "Model default" on the Chat and Ask one since
+                # #545, and this seam serves both — so it says what to DO, which is the same act on
+                # either surface, rather than a label that would be wrong on one of them.
                 raise ValueError(f"{request['model']} cannot use the saved reasoning setting {effort!r}. "
-                                 "Choose Model default or a supported setting. " + capability.reason)
+                                 "Clear it or choose a supported setting. " + capability.reason)
             # Said out loud. A dropped effort is a silent bill — the turn runs at the alias's own
             # default, costs more or thinks less than the person asked for, and looks exactly like a
             # turn nobody configured. This line is what tells a stale stored level from a slot that
@@ -753,8 +757,11 @@ class EnforcementShim:
                 )
             effort = None
             status = EffortStatus.UNSUPPORTED
-        # Model default means no override, in Chat and Build alike. A hidden Low
-        # fallback would contradict both the picker and the saved assignment.
+        # Still the only place the field is added, and still no fallback of its own: `configured`
+        # above is the whole answer, and a hidden level chosen here would contradict both the picker
+        # and the saved assignment. What changed with #545 is only where an UNSET level resolves —
+        # the stage supplies one for a Build plan or implement turn, a dozen lines up and in the
+        # open, while Chat and Ask still send no field at all.
         if effort is not None:
             request = {**request, "reasoning_effort": effort}
         effort_decision = EffortDecision(
@@ -779,19 +786,15 @@ class EnforcementShim:
         # The note tells the truth about what changed. "Running on a different model" was written
         # when the plan and implement slots always held two models; with one model in both, the
         # rescue resolves to the model that just failed, and a note claiming otherwise sends it
-        # looking for a difference that is not there. What did change, when patches were refused,
-        # is the tool on offer — so the note names `edit` and the one thing a model gets wrong
-        # with it (pasting the read tool's line-number prefix into `oldString`).
-        if ((rescued_phase or patch_withdrawn)
-                and isinstance(request.get("messages"), list)):
+        # looking for a difference that is not there.
+        #
+        # There was a third branch here, for #494's patch withdrawal: it told the model the patch
+        # tool was gone and to use `edit` instead. It went with the withdrawal (#551). It could not
+        # be reached, and on the only turns that refuse a patch it would have named `edit` at a
+        # model OpenCode never offered `edit` to.
+        if rescued_phase and isinstance(request.get("messages"), list):
             same_model = self._catalog.plan == self._catalog.implement
-            if patch_withdrawn:
-                what = ("earlier patches in this turn were refused, so the patch tool is withdrawn "
-                        "for the rest of this turn. Re-read the file you are changing, then make "
-                        "the change with `edit` — `oldString` copied exactly from your last read of "
-                        "the file, without the `NNNNN|` line-number prefix — or with `write` for a "
-                        "new file. Fix the cause rather than repeating the change that just failed.")
-            elif same_model:
+            if same_model:
                 what = ("earlier tool calls in this turn failed. Work out why before editing again "
                         "— re-read the file you are changing and fix the cause, rather than "
                         "repeating the change that just failed.")
@@ -921,8 +924,10 @@ class EnforcementShim:
                 "model policy: rescue examined=%d errors=%d episodes=%d rescued=%s (%s) "
                 "patch_refusals=%d apply_patch=%s — %s",
                 signals.examined, signals.errors_since_write, signals.rescues, rescued,
-                signals.reason, signals.patch_refusals,
-                "withdrawn" if patch_withdrawn else "offered", " | ".join(signals.samples),
+                # The field is kept and is now a constant: nothing withdraws `apply_patch` any more
+                # (#551). `patch_refusals` beside it is the half that still measures something.
+                signals.reason, signals.patch_refusals, "offered",
+                " | ".join(signals.samples),
             )
 
         # What the tool calls in this request look like on the way OUT, grouped by message. Behind

@@ -2270,6 +2270,39 @@ def _tool_handle(project) -> dict:
     return {"providerID": "sage-gateway", "modelID": "gpt-5.4" if patch else "sage-model"}
 
 
+# The patch envelope, for the only turns that get `apply_patch` and no `edit`/`write` (#541).
+#
+# It cannot live in the `sage-implement` prompt, which is where the rest of the edit guidance is:
+# that prompt is one static string in `opencode.json` and cannot know which handle this prompt
+# carries, and in Auto the turn runs on OpenCode's DEFAULT agent and never reads that string at
+# all. So it rides the turn prompt, beside the read token, which is chosen in the same place as
+# the handle. Every other model is told about `edit`/`write` and is never shown a tool it has not
+# been offered — a weaker model reading instructions for a missing tool calls it.
+#
+# Not the batching rule from the templates: `edit` takes one oldString per call, so "put every
+# change in one call" is true of a patch envelope and false of `edit`. The templates keep the
+# sequential rule, and this note carries the one that only holds here.
+# Says what the tool IS, never what is missing. Chat hands this block to a model whose prompt
+# forbids naming tools or limits to the person, and three observed turns reported a "constrained
+# turn" and tools being "unavailable" to someone who had asked for a chart. "You have no `edit`"
+# is exactly that sentence, one paraphrase away — so the note carries no absence clause and one
+# string serves both Build and Chat.
+_PATCH_ENVELOPE_NOTE = (
+    "Your edit tool for this turn is `apply_patch`. "
+    "Put every change to one file in one call, new files included: each hunk starts with a bare "
+    "@@ line (no line numbers), and the envelope is `*** Begin Patch` and `*** End Patch` on "
+    "their own lines. Each extra call is another round trip."
+)
+
+
+def _patch_envelope_note(handle: dict) -> str:
+    """The patch guidance, for a handle OpenCode answers with `apply_patch` alone.
+
+    Read off the HANDLE and through `_gives_patch`, which is OpenCode's own test — so the note and
+    the tool set can never disagree, however `_tool_handle` spells the handle it picked."""
+    return _PATCH_ENVELOPE_NOTE if _gives_patch(handle["modelID"]) else ""
+
+
 # Interrogative leads and build verbs for _looks_like_question. Kept tight on purpose: ambiguous
 # leads ("give", "show", "tell", "list", "get") stay OUT so they fall through to gating.
 _QUESTION_LEAD = frozenset({
@@ -2846,16 +2879,27 @@ _FAILED_PLAN_DECISIONS = frozenset({"no app described", "empty plan"})
 _PLANNING_STOPPED = "Planning stopped"
 
 
-def _effort_hint(err: dict) -> str:
-    """One sentence for a planner that stalled on Model default, or "" (#538).
+def _effort_hint(err: dict, stage: str) -> str:
+    """One sentence for a call that stalled with no effort on the wire, or "" (#538, #545).
 
-    MEASURED 2026-09-24: GLM 5.3 OR on Model default reasoned for 120 s with no answer, then acted in
-    3.5 s on the same request. Said, never done: "Model default" is the person's saved choice."""
+    MEASURED 2026-09-24: GLM 5.3 OR with no effort reasoned for 120 s with no answer, then acted in
+    3.5 s on the same request.
+
+    Keyed on what reached the WIRE, not on where the level came from. `effort_source` was the key
+    while `provider_default` was the only way to send no field; #545 made an unset Build level
+    resolve to the stage default, and a stage level the alias refuses is dropped just the same
+    (gpt-5.4 keeps only `none` beside tools). Both stall for one reason, so both get one sentence,
+    and a turn that did send a level gets none — there is nothing to suggest once a limit ran.
+
+    `stage` is the person's word for the control they would set, and the reason this takes an
+    argument rather than reading the turn: the same absence is fixed on the Plan row from a plan
+    turn and on the Implement row from an implement one.
+    """
     efforts = [str(e) for e in err.get("efforts") or []]
-    if err.get("effort_source") != "provider_default" or not efforts:
+    if err.get("effort") is not None or not efforts:
         return ""
-    return (f" {err.get('model') or 'This model'} ran on Model default, which puts no limit on "
-            f"its thinking. Setting its Plan effort ({', '.join(efforts)}) can prevent this.")
+    return (f" {err.get('model') or 'This model'} ran with no limit on its thinking. Setting its "
+            f"{stage} effort ({', '.join(efforts)}) can prevent this.")
 
 
 def _failed_plan_request(history: list[dict], prompt: str) -> str | None:
@@ -4362,8 +4406,9 @@ _OPEN_Q_HEADING = re.compile(r"^#{1,6}[ \t]*open questions\b[ \t]*:?[ \t]*$", re
 def _drop_empty_questions(plan_md: str) -> str:
     """Remove an "## Open questions" section whose only content is "None".
 
-    The planner is told to write the section, so a plan with nothing to ask still ends in a heading
-    followed by "None — ready to build.". That heading is scaffolding: it shows the user a slot that
+    Neither prompt asks for the section any more — the turn's shape says to leave the heading out
+    rather than write "None", and the agent prompt describes no layout at all since #540. A planner
+    writes one anyway, so this stays. That heading is scaffolding: it shows the user a slot that
     exists for the model's benefit, and reads as a prompt to answer questions that were never asked.
     A section with real questions is left alone."""
     lines = plan_md.splitlines()
@@ -5383,15 +5428,29 @@ def _execution_contract_problems(check: PlanContractCheck) -> tuple[str, ...]:
     return tuple(problems)
 
 
-def _execution_contract_recovery_prompt(check: PlanContractCheck) -> str:
-    """Tell a clean planner why it is retrying without copying the rejected answer."""
+def _execution_contract_recovery_prompt(check: PlanContractCheck, example: str) -> str:
+    """Tell a clean planner why it is retrying without copying the rejected answer.
+
+    The categories alone were not enough to retry on (#540). A plan written in some OTHER numbered
+    layout parses to no steps at all, so the only thing the planner was told was "at least one
+    numbered execution step" — about a plan that looked numbered already. With nothing naming the
+    shape that was wanted, the retry tended to write the same plan again and the turn ended
+    `invalid execution plan`. So the retry says which layout, in full, and shows one worked plan.
+
+    `_PLAN_STEP_SHAPE` is the same string the turn carried, not a second description of it, and
+    `example` comes from `_plan_example_for` so the stack matches the app being planned.
+    """
     problems = "; ".join(_execution_contract_problems(check))
     return (
         "The previous planning attempt did not satisfy the required execution-plan structure. "
         "Write a complete replacement plan from the original request and references above. Do not "
         "discuss or reconstruct the rejected answer. The local validator requires: "
         f"{problems or 'the complete executable plan contract'}. Return the full plan, including "
-        "all required product sections and numbered execution steps."
+        "all required product sections and numbered execution steps.\n\n"
+        "A numbered execution step is not a numbered line, and no other numbered layout is read as "
+        "one. Steps are counted in one shape only. So after the product sections, write the rest "
+        "of the plan exactly like this:\n"
+        + _PLAN_STEP_SHAPE + "\n\n" + example
     )
 
 
@@ -5515,8 +5574,13 @@ _PLAN_DOC_SECTIONS = (
 # the context the fresh session just bought us, `Done when` so verification travels with the
 # work instead of being inferred, `Don't touch` so a later step doesn't rewrite an earlier
 # one's output it has never seen. Single-context builds use the same durable document shape.
-_PLAN_SHAPE_PHASED = (
-    _PLAN_OPENER + _PLAN_DOC_SECTIONS +
+#
+# The '## Plan' half is named on its own because two prompts have to state it: the turn that asks
+# for the plan, and the retry that asks for it again after the validator refused one (#540). Naming
+# it is what keeps those two from drifting — the retry restates THIS string rather than a second
+# description of the same layout, which is exactly how `opencode.json` came to describe a different
+# plan from the one `validate_execution_contract` reads.
+_PLAN_STEP_SHAPE = (
     "- Then a '## Plan' heading.\n"
     "- Then, for each step, a '### N. Label' heading (N is 1, 2, 3…; the label is 2-4 "
     "words), followed by exactly these bullets:\n"
@@ -5543,6 +5607,7 @@ _PLAN_SHAPE_PHASED = (
     "heading and short bullets. Nothing to ask: leave the heading out entirely rather than "
     "writing 'None'.\n"
     "Write no code blocks. Never repeat a sentence or restate a step you've already written.")
+_PLAN_SHAPE_PHASED = _PLAN_OPENER + _PLAN_DOC_SECTIONS + _PLAN_STEP_SHAPE
 _PLAN_SHAPE = _PLAN_SHAPE_PHASED
 
 # The planner's one way out of writing a plan (#150). Without it there was none: the gated turn's
@@ -5617,6 +5682,17 @@ _PLAN_EXAMPLES = {
         ("src/arrivals.ts", "Read the arrivals file and return each sample."),
         "src/App.tsx, src/App.css"),
 }
+
+
+def _plan_example_for(project: Project) -> str:
+    """The worked example for this turn's stack, react-vite when the record names neither.
+
+    One lookup for both readers — the gated plan turn and the invalid-plan retry — so the retry
+    cannot show a fastapi-antd app a react-vite plan. `stack_of` already falls back on an app with
+    no record, which is what the Chat handoff has: it plans before any app exists.
+    """
+    return _PLAN_EXAMPLES.get(stack_of(project.app_for_turn().path).name,
+                              _PLAN_EXAMPLES["react-vite"])
 
 
 # Heads the person's own words in a gated plan turn (#537). The data notes ride AFTER the request
@@ -10785,7 +10861,7 @@ class Orchestrator:
             sid = client.create_session(directory=directory)
             current_prompt = (
                 original_prompt + "\n\n" +
-                _execution_contract_recovery_prompt(contract))
+                _execution_contract_recovery_prompt(contract, _plan_example_for(project)))
 
     def _repair_plan_heading(self, project: Project, plan_md: str, session_id: str,
                              where: str, *,
@@ -14222,8 +14298,19 @@ class Orchestrator:
                         "If you can't produce something, say so in one plain sentence and don't describe "
                         "how you work."
                     )
+            # Chat has the same shape Build had (#551): OpenCode gives a GPT handle `apply_patch`
+            # and no `edit`/`write`, and `sage-chat`'s prompt has never named it. Only a lane that
+            # can actually write — measured against the shim, `answer_only` and the artifact lane
+            # each keep `read`/`glob`/`grep` and Live read and lose every writer, so a note there
+            # would describe a tool the shim had already stripped. Held once for the whole turn:
+            # the table-repair send below is the same turn on the same handle.
+            chat_handle = _tool_handle(project)
+            chat_patch_note = ("" if answer_only or artifact_token is not None
+                               else _patch_envelope_note(chat_handle))
+            if chat_patch_note:
+                turn_prompt += "\n\n" + chat_patch_note
             with timing.span("setup.dispatch"):
-                client.send_prompt(sid, turn_prompt, model=_tool_handle(project), agent="sage-chat",
+                client.send_prompt(sid, turn_prompt, model=chat_handle, agent="sage-chat",
                                    attachments=mentioned, chat=True)
             if owed:
                 # Discharged by a turn REACHING the model on the new session, which is not the same
@@ -14891,7 +14978,11 @@ class Orchestrator:
                                     seen.add(_part_key(m, i, part))
                         try:
                             with timing.span("chat.table_repair"):
-                                client.send_prompt(sid, tables.repair_prompt(repairable), model=_tool_handle(project),
+                                client.send_prompt(sid,
+                                                   tables.repair_prompt(repairable)
+                                                   + (("\n\n" + chat_patch_note)
+                                                      if chat_patch_note else ""),
+                                                   model=chat_handle,
                                                    agent="sage-chat", chat=True)
                         except Exception:
                             log.warning("chat: table repair request failed")
@@ -17891,8 +17982,7 @@ class Orchestrator:
             # Labelled (#537). The person's sentence was ~0.4 KB of a 14 KB message, unmarked, with
             # ~10 KB of data notes after it; a planner took the notes for the request and refused.
             current = _PLAN_REQUEST_LABEL + current
-            shape += "\n\n" + _PLAN_EXAMPLES.get(
-                stack_of(project.app_for_turn().path).name, _PLAN_EXAMPLES["react-vite"])
+            shape += "\n\n" + _plan_example_for(project)
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
@@ -18984,17 +19074,26 @@ class Orchestrator:
                         persisted=implementation_session_persisted,
                         dispatch_started=True,
                     )
+                handle = _tool_handle(project)
+                # Only a turn that may edit. Plan, Ask and the architect are read-only, and naming
+                # an edit tool there would describe work they are forbidden to do. Same three the
+                # implementation-session timing above is gated on.
+                patch_note = ("" if gate or answer_only or arch
+                              else _patch_envelope_note(handle))
                 client.send_prompt(sid,
                                    # `live_read_note` leads rather than trails. Everything after
                                    # `current` is a block ABOUT this request, and the tail is load-
                                    # bearing: the forks below wrap `current` in their own preamble and
                                    # a turn with no notes must still end on the person's own sentence.
                                    # The token is a standing fact about the turn, so it goes in front.
-                                   "\n\n".join(p for p in (live_read_note, source_note, current, chat_note,
+                                   # `patch_note` is one too, and rides every send of the turn for
+                                   # that reason — the nudge and fix follow-ups edit as well.
+                                   "\n\n".join(p for p in (live_read_note, patch_note, source_note,
+                                                           current, chat_note,
                                                            resource_note,
                                                            unusable_note, ambiguous_note,
                                                            broken_retry_note) if p),
-                                   model=_tool_handle(project), agent=agent,
+                                   model=handle, agent=agent,
                                    attachments=mention_files,
                                    # Passed only when set, so every other client keeps its shape.
                                    **({"tail": _PLAN_REQUEST_AGAIN + prompt}
@@ -19664,7 +19763,7 @@ class Orchestrator:
                         restarted = yield from restart_planning_session(
                             correction="",
                             reason=("the planner produced no action — restarting once in a "
-                                    "clean session." + _effort_hint(err)),
+                                    "clean session." + _effort_hint(err, "Plan")),
                         )
                         if restarted:
                             iterate_reason = "planning no-action recovery"
@@ -19677,7 +19776,7 @@ class Orchestrator:
                         "type": "error",
                         "message": (_PLANNING_STOPPED + " because the clean retry also produced no "
                                     "text or tool call. Try the request again."
-                                    + _effort_hint(err)),
+                                    + _effort_hint(err, "Plan")),
                     })
                     yield persist({"type": "done", "ok": False,
                                    "decision": "model_no_action_timeout"})
@@ -19715,8 +19814,11 @@ class Orchestrator:
                         restore_mode()
                         yield persist({
                             "type": "error",
+                            # The implement half of the plan sentence two branches up (#545). The
+                            # stall this ends is the same one, on the row below it, and before this
+                            # it was the only no-action terminal that named no way out.
                             "message": ("The model produced no next action. Existing app changes "
-                                        "were kept."),
+                                        "were kept." + _effort_hint(err, "Implement")),
                             "kept": True,
                         })
                         if owns_turn:
@@ -20018,7 +20120,8 @@ class Orchestrator:
                             active_turn_id, attempt, action, ",".join(problems))
                         if action == "recover":
                             restarted = yield from restart_planning_session(
-                                correction=_execution_contract_recovery_prompt(contract),
+                                correction=_execution_contract_recovery_prompt(
+                                    contract, _plan_example_for(project)),
                                 reason=("the first plan was incomplete — retrying once with the "
                                         "required plan structure"),
                             )
