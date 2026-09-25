@@ -1191,7 +1191,7 @@ for (const step of steps) {
           if (n === 2) {
             atValidation = { src: SW.store.get().previewSrc, typing: SW.store.get().buildTyping };
             return { done: false, value: new TextEncoder().encode('data: ' + JSON.stringify({
-              type: 'done', ok: true, verification: { overall: 'unverified' }, decision: 'typecheck clean',
+              type: 'done', ok: true, verification: { overall: 'unverified', stages: step.verificationStages }, decision: 'typecheck clean',
             }) + '\n\n') };
           }
           return { done: true };
@@ -1210,7 +1210,7 @@ for (const step of steps) {
       { type: 'user', text: 'Make a page' },
       { type: 'typecheck', kind: 'Syntax check', ok: true },
       { type: 'done', ok: step.savedVerification !== 'failed', decision: 'queries failed',
-        verification: { overall: step.savedVerification } },
+        verification: { overall: step.savedVerification, stages: step.verificationStages } },
     ] });
     await SW.store.loadBuild({ keepPreview: true });
     report.push(SW.store.get().buildMessages.flatMap(m => m.blocks || []).filter(b => b.type === 'status'));

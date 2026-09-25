@@ -18,6 +18,11 @@ class PageValidation:
     acknowledged: bool = False
     closed: bool = False
     error: dict | None = None
+    data_expected: bool = False
+    dataset_ids: tuple[str, ...] = ()
+    data_reads: list[dict] = field(default_factory=list)
+    reads_truncated: bool = False
+    query_failures: dict[str, str] = field(default_factory=dict)
 
     def event(self) -> dict:
         return {'type': 'preview-validation', 'validationId': self.id,
@@ -25,9 +30,16 @@ class PageValidation:
                 'turnId': self.turn_id, 'generation': self.generation}
 
     def summary(self) -> dict:
+        outcomes = [read["outcome"] for read in self.data_reads]
+        self.stages["data"] = (
+            "failed" if "failed" in outcomes else
+            "unverified" if self.reads_truncated or "pending" in outcomes else
+            "passed" if outcomes else
+            "unverified" if self.data_expected else "not_applicable")
         states = self.stages.values()
         overall = ('failed' if 'failed' in states else
                    'unverified' if 'unverified' in states else 'passed')
         return {'overall': overall, 'validationId': self.id, 'generation': self.generation,
                 'codeGeneration': self.code_generation, 'codeKind': self.code_kind,
-                'stages': dict(self.stages)}
+                'stages': dict(self.stages), 'dataReads': [dict(read) for read in self.data_reads],
+                'readsTruncated': self.reads_truncated}

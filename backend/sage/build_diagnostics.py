@@ -21,6 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import timing
+from .preview.read_outcomes import read_request
 from .request_composition import diagnostic_tool_name
 from .tool_timing import MAX_PROGRAMS, argument_keys_for_tool, program_name
 from .workspace.stack import STACKS
@@ -507,6 +508,28 @@ def _verification(value) -> dict | None:
             result[key] = text
     if value.get("codeKind") in ("Typecheck", "Syntax check"):
         result["codeKind"] = value["codeKind"]
+    reads = value.get("dataReads")
+    if isinstance(reads, list):
+        result["dataReads"] = []
+        for read in reads[:20]:
+            if not isinstance(read, dict) or read.get("outcome") not in ("pending", "passed", "empty", "failed"):
+                continue
+            safe = read_request(str(read.get("path") or ""), kind=str(read.get("kind") or ""))
+            identifiers = read.get("resourceIds")
+            safe["resourceIds"] = [identifier for identifier in (identifiers if isinstance(identifiers, list) else [])
+                                   if isinstance(identifier, str)
+                                   and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", identifier)][:20]
+            if read.get("resourceIdsTruncated") is True:
+                safe["resourceIdsTruncated"] = True
+            safe["outcome"] = read["outcome"]
+            status = read.get("status")
+            safe["status"] = status if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599 else None
+            if read.get("reason") in ("transport_error", "access_denied", "invalid_resource_id",
+                                       "binding_mismatch", "not_found_or_hidden", "timeout",
+                                       "unavailable", "http_error"):
+                safe["reason"] = read["reason"]
+            result["dataReads"].append(safe)
+        result["readsTruncated"] = value.get("readsTruncated") is True or len(reads) > 20
     return result
 
 
