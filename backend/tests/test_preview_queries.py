@@ -360,7 +360,7 @@ def test_a_refused_platform_read_is_reported_with_its_status_and_path(monkeypatc
     """The page catches the failed fetch and logs it in the browser, where the model cannot read it
     (#556): eight turns never learned that `datasetIds=ABC123_ADAE` was refused. The proxy is the one
     place that sees every relay status, so a refusal is handed to whoever asked to hear one — and a
-    read that worked is nobody's business."""
+    successful reads remain distinct from no observed request."""
     from fastapi.testclient import TestClient
 
     from sage.resources.builtapp import domino_module
@@ -372,19 +372,19 @@ def test_a_refused_platform_read_is_reported_with_its_status_and_path(monkeypatc
     heard: list[tuple[int, str]] = []
     client = TestClient(make_preview_app(
         _no_vite, "", lambda: None, get_platform=lambda: module,
-        on_platform_read=lambda status, path: heard.append((status, path))))
+        on_platform_read=lambda status, path, **kwargs: heard.append((status, path))))
 
     refused = client.get("/api/domino/v4/datasetrw/datasets-v2?datasetIds=ABC123_ADAE&includeTaxonomyTags=true")
     bad = client.get("/api/domino/api/users/v1/user/nope")     # 400 is the first status that counts
     fine = client.get("/api/domino/api/users/v1/self")
 
     assert refused.status_code == 404 and bad.status_code == 400 and fine.status_code == 200
-    assert heard == [(404, "/v4/datasetrw/datasets-v2?datasetIds=ABC123_ADAE&includeTaxonomyTags=true"),
-                     (400, "/api/users/v1/user/nope")]
+    assert heard == [(404, "/v4/datasetrw/datasets-v2"),
+                     (400, "/api/users/v1/user/nope"), (200, "/api/users/v1/self")]
 
 
-def test_the_reported_path_is_capped_at_200_characters(monkeypatch):
-    # The record rides into a prompt. A query string is the page's to write and can be any length.
+def test_the_reported_path_omits_query_values(monkeypatch):
+    # Query values do not belong in the evidence record, regardless of their length.
     from fastapi.testclient import TestClient
 
     from sage.resources.builtapp import domino_module
@@ -394,12 +394,12 @@ def test_the_reported_path_is_capped_at_200_characters(monkeypatch):
     heard: list[tuple[int, str]] = []
     client = TestClient(make_preview_app(
         _no_vite, "", lambda: None, get_platform=lambda: module,
-        on_platform_read=lambda status, path: heard.append((status, path))))
+        on_platform_read=lambda status, path, **kwargs: heard.append((status, path))))
 
     client.get("/api/domino/api/users/v1/self?q=" + "x" * 300)
 
     assert len(heard) == 1 and heard[0][0] == 403
-    assert len(heard[0][1]) == 200 and heard[0][1].startswith("/api/users/v1/self?q=x")
+    assert heard[0][1] == "/api/users/v1/self"
 
 
 # ---- why a query failed has to reach somebody -------------------------------------------------

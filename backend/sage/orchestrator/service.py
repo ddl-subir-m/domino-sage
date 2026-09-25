@@ -78,7 +78,9 @@ from ..pre_edit_guard import (
 )
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
+from ..preview.read_outcomes import read_request, read_result
 from ..preview.supervisor import UvicornSupervisor, ViteSupervisor
+from ..preview.validation import PageValidation
 from ..provision import naming
 
 # The 404 the publish path has to tell from every other failure (#80). A runtime import, unlike the
@@ -4552,6 +4554,7 @@ def _tidy_plan(plan_md: str) -> str:
 
 _PLAN_NAME_HEADING = re.compile(r"^#[ \t]+\S")
 _PLAN_SECTION_HEADING = re.compile(r"^##")
+_PLAN_FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 
 
 def _drop_plan_preamble(plan_md: str) -> str:
@@ -4568,9 +4571,21 @@ def _drop_plan_preamble(plan_md: str) -> str:
     line before it is dropped. No such heading, and the plan comes back exactly as written — so a
     `NO APP DESCRIBED` refusal and a plan that opens on `## Problem & outcome` reach the same
     checks they always did, and a `# ` heading BELOW a section is never read as the name.
+
+    A fenced block is skipped whole. The narration this drops is the model saying what it is about
+    to do, and a model that says it by showing the command opens a ```bash fence and writes a `#`
+    comment under it — which matches the heading pattern exactly, because a shell comment and a
+    Markdown `# ` heading are the same characters. Measured while landing this: without the skip,
+    `# install the deps` became the app's name and the real heading below it was never reached.
     """
     lines = plan_md.splitlines(keepends=True)
+    fenced = False
     for i, line in enumerate(lines):
+        if _PLAN_FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         if _PLAN_SECTION_HEADING.match(line):
             return plan_md
         if _PLAN_NAME_HEADING.match(line):
@@ -5280,6 +5295,8 @@ class Project:
     # after a clean typecheck to catch runtime crashes that tsc can't see (a blank preview) and feed
     # them back to the agent to autofix. ts-gated so a stale error from a prior turn is ignored.
     runtime_error: dict | None = None
+    page_validation: PageValidation | None = None
+    phase_verification: dict | None = None
     # Set by the preview proxy's `on_platform_read` when the app's own relay refused a platform read
     # (#556). Carries {"status", "path", "ts", "app"}, stamped as `runtime_error` is and read in the
     # same window: the page catches the failed fetch and logs it where the model cannot read it.
@@ -8368,7 +8385,19 @@ class Orchestrator:
                     "ok": False, "error_count": 0, "decision": "wedged",
                     "message": turn_busy_message(True),
                 }
-            return {"ok": report.ok, "error_count": len(report.errors), "decision": decision.reason, "message": report.as_agent_message()}
+            verification = {"overall": "unverified" if report.ok else "failed",
+                            "codeKind": report.kind,
+                            "stages": {"code": "passed" if report.ok else "failed",
+                                       "startup": "unverified", "page": "unverified",
+                                       "runtime": "unverified"}}
+            result = {"ok": report.ok, "error_count": len(report.errors),
+                      "decision": decision.reason, "message": report.as_agent_message(),
+                      "verification": verification}
+            build_diagnostics.observe({"type": "done", **result})
+            if project.snapshot.changed_since_pre_turn():
+                project.app_for_turn().mark_built()
+                self._save_to_git(project, prompt)
+            return result
         finally:
             if not self._turn_wedged:
                 self._clear_turn_baseline()
@@ -15910,6 +15939,8 @@ class Orchestrator:
         the log, the revert, the `built` latch, the end-of-turn repairs — has to mean the app the
         turn began in rather than whichever one is on screen when it gets there."""
         project.turn_app = project.workspace
+        project.page_validation = None
+        project.phase_verification = None
         project.turn_attached = project.attached
         project.turn_attachment_failures.clear()
 
@@ -17896,6 +17927,7 @@ class Orchestrator:
                       explicit_references: list[dict] | None = None,
                       build_intent: BuildIntent | None = None,
                       fresh_session: bool = False,
+                      validate_page: bool | None = None,
                       continuation_note: str = "",
                       initial_repair_objective: str = "implementation"):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
@@ -18942,8 +18974,10 @@ class Orchestrator:
         )
         PLATFORM_READ_NUDGE = (
             "The app's read of the platform API was refused while the preview ran it: {status} on "
-            "`{path}`. A 404 on a path the reads table names is a wrong id — use the platform id "
-            "from the attached-data block in AGENTS.md, never the name. Fix the call; do not hide "
+            "`{path}`. Evidence: {reason}. Requested Dataset IDs: {resource_ids}. "
+            "Compare these with the platform id from the attached-data block in AGENTS.md, never "
+            "the name. A 401/403 is an access failure. A 404 alone can mean a missing route, missing "
+            "resource, or hidden access; do not assume it proves a wrong id. Fix the call; do not hide "
             "the failure and do not substitute values for what the platform did not answer."
         )
         # What the retry below adds to the turn it re-sends. It is orientation, not instruction: the
@@ -20757,7 +20791,7 @@ class Orchestrator:
                     else:
                         return
 
-            yield {"type": "typecheck-start"}
+            yield {"type": "typecheck-start", "kind": ("Syntax check" if project.app_for_turn().stack.name == "fastapi-antd" else "Typecheck")}
             with timing.span("typecheck") as check_span:
                 report = self._feedback.check(project.app_for_turn().path)
                 # What sent the turn back, for the diagnostics download (#534): codes and a count,
@@ -20765,7 +20799,7 @@ class Orchestrator:
                 if check_span is not None:
                     check_span.fields.update(errors=len(report.errors),
                                              error_codes=sorted({e.code for e in report.errors}))
-            yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "message": report.as_agent_message()})
+            yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "kind": report.kind, "message": report.as_agent_message()})
             if project.stop_requested:
                 yield handle_stop()
                 return
@@ -20853,27 +20887,30 @@ class Orchestrator:
                 turn_span.fields.update(retry_reason="typecheck_repair",
                                         retry_exhausted=decision.action == "stop")
             if decision.action == "stop":
-                # Typecheck is clean and code was written — but tsc can't see a runtime crash that
-                # blanks the preview. Wait briefly for the open preview to report one; if it does,
-                # feed the error back so the agent fixes it before we call the build done.
-                if report.ok and wrote_code and runtime_fixes < max_runtime_fixes:
-                    with timing.span("after.runtime_wait"):
-                        rt = self._await_runtime_error(project, since=send_ts,
-                                                       timeout=self._build_policy.runtime_error_wait_seconds)
-                    if rt is not None:
-                        runtime_fixes += 1
-                        project.runtime_error = None  # consume so a later turn starts clean
-                        first_line = (rt.get("message") or "runtime error").splitlines()[0][:140]
-                        iterate_reason = f"app crashed at runtime — fixing ({first_line})"
-                        yield {"type": "iterate", "reason": iterate_reason}
-                        current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
-                        continue
+                verification = None
+                rt = None
+                if report.ok and wrote_code and (owns_turn if validate_page is None else validate_page):
+                    validation = yield from self._validate_page(project, report.kind)
+                    verification = validation.summary()
+                    rt = validation.error
+                elif not report.ok:
+                    verification = {"overall": "failed", "codeKind": report.kind,
+                                    "stages": {"code": "failed", "startup": "not_applicable",
+                                               "page": "not_applicable", "runtime": "not_applicable"}}
+                if rt is not None and runtime_fixes < max_runtime_fixes and not project.stop_requested:
+                    runtime_fixes += 1
+                    project.runtime_error = None
+                    first_line = (rt.get("message") or "runtime error").splitlines()[0][:140]
+                    iterate_reason = f"app crashed at runtime — fixing ({first_line})"
+                    yield {"type": "iterate", "reason": iterate_reason}
+                    current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
+                    continue
                 # The relay refused a platform read while this turn's code ran (#556). No wait of
                 # its own: the runtime wait above is the window, and a refusal that landed inside
                 # it is here to read. Its own block, for the reason the gateway one below is: one
                 # `continue` fires per iteration, so a turn that both crashed and misread gets the
                 # crash first and this on the next pass.
-                if report.ok and wrote_code and platform_fixes < max_platform_fixes:
+                if report.ok and wrote_code and platform_fixes < max_platform_fixes and not project.stop_requested:
                     refused = self._fresh_platform_read_failure(project, since=send_ts)
                     if refused is not None:
                         platform_fixes += 1
@@ -20881,15 +20918,17 @@ class Orchestrator:
                         iterate_reason = (f"platform read refused — fixing ({refused['status']} "
                                           f"{refused['path'][:140]})")
                         yield {"type": "iterate", "reason": iterate_reason}
-                        current = PLATFORM_READ_NUDGE.format(status=refused["status"],
-                                                             path=refused["path"])
+                        current = PLATFORM_READ_NUDGE.format(
+                            status=refused["status"] or "network failure", path=refused["path"],
+                            reason=refused.get("reason", "http_error"),
+                            resource_ids=", ".join(refused.get("resourceIds", [])) or "none recorded")
                         continue
                 # The agent may have copied attached data into src/ — that leaks it into git
                 # (public/data/ is gitignored on purpose) and is why deleting the attachment leaves the
                 # dashboard still working. Treat it like a build error: nudge the agent to remove the
                 # copy and fetch from data/ instead, bounded. If it won't, _save_to_git strips the copy
                 # from the commit anyway (the bytes never reach git), so this loop is UX, not the guard.
-                if report.ok and wrote_code and leak_fixes < max_leak_fixes:
+                if report.ok and wrote_code and leak_fixes < max_leak_fixes and not project.stop_requested:
                     with timing.span("after.leak_scan"):
                         leaks = self._detect_leaks(project)
                     if leaks:
@@ -20908,7 +20947,7 @@ class Orchestrator:
                 # fires per iteration, so a turn that did both fixes the leak and catches this on
                 # the next pass. Nothing gates — the nudge is bounded and the turn completes either
                 # way, exactly as the leak fix does.
-                if report.ok and wrote_code and gateway_fixes < max_gateway_fixes:
+                if report.ok and wrote_code and gateway_fixes < max_gateway_fixes and not project.stop_requested:
                     with timing.span("after.gateway_scan"):
                         raw_calls = self._detect_raw_gateway_calls(project)
                     if raw_calls:
@@ -20939,7 +20978,7 @@ class Orchestrator:
                 # every number the model had written itself — typecheck clean, no query to fail, so
                 # nothing anywhere disagreed. Only on a turn that SUCCEEDED: a turn that already
                 # failed has its own sentence, and a second one below it reads as part of the fault.
-                if report.ok and owns_turn:
+                if report.ok and (owns_turn or validate_page):
                     notice = self._unasked_notice(project.app_for_turn())
                     if notice:
                         yield persist({"type": "data-source-unasked", "message": notice})
@@ -20951,10 +20990,9 @@ class Orchestrator:
                 #
                 # Only on a turn that SUCCEEDED, for the same reason the notice above is: a turn
                 # that already failed has its own sentence, and a second one below it reads as part
-                # of the fault. A switch mid-build (#77) needs nothing here — the preview is
-                # rebuilt for the app that was switched TO, so its answer is empty rather than the
-                # other app's.
-                failed = self._query_failures(project) if report.ok and owns_turn else {}
+                # of the fault. Query outcomes now come from this validation's issued reads, so a
+                # late response from another app cannot change the result (#557 P10).
+                failed = self._query_failures(project) if report.ok and (owns_turn or validate_page) else {}
                 if failed:
                     yield persist({"type": "data-source-failed",
                                    "message": self._failed_notice(failed)})
@@ -20963,14 +21001,17 @@ class Orchestrator:
                 # typechecks, and a store that was down for ten seconds must not cost the creator
                 # the turn's work — which is also what keeps this a report rather than the gate
                 # ADR-0010 rules out.
-                yield persist({"type": "done", "ok": report.ok and not failed,
-                               "decision": "queries failed" if failed else decision.reason})
-                if report.ok and owns_turn:
-                    # A clean code-writing build succeeded (a no-edit plan/answer turn returned earlier),
-                    # so this project is now "built" — future turns gate on plan, not on this being done.
-                    #
-                    # A phase does neither: one approved plan is one commit, not six, and a build that
-                    # dies at phase 4 must not have been marked "built" by phase 1.
+                refused = self._fresh_platform_read_failure(project, since=send_ts) if report.ok else None
+                if verification is not None and (failed or refused):
+                    verification["stages"]["data"] = "failed"
+                    verification["overall"] = "failed"
+                yield persist({"type": "done", "ok": report.ok and not failed and rt is None and refused is None,
+                               "decision": ("queries failed" if failed else "runtime failed" if rt
+                                            else "platform read failed" if refused else decision.reason),
+                               **({"verification": verification} if verification is not None else {})})
+                if wrote_code and owns_turn:
+                    # Written work is durable even when verification fails. A phase leaves this
+                    # to its enclosing build so one approved plan produces one save receipt.
                     project.app_for_turn().mark_built()
                     with timing.span("after.git_save"):
                         saved = self._save_to_git(project, prompt)
@@ -21484,10 +21525,9 @@ class Orchestrator:
         if failed is not None:
             step, why = failed
             # Deliberately NOT reverted. A failure is Sage's problem to recover from, and the
-            # finished phases are real progress the user can see and build on — throwing away forty
-            # minutes of good work because step 4 of 6 broke is the worst available behaviour. What
-            # we do instead is skip the commit (the durable record stays clean) and flag the failure,
-            # which makes the next turn plan first via the existing failure-replan gate.
+            # finished phases are real progress the user can see and build on. Save the written
+            # work and record that the app has code, while keeping the failure and resume point.
+            # The failure flag makes the next turn plan first via the existing failure-replan gate.
             #
             # Unless the next turn is "try again", which the resume point written before this phase
             # ran now answers directly: the plan stays live, and the retry opens at the phase that
@@ -21500,7 +21540,14 @@ class Orchestrator:
             if project.snapshot.working_tree_hash() != tree_before:
                 yield persist(_app_change_event(project.app_for_turn()))
             yield persist({"type": "done", "ok": False,
-                           "decision": f"phase {step.n} of {len(steps)}, {step.label}, failed — {why}"})
+                           "decision": f"phase {step.n} of {len(steps)}, {step.label}, failed — {why}",
+                           **({"verification": project.phase_verification}
+                              if project.phase_verification is not None else {})})
+            if project.snapshot.working_tree_hash() != tree_before:
+                project.app_for_turn().mark_built()
+                saved = self._save_to_git(project, f"partial build plan ({len(steps)} phases)")
+                if saved is not None:
+                    yield persist(saved)
             return "failed"
 
         if completion_guard is not None and not completion_guard():
@@ -21518,7 +21565,9 @@ class Orchestrator:
         # One card for the whole phased build, here rather than per phase — the phases swallow their
         # own terminal events for the same reason (#56).
         yield persist(_app_change_event(project.app_for_turn()))
-        yield persist({"type": "done", "ok": True, "decision": "typecheck clean"})
+        yield persist({"type": "done", "ok": True, "decision": "typecheck clean",
+                       **({"verification": project.phase_verification}
+                          if project.phase_verification is not None else {})})
         with timing.span("after.git_save"):
             saved = self._save_to_git(project, f"build plan ({len(steps)} phases)")
         if saved is not None:
@@ -21536,6 +21585,7 @@ class Orchestrator:
         """Run one phase, retrying once in another fresh session if it fails. Returns True, the
         string "stopped", or a failure reason; swallows the phase's own terminal `done` so the build
         emits exactly one."""
+        project.phase_verification = None
         strong_retry = os.environ.get("SAGE_PHASE_RETRY_STRONG", "1").strip().lower() not in ("0", "false", "no")
         # Both halves of the person's pick, restored together in the `finally` below. A capture that
         # took only the model would spend one phase retry to erase the level they chose, silently and
@@ -21577,6 +21627,7 @@ class Orchestrator:
                                                            project.workspace.stack.entry_file),
                                              mentions, is_approval=True, mode=Mode.IMPLEMENT,
                                              session_id=sid, brief=step,
+                                             validate_page=step is steps[-1],
                                              explicit_references=explicit_references,
                                              build_intent=phase_intent,
                                              continuation_note=(
@@ -21588,6 +21639,8 @@ class Orchestrator:
                         return "stopped"
                     if ev["type"] == "done":
                         outcome = ev  # swallowed: one `done` per build, not one per phase
+                        if ev.get("verification") is not None:
+                            project.phase_verification = ev["verification"]
                         continue
                     if ev["type"] == "agent" and ev.get("kind") == "text" and ev.get("text"):
                         summary = str(ev["text"])  # last one wins: the agent's closing summary
@@ -21602,7 +21655,9 @@ class Orchestrator:
                     return True
                 if outcome is not None:
                     reason = str(outcome.get("decision") or reason)
-                    if reason in {"pre_edit_limit", "context_limit"}:
+                    if reason in {"pre_edit_limit", "context_limit", "platform read failed", "queries failed"}:
+                        # Data validation already used its allowed repair. A phase retry must not
+                        # reset that budget or make another model call to probe an unavailable store.
                         return reason
         except TurnWedged:
             # A phase's `done` is swallowed above so one build ends once, not once per phase — but a
@@ -21619,7 +21674,91 @@ class Orchestrator:
                 project.control.pick(original_pick, original_effort)
         return reason
 
-    def record_runtime_error(self, message: str, stack: str = "") -> None:
+    def _validate_page(self, project: Project, code_kind: str):
+        """Restart the pinned code, then wait for that document before observing runtime errors."""
+        app = project.app_for_turn()
+        rec = timing.current()
+        validation = PageValidation(new_id("validation"), project.id, app.app_id,
+                                    rec.turn_id if rec is not None else "",
+                                    project.snapshot.working_tree_hash(), code_kind)
+        bindings = parse_bindings(app.read_bindings())
+        validation.data_expected = any(b.kind in (KIND_DATASET, KIND_DATA_SOURCE) for b in bindings)
+        validation.dataset_ids = tuple(b.id for b in bindings if b.kind == KIND_DATASET)
+        project.page_validation = validation
+        timeout = self._build_policy.page_ack_wait_seconds
+        supervisor = project.supervisor
+
+        def current():
+            return (self._project is project and project.workspace.app_id == app.app_id
+                    and project.supervisor is supervisor and not project.stop_requested
+                    and (not validation.generation
+                         or supervisor.status()["generation"] == validation.generation))
+
+        try:
+            if timeout <= 0 or not current():
+                return validation
+            deadline = time.monotonic() + timeout
+            accepted = False
+            while current() and time.monotonic() < deadline:
+                if not accepted:
+                    accepted = supervisor.retry_start(explicit=True)
+                status = supervisor.status()
+                if accepted:
+                    validation.generation = status["generation"]
+                    if status["state"] == "failed":
+                        validation.stages["startup"] = "failed"
+                        validation.error = {"message": status.get("error") or "App startup failed"}
+                        return validation
+                    if status["state"] == "ready":
+                        validation.stages["startup"] = "passed"
+                        break
+                time.sleep(0.1)
+            if validation.stages["startup"] != "passed" or not current():
+                return validation
+            yield validation.event()
+            deadline = time.monotonic() + timeout
+            while current() and not validation.acknowledged and time.monotonic() < deadline:
+                if validation.error is not None:
+                    validation.stages["runtime"] = "failed"
+                    return validation
+                time.sleep(0.1)
+            if not validation.acknowledged or not current():
+                return validation
+            validation.stages["page"] = "passed"
+            error = self._await_runtime_error(
+                project, since=time.monotonic(), timeout=self._build_policy.runtime_error_wait_seconds)
+            if error is not None:
+                validation.error = error
+                validation.stages["runtime"] = "failed"
+            elif (current() and validation.code_generation
+                  and project.snapshot.working_tree_hash() == validation.code_generation):
+                validation.stages["runtime"] = "passed"
+            return validation
+        finally:
+            status = supervisor.status()
+            if (validation.generation and status["generation"] == validation.generation
+                    and status["state"] == "failed"):
+                validation.stages["startup"] = "failed"
+                validation.error = validation.error or {"message": status.get("error") or "App startup failed"}
+            validation.closed = True
+
+    def _active_validation(self, validation_id: str) -> PageValidation | None:
+        project = self._project
+        validation = project.page_validation if project is not None else None
+        if (validation is not None and not validation.closed and validation.id == validation_id
+                and validation.app_id == project.workspace.app_id
+                and validation.generation == project.supervisor.status()["generation"]):
+            return validation
+        return None
+
+    def record_preview_ack(self, validation_id: str) -> bool:
+        validation = self._active_validation(validation_id)
+        if validation is None:
+            return False
+        validation.acknowledged = True
+        return True
+
+    def record_runtime_error(self, message: str, stack: str = "", *, validation_id: str = "") -> None:
         """Store a runtime error the live preview reported (via /api/preview/runtime-error), stamped
         so build_stream can tell this turn's crash from a stale one. Best-effort: a report that
         arrives with no active project is simply dropped.
@@ -21630,28 +21769,88 @@ class Orchestrator:
 
         if self._project is None:
             return
+        if validation_id:
+            validation = self._active_validation(validation_id)
+            if validation is not None:
+                validation.error = {"message": message[:4000], "stack": stack[:8000]}
+            return
         self._project.runtime_error = {"message": message, "stack": stack, "ts": time.monotonic(),
                                        "app": self._project.workspace.app_id}
 
-    def record_platform_read_failure(self, status: int, path: str) -> None:
-        """Store a platform read the app's own relay refused in the preview (the proxy's
-        `on_platform_read`, #556), stamped exactly as `record_runtime_error` stamps a crash: the
-        time, so build_stream can tell this turn's refusal from a stale one, and the app, because
-        the preview serves whichever app is ON SCREEN (#77). Best-effort: no active project, dropped."""
-        import time
+    def capture_preview_read(self, validation_id: str, path: str, query: str = "",
+                             kind: str = "platform") -> dict | None:
+        """Capture the document and pending read before the proxy gives up control."""
+        validation = self._active_validation(validation_id)
+        if validation is None:
+            return None
+        if len(validation.data_reads) >= 20:
+            validation.reads_truncated = True
+            return None
+        read = {**read_request(path, query, kind=kind), "outcome": "pending", "status": None}
+        validation.data_reads.append(read)
+        return {"project": self._project, "validation": validation, "read": read,
+                "queries": self._project.queries if kind == "query" else None}
 
+    def record_platform_read_failure(self, status: int | None, path: str, *,
+                                     context: dict | None = None, body: bytes | None = None) -> None:
+        """Extend #556's callback with success, empty and failure evidence for its issued read.
+
+        The legacy two-argument call remains readable outside validation. It cannot establish any
+        fact about a new validation document; that requires the context captured at issuance.
+        """
         if self._project is None:
             return
-        self._project.platform_read_failure = {"status": int(status), "path": str(path),
-                                               "ts": time.monotonic(),
-                                               "app": self._project.workspace.app_id}
+        if context is None:
+            if status is not None and status >= 400:
+                self._project.platform_read_failure = {
+                    **read_result(read_request(path), status), "ts": time.monotonic(),
+                    "app": self._project.workspace.app_id}
+            return
+        validation = context["validation"]
+        read = context["read"]
+        result = read_result(read, status, body, bound_ids=validation.dataset_ids)
+        # Parsing may cross the validation deadline. Check again before publishing its result,
+        # and replace pending fields together so the build thread never sees an empty record.
+        if (context["project"] is not self._project
+                or self._active_validation(validation.id) is not validation):
+            return
+        read.update(result)
+        if result["outcome"] == "failed" and result["kind"] == "query":
+            # Preserve #203's existing readable query error, from the server captured when this
+            # matched request was issued. Keep it out of the bounded diagnostic read metadata.
+            name = result["path"].rsplit("/", 1)[-1]
+            try:
+                reason = (context["queries"].failures() or {}).get(name)
+                if isinstance(reason, str):
+                    validation.query_failures[name] = reason
+            except Exception:
+                log.debug("preview query failure detail unavailable", exc_info=True)
+        if result["outcome"] == "failed" and result["kind"] == "platform":
+            self._project.platform_read_failure = {
+                **result, "validationId": validation.id, "app": validation.app_id,
+                "ts": time.monotonic()}
+
+    def record_preview_data_error(self, validation_id: str, path: str) -> None:
+        """A caught fetch rejection is a failed read even when no proxy response arrived."""
+        path = path.rsplit("/preview/", 1)[-1]
+        path = "/" + path.lstrip("/")
+        kind = "query" if path.startswith("/api/queries/") else "platform"
+        if path.startswith("/api/domino/"):
+            path = path[len("/api/domino"):]
+        context = self.capture_preview_read(validation_id, path, kind=kind)
+        if context is not None:
+            self.record_platform_read_failure(None, path, context=context)
 
     def _fresh_platform_read_failure(self, project: Project, since: float) -> dict | None:
         """The refusal recorded after `since` (this turn's send time) for the app this turn is
         building, or None. The same two rules `_await_runtime_error` applies to a crash, and no
         wait of its own: that wait is the window, and this reads what landed in it."""
         refused = project.platform_read_failure
+        validation = project.page_validation
         app_id = project.app_for_turn().app_id
+        if validation is not None:
+            return (refused if (refused or {}).get("validationId") == validation.id
+                    and validation.app_id == app_id else None)
         if (refused is not None and refused.get("ts", 0.0) >= since
                 and refused.get("app", app_id) == app_id):
             return refused
@@ -21671,12 +21870,20 @@ class Orchestrator:
         app_id = project.app_for_turn().app_id
         deadline = time.monotonic() + timeout
         while True:
-            rt = project.runtime_error
-            if rt is not None and rt.get("ts", 0.0) >= since and rt.get("app", app_id) == app_id:
-                return rt
-            if time.monotonic() >= deadline:
+            validation = project.page_validation
+            if validation is not None and not validation.closed:
+                if (project.stop_requested or project.workspace.app_id != validation.app_id
+                        or project.supervisor.status()["generation"] != validation.generation):
+                    return None
+                if validation.error is not None:
+                    return validation.error
+            else:
+                rt = project.runtime_error
+                if rt is not None and rt.get("ts", 0.0) >= since and rt.get("app", app_id) == app_id:
+                    return rt
+            if time.monotonic() >= deadline or project.stop_requested:
                 return None
-            time.sleep(0.5)
+            time.sleep(0.1)
 
     def _save_to_git(self, project: Project, prompt: str) -> dict | None:
         """Commit + push the Project after a clean build so the app and .sage/ transcript are
@@ -26538,6 +26745,13 @@ class Orchestrator:
         Best-effort like everything else that runs at the end of a turn. A preview that has gone
         strange is not grounds to fail a build that worked.
         """
+        validation = project.page_validation
+        if validation is not None:
+            return {read["path"].rsplit("/", 1)[-1]: validation.query_failures.get(
+                read["path"].rsplit("/", 1)[-1],
+                f"Read failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')}).")
+                for read in validation.data_reads
+                if read["kind"] == "query" and read["outcome"] == "failed"}
         try:
             return project.queries.failures() or {}
         except Exception:

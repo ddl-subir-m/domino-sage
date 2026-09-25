@@ -8,6 +8,41 @@
 // app's `api/preview/runtime-error`; both are same-origin behind the one proxy.
 const API = import.meta.env.BASE_URL.replace(/preview\/?$/, "") + "api/";
 const ENDPOINT = API + "preview/runtime-error";
+// Fixed when this document loads; a later app selection cannot retag its reports.
+const validationId = new URLSearchParams(window.location.search).get("sageValidation") || "";
+// Capture the document identity when its own data fetch is issued. The proxy observes HTTP
+// results; this catches a rejected fetch even if app code catches it and renders an empty state.
+if (import.meta.env.DEV && validationId) {
+  const originalFetch = window.fetch.bind(window);
+  const previewBase = new URL(import.meta.env.BASE_URL, window.location.href).pathname;
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+    if (url.origin !== window.location.origin
+        || !(url.pathname.startsWith(previewBase + "api/queries/")
+             || url.pathname.startsWith(previewBase + "api/domino/"))) {
+      return originalFetch(input, init);
+    }
+    const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+    headers.set("X-Sage-Validation", validationId);
+    return originalFetch(input, { ...init, headers }).catch((error) => {
+      void originalFetch(API + "preview/data-error", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ validationId, path: url.pathname }), keepalive: true,
+      }).catch(() => {});
+      throw error;
+    });
+  };
+}
+function acknowledgePage() {
+  if (!import.meta.env.DEV || !validationId || document.visibilityState === "hidden") return;
+  void fetch(API + "preview/ack", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ validationId }), keepalive: true,
+  }).catch(() => {});
+}
+if (document.readyState !== "complete") {
+  document.addEventListener("DOMContentLoaded", acknowledgePage, { once: true });
+} else { acknowledgePage(); }
 
 // Is the agent editing these files right now? The error boundary asks so it can tell a crash Sage is
 // already part-way through fixing from one the creator has to deal with themselves.
@@ -38,9 +73,9 @@ export function reportRuntimeError(message: string, stack?: string): void {
     void fetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, stack: stack || "" }),
+      body: JSON.stringify({ message, stack: stack || "", validationId }),
       keepalive: true,
-    });
+    }).catch(() => {});
   } catch {
     /* best-effort: never let the reporter itself throw */
   }

@@ -58,7 +58,7 @@ def _no_wait_for_a_preview_that_never_reports(monkeypatch):
     poll paid the whole 4s — 58 files stubbed the method by hand to skip it and the rest paid.
     One check with no wait keeps the branch live: an error a test recorded before the poll is
     still found, and none arrives during it."""
-    policy = replace(BuildPolicy(), runtime_error_wait_seconds=0.0)
+    policy = replace(BuildPolicy(), runtime_error_wait_seconds=0.0, page_ack_wait_seconds=0.0)
     monkeypatch.setattr(service, "load_build_policy", lambda: policy)
 
 

@@ -613,7 +613,7 @@ const said = [];
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
-  Error, Blob, ArrayBuffer, Uint8Array, Infinity, clearTimeout,
+  Error, Blob, ArrayBuffer, Uint8Array, Infinity, clearTimeout, TextDecoder,
   setTimeout: (fn, ms) => {
     if (ms >= 5000) { timeouts.push({ ms, fn }); return -timeouts.length; }
     return setTimeout(fn, ms);
@@ -1174,6 +1174,48 @@ async function arrive(threadId, appId, mode) {
 // --- the run ---------------------------------------------------------------
 const report = [];
 for (const step of steps) {
+  if (step.pageValidation) {
+    await arrive('thr_one', 'app_a', 'build');
+    const realFetch = sandbox.fetch;
+    let atValidation;
+    sandbox.document.visibilityState = step.pageValidation === 'hidden' ? 'hidden' : 'visible';
+    sandbox.fetch = (url, init) => {
+      if (!String(url).includes('/build/stream')) return realFetch(url, init);
+      let n = 0;
+      return { ok: true, headers: { get: () => null }, body: { getReader: () => ({
+        read: async () => {
+          if (n++ === 0) return { done: false, value: new TextEncoder().encode('data: ' + JSON.stringify({
+            type: 'preview-validation', appId: step.pageValidation === 'other' ? 'app_b' : 'app_a',
+            validationId: 'validation_current', turnId: 'turn_current',
+          }) + '\n\n') };
+          if (n === 2) {
+            atValidation = { src: SW.store.get().previewSrc, typing: SW.store.get().buildTyping };
+            return { done: false, value: new TextEncoder().encode('data: ' + JSON.stringify({
+              type: 'done', ok: true, verification: { overall: 'unverified', stages: step.verificationStages }, decision: 'typecheck clean',
+            }) + '\n\n') };
+          }
+          return { done: true };
+        },
+      }) } };
+    };
+    await SW.store.sendBuildPrompt('Make a page');
+    const status = SW.store.get().buildMessages.flatMap(m => m.blocks || []).filter(b => b.type === 'status');
+    report.push({ atValidation, status });
+    continue;
+  }
+  if (step.savedVerification) {
+    await arrive('thr_one', 'app_a');
+    SW.prefs.set('conversationView', 'split');
+    SW.api.history = async () => ({ history: [
+      { type: 'user', text: 'Make a page' },
+      { type: 'typecheck', kind: 'Syntax check', ok: true },
+      { type: 'done', ok: step.savedVerification !== 'failed', decision: 'queries failed',
+        verification: { overall: step.savedVerification, stages: step.verificationStages } },
+    ] });
+    await SW.store.loadBuild({ keepPreview: true });
+    report.push(SW.store.get().buildMessages.flatMap(m => m.blocks || []).filter(b => b.type === 'status'));
+    continue;
+  }
   if (step.historyUnavailable) {
     await arrive('thr_many', 'app_a');
     SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });
