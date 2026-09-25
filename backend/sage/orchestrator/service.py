@@ -7714,6 +7714,9 @@ class Orchestrator:
                     self._restart_preview_for_config_change(project)
                 self._voice_agents_md(project)
                 self._splice_instructions(project)
+                # The third door onto an app, and the one `create_app` takes: what Chat bound
+                # before the app existed is derived here too (`_write_app_resources`).
+                self._write_app_resources(project)
             self._rehydrate_attached(project)
             # A switch to another app must not move the Build's pinned baseline. Switching back can
             # repair that pinned app, so include those user-side writes before releasing the witness.
@@ -27371,8 +27374,9 @@ class Orchestrator:
 
         Nothing is written into an app that is not born yet (#503). Chat can bind into a Project
         before Build seeds its app; the manifest is the app's record and is kept, but there is no
-        source to pin the Resource into and no AGENTS.md to tell. The two doors that seed the
-        selected app call this again once it is, so what was recorded is derived then.
+        source to pin the Resource into and no AGENTS.md to tell. The three doors that put a born
+        app in front of a Project — attach, `_ensure_seeded`, `_bind_app` — call this again once
+        it is, so what was recorded is derived then.
         """
         if not resolve_stack(project.workspace.path).ready:
             return
