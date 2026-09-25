@@ -53,19 +53,39 @@ def resolve(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
 def _slot_effort(
     state: SessionState, catalog: ModelCatalog, slot: str, *, stage_default: bool
 ) -> tuple[str | None, EffortSource]:
-    """Return the saved choice for one slot without losing present-null row semantics."""
+    """Return the level chosen for one slot, else the Build stage default (#545).
+
+    An UNSET level is not a choice to run unlimited. It used to be: a saved row carrying null said
+    "this slot exists and names no level", and this read that presence as the person having asked
+    for the provider's own default — so every assigned model ran with no limit, and the stage
+    default reached only a slot nobody had ever saved. Measured on #545: GLM 5.3 OR assigned to
+    Implement at that unset level reasoned for 120 s twice and ended the turn with no edit.
+
+    So row presence no longer decides the source; only the VALUE does. A level the person picked is
+    theirs and is sent as-is. No level, on a Build turn whose caller allows a stage default, is the
+    stage's (`plan_reasoning_effort` / `implement_reasoning_effort`, applied in `enforcement.py`).
+    `stage_default=False` — Ask and Chat — keeps the provider default it always had.
+    """
     effort = getattr(catalog, f"{slot}_effort")
-    if slot in state.saved_effort_slots:
-        return effort, EffortSource.USER if effort is not None else EffortSource.PROVIDER_DEFAULT
+    if slot in state.saved_effort_slots and effort is not None:
+        return effort, EffortSource.USER
     if stage_default and state.effort_rows_armed:
         return None, EffortSource.STAGE_DEFAULT
     return effort, EffortSource.USER if effort is not None else EffortSource.PROVIDER_DEFAULT
 
 
 def _picked_effort(state: SessionState) -> tuple[str | None, EffortSource]:
-    return (state.picked_effort,
-            EffortSource.USER if state.picked_effort is not None
-            else EffortSource.PROVIDER_DEFAULT)
+    """The in-session pick's own level, else the stage default — the same rule as a saved row.
+
+    A pick made with no level is unset in exactly the sense `_slot_effort` now reads, and every
+    caller is a Build plan or implement override. Left on the provider default, the one act that
+    replaces a model would also be the one way back to the unlimited thinking #545 removes.
+    """
+    if state.picked_effort is not None:
+        return state.picked_effort, EffortSource.USER
+    if state.effort_rows_armed:
+        return None, EffortSource.STAGE_DEFAULT
+    return None, EffortSource.PROVIDER_DEFAULT
 
 
 def _lock_sensitivity(
