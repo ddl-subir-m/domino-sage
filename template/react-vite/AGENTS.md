@@ -53,6 +53,16 @@ for, what you proposed, which steps ran.
   turn as an instruction for this one.
 - Don't edit it. It is regenerated each turn, so any change is overwritten.
 
+## What only the platform knows
+
+When the request names something only the platform knows — a snapshot, a version, an approval, a
+policy, a tag, governance, an owner, lineage, a classification, who made something, or which
+{datasetPlural} exist — this app's own server can read it from the {platformName} API through
+`/api/domino/…`, and the implementation instructions carry the table of what it can read. Plan for
+that read. **Never write example values for anything the platform owns**, and never plan "not
+connecting to the API" for such a request: what reaches the screen is the platform's own answer, or
+the status and path of the read that failed — never a stand-in.
+
 ## Selected references
 
 A reference selected for this turn is authoritative. Read it through the supplied typed operation
@@ -239,9 +249,10 @@ router matches the viewer's full path against routes you wrote without the prefi
 > in front of the user, and answers a question nobody asked.
 >
 > Come here only when the request names something only the platform knows: a snapshot, a version, an
-> approval, a policy, who made something, or which {datasetPlural} exist. If those words are not in
-> the request, do not pin a snapshot, do not show an approval, and do not list {datasetPlural} —
-> build the app that was asked for.
+> approval, a policy, a tag, governance, an owner, lineage, a classification, who made something, or
+> which {datasetPlural} exist. If none of those words is in the request, do not pin a snapshot, do
+> not show an approval, and do not list {datasetPlural} — build the app that was asked for. A read
+> that fails is shown as its status and path; it is never replaced by a stand-in value.
 
 A page cannot call the {platformName} API itself — it is another origin, and the browser blocks the
 call before it is sent. This app's server relays it at `GET <app>/api/domino/<platform path>`, with
@@ -265,7 +276,7 @@ GET only, and only these families; anything else answers 403 or 405:
 | every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus`; a {dataset} nobody has snapshotted holds only its head, so expect zero committed |
 | the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
 | one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
-| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way |
+| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way — the id is the one beside the {dataset}'s name in this file, never the name itself |
 | governance bundles | `/api/governance/v1/bundles` — paged, rows under `data`; per bundle `id`, `name`, `policyName`, `stage`, `stages`, `policies`, `projectName`, `classificationValue`. One bundle on its own: `/api/governance/v1/bundles/<id>` |
 | a bundle's approvals | `/api/governance/v1/bundles/<id>/approvals` — a bare array, not rows under `data`; per approval `name`, `status`, `approvers`, `updatedAt`, `updatedBy` |
 | what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them |

@@ -27,6 +27,7 @@ TEMPLATES = (
 COMMON = "A reference selected for this turn is authoritative."
 IMPLEMENT = "Every implementation turn must end with edits"
 PRIVATE = "PRIVATE_PROFILE_SENTINEL"
+PLATFORM_OWNED = "Never write example values for anything the platform owns"
 
 
 def request_for(template: Path, *, effort: object = "high") -> dict:
@@ -72,6 +73,21 @@ def test_plan_profile_keeps_common_and_plan_contract_but_removes_implementation(
     assert report["status"] == "valid"
     assert report["removedStageBlocksById"]["implement"]["count"] == 1
     assert report["instructionBytesAfter"] < report["instructionBytesBefore"]
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=("react-vite", "fastapi-antd"))
+def test_the_plan_profile_carries_what_only_the_platform_knows(template):
+    """The planner never saw the platform section (#556): on react-vite it sits inside `implement`,
+    on fastapi-antd in the optional `platform` block, and the plan profile keeps `common` alone. So
+    a request for governance tags was planned by a model that had never heard of the relay — with
+    example values, and "Not doing: connecting to a live governance system or API", approved."""
+    after, _ = apply_instruction_profile(request_for(template), "plan")
+    encoded = json.dumps(after, ensure_ascii=False)
+
+    assert PLATFORM_OWNED in encoded
+    for word in ("governance", "lineage", "classification"):
+        assert word in encoded, word
+    assert IMPLEMENT not in encoded
 
 
 @pytest.mark.parametrize("effort", [None, "low", "high", "max", "provider-private-value"])

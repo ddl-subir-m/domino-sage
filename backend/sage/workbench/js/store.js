@@ -7872,8 +7872,8 @@ window.SW = window.SW || {};
     //
     // `echo` is off and `skipTableGate` is on for one reason between them: the question is already
     // in the transcript above the card, and the server will not write it a second time.
-    async chooseTableAndAsk(prompt, threadId, sourceId, scope) {
-      await SW.api.confirmThreadTableCandidate(threadId, sourceId, scope);
+    async chooseTableAndAsk(prompt, threadId, sourceId, scope, taskId = '') {
+      await SW.api.confirmThreadTableCandidate(threadId, sourceId, scope, taskId);
       const opened = await store.openThread(threadId);
       // The record stands either way — it is written above, and it belongs to the Thread rather
       // than to whatever is on screen. What must not follow it is the answer: `openThread` returns
@@ -7881,7 +7881,7 @@ window.SW = window.SW || {};
       // `state.thread`, so replaying here would post this question into the conversation the person
       // moved to — with `echo` off and the question never written, under a card they cannot see.
       if (!opened || !state.thread || state.thread.id !== threadId) return null;
-      return store.sendMessage(prompt, { echo: false, skipTableGate: true });
+      return store.sendMessage(prompt, { echo: false, skipTableGate: true, taskId });
     },
 
     // The investigation card's two buttons (#386, ADR-0056). The same two acts as the table card's
@@ -7895,8 +7895,8 @@ window.SW = window.SW || {};
     //
     // `echo` off and `investigationAnswered` on for the one reason between them: the question is
     // already in the transcript above the card, and the server will not write it a second time.
-    async answerInvestigationAndAsk(prompt, threadId, decision) {
-      await SW.api.decideInvestigation(threadId, decision);
+    async answerInvestigationAndAsk(prompt, threadId, decision, taskId = '') {
+      await SW.api.decideInvestigation(threadId, decision, taskId);
       // Re-read rather than patched in place: the bar below the transcript draws off
       // `thread.context.investigation`, and the record the server wrote is the one to draw.
       const opened = await store.openThread(threadId);
@@ -7905,7 +7905,7 @@ window.SW = window.SW || {};
       // `state.thread`, so replaying here would post the question into a conversation the person
       // moved to, and with `echo` off it would never be written under the card they cannot see.
       if (!opened || !state.thread || state.thread.id !== threadId) return null;
-      return store.sendMessage(prompt, { echo: false, investigationAnswered: true });
+      return store.sendMessage(prompt, { echo: false, investigationAnswered: true, taskId });
     },
 
     // The door onto the lane that can compute, accepted (#411, ADR-0058). ONE act, not two: there
@@ -8547,7 +8547,7 @@ window.SW = window.SW || {};
     // record itself, on both answers.
     async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride,
                               skipTableGate = false, skipDatasetGate = false,
-                              datasetDismissed = '', investigationAnswered = false,
+                              datasetDismissed = '', investigationAnswered = false, taskId = '',
                               otherLaneGrant = '', alreadyAsked = false } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
@@ -8680,7 +8680,8 @@ window.SW = window.SW || {};
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
           body: JSON.stringify({ prompt: text, skipTableGate, skipDatasetGate, datasetDismissed,
-                               investigationAnswered, otherLaneGrant, alreadyAsked }),
+                               investigationAnswered, otherLaneGrant, alreadyAsked,
+                               ...(taskId ? { taskId } : {}) }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));

@@ -1362,7 +1362,7 @@ window.SW = window.SW || {};
   function InvestigationOffer({ block }) {
     const [busy, run] = SW.util.useBusyAct();
     const answer = (decision) => () =>
-      SW.store.answerInvestigationAndAsk(block.prompt, block.threadId, decision);
+      SW.store.answerInvestigationAndAsk(block.prompt, block.threadId, decision, block.taskId || '');
 
     return h(
       'div',
@@ -1775,6 +1775,7 @@ window.SW = window.SW || {};
                         ? SW.store.chooseTableAndAsk(
                           block.prompt, block.threadId, block.sourceId,
                           { database: group.database, schema: group.schema, table },
+                          block.taskId || '',
                         )
                         : SW.store.chooseTableAndBuild(
                           block.prompt, block.sourceId,

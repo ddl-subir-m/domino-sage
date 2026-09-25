@@ -3654,7 +3654,8 @@ async def decide_thread_investigation(thread_id: str, request: Request) -> JSONR
         return JSONResponse(status_code=400, content={"error": "Send a JSON body naming a decision."})
     try:
         return JSONResponse(content=orchestrator.decide_thread_investigation(
-            thread_id, str((body or {}).get("decision") or "")))
+            thread_id, str((body or {}).get("decision") or ""),
+            task_id=str((body or {}).get("taskId") or "")))
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "unknown thread"})
     except ValueError as e:
@@ -3862,6 +3863,7 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     dset = bool((body or {}).get("skipDatasetGate"))
     dropped = str((body or {}).get("datasetDismissed") or "")
     invq = bool((body or {}).get("investigationAnswered"))
+    task_id = str((body or {}).get("taskId") or "")
     turn_id = new_id("turn")
     turn_ticket, turn_state = orchestrator.prepare_stream_turn(
         turn_id, kind="chat", conversation=thread_id)
@@ -3869,7 +3871,7 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
         _turn_sse(orchestrator.chat_stream(
             thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
             skip_dataset_gate=dset, dismissed_dataset=dropped,
-            skip_investigation_gate=invq,
+            skip_investigation_gate=invq, task_id=task_id,
             other_lane_grant=grant, turn_ticket=turn_ticket), "chat_stream"),
         media_type="text/event-stream",
         headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
@@ -3895,7 +3897,8 @@ async def confirm_thread_table_candidate(thread_id: str, resource_id: str,
         )})
     try:
         return JSONResponse(content=orchestrator.confirm_thread_table_candidate(
-            thread_id, resource_id, database, schema, table))
+            thread_id, resource_id, database, schema, table,
+            task_id=str((body or {}).get("taskId") or "")))
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "unknown thread"})
     except ResourceNotBound:
@@ -4655,6 +4658,13 @@ def _preview_platform():
     return domino_module(orchestrator._wm.template)
 
 
+# What the relay refused, told to the turn (#556). The page catches the failed fetch and logs it in
+# the browser, where the model cannot read it; the proxy sees every status, and this is the record
+# the build loop reads in the same window it reads a crash.
+def _preview_platform_read(status: int, path: str) -> None:
+    orchestrator.record_platform_read_failure(status, path)
+
+
 # The previewed app's own model calls (#7). A published app calls the gateway straight from the
 # viewer's browser because both sit on `apps.<domino-host>` — same origin. The preview is served from
 # here instead, so that call is cross-origin and the browser blocks it; the proxy makes it instead.
@@ -4726,7 +4736,8 @@ def _preview_mount_base() -> str:
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
                                                _preview_llm, _preview_approve_model,
                                                get_platform=_preview_platform,
-                                               get_mount_base=_preview_mount_base))
+                                               get_mount_base=_preview_mount_base,
+                                               on_platform_read=_preview_platform_read))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of

@@ -36,27 +36,30 @@ def test_a_pre_record_react_vite_app_still_answers_react_vite(tmp_path):
     """The population `LEGACY_STACK` was written for. It has the package.json this looks for, so
     reading the disk reaches the same answer the old fallback did — without guessing for others."""
     (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/App.tsx").write_text("// app")
     assert preview_stack_of(tmp_path) is REACT_VITE
 
 
 def test_a_python_app_that_lost_its_record_is_not_served_by_vite(tmp_path):
     """The measured failure. Before this, no record meant react-vite meant `npm run dev`."""
     (tmp_path / "app.py").write_text("")
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static/app.js").write_text("// app")
     assert preview_stack_of(tmp_path) is FASTAPI_ANTD
 
 
-def test_an_unreadable_record_falls_through_to_the_disk_not_to_the_legacy_stack(tmp_path):
-    """A stray comma must not decide that a Python app is served by Vite."""
+def test_an_unreadable_record_requires_repair(tmp_path):
     (tmp_path / ".sage").mkdir()
     (tmp_path / ".sage" / "settings.json").write_text("{ not json,,, }")
     (tmp_path / "app.py").write_text("")
-    assert preview_stack_of(tmp_path) is FASTAPI_ANTD
+    assert preview_stack_of(tmp_path) is None
 
 
-def test_a_record_naming_a_stack_nobody_ships_falls_through_rather_than_crashing(tmp_path):
+def test_a_record_naming_a_stack_nobody_ships_has_no_guessed_server(tmp_path):
     _record(tmp_path, "svelte-whatever")
     (tmp_path / "app.py").write_text("")
-    assert preview_stack_of(tmp_path) is FASTAPI_ANTD
+    assert preview_stack_of(tmp_path) is None
 
 
 def test_an_app_directory_with_nothing_in_it_has_no_server(tmp_path):
@@ -69,6 +72,10 @@ def test_the_supervisor_follows_that_answer(tmp_path):
     py.mkdir(); js.mkdir()
     (py / "app.py").write_text("")
     (js / "package.json").write_text("{}")
+    (py / "static").mkdir()
+    (py / "static/app.js").write_text("// app")
+    (js / "src").mkdir()
+    (js / "src/App.tsx").write_text("// app")
     assert isinstance(make_supervisor(py, ""), UvicornSupervisor)
     assert isinstance(make_supervisor(js, ""), ViteSupervisor)
 
@@ -81,5 +88,5 @@ def test_nothing_is_spawned_for_an_app_that_was_never_built(tmp_path, monkeypatc
     with pytest.raises(RuntimeError) as e:
         sup.start(ready_timeout_s=0.1)
     assert spawned == [], "a server was started for an app that does not exist"
-    assert "no app has been built" in str(e.value)
-    assert "no app has been built" in (sup.last_error() or ""), "the pane cannot say why"
+    assert "No app has been built" in str(e.value)
+    assert "No app has been built" in (sup.last_error() or ""), "the pane cannot say why"
