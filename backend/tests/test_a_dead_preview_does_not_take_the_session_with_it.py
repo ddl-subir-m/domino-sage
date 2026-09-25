@@ -61,8 +61,15 @@ _IMPORT_FAILED = 'ERROR:    Error loading ASGI app. Could not import module "app
 
 
 def _read(sup, lines, hang=False):
-    """Run the supervisor's own output reader over `lines`, as a spawn would."""
+    """Run the supervisor's own output reader over `lines`, as a spawn would.
+
+    `sup._proc = proc` is not decoration: `_read_output` returns early when the process it was
+    given is no longer the current one, so an old generation cannot restart over a newer one. A
+    fake that skips that assignment emits a state `_spawn` never produces, and the reader then
+    takes the early return in every test.
+    """
     proc = _Proc(_Pipe(lines, hang=hang))
+    sup._proc = proc
     t = threading.Thread(target=sup._read_output, args=(proc,), daemon=True)
     t.start()
     t.join(timeout=2 if not hang else 0.3)
@@ -152,3 +159,104 @@ def test_a_stopped_supervisor_is_not_restarted_from_the_request_path(tmp_path, m
     sup.stop()
     sup.retry_start()
     assert calls == []
+
+
+# --- A failed start must not retire the supervisor --------------------------------------------
+#
+# This is what made the live 30 seconds, and the first fix missed it. `start()`'s failure path
+# called `self.stop()`, which sets `_stopped`; nothing ever cleared it. So on every later start the
+# reader skipped BOTH of its branches, `_ready` was never set, and the call waited out the whole
+# timeout. `get_upstream()` is called straight from `async def http_proxy` with no threadpool hop,
+# so those 30 s block the event loop itself — every route on the control app, not just the pane.
+
+
+def _failing_spawn(self):
+    """A spawn whose process exits at once with no output, wired like the real one."""
+    self._ready.clear()
+    self._upstream = None
+    proc = _Proc(_Pipe([]))
+    self._proc = proc
+    threading.Thread(target=self._read_output, args=(proc,), daemon=True).start()
+
+
+def test_a_failed_start_does_not_retire_the_supervisor(tmp_path, monkeypatch):
+    (tmp_path / "package.json").write_text("{}")          # an app exists; the server is what fails
+    monkeypatch.setattr(ViteSupervisor, "_spawn", _failing_spawn)
+    monkeypatch.setattr(ViteSupervisor, "_kill", lambda self: None)
+    sup = ViteSupervisor(tmp_path, "")
+
+    with pytest.raises(RuntimeError):
+        sup.start(ready_timeout_s=3)
+    assert not sup._stopped, "a failed start marked the supervisor stopped, and nothing clears it"
+
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError) as second:
+        sup.start(ready_timeout_s=3)
+    assert time.monotonic() - t0 < 2.5, "the second start waited out the timeout"
+    assert "max restarts reached" in str(second.value)
+    assert "timed out" not in str(second.value), "the reader's branches were skipped again"
+
+
+def test_the_pane_can_still_come_back_after_a_failure(tmp_path, monkeypatch):
+    """`retry_start` yields to `_stopped`, which is right for an owner who stopped the preview and
+    was wrong when a failed start set it — the pane could then never recover."""
+    (tmp_path / "package.json").write_text("{}")
+    monkeypatch.setattr(ViteSupervisor, "_spawn", _failing_spawn)
+    monkeypatch.setattr(ViteSupervisor, "_kill", lambda self: None)
+    sup = ViteSupervisor(tmp_path, "")
+    with pytest.raises(RuntimeError):
+        sup.start(ready_timeout_s=3)
+
+    tried = []
+    monkeypatch.setattr(ViteSupervisor, "start",
+                        lambda self, ready_timeout_s=30.0: tried.append(1))
+    sup.retry_start()
+    if sup._retry_thread:
+        sup._retry_thread.join(2)
+    assert tried == [1], "the preview was retired permanently by one failure"
+
+
+def test_an_owner_who_stops_the_preview_is_still_obeyed(tmp_path, monkeypatch):
+    """The other half: `_stopped` must still mean something after the above."""
+    (tmp_path / "package.json").write_text("{}")
+    tried = []
+    monkeypatch.setattr(ViteSupervisor, "start",
+                        lambda self, ready_timeout_s=30.0: tried.append(1))
+    sup = ViteSupervisor(tmp_path, "")
+    sup.stop()
+    sup.retry_start()
+    assert tried == []
+
+
+def test_an_old_reader_does_not_respawn_over_a_newer_server(tmp_path, monkeypatch):
+    """Only reachable once a failed start stopped retiring the supervisor, which is why it arrives
+    with that fix: a timed-out server killed and immediately restarted leaves the old reader alive,
+    and its respawn's `_clear_stale_port` reaps the live one it knows nothing about."""
+    sup = ViteSupervisor(tmp_path, "")
+    spawns = []
+    monkeypatch.setattr(ViteSupervisor, "_spawn", lambda self: spawns.append(1))
+    stale = _Proc(_Pipe([]))
+    sup._proc = _Proc(_Pipe([]))            # a newer generation is the current one
+    sup._read_output(stale)                 # the old reader reaches the end of its pipe
+    assert spawns == [], "a retired generation restarted over the current server"
+
+
+def test_a_start_revives_a_supervisor_that_was_stopped(tmp_path, monkeypatch):
+    """`start()` is a fresh attempt, whatever left the flag set.
+
+    Its failure path no longer calls `stop()`, so nothing in the product sets `_stopped` and then
+    starts again — but the reader skips BOTH of its branches while it is set, which is what made
+    every start wait out the full timeout. The reset is what makes `start()` mean start, so it is
+    asserted here rather than left resting on the failure path staying as it is now.
+    """
+    (tmp_path / "package.json").write_text("{}")
+    monkeypatch.setattr(ViteSupervisor, "_spawn", _failing_spawn)
+    monkeypatch.setattr(ViteSupervisor, "_kill", lambda self: None)
+    sup = ViteSupervisor(tmp_path, "")
+    sup.stop()                                   # the owner stopped it; now something starts it
+
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError) as e:
+        sup.start(ready_timeout_s=3)
+    assert time.monotonic() - t0 < 2.5, "the reader's branches were skipped; this waited out"
+    assert "timed out" not in str(e.value)

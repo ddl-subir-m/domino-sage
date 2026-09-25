@@ -22,7 +22,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..workspace.stack import stack_of
+from ..workspace.stack import preview_stack_of
 
 log = logging.getLogger("sage.preview.supervisor")
 
@@ -77,8 +77,14 @@ def parse_uvicorn_url(line: str) -> str | None:
 
 
 def make_supervisor(workspace: Path, base_prefix: str = "") -> ViteSupervisor:
-    """The supervisor for the app at `workspace`, by the stack its record names (#490)."""
-    if stack_of(Path(workspace)).preview == "uvicorn":
+    """The supervisor for the app at `workspace` (#490), by its record and then by what is there.
+
+    `preview_stack_of` rather than `stack_of`: an app that lost its record read as react-vite and
+    got `npm run dev` run on Python (#554). It answers None where nothing has been built, and the
+    supervisor returned here then refuses to spawn rather than guessing — see `start`.
+    """
+    stack = preview_stack_of(Path(workspace))
+    if stack is not None and stack.preview == "uvicorn":
         return UvicornSupervisor(workspace, base_prefix)
     return ViteSupervisor(workspace, base_prefix)
 
@@ -115,10 +121,29 @@ class ViteSupervisor:
         Raises RuntimeError (with Vite's own recent output) if Vite exits before reporting a port —
         e.g. an incompatible Node version — so the failure isn't an opaque assertion upstream.
         """
+        if preview_stack_of(self._workspace) is None:
+            # Nothing has been built here yet. Spawning anyway is what made an empty app directory
+            # read as a broken build: `npm run dev` with no package.json dies ENOENT, four times
+            # over, and the pane ends on "max restarts reached" (#554). Say the true thing instead.
+            self._last_error = f"no app has been built in {self._workspace.name} yet"
+            raise RuntimeError(self._last_error)
+        # Per-start state, reset before spawning. A previous failure left `_stopped` True — set by
+        # this method's own failure path below — and NOTHING cleared it, so `_read_output` skipped
+        # both of its branches, `_ready` was never set, and every later start waited out the full
+        # timeout. That is the 30 s the live workspace measured, not the spawn (#554). `_tail` is
+        # cleared for the same reason its four identical ENOENT copies were confusing: the tail
+        # must describe THIS attempt.
+        self._stopped = False
+        self._restarts = 0
+        self._last_error = None
+        self._tail.clear()
         self._spawn()
         timed_out = not self._ready.wait(timeout=ready_timeout_s)
         if self._upstream is None:
-            self.stop()
+            # `_kill()`, not `stop()`: this attempt is over, the supervisor is not. `stop()` is the
+            # owner's verb and its `_stopped` is what `retry_start` reads to know it may not
+            # restart. Using it here retired the preview permanently on its first failure.
+            self._kill()
             why = f"timed out after {ready_timeout_s}s" if timed_out else (self._last_error or "exited early")
             tail = "\n".join(self._tail)
             # Record it as well as raise. The restart loop sets `_last_error` when the process
@@ -237,6 +262,11 @@ class ViteSupervisor:
                 self._ready.set()
         # stdout closed -> process exited. Restart unless we asked it to stop.
         code = proc.wait()
+        if proc is not self._proc:
+            # A later `start()` has spawned past this one. Without this the old reader restarts a
+            # dead generation, and `_clear_stale_port` in that spawn reaps the LIVE server — which
+            # only became reachable once `start()` stopped retiring the supervisor above.
+            return
         # Exited means not serving. Without this, a server that printed a URL and then died leaves
         # its address behind and `upstream()` hands the proxy a socket nothing is listening on.
         self._upstream = None

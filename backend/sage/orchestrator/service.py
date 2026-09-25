@@ -200,7 +200,7 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import TurnSnapshot
-from ..workspace.stack import stack_of
+from ..workspace.stack import preview_stack_of, stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     FINDINGS_MAX,
@@ -514,7 +514,10 @@ def _supervisor_for(workspace: Path, base_prefix: str):
     """The preview server for the app at `workspace`, by its stack (#490): the template's Vite dev
     server for a react-vite app, the app's own uvicorn for a fastapi-antd one. Reads the two classes
     off this module at call time, so a test that stands in for `ViteSupervisor` still does."""
-    if stack_of(Path(workspace)).preview == "uvicorn":
+    # By the record, then by what is on disk — see `preview_stack_of`. An app that lost its record
+    # used to read as react-vite and get `npm run dev` run on Python (#554).
+    stack = preview_stack_of(Path(workspace))
+    if stack is not None and stack.preview == "uvicorn":
         return UvicornSupervisor(workspace, base_prefix)
     return ViteSupervisor(workspace, base_prefix)
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
