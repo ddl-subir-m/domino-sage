@@ -1,5 +1,6 @@
 """The reload parent being alive does not prove that the app can serve a page (#504)."""
 import json
+import subprocess
 import threading
 import time
 
@@ -346,3 +347,63 @@ def test_stop_before_reserved_spawn_is_not_undone_by_the_retry_thread(tmp_path, 
         release.set()
         sup._retry_thread.join(2)
         sup.stop()
+
+
+def test_real_uvicorn_restarts_wait_for_their_own_listener_to_close(tmp_path, monkeypatch):
+    import socket
+
+    _fixture(tmp_path)
+    (tmp_path / 'app.py').write_text(_APP + '''
+import asyncio
+from pathlib import Path
+@app.get('/slow')
+async def slow():
+    Path('request-started').write_text('started')
+    await asyncio.sleep(0.8)
+    return {'ok': True}
+''')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv('SAGE_PREVIEW_PORT', str(port))
+    sup = UvicornSupervisor(tmp_path)
+    requests = []
+    old_processes = []
+    def slow_request():
+        try:
+            httpx.get(f'http://127.0.0.1:{port}/slow', timeout=3)
+        except httpx.HTTPError:
+            pass  # Restart can cancel the in-flight client; the listener must still be retired.
+    try:
+        sup.start(ready_timeout_s=8)
+        for _ in range(3):
+            marker = tmp_path / 'request-started'
+            marker.unlink(missing_ok=True)
+            client = threading.Thread(target=slow_request)
+            requests.append(client)
+            client.start()
+            _wait(marker.exists, timeout=3)
+            old_processes.append(sup._proc)
+            before = time.monotonic()
+            assert sup.retry_start(explicit=True)
+            reserved = sup.status()['generation']
+            assert time.monotonic() - before < 0.5, 'Retry and status must not wait for port release'
+            sup._retry_thread.join(8)
+            assert not sup._retry_thread.is_alive()
+            status = sup.status()
+            assert status['state'] == 'ready', status
+            assert status['generation'] == reserved, status
+            assert not any('Address already in use' in line for line in status['output'])
+            assert httpx.get(sup.upstream(), timeout=1).status_code == 200
+            client.join(3)
+    finally:
+        sup.stop()
+        if sup._retry_thread:
+            sup._retry_thread.join(3)
+        for client in requests:
+            client.join(3)
+        for process in old_processes:
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass

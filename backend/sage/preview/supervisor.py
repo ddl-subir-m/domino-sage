@@ -11,6 +11,7 @@ Deep module, narrow interface: start() / upstream() / stop(). How the port is di
 from __future__ import annotations
 
 import collections
+import errno
 import logging
 import os
 import re
@@ -39,6 +40,29 @@ _UVICORN_RE = re.compile(r"Uvicorn running on (https?://[^\s/]+)")
 # (e.g. IPv6-only) while a fresh Vite grabs the other, so "localhost" nondeterministically
 # resolves to the stale one. Clearing it before every spawn keeps that from happening.
 _DEFAULT_PORT = 5173
+_PORT_RELEASE_TIMEOUT_S = 3.0
+
+
+def _probe_port(port: int) -> None:
+    """Check both listener families; a graceful old child may still own its socket."""
+    # BSD permits reusable wildcard and loopback listeners to coexist. Probe both addresses
+    # used by our launch commands and template configs, not only the wildcard.
+    for family, host in (
+        (socket.AF_INET, "0.0.0.0"), (socket.AF_INET, "127.0.0.1"),
+        (socket.AF_INET6, "::"), (socket.AF_INET6, "::1"),
+    ):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind((host, port))
+                # A reusable bind alone does not prove another process can listen here.
+                probe.listen(1)
+        except OSError as exc:
+            if family == socket.AF_INET6 and exc.errno in (
+                errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT, errno.EADDRNOTAVAIL, errno.ENODEV,
+            ):
+                continue  # IPv4-only hosts need no IPv6 listener.
+            raise
 
 
 def preview_port() -> int:
@@ -284,6 +308,8 @@ class ViteSupervisor:
         # Never hold the status lock across lsof or Popen. Status and Stop are control requests;
         # an OS launch that takes seconds cannot hold them behind its work.
         self._clear_stale_port(port)
+        if not self._wait_for_port_release(port, generation):
+            return
         with self._state_lock:
             if self._stopped or generation != self._generation:
                 return
@@ -303,6 +329,26 @@ class ViteSupervisor:
         if cancelled:
             self._terminate(proc)
         threading.Thread(target=self._read_output, args=(proc,), daemon=True).start()
+
+    def _wait_for_port_release(self, port: int, generation: int) -> bool:
+        # SIGTERM is asynchronous. Wait on the background launch path, never in Stop or Retry.
+        deadline = time.monotonic() + _PORT_RELEASE_TIMEOUT_S
+        while True:
+            with self._state_lock:
+                if self._stopped or generation != self._generation:
+                    return False
+            try:
+                _probe_port(port)
+                return True
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                if time.monotonic() >= deadline:
+                    raise OSError(
+                        errno.EADDRINUSE,
+                        f"Preview port {port} is still in use after {_PORT_RELEASE_TIMEOUT_S:g}s",
+                    ) from exc
+            time.sleep(0.05)
 
     # A line that proves the server is SERVING, for a server whose URL line does not prove it.
     # Uvicorn's reloader prints "Uvicorn running on <url>" BEFORE the child imports the app, so a
