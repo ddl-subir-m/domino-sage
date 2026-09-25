@@ -22,7 +22,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..workspace.stack import preview_stack_of
+from ..workspace.stack import preview_stack_of, resolve_stack
 
 log = logging.getLogger("sage.preview.supervisor")
 
@@ -77,12 +77,8 @@ def parse_uvicorn_url(line: str) -> str | None:
 
 
 def make_supervisor(workspace: Path, base_prefix: str = "") -> ViteSupervisor:
-    """The supervisor for the app at `workspace` (#490), by its record and then by what is there.
-
-    `preview_stack_of` rather than `stack_of`: an app that lost its record read as react-vite and
-    got `npm run dev` run on Python (#554). It answers None where nothing has been built, and the
-    supervisor returned here then refuses to spawn rather than guessing — see `start`.
-    """
+    """Pick from the shared stack resolution. Unresolved apps get an inert supervisor;
+    `start` refuses them with the resolver's reason before it can spawn a process."""
     stack = preview_stack_of(Path(workspace))
     if stack is not None and stack.preview == "uvicorn":
         return UvicornSupervisor(workspace, base_prefix)
@@ -121,11 +117,12 @@ class ViteSupervisor:
         Raises RuntimeError (with Vite's own recent output) if Vite exits before reporting a port —
         e.g. an incompatible Node version — so the failure isn't an opaque assertion upstream.
         """
-        if preview_stack_of(self._workspace) is None:
+        resolution = resolve_stack(self._workspace)
+        if not resolution.ready:
             # Nothing has been built here yet. Spawning anyway is what made an empty app directory
             # read as a broken build: `npm run dev` with no package.json dies ENOENT, four times
             # over, and the pane ends on "max restarts reached" (#554). Say the true thing instead.
-            self._last_error = f"no app has been built in {self._workspace.name} yet"
+            self._last_error = resolution.reason
             raise RuntimeError(self._last_error)
         # Per-start state, reset before spawning. A previous failure left `_stopped` True — set by
         # this method's own failure path below — and NOTHING cleared it, so `_read_output` skipped

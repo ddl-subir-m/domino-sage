@@ -64,12 +64,11 @@ def test_an_app_with_no_record_is_react_vite(tmp_path: Path):
     assert again.stack_name == LEGACY_STACK
     assert mgr.stack.name == LEGACY_STACK
     assert (again.path / "src" / "App.tsx").read_text() == "the person's app", "not re-seeded"
-    assert "stack" not in _settings(again), "an old app is not rewritten just for being opened"
+    assert _settings(again)["stack"] == LEGACY_STACK, "only the missing identity is recovered"
 
 
 def test_the_record_answers_and_the_files_do_not(tmp_path: Path):
-    """The sentinel is a file the agent can delete. Deleting it re-seeds the SAME stack — the one
-    the record names — and the record itself does not move."""
+    """Deleting the sentinel leaves an incomplete app; it is not permission to seed again."""
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=_fake_template(tmp_path))
     ws = mgr.ensure("proj1")
     (ws.path / "package.json").unlink()
@@ -77,21 +76,20 @@ def test_the_record_answers_and_the_files_do_not(tmp_path: Path):
 
     again = mgr.ensure("proj1")
 
-    assert (again.path / "package.json").exists(), "the sentinel is restored from the template"
+    assert not (again.path / "package.json").exists(), "only explicit reset may restore the template"
     assert (again.path / "src" / "App.tsx").read_text() == "the person's app", "entry by entry"
     assert _settings(again)["stack"] == "react-vite"
 
 
-def test_an_unreadable_record_reads_as_react_vite(tmp_path: Path):
-    """A stray comma in the settings file must not decide that an app on the disk cannot open."""
+def test_an_unreadable_record_has_no_guessed_stack(tmp_path: Path):
     app = tmp_path / "app"
     (app / ".sage").mkdir(parents=True)
     (app / ".sage" / "settings.json").write_text("{not json")
-    assert read_stack_name(app) == LEGACY_STACK
+    assert read_stack_name(app) is None
     (app / ".sage" / "settings.json").write_text(json.dumps({"stack": "   "}))
-    assert read_stack_name(app) == LEGACY_STACK
+    assert read_stack_name(app) is None
     (app / ".sage" / "settings.json").write_text(json.dumps({"stack": 7}))
-    assert read_stack_name(app) == LEGACY_STACK
+    assert read_stack_name(app) is None
 
 
 def test_a_name_sage_cannot_seed_is_refused_before_anything_is_minted(tmp_path: Path):
@@ -175,5 +173,6 @@ def test_the_template_override_reaches_only_the_react_vite_entry(tmp_path: Path)
     caller passes still lands there and nowhere else."""
     tmpl = _fake_template(tmp_path)
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=tmpl)
-    assert mgr.stack_for("nobody").template_dir == tmpl
+    app = mgr.ensure("project", stack=LEGACY_STACK)
+    assert mgr.stack_for(app.app_id).template_dir == tmpl
     assert REACT_VITE.template_dir != tmpl, "the module constant is not rewritten under a caller"

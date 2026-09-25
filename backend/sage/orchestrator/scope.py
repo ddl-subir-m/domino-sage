@@ -232,13 +232,13 @@ def app_context(root: Path | None) -> str:
     if root is None:
         return ""
     root = Path(root)
-    kind = stack_of(root)
     try:
+        kind = stack_of(root)
         files = sorted({p for glob in kind.source_globs for p in root.glob(glob)
                         if p.is_file()
                         and not any(part.startswith(".") for part in p.relative_to(root).parts)
                         and not p.relative_to(root).as_posix().startswith(kind.vendored)})
-    except OSError:
+    except (OSError, ValueError):
         return ""
     if not files:
         return ""

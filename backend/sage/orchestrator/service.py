@@ -200,7 +200,7 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import TurnSnapshot
-from ..workspace.stack import preview_stack_of, stack_of
+from ..workspace.stack import preview_stack_of, resolve_stack, stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     FINDINGS_MAX,
@@ -6984,7 +6984,7 @@ class Orchestrator:
         workspace = self._wm.ensure(self._project_id, seed_app=seed_app)
         record = self._wm.project_record(self._project_id)
         self._hydrate_untitled(record)
-        if seed_app:
+        if seed_app and resolve_stack(workspace.path).ready:
             self._prepare_app_files()
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
         shim = EnforcementShim(control, self._effective_catalog(record), self._gateway,
@@ -7020,7 +7020,7 @@ class Orchestrator:
                 queries.start()
             except Exception:
                 log.exception("preview: the queries server could not start")
-        if seed_app:
+        if seed_app and resolve_stack(workspace.path).ready:
             # A freshly seeded AGENTS.md is the template's, so it is voiced in the pack's words
             # (#114) and then the Project's instructions have to be rendered back into it — they are
             # kept on the record, not in the file (ADR-0008).
@@ -7057,6 +7057,8 @@ class Orchestrator:
         if self._project is None:
             return self.project(start_preview=False, seed_app=True)
         self._wm.ensure(self._project_id, seed_app=True)
+        if not resolve_stack(self._project.workspace.path).ready:
+            return self._project
         # The app is BORN on the line above, and the server was picked when the Project ATTACHED.
         # Chat attaches first and with `seed_app=False`, so at pick time there was no app directory
         # — no record to read and no files to read it from — and the pick fell back to the build
@@ -7068,6 +7070,9 @@ class Orchestrator:
             self._project.workspace.path)
         if self._prepare_app_files() or wrong_server:
             self._restart_preview_for_config_change(self._project)
+        # Chat may have attached before identity existed, when there was no query template.
+        if getattr(self._project.queries, "_template", self._wm.template) is None:
+            self._project.queries = PreviewQueries(self._project.workspace.path, self._wm.template)
         # The app may have been seeded just now, from a template that carries the pack's tokens and
         # no instructions block.
         self._voice_agents_md(self._project)
@@ -7605,10 +7610,11 @@ class Orchestrator:
             # emptying that one under it would leave its end-of-turn repairs with nothing to restore
             # from (see Project.turn_attached and _restore_attachments).
             project.attached = []
-            if self._prepare_app_files():
-                self._restart_preview_for_config_change(project)
-            self._voice_agents_md(project)   # the app being bound to may have been seeded just now
-            self._splice_instructions(project)
+            if resolve_stack(workspace.path).ready:
+                if self._prepare_app_files():
+                    self._restart_preview_for_config_change(project)
+                self._voice_agents_md(project)
+                self._splice_instructions(project)
             self._rehydrate_attached(project)
             # A switch to another app must not move the Build's pinned baseline. Switching back can
             # repair that pinned app, so include those user-side writes before releasing the witness.
@@ -7704,6 +7710,8 @@ class Orchestrator:
                  "byConversation": conversation}, origin)
 
     def _prepare_app_files(self) -> bool:
+        if not resolve_stack(self._wm.app_path).ready:
+            return False
         preview_config_changed = self._wm.refresh_preview_config()
         self._wm.ensure_llm_helper()
         self._wm.refresh_owned_sources()

@@ -184,6 +184,8 @@ def test_a_long_prompt_is_truncated_not_refused():
 # --- the app listing ---------------------------------------------------------------------------
 
 def _app(tmp_path, files: dict[str, str]):
+    (tmp_path / ".sage").mkdir(exist_ok=True)
+    (tmp_path / ".sage/settings.json").write_text('{"stack":"react-vite"}')
     for rel, body in files.items():
         p = tmp_path / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -480,6 +482,7 @@ def test_the_rule_matches_the_paths_the_model_is_handed_and_not_a_guess_at_words
     classifier over a file the model was never told about."""
     from sage.orchestrator.service import Orchestrator
 
+    _app(tmp_path, {})
     src = tmp_path / "src"
     src.mkdir()
     (src / "App.tsx").write_text("export default function App() { return null }\n")
