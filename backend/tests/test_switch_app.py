@@ -66,6 +66,16 @@ class FakeVite:
         self.starts += 1
         return "http://127.0.0.1:5173"
 
+    def retry_start(self) -> None:
+        """What the request path calls since #554, where it used to call `start()` directly.
+
+        The real one is rate-limited and hands the work to a thread nobody waits on, because a
+        preview that will not start must not block a request. A test asserting WHICH DIRECTORY the
+        preview follows cannot race a thread, so the fake does the same work in line — the
+        behaviour under test is the directory, not the threading, which
+        `test_a_dead_preview_does_not_take_the_session_with_it.py` covers directly."""
+        self.start()
+
     def upstream(self) -> str:
         if not self.running:
             raise RuntimeError("Vite not ready")
