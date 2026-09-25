@@ -61,6 +61,15 @@ document, so both readers get what they had.
 
 ## Consequences
 
+- **The app name is optional metadata (#557 P2).** Required summary, product sections and
+  executable steps are checked before the optional name call. A missing heading gets one bounded
+  gateway call after those checks pass. If naming fails, the plan keeps an empty stored title and
+  its existing display caption. No caption is inserted into Markdown or written as a deployment
+  name. Editing and archiving preserve the empty title; a later explicit name can fill it. A
+  terminal failure of the main planning call still blocks approval, even with plausible partial
+  text, and records its planning stage and bounded error code. An earlier recovered step or an
+  earlier turn's failure does not block the current plan.
+
 - **An edit to a live document rewrites `plan.md`.** Otherwise the page shows one plan and the
   build runs another, and the rail keeps counting steps that are no longer there. Only while a
   handoff is live, and only from the document it belongs to — editing an older plan after its

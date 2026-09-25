@@ -39,6 +39,7 @@ import httpx
 
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
+    from ..workspace.chat_tables import ChatTables
 
 from .. import build_diagnostics, degraded, timing
 from ..assets.provider import (
@@ -191,6 +192,7 @@ from ..router.models import (
 )
 from ..router.phase_classifier import SHELL_TOOLS, WRITE_TOOLS
 from ..shim.enforcement import EnforcementShim
+from ..shim.keepalive import cut_off_finish_reason, terminal_finish_reason, upstream_error
 from ..tool_timing import MAX_PROGRAMS, program_name
 from ..workspace import plan_doc
 from ..workspace.manager import (
@@ -201,7 +203,7 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import TurnSnapshot
-from ..workspace.stack import preview_stack_of, resolve_stack, stack_of
+from ..workspace.stack import default_stack_name, preview_stack_of, resolve_stack, stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     FINDINGS_MAX,
@@ -3514,6 +3516,20 @@ def _error_raw(err: object) -> str:
     return ""
 
 
+def _plan_failure_fields(error: dict) -> dict:
+    code = str(error.get("code") or "model_call_failed")
+    if not re.fullmatch(r"[a-z0-9_-]{1,64}", code):
+        code = "model_call_failed"
+    return {"errorCode": code, "errorStage": "planning"}
+
+
+class PlanCallFailed(ValueError):
+    def __init__(self, error: dict):
+        raw = _error_raw(error) or "The model call failed."
+        super().__init__(_guardrail_sentence(raw) or f"model call failed: {raw}")
+        self.failure = _plan_failure_fields(error)
+
+
 def _at_last_rung(history: list[dict], reason: str) -> bool:
     """Is the refusal ABOUT to be appended the one that survived a complete clear (ADR-0022)?
 
@@ -5652,10 +5668,6 @@ def _record_execution_contract(check: PlanContractCheck, source_request_count: i
     )
 
 
-_PLAN_HEADING_REPAIR_FAILED = (
-    "Planning wrote a plan without an app name, and the repair couldn't name it. Send the "
-    "request again — adding the app name you want can help."
-)
 # The name repair is one direct gateway call, and this is its whole system prompt (#555). It was a
 # second `sage-plan` turn in the same OpenCode session, whose agent prompt says "produce the plan
 # and nothing else" — and a weak model follows the system prompt over a user message asking for a
@@ -5891,14 +5903,10 @@ _PLAN_EXAMPLES = {
 
 
 def _plan_example_for(project: Project) -> str:
-    """The worked example for this turn's stack, react-vite when the record names neither.
-
-    One lookup for both readers — the gated plan turn and the invalid-plan retry — so the retry
-    cannot show a fastapi-antd app a react-vite plan. `stack_of` already falls back on an app with
-    no record, which is what the Chat handoff has: it plans before any app exists.
-    """
-    return _PLAN_EXAMPLES.get(stack_of(project.app_for_turn().path).name,
-                              _PLAN_EXAMPLES["react-vite"])
+    """Use the recorded app stack, or the new-app default before a Chat handoff creates one."""
+    resolution = resolve_stack(project.app_for_turn().path)
+    name = default_stack_name() if resolution.state == "empty" else resolution.require_stack().name
+    return _PLAN_EXAMPLES.get(name, _PLAN_EXAMPLES["react-vite"])
 
 
 # Heads the person's own words in a gated plan turn (#537). The data notes ride AFTER the request
@@ -6236,6 +6244,8 @@ class Orchestrator:
         # not possible — the tuple is replaced, never mutated.
         self._alias_listing_at: tuple[float, dict[str, LlmAlias]] | None = None
         self._data_use_turns: dict[str, str] = {}
+        # The controlled writer and Chat finalization share this turn's validation evidence.
+        self._chat_tables: dict[str, ChatTables] = {}
         # Reads that ended in the model querying the table itself. ADR-0041 permits it — "a
         # read-only turn may read the world", and Chat queries Data Sources every day — but it is a
         # DIFFERENT door from the one the person bound the table for, and rows go into the model's
@@ -10946,7 +10956,8 @@ class Orchestrator:
                     directory=getattr(client, "_dirs", {})[session_id],
                     rebuild_pending=bool(record.get("rebuild_pending")))
         except ValueError as e:
-            self._record_plan_refusal(store, thread_id, project, str(e))
+            self._record_plan_refusal(store, thread_id, project, str(e),
+                                      failure=getattr(e, "failure", None))
             raise
         if not plan_md:
             # Said in words, because this sentence is what the route answers 502 with and the click
@@ -11012,18 +11023,27 @@ class Orchestrator:
                 client.send_prompt(sid, original_prompt, model=_tool_handle(project), agent="sage-plan")
                 client.wait_for_idle(sid)
                 parts: list[str] = []
+                turn_failure = None
                 for message in client.messages(sid):
                     if message.get("type") != "assistant":
                         continue
+                    # Only this request's messages count. A later successful message clears a
+                    # failed step, just as it does in Build's terminal check.
+                    if _message_error_key(message) not in seen:
+                        turn_failure = message.get("error") or None
+                        if turn_failure:
+                            parts.clear()
+                            continue
                     for index, part in enumerate(message.get("content", [])):
+                        if not isinstance(part, dict):
+                            continue
                         if _part_key(message, index, part) in seen:
                             continue
                         if part.get("type") == "text" and part.get("text"):
                             parts.append(part["text"])
                 plan_md = _drop_plan_preamble(_tidy_plan("\n".join(parts)))
-                if plan_md:
-                    return plan_md, sid
-                error = project.last_gateway_error
+                error = project.last_gateway_error or (
+                    {"message": _error_raw(turn_failure)} if turn_failure else None)
                 if error is not None and error.get("code") == "model_no_action_timeout":
                     if project.stop_requested:
                         raise ValueError("Planning was stopped.")
@@ -11055,8 +11075,9 @@ class Orchestrator:
                     sid = client.create_session(directory=directory)
                     continue
                 if error is not None:
-                    raw = str(error["message"])
-                    raise ValueError(_guardrail_sentence(raw) or f"model call failed: {raw}")
+                    raise PlanCallFailed(error)
+                if plan_md:
+                    return plan_md, sid
                 log.warning("sage-plan produced no text (session=%s, model_calls=%d)",
                             sid, project.model_calls)
                 return plan_md, sid
@@ -11084,11 +11105,10 @@ class Orchestrator:
                 project, current_prompt, sid, recovery=recovery)
             if not plan_md:
                 return plan_md, sid
-            plan_md = self._repair_plan_heading(project, plan_md, where)
             contract = validate_execution_contract(plan_md)
             _record_execution_contract(contract, source_request_count)
             if contract.valid:
-                return plan_md, sid
+                return self._repair_plan_heading(project, plan_md, where), sid
             attempt, action = recovery.choose()
             timing.planning_recovery(
                 "invalid_execution_plan", attempt, action,
@@ -11130,9 +11150,8 @@ class Orchestrator:
         carried the implement block and the write tools (measured: 39862 instruction bytes and 9
         tool schemas against 12303 and 7 on the calls either side). A gateway call arms nothing.
 
-        Every failure — a bad name, a transport error, the bounded wait running out — is the one
-        sentence `_PLAN_HEADING_REPAIR_FAILED`, which is what the callers already turn into a
-        failed planning turn.
+        A failed optional name call keeps the valid body and its empty title. The existing app
+        display name/caption remains a display value, never a fabricated Markdown heading.
         """
         if chat_handoff.plan_heading(plan_md):
             return plan_md
@@ -11140,12 +11159,12 @@ class Orchestrator:
             answer = self._ask_for_app_name(project, plan_md)
         except Exception as e:
             log.warning("%s: plan heading repair failed: %s: %s", where, type(e).__name__, e)
-            raise ValueError(_PLAN_HEADING_REPAIR_FAILED) from None
+            return plan_md
         repaired = _prepend_repaired_heading(plan_md, answer)
         if not repaired:
             log.warning("%s: plan heading repair returned no valid app name: %r",
                         where, answer[:120])
-            raise ValueError(_PLAN_HEADING_REPAIR_FAILED)
+            return plan_md
         return repaired
 
     def _ask_for_app_name(self, project: Project, plan_md: str) -> str:
@@ -11179,11 +11198,32 @@ class Orchestrator:
                     call.first_byte()
                     call.chunk()
                     chunks.append(chunk)
+                raw = b"".join(chunks)
+                # Validate complete protocol frames, including frames split across transport
+                # chunks. A partial two-word answer is not a successful name on a failed call.
+                framed = raw if raw.lstrip().startswith(b"data:") else b"data: " + raw
+                failure = upstream_error(framed)
+                cutoff = cut_off_finish_reason(framed)
+                if failure or cutoff:
+                    raise ValueError(failure or f"name answer ended with {cutoff}")
+                if raw.lstrip().startswith(b"{"):
+                    whole = json.loads(raw)
+                    complete = isinstance(whole, dict) and any(
+                        isinstance(choice, dict) and isinstance(choice.get("message"), dict)
+                        for choice in whole.get("choices", []))
+                else:
+                    complete = (terminal_finish_reason(raw) == "stop"
+                                or re.search(rb"(?m)^data:\s*\[DONE\]\s*$", raw) is not None)
+                if not complete:
+                    raise ValueError("name answer ended without a completion signal")
+                answer = scope._extract(raw)
+                if not _repair_heading_name(answer):
+                    raise ValueError("name answer was not a valid app name")
             except BaseException as e:
                 call.done(ok=False, error=f"{type(e).__name__}: {e}")
                 raise
             call.done()
-            return scope._extract(b"".join(chunks))
+            return answer
 
         # A timeout releases the TURN, not the thread: the worker stays on the gateway read until
         # the stream ends, and process exit joins it. `_withhold_probe` accepts the same, and both
@@ -11960,7 +12000,8 @@ class Orchestrator:
         return ask
 
     def _record_plan_refusal(self, store: ThreadStore, thread_id: str, project: Project,
-                             said: str, *, offer: bool = True) -> None:
+                             said: str, *, offer: bool = True,
+                             failure: dict | None = None) -> None:
         """Put a failed handoff plan on the Thread, and advance the ladder if it earned a rung.
 
         `offer` is False for a plan that came back empty with nothing refused. The row still goes
@@ -12005,7 +12046,7 @@ class Orchestrator:
             # be the one with no offer under it AND no reason given for the silence.
             message += _last_rung_note(history, reason)
             store.append_history(thread_id, {
-                "type": "error", "reason": reason, "message": message})
+                "type": "error", "reason": reason, "message": message, **(failure or {})})
             # Opened on ONE refusal here, unlike every other caller. A failed handoff is not a turn
             # somebody can shrug at and retry: it is a deliberate click, on a card already on
             # screen, and the planner runs in the Thread's own session — so it is a fact about the
@@ -12846,6 +12887,7 @@ class Orchestrator:
         if (not state.chat_artifact_turn or state.read_only_turn
                 or not thread_id or thread_id != state.chat_thread_id):
             raise ValueError("Artifact writes require the active data artifact Chat turn.")
+        tables = self._chat_tables.get(thread_id)
         path = body.get("path")
         content = body.get("content")
         if not isinstance(path, str) or not isinstance(content, str):
@@ -12854,12 +12896,17 @@ class Orchestrator:
         if (rel.is_absolute() or ".." in rel.parts or "\\" in path
                 or not path.startswith(f"examples/{thread_id}/")):
             raise ValueError(f"Artifact writes must stay under examples/{thread_id}/.")
+        path = rel.as_posix()
         folder = project.record.path.resolve() / "examples" / thread_id
         dest = (project.record.path / path).resolve()
         if folder.resolve() != folder or dest == folder or not dest.is_relative_to(folder):
             raise ValueError("Artifact path escapes its thread folder.")
         if not path.endswith((".png", ".table.json")):
             raise ValueError("Artifact writes must use .png or .table.json so row protection applies.")
+        # Keep a rejected attempt even when it leaves no file for the final scan to find.
+        # Clear only after replacement succeeds, including an unchanged valid replacement.
+        if path.endswith(".table.json") and tables is not None:
+            tables.write_failures[path] = "table write did not complete"
         encoding = body.get("encoding", "utf8")
         if encoding == "svg" and path.endswith(".png"):
             import xml.etree.ElementTree as ET
@@ -12917,11 +12964,29 @@ class Orchestrator:
             except ValueError as e:
                 raise ValueError("Artifact content is not valid base64.") from e
         elif encoding == "utf8" and path.endswith(".table.json"):
+            from ..workspace.chat_tables import validate_table_bytes
+
             data = content.encode("utf-8")
+            if reason := validate_table_bytes(data):
+                if tables is not None:
+                    tables.write_failures[path] = reason
+                raise ValueError(f"Invalid table JSON: {reason}.")
         else:
             raise ValueError("Use utf8 for table JSON, or svg/base64 for PNG charts.")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
+        if path.endswith(".table.json"):
+            with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", delete=False) as candidate:
+                temporary = Path(candidate.name)
+                try:
+                    candidate.write(data)
+                    candidate.close()
+                    os.replace(temporary, dest)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            if tables is not None:
+                tables.write_failures.pop(path, None)
+        else:
+            dest.write_bytes(data)
         return {"path": path, "bytes": len(data)}
 
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
@@ -14421,13 +14486,14 @@ class Orchestrator:
                 chat_approved.names, chat_approved.order
             )
         tap: _EventTap | None = None
-        from ..workspace.chat_tables import ChatTables, failed_table_name, without_failed_tables
+        from ..workspace.chat_tables import ChatTables, failed_table_name, validate_table_bytes
 
         tables: ChatTables | None = None
         recovery_used = False
         primary_body = ""
         last_text = ""
         streamed_body = ""
+        completed_stream_body = ""
         artifacts_finished = False
         # #418. Read at the turn's end to decide whether the workspace is worth re-reading: a turn
         # that ran no tool cannot have written a file, so there is nothing for the revert scan to
@@ -14477,13 +14543,17 @@ class Orchestrator:
                     revert_denied_writes(project.record.path, thread_id, tables.before)
                 invalid = tables.check(body)
                 tables.diagnose(invalid, outcome)
-                # A failed replacement must not turn an earlier turn's valid card into an empty
-                # receipt. Restore only this turn's damage; unchanged prior files stay untouched.
+                # Restore an earlier valid table after a bad replacement. Remove only failed
+                # candidates written by this turn; retention must not turn them into valid-looking
+                # empty receipts. An unchanged invalid file stays eligible for a later repair.
                 for rel in invalid:
-                    if rel in tables.before and rel not in tables.prior_paths:
-                        path = project.record.path / rel
+                    path = project.record.path / rel
+                    previous = tables.before.get(rel)
+                    if previous is not None and not validate_table_bytes(previous):
                         path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(tables.before[rel])
+                        path.write_bytes(previous)
+                    elif previous is None or not path.exists() or path.read_bytes() != previous:
+                        path.unlink(missing_ok=True)
                 withhold_table_rows(project.record.path, thread_id, tables.before,
                                     kept_rows=project.record.kept_rows())
                 runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
@@ -14507,8 +14577,11 @@ class Orchestrator:
                 turn_rewrites.update(rel for rel in written if rel in tables.before)
             events = []
             if body.strip() or invalid:
+                # The failure text below is authoritative. A phrase filter cannot remove every
+                # possible success claim or know which surrounding numbers remain supported. An
+                # empty final text event also removes provisional streamed prose in Workbench.
                 ev = {"type": "agent", "kind": "text",
-                      "text": without_failed_tables(body, set(invalid))}
+                      "text": "" if invalid else body}
                 events.append(ev)
             if artifacts:
                 immediate = immediate or "artifacts"
@@ -14589,6 +14662,7 @@ class Orchestrator:
                 # unlink on `prev is None`.
                 before = snapshot_files(project.record.path)
                 tables = ChatTables(project.record.path, thread_id, before)
+                self._chat_tables[thread_id] = tables
             # Cleared here so what is read at the end of this turn belongs to this turn. Every build
             # entry point already does this; Chat never did, because Chat never read the field —
             # which is the gap, not the clearing. The turn lock means no other turn is running to
@@ -14720,6 +14794,7 @@ class Orchestrator:
             # question that was never the problem.
             step_error = ""
             step_reason = ""
+            unanswered_stream_error = False
             answered = False
             idle_quiet = _CHAT_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
             tool_quiet = _CHAT_TOOL_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
@@ -15062,6 +15137,8 @@ class Orchestrator:
                             # anything arrive AFTER this went wrong" — a step that fails and is
                             # retried still says something afterwards and still stays quiet.
                             answered = False
+                            completed_stream_body = ""
+                            unanswered_stream_error = True
                         log.warning("chat: step failed — %s", ev.payload.get("error"))
                         # A turn refused at its first step may never register as running, and
                         # `finished` needs to have seen it run. Without this the loop cannot end on
@@ -15134,10 +15211,14 @@ class Orchestrator:
                     if live is not None:
                         answered = answered or bool(live.get("text"))
                         if live.get("type") == "delta":
+                            if live.get("final") and live.get("text", "").strip():
+                                unanswered_stream_error = False
                             if tables.repair_ran:
                                 continue
                             streamed_body = (live.get("text", "") if live.get("final")
                                              else streamed_body + live.get("text", ""))
+                            if live.get("final"):
+                                completed_stream_body = streamed_body
                             tables.check(streamed_body)
                             # A table answer is held until its files have been checked. Ordinary
                             # Chat still streams. Repair prose never replaces the useful answer.
@@ -15313,12 +15394,15 @@ class Orchestrator:
                     # well as this session's, so the chat agent is told the rule it belongs to; the
                     # Thread must not show it either way. Stripped here, where the reply is both
                     # persisted and replayed, so a reload does not bring it back.
-                    body = _take_no_build_marker(pending_text)[0] if pending_text else ""
+                    # A final stream message is an answer even if the transcript copy is late.
+                    # Partial narration and words before a failed step do not meet that test.
+                    body = _take_no_build_marker(pending_text or completed_stream_body)[0]
                     if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                         continue
                     invalid = tables.check(primary_body if tables.repair_ran else body)
                     answered = (has_chat_result(primary_body if tables.repair_ran else body, invalid)
-                                and not turn_failed and project.last_gateway_error is None)
+                                and not turn_failed and not unanswered_stream_error
+                                and project.last_gateway_error is None)
                     repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
                     if ((repairable or (not invalid and not answered))
                             and not recovery_used and not turn_failed and not step_error
@@ -15369,6 +15453,7 @@ class Orchestrator:
                         appeared = False
                         last_text = ""
                         streamed_body = ""
+                        completed_stream_body = ""
                         last_activity = time.monotonic()
                         running_tools.clear()
                         running_paths.clear()
@@ -15492,6 +15577,8 @@ class Orchestrator:
             yield finish({"type": "done", "ok": False, "decision": "session failed",
                           "artifacts": artifacts})
         finally:
+            if self._chat_tables.get(thread_id) is tables:
+                self._chat_tables.pop(thread_id, None)
             # Generator close and exceptions also end the retention window. In particular Stop
             # used to save straight from this finally without removing generated table rows.
             if tables is not None and not artifacts_finished:
@@ -20352,7 +20439,9 @@ class Orchestrator:
                     message += brand.text(
                         '\n\nThe plan is still here. Say "try again" to build it.')
                 message += _last_rung_note(build_history, reason)
-                yield persist({"type": "error", "message": message, "reason": reason})
+                failure_fields = _plan_failure_fields(err) if gate else {}
+                yield persist({"type": "error", "message": message, "reason": reason,
+                               **failure_fields})
                 # Between the error and the `done`, for the reason Chat puts it there: a client
                 # reading the stream in order sees what failed before it is offered a way out of it.
                 #
@@ -20363,7 +20452,8 @@ class Orchestrator:
                 offered = self._record_build_recall_offer(project)
                 if offered is not None:
                     yield offered
-                yield persist({"type": "done", "ok": False, "decision": "gateway error"})
+                yield persist({"type": "done", "ok": False, "decision": "gateway error",
+                               **failure_fields})
                 return
 
             if broken_call is not None and broken_retries < 1:
@@ -20542,14 +20632,6 @@ class Orchestrator:
                     yield persist({"type": "done", "ok": False, "decision": "no app described"})
                     return
                 if not arch:
-                    try:
-                        plan_md = self._repair_plan_heading(project, plan_md, "plan gate")
-                    except ValueError as e:
-                        restore_mode()
-                        yield persist({"type": "error", "message": str(e)})
-                        yield persist({"type": "done", "ok": False,
-                                       "decision": "plan title repair failed"})
-                        return
                     source_request_messages = (prompt,)
                     contract = validate_execution_contract(plan_md)
                     _record_execution_contract(contract, len(source_request_messages))
@@ -20582,6 +20664,7 @@ class Orchestrator:
                         yield persist({"type": "done", "ok": False,
                                        "decision": "invalid execution plan"})
                         return
+                    plan_md = self._repair_plan_heading(project, plan_md, "plan gate")
                 restore_mode()
                 # An architecture is a reference document, not the one-shot plan→implement handoff, so
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it

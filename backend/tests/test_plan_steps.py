@@ -191,6 +191,13 @@ def test_one_step_execution_plan_is_valid_but_does_not_phase():
     assert not is_phasable(EXECUTION_PLAN)
 
 
+def test_an_unnamed_plan_still_needs_its_full_execution_contract():
+    unnamed = "\n".join(EXECUTION_PLAN.splitlines()[1:]).lstrip()
+    assert validate_execution_contract(unnamed).valid
+    no_summary = unnamed.replace("A dashboard for exploring trade data.", "")
+    assert validate_execution_contract(no_summary).missing_sections == ("summary",)
+
+
 def test_six_step_execution_plan_is_valid_and_phases():
     steps = "\n\n".join(
         f"### {n}. Step {n}\n"
