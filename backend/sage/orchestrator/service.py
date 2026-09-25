@@ -7679,12 +7679,24 @@ class Orchestrator:
         project.supervisor = _supervisor_for(project.workspace.path, domino_base_prefix())
 
     def _ensure_preview_running(self, project: Project) -> None:
+        """Nudge a dead preview back up, WITHOUT making this request wait or fail.
+
+        Every preview request reaches here, and a pane showing a broken app re-polls about once a
+        second. This used to call `start()`, which blocks 30 s and then raises, so each poll held a
+        request thread for the whole timeout and the failure came back up the stack. Measured
+        2026-09-24: Chat and the model drawer stopped answering on a workspace whose app would not
+        import, while the session still looked alive. Both servers here are PANES; neither may cost
+        the session a thread or a turn.
+        """
         try:
             project.supervisor.upstream()
         except RuntimeError:
-            project.supervisor.start()
+            project.supervisor.retry_start()
         if project.queries.port is None:
-            project.queries.start()
+            try:
+                project.queries.start()
+            except Exception:
+                log.exception("preview: the queries server could not start")
 
     def set_chat_pick(self, model: str | None, effort: str | None) -> None:
         """Standing Chat alias + reasoning_effort. `auto`/empty is Sage's default (catalog.ask)."""

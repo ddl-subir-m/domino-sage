@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from ..workspace.stack import stack_of
@@ -104,6 +105,9 @@ class ViteSupervisor:
         self._stopped = False
         self._last_error: str | None = None
         self._tail: collections.deque[str] = collections.deque(maxlen=40)  # recent Vite output
+        self._retry_lock = threading.Lock()
+        self._retry_thread: threading.Thread | None = None
+        self._last_retry_at = 0.0
 
     def start(self, ready_timeout_s: float = 30.0) -> str:
         """Spawn Vite and block until its port is discovered. Returns the upstream base URL.
@@ -117,8 +121,63 @@ class ViteSupervisor:
             self.stop()
             why = f"timed out after {ready_timeout_s}s" if timed_out else (self._last_error or "exited early")
             tail = "\n".join(self._tail)
+            # Record it as well as raise. The restart loop sets `_last_error` when the process
+            # EXITS, and a uvicorn started with `--reload` on an app that will not import does not
+            # exit — measured 2026-09-24 (#554): it prints its banner, fails the import, and then sits
+            # watching for a file change, so `_restarts` stayed 0 and nothing was ever recorded.
+            # Whoever has to tell the person why the pane is empty reads `last_error()`.
+            self._last_error = f"{self._NAME} failed to start ({why})"
             raise RuntimeError(f"{self._NAME} failed to start ({why}). Recent output:\n{tail}")
         return self._upstream
+
+    # How often a failing server may be retried from a REQUEST. The preview proxy reaches
+    # `retry_start` on every request and a dead pane re-polls about once a second, so without a
+    # floor here one broken app spawns a fresh server per poll.
+    _RETRY_EVERY_S = 10.0
+
+    def last_error(self) -> str | None:
+        """Why the server is not up, for a caller that has to tell somebody. None while healthy."""
+        return self._last_error
+
+    def recent_output(self, lines: int = 20) -> list[str]:
+        """The server's own last words. The reason a start failed is almost always in here."""
+        return list(self._tail)[-lines:]
+
+    def retry_start(self) -> None:
+        """Ask for a restart WITHOUT waiting for it, and without raising.
+
+        `start()` blocks up to `ready_timeout_s` (30 s) and then raises. The preview proxy calls it
+        on the request path, and the pane polls about once a second, so one app that would not
+        import put a 30-second block on a request thread per poll until the threads ran out.
+        Measured 2026-09-24 (#554) on a live workspace: consecutive `/preview/` requests 29,999 ms and
+        29,302 ms apart, and while that ran Chat and the model drawer stopped answering although
+        the session still looked alive.
+
+        The preview is a pane. It may not take the session down with it — so the caller is told
+        nothing and waits for nothing, and the work happens on a thread nobody is holding.
+        """
+        with self._retry_lock:
+            if self._stopped:
+                return
+            if self._retry_thread is not None and self._retry_thread.is_alive():
+                return
+            now = time.monotonic()
+            if self._last_retry_at and now - self._last_retry_at < self._RETRY_EVERY_S:
+                return
+            self._last_retry_at = now
+            # A new attempt, not a continuation of the last crash loop — otherwise an app that is
+            # FIXED after `_max_restarts` is reached could never come back without a Project reopen.
+            self._restarts = 0
+            self._retry_thread = threading.Thread(target=self._retry, daemon=True)
+            self._retry_thread.start()
+
+    def _retry(self) -> None:
+        # Nothing may escape: this runs on a thread nobody is waiting on, and `start()` raises by
+        # design. The reason is already on `_last_error`, where `last_error()` can find it.
+        try:
+            self.start()
+        except Exception:
+            log.warning("preview: %s is not up: %s", self._NAME, self._last_error)
 
     def upstream(self) -> str:
         """Current server base URL for the proxy. Raises until the server is ready."""
@@ -153,15 +212,34 @@ class ViteSupervisor:
         )
         threading.Thread(target=self._read_output, args=(self._proc,), daemon=True).start()
 
+    # A line that proves the server is SERVING, for a server whose URL line does not prove it.
+    # Uvicorn's reloader prints "Uvicorn running on <url>" BEFORE the child imports the app, so a
+    # missing or unimportable `app.py` prints the URL and then exits. Measured 2026-09-24 (#554) in an
+    # empty directory: the banner, then `Error loading ASGI app. Could not import module "app"`,
+    # then exit — so the URL alone cannot tell a live server from a dead one, and a dead
+    # fastapi-antd app reported a SUCCESSFUL start and then 502'd every request. Vite prints its
+    # URL only once it is serving, so it needs none and keeps the behaviour it had.
+    _READY_LINE: str | None = None
+
     def _read_output(self, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
+        pending: str | None = None  # a URL seen, not yet proven to be serving
         for line in proc.stdout:
             self._tail.append(line.rstrip())
-            if self._upstream is None and (url := self._parse_url(line)):
-                self._upstream = url
+            if pending is None and (url := self._parse_url(line)):
+                pending = url
+                if self._READY_LINE is None:
+                    self._upstream = pending
+                    self._ready.set()
+            if (pending is not None and self._READY_LINE is not None
+                    and not self._ready.is_set() and self._READY_LINE in line):
+                self._upstream = pending
                 self._ready.set()
         # stdout closed -> process exited. Restart unless we asked it to stop.
         code = proc.wait()
+        # Exited means not serving. Without this, a server that printed a URL and then died leaves
+        # its address behind and `upstream()` hands the proxy a socket nothing is listening on.
+        self._upstream = None
         if not self._stopped and self._restarts < self._max_restarts:
             self._restarts += 1
             self._last_error = f"{self._NAME} exited (code {code}); restart {self._restarts}/{self._max_restarts}"
@@ -223,6 +301,9 @@ class UvicornSupervisor(ViteSupervisor):
     """
 
     _NAME = "uvicorn"
+    # See `_READY_LINE` on the base class: uvicorn's URL banner is printed by the RELOADER, before
+    # the child has imported anything, so this is the first line that means the app itself is up.
+    _READY_LINE = "Application startup complete"
     _parse_url = staticmethod(parse_uvicorn_url)
 
     def mount_base(self) -> str:
