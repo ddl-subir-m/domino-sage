@@ -22,6 +22,7 @@ import pytest
 from sage import timing
 from sage.build_policy import BuildPolicy, load_build_policy
 from sage.feedback.runner import FeedbackReport
+from sage.orchestrator import service as svc
 from sage.orchestrator.service import _PROGRESS_TIME_MIN_CALLS, Orchestrator, _progress_armed
 from sage.pre_edit_guard import PreEditState
 from sage.router.models import ModelCatalog
@@ -102,6 +103,21 @@ def test_the_four_limits_are_settings_with_the_approved_defaults():
     })
     assert (loaded.progress_notice_call_limit, loaded.progress_stop_call_limit) == (2, 3)
     assert (loaded.progress_notice_seconds, loaded.progress_stop_seconds) == (1.5, 9.0)
+
+
+def test_the_call_halfs_time_floor_sits_between_the_measured_populations():
+    """The floor is a judgement, so the judgement is written down where a change must face it.
+
+    The pair of tests either side of it proves the floor is a floor rather than an off switch, but
+    neither pins its VALUE — both would stay green if it were a century. These are the three
+    measurements it has to sit between, from #544 and from the two regression tests it broke.
+    """
+    healthy_2026_09_21 = 0.0      # 45 shell calls after a heredoc write, measured working
+    chatty_thirty_steps = 7.0     # 8 calls, the wedged-turn regression test
+    haiku_after_its_write = 71.0  # 8 calls at ~8.9s each, the trace this budget exists for
+
+    assert max(healthy_2026_09_21, chatty_thirty_steps) < svc._PROGRESS_CALL_MIN_SECONDS
+    assert svc._PROGRESS_CALL_MIN_SECONDS < haiku_after_its_write
 
 
 def test_a_notice_at_or_past_its_own_stop_is_refused_by_the_environment_key():
@@ -341,14 +357,85 @@ def test_the_note_reaches_the_model_as_a_system_message(tmp_path: Path):
 
 # ---- the two halves ---------------------------------------------------------------------------
 
+def test_a_turn_that_writes_once_and_then_works_quickly_is_not_stopped(tmp_path: Path):
+    """THE SHAPE THAT REACHED THE LANDING GATE. It had no test and no plant, which is why.
+
+    One write, then many calls that change nothing — which is, call for call, the Haiku trace this
+    budget was built to stop. The two separate on RATE and on nothing else, and this is the end of
+    that range: `test_a_build_turn_whose_app_has_changed_is_not_stopped_for_its_shell_calls` stands
+    for a build measured healthy on 2026-09-21 that ran 45 shell calls after a heredoc write in 0s,
+    and `test_the_clock_runs_from_the_last_event_not_from_the_start_of_the_turn` reached 8 calls in
+    7s. Both were red on the gate before the call half grew a time floor.
+
+    Twelve calls is past the stop limit of eight, and the turn must run all of them.
+    """
+    policy = _replace(TEST_POLICY, progress_stop_seconds=3600.0, progress_notice_seconds=1800.0)
+    oc = ScriptedPartsOpenCode(tmp_path / "mnt" / "code",
+                               [[_write(1)]] + [[_bash(n)] for n in range(12)],
+                               [Turn(text="built it", writes={"src/App.tsx": "v1\n"})])
+    orch = _orch(tmp_path, oc, policy)
+
+    list(orch.build_stream("build me a chart"))
+
+    assert oc.script == []
+    assert oc.interrupted == 0
+    assert _notes(orch) == []
+
+
+def test_the_call_half_fires_on_the_same_turn_once_the_clock_has_run(tmp_path: Path, monkeypatch):
+    """The plant for the floor, as a test: the same turn, the same twelve calls, floor removed.
+
+    Without this beside the one above, a floor set so high it disabled the call half entirely would
+    look exactly as green. The pair is what pins the floor as a FLOOR.
+    """
+    monkeypatch.setattr(svc, "_PROGRESS_CALL_MIN_SECONDS", 0.0)
+    policy = _replace(TEST_POLICY, progress_stop_seconds=3600.0, progress_notice_seconds=1800.0)
+    oc = ScriptedPartsOpenCode(tmp_path / "mnt" / "code",
+                               [[_write(1)]] + [[_bash(n)] for n in range(12)],
+                               [Turn(text="built it", writes={"src/App.tsx": "v1\n"})])
+    orch = _orch(tmp_path, oc, policy)
+
+    list(orch.build_stream("build me a chart"))
+
+    assert oc.interrupted == 1
+    assert oc.emitted == 1 + policy.progress_stop_call_limit
+
+
+def test_a_heredoc_write_before_the_first_threshold_still_resets_the_window(tmp_path: Path,
+                                                                           monkeypatch):
+    """The window is baselined where it STARTS, not at its first threshold.
+
+    Baselined lazily, the first read has nothing earlier to compare against and can never rescue
+    anything — so a shell write landing before the notice is already folded into the baseline by
+    the time the stop reads it, and the turn is stopped for the one write it made. The write here
+    lands at the second call, well before the notice at four.
+    """
+    monkeypatch.setattr(svc, "_PROGRESS_CALL_MIN_SECONDS", 0.0)
+    policy = _replace(TEST_POLICY, progress_stop_seconds=3600.0, progress_notice_seconds=1800.0)
+    oc = ScriptedPartsOpenCode(tmp_path / "mnt" / "code",
+                               [[_bash(n)] for n in range(11)],
+                               [Turn(text="built it", writes={"src/App.tsx": "v1\n"})],
+                               tree_write_at=2)
+    orch = _orch(tmp_path, oc, policy)
+
+    list(orch.build_stream("build me a chart"))
+
+    assert oc.interrupted == 0
+    assert oc.script == []
+
+
 def test_a_turn_that_writes_then_runs_distinct_calls_is_noticed_then_stopped_then_checked(
-        tmp_path: Path):
+        tmp_path: Path, monkeypatch):
     """The Haiku shape, end to end: write, then a run of different shell commands.
 
     Every command differs, so the repeat brake cannot be what ends this; there are eight calls,
     not forty, so the shell cap cannot be either; and a write landed, so the pre-edit guard has
     handed off. The call half of the budget is the only thing here that can see it.
     """
+    # The floor is about RATE, and this test is about the COUNT. Removed here so the count is the
+    # only thing that can fire; `test_a_turn_that_writes_once_and_then_works_quickly_is_not_stopped`
+    # is the other half of the pair and keeps the floor honest.
+    monkeypatch.setattr(svc, "_PROGRESS_CALL_MIN_SECONDS", 0.0)
     calls = 12
     oc = ScriptedPartsOpenCode(tmp_path / "mnt" / "code",
                                [[_write(1)]] + [[_bash(n)] for n in range(calls)],

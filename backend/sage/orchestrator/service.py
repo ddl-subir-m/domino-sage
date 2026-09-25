@@ -253,6 +253,19 @@ _CHAT_STOP_GRACE_SECONDS = 30.0
 # would tune, and the two limits that ARE tunable are the ones the person is meant to reach for.
 _PROGRESS_TIME_MIN_CALLS = 2
 
+# And the mirror of it: the progress budget's CALL half never fires before this much wall clock has
+# passed since the last landed change (#544). 30s is not a new number — it is
+# `model_no_action_notice_seconds`, this repo's existing answer to "how long before a person has
+# noticed they are waiting", and that is exactly the question being asked here.
+#
+# It sits between two measured populations rather than above the one that bit us. Below it: the
+# healthy build of 2026-09-21, which ran 45 shell calls after a heredoc write in 0s, and the
+# 30-step chatty turn, which reached 8 calls in 7s. Above it: the Haiku trace of #544, 8 calls in
+# ~71s. Without the floor a count alone cannot separate those, because all three are "a turn that
+# wrote once and then made calls that changed nothing" — and the first two are regression tests
+# standing for builds that were measured working.
+_PROGRESS_CALL_MIN_SECONDS = 30.0
+
 # What ends a Chat turn that will not end itself. Quiet time, not wall clock: a hung
 # `DataSourceClient.query` (Arrow Flight from a published App) never goes idle, the UI stays on its
 # last label, and the turn lock blocks the next send — and that hang looks exactly like this, a
@@ -19189,7 +19202,8 @@ class Orchestrator:
             progress_capped = False
             # The tree as of this window's last threshold read, or "" before the first one. Only
             # ever set where a hash is already being paid for.
-            progress_tree = ""
+            progress_tree = (project.snapshot.working_tree_hash()
+                             if progress_armed else "")
             looped = ""
             poll_failures = 0
             while True:
@@ -19400,7 +19414,7 @@ class Orchestrator:
                                 progress_calls = 0
                                 progress_at = time.monotonic()
                                 progress_noticed = False
-                                progress_tree = ""
+                                progress_tree = project.snapshot.working_tree_hash()
                             else:
                                 progress_calls += 1
                                 # The high-water mark is what says whether 4 and 8 are the right
@@ -19572,20 +19586,42 @@ class Orchestrator:
                                    and progress_calls >= _PROGRESS_TIME_MIN_CALLS
                                    and time.monotonic() - progress_at
                                    >= self._build_policy.progress_notice_seconds)
-                    hit_stop = (progress_calls >= self._build_policy.progress_stop_call_limit
-                                or over_time)
-                    hit_notice = (progress_calls >= self._build_policy.progress_notice_call_limit
-                                  or notice_time)
+                    # The call half carries a TIME floor, exactly as the time half carries a
+                    # call floor, and for the mirror-image reason. A count on its own cannot tell a
+                    # build from a loop: `test_a_build_turn_whose_app_has_changed_is_not_stopped_
+                    # for_its_shell_calls` stands for a build measured healthy on 2026-09-21 that
+                    # ran 45 shell calls after one heredoc write, and the Haiku trace in #544 is 8
+                    # calls after one write. Measured, the two populations separate on RATE and on
+                    # nothing else: the healthy builds spend 0s and 7s getting there, Haiku ~71s.
+                    #
+                    # Which is the honest reading of what this budget is for. The defect in #544 is
+                    # that a PERSON sat watching a spinner until they pressed Stop, so the cost
+                    # being bounded is wall clock. Eight calls in seven seconds cost them nothing
+                    # and are somebody's build working; eight calls in seventy cost them seventy
+                    # seconds. A budget that fires before anyone has been made to wait is not
+                    # measuring the thing it was asked to measure.
+                    worked_for = time.monotonic() - progress_at
+                    over_calls = (progress_calls >= self._build_policy.progress_stop_call_limit
+                                  and worked_for >= _PROGRESS_CALL_MIN_SECONDS)
+                    notice_calls = (progress_calls >= self._build_policy.progress_notice_call_limit
+                                    and worked_for >= _PROGRESS_CALL_MIN_SECONDS)
+                    hit_stop = over_calls or over_time
+                    hit_notice = notice_calls or notice_time
                     if hit_stop or (hit_notice and not progress_noticed):
                         # ONE working-tree read per threshold, not per call — `working_tree_hash`
                         # is `git add -A` plus `git write-tree`, and the shell cap above pays for
                         # it exactly once for the same reason. This is what makes a tight call
                         # limit safe against a turn that writes by heredoc and so announces no
-                        # write tool at all: its tree moves, the window resets, and it is never
-                        # stopped. Such a turn can still draw one advisory note per window, because
-                        # the first read of a window happens AT the notice and so has nothing
-                        # earlier to be compared with. A note costs a sentence; a wrong stop costs
-                        # the turn.
+                        # write tool at all: its tree moves and the window resets.
+                        #
+                        # It only works because the window is baselined where the window STARTS.
+                        # This was first written to baseline lazily, at the first threshold, and
+                        # that hole is worth recording: the first read had nothing earlier to
+                        # compare against, so it could never rescue anything, and a heredoc write
+                        # landing BEFORE the notice was already folded into the baseline by the
+                        # time the stop read it. The turn then looked motionless and was stopped
+                        # for the one write it had made. A hatch whose first use is always a
+                        # no-op is not a hatch.
                         tree = project.snapshot.working_tree_hash()
                         if tree and progress_tree and tree != progress_tree:
                             progress_calls = 0
