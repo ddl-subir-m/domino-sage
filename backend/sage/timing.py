@@ -174,6 +174,10 @@ class TurnRecord:
     repeat_brake_truncated: bool = False
     implementation_session: dict = field(default_factory=dict)
     planning_recovery: dict = field(default_factory=dict)
+    # Every planning decision of the turn, in order (ADR-0069, #561). The slot above is overwritten
+    # on the second `choose()`, so a no-action recover followed by an invalid-plan stop kept only
+    # the stop; the slot stays for the readers that have it.
+    planning_recoveries: list[dict] = field(default_factory=list)
     pre_edit_guard: dict = field(default_factory=dict)
     progress_budget: dict = field(default_factory=dict)
     context_rollover: dict = field(default_factory=dict)
@@ -750,8 +754,14 @@ def model_no_action_recovery(call_id: str | None, attempt: str, action: str,
 
 
 def planning_recovery(trigger: str, attempt: str, action: str,
-                      *, record=_CURRENT_RECORD) -> None:
-    """Record the bounded, content-free planning decision at turn level."""
+                      *, record=_CURRENT_RECORD, limit: int = 1) -> None:
+    """Record the bounded, content-free planning decision at turn level.
+
+    `limit` is the `PlanRecoveryBudget` the decision was drawn from. The list is capped at that
+    plus one (ADR-0069): every `recover` the budget can grant and the one `stop` that can follow
+    them. The recorder caps rather than the diagnostics reader because only the caller holds the
+    budget in force, and the reader would otherwise have to guess it from a module default.
+    """
     if (trigger not in {"model_no_action", "invalid_execution_plan"}
             or attempt not in {"initial", "recovery"}
             or action not in {"recover", "stop"}):
@@ -765,6 +775,8 @@ def planning_recovery(trigger: str, attempt: str, action: str,
             "trigger": trigger,
             "action": action,
         }
+        if len(rec.planning_recoveries) < max(int(limit), 0) + 1:
+            rec.planning_recoveries.append(dict(rec.planning_recovery))
 
 
 def tool_observer() -> ToolObserver:
@@ -859,6 +871,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "running": rec.t1 is None,
         "implementationSession": dict(rec.implementation_session),
         "planningRecovery": dict(rec.planning_recovery),
+        "planningRecoveries": [dict(entry) for entry in rec.planning_recoveries],
         "preEditGuard": dict(rec.pre_edit_guard),
         "progressBudget": dict(rec.progress_budget),
         "contextRollover": dict(rec.context_rollover),

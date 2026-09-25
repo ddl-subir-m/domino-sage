@@ -565,6 +565,15 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
     planning_recovery = _planning_recovery(raw.get("planningRecovery"))
     if planning_recovery is not None:
         record["planningRecovery"] = planning_recovery
+    # The same vocabulary, every decision of the turn in order (ADR-0069, #561). Each entry passes
+    # the one normaliser the slot passes; the recorder already caps the list at the budget plus one.
+    # Additive under schema 1: a reader of the slot sees the slot unchanged.
+    raw_recoveries = raw.get("planningRecoveries")
+    planning_recoveries = [entry for entry in (
+        _planning_recovery(value) for value in (raw_recoveries if isinstance(raw_recoveries, list) else []))
+        if entry is not None]
+    if planning_recoveries:
+        record["planningRecoveries"] = planning_recoveries
     pre_edit_guard = _pre_edit_guard(raw.get("preEditGuard"))
     if pre_edit_guard is not None:
         record["preEditGuard"] = pre_edit_guard

@@ -541,6 +541,9 @@ def install(app, get_orchestrator):
                     "turn_id": running_ticket.id,
                     "elapsed_ms": round(snapshot["elapsedSeconds"] * 1000),
                     "chunk_count": snapshot["chunkCount"],
+                    # The witness the planner's recovery line reads (#561): how many of those
+                    # chunks were reasoning. The active snapshot held it; this dict dropped it.
+                    "reasoning_only_chunks": snapshot["reasoningOnlyChunks"],
                     # What the stall hint needs (#538): what reached the WIRE, and what this alias
                     # could have taken on a request of this shape. `effort` rather than the source
                     # alone, because since #545 an unset Build level resolves to the stage default
