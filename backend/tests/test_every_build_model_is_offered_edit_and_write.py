@@ -20,10 +20,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from .fake_opencode import Turn
+from .fake_opencode import FakeOpenCode, Turn
 from .opencode_server import BINARY, _opencode_server
 from .test_a_prompt_naming_no_app_asks_what_to_build import (  # noqa: F401  (_no_waiting: autouse)
     _REFUSAL,
+    OkFeedback,
+    ScriptedGateway,
     _build,
     _no_waiting,
     _run,
@@ -171,3 +173,84 @@ def test_every_prompt_of_a_build_turn_names_its_handle(tmp_path):
     _run(orch, "build me a table of lab samples")
     assert [p["model"] for p in oc.prompts] == [
         {"providerID": "sage-gateway", "modelID": "sage-model"}] * len(oc.prompts)
+
+
+# --- The WORDING follows the handle too (#541) ---------------------------------------------------
+#
+# The tool set was fixed above; the instructions were not. `opencode.json`'s `sage-implement` prompt
+# and both `AGENTS.md` templates described `apply_patch` to every model, and a model reading
+# instructions for a tool it was never offered calls a tool that is not there. So the patch envelope
+# now rides the TURN prompt, where `_tool_handle` is chosen, and the static text says only what is
+# true of `edit`/`write`. One test per handle below, because "GPT is told" and "GLM is not told" are
+# two conditions and a single assertion can only hold one of them.
+
+
+def _agent_prompt() -> str:
+    return _config()["agent"]["sage-implement"]["prompt"]
+
+
+def _implement_turn(tmp: Path, model: str, *, mode=None) -> str:
+    """The prompt a real Build turn sends, with `model` on every slot of the catalog.
+
+    Rendered rather than reasoned about: the note is assembled at the send site out of the same
+    handle the send carries, and reading the branch would not show whether it reached the wire."""
+    from sage.orchestrator.service import Orchestrator
+    from sage.router.models import Mode, ModelCatalog
+
+    template = tmp / "template"
+    (template / "src").mkdir(parents=True, exist_ok=True)
+    (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
+    (template / "package.json").write_text("{}")
+    ws = tmp / "mnt" / "code"
+    oc = FakeOpenCode(ws, [Turn(text="done")])
+    orch = Orchestrator(workspace_dir=ws, template=template, gateway=ScriptedGateway(),
+                        catalog=ModelCatalog(sovereign_plan=model, sovereign_implement=model,
+                                             sovereign_ask=model, plan=model, implement=model,
+                                             ask=model),
+                        project_id="Sage", feedback=OkFeedback(), opencode_client=oc)
+    project = orch.project(start_preview=False)
+    # Past the automatic first-build plan gate: a gated turn is read-only, and what it is told about
+    # editing is a different question (`test_a_read_only_turn_is_never_told_about_an_edit_tool`).
+    project.record.write_settings({"skip_planning": True})
+    project.control.set_mode(mode or Mode.IMPLEMENT)
+    list(orch.build_stream("add a chart", None, None))
+    return oc.prompts[0]["text"]
+
+
+def test_no_static_build_instruction_names_apply_patch():
+    """The two places that described it to everyone. Both are read by every model, whatever its
+    handle, so neither can name a tool only a GPT handle is offered."""
+    assert "apply_patch" not in _agent_prompt()
+    for stack in ("react-vite", "fastapi-antd"):
+        assert "apply_patch" not in (REPO / "template" / stack / "AGENTS.md").read_text()
+
+
+def test_a_gpt_implement_turn_is_told_the_patch_envelope(tmp_path):
+    """GPT has `apply_patch` and nothing else, so it still needs the envelope and the one-call rule
+    — which is true of a patch and false of `edit`, and so cannot go back in the shared text."""
+    turn = _implement_turn(tmp_path, "gpt-5.4")
+    assert "`apply_patch`" in turn
+    assert "*** Begin Patch" in turn and "*** End Patch" in turn
+    assert "Put every change to one file in one call" in turn
+
+
+def test_a_glm_implement_turn_is_told_about_edit_and_write_only(tmp_path):
+    turn = _implement_turn(tmp_path, "GLM 5.3 OR")
+    assert "apply_patch" not in turn
+    assert "use `edit`" in _agent_prompt() and "use `write`" in _agent_prompt()
+
+
+def test_a_claude_implement_turn_is_told_about_edit_and_write_only(tmp_path):
+    """Sonnet is the other half of the symptom: `_gives_patch` leaves it on `edit`/`write` too."""
+    turn = _implement_turn(tmp_path, "sonnet")
+    assert "apply_patch" not in turn
+    assert "use `edit`" in _agent_prompt() and "use `write`" in _agent_prompt()
+
+
+def test_a_read_only_turn_is_never_told_about_an_edit_tool(tmp_path):
+    """Plan is read-only and its tools are stripped, so naming an edit tool there describes work the
+    turn is forbidden to do — even on a GPT handle, where the note is otherwise correct."""
+    from sage.router.models import Mode
+
+    turn = _implement_turn(tmp_path, "gpt-5.4", mode=Mode.PLAN)
+    assert "apply_patch" not in turn

@@ -14,6 +14,50 @@ Live gateway checks still reject GPT-5.4 `low` with tools and accept `none`. Opu
 accepts invalid `reasoning_effort`, `thinking.type`, and `output_config.effort` values without
 validation. These checks do not justify adding effort choices; the UI now explains the limits.
 
+**Amended 2026-09-24 (#545): an UNSET effort is not a choice to run unlimited, and on a Build plan
+or implement turn it resolves to the stage's level.** The sentence above — "Model default leaves
+`reasoning_effort` unset" — held for Chat and for Build alike, and on Build it was the defect. A
+person who assigns a model and touches nothing else leaves a row carrying `effort: null`, and
+`_slot_effort` read that row's PRESENCE as the person having asked for the provider's own default.
+So an assigned model was the one configuration that could never get a limit. Measured: GLM 5.3 OR
+assigned to Implement at that level streamed 1,151 and 1,755 reasoning-only chunks over 120 s
+each and ended the turn with no edit, while the same slot saved at High acted in 76 s.
+
+What changes, and only this:
+
+- **Unset resolves to `STAGE_DEFAULT` on a Build plan or implement turn** — `plan_reasoning_effort`
+  (`high`) or `implement_reasoning_effort` (`low`), read off `BuildPolicy` in `enforcement.py`.
+  Unset means either a saved row with `null` or an in-session pick made with no level; both are the
+  same absence and now take the same path.
+- **A level the person chose is untouched**, and so is the rest of this record. The stage level is
+  offered to the same measured table a saved one meets, and dropped there just as quietly.
+- **Chat and Ask are unchanged.** The stage is a plan/implement fact; `_slot_effort` is called for
+  `ask` with `stage_default=False`, and a Chat pick with no level still sends no field.
+- **Existing rows migrate by being read**, not rewritten: a `null` saved yesterday is unset today
+  and gets the stage level on its next turn. Accepted by the owner on #545.
+
+Two consequences this ADR did not foresee, both load-bearing:
+
+- **The send path must DROP a stage level rather than refuse it.** The refusal beside
+  `capability.identity` was written for a stale level the PERSON saved — a sentence only they can
+  act on. A stage level is Sage's own, so the same refusal would turn every alias that never
+  listed a level into a first-turn 400 on a turn nobody configured. The exemption is
+  `source is not EffortSource.STAGE_DEFAULT`, and `haiku` is the alias that proves it: it carries
+  a gateway identity and accepts only `none`.
+- **"Model default" stops being one name.** On the Plan and Implement rows the unset option now
+  asks for the stage's level, so it reads **Automatic**; on the Ask and Chat row nothing changed,
+  so it keeps **Model default**. One name over both would be false on one of them, whichever were
+  chosen. `none` stays a distinct level, for the reason it always was — it SENDS the field and
+  turns reasoning off — and no third option is offered: "send no effort field" is the behaviour
+  this amendment removes, and a control that restored it would put the 120 s stall one click away.
+  A person who wants less thinking picks the lowest level their alias takes.
+
+The stall hint (#538) moved with this. It used to fire on `effort_source == "provider_default"`,
+which after this amendment no longer names every turn that sent nothing: a stage level the alias
+refuses is dropped, and that turn stalls identically while carrying `stage_default`. It now keys
+on the effective effort — what reached the wire — and it reaches the implement timeout as well as
+the plan one, naming the row the reader would set.
+
 Reasoning effort is modelled today as a Chat setting: `SessionState.reasoning_effort` is one
 string, its comment says "for Chat", and `enforcement.py` sends the field only when
 `state.chat_thread_id` is set, the turn carries no tools, and the resolved model is the one the

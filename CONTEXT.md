@@ -489,7 +489,10 @@ that model runs. It is half of a Model assignment, and half of a Model override 
 model menu offers the levels underneath the model, so one click chooses both. Not every model
 takes one — most of the Aliases on the LLM Gateway discard the field in silence — so a model
 that takes none offers no control at all, and which levels a model accepts is measured per Alias
-rather than guessed from its name. An Effort belongs to the model that actually runs a turn
+rather than guessed from its name. Choosing no level is itself two different things, and the two
+rows say which: on Plan and Implement it reads **Automatic** and means the stage's own level, hard
+while planning and cheap while building, while on Ask and Chat it reads **Model default** and
+means no setting is sent at all. An Effort belongs to the model that actually runs a turn
 rather than to the slot it was saved on: when the signing pin, the sensitivity lock or a Model
 override moves a turn onto another model, the Effort moves with it — to the one chosen for that
 model, or to none where whoever moved it chose no level. A saved level is dropped rather than sent when the model on the wire will
@@ -499,7 +502,8 @@ is a line in the log. See
 [ADR-0049](docs/adr/0049-an-effort-belongs-to-an-assignment-and-follows-the-model-that-runs.md).
 _Kind_: name
 _Avoid_: reasoning_effort (that is the field on the wire), thinking budget, reasoning level,
-effort setting, model default (the phrase names what an Effort reverts to, not the Effort)
+effort setting, model default (the phrase names what an Effort reverts to on Ask and Chat, not
+the Effort, and on Plan and Implement it no longer names that either)
 
 **Conversation**:
 One line of talk inside a Project, and one row in the rail. A Project has many Conversations;

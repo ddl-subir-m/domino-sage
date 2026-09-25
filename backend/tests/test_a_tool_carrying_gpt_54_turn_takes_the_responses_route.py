@@ -11,9 +11,10 @@ request that carries function tools unless `reasoning_effort` is present:
 Every Build turn carries tools and `auto-plan` resolves to gpt-5.4, so a new workspace died on its
 first Build turn, in ~730ms, with `invalid_request_error`. The gateway's own refusal says the way
 out: "To use function tools, use /v1/responses or set reasoning_effort". Sending
-`reasoning_effort: "none"` was rejected as the fix — `enforcement.py` says "Model default means no
-override, in Chat and Build alike", and for this alias `none` means NO reasoning, so it would
-silently downgrade every Build plan turn.
+`reasoning_effort: "none"` was rejected as the fix — `enforcement.py` adds the field from
+`configured` and from nowhere else, and for this alias `none` means NO reasoning, so a hidden one
+here would silently downgrade every Build plan turn. (#545 later gave an unset Build level the
+STAGE's level, in the open and a dozen lines earlier; it is still not a fallback chosen here.)
 
 So the route moves instead, and the whole move is one measured evidence row: nothing here is a new
 seam. `RouteCapability` already carries the protocol, `native_routes.py` already serves
