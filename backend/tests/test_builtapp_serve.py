@@ -432,6 +432,33 @@ def test_the_reads_table_is_the_same_on_both_stacks():
     assert _reads_table(_AGENTS["react-vite"]) == _reads_table(_AGENTS["fastapi-antd"])
 
 
+def _gate_paragraph(agents_md: Path) -> str:
+    """The blockquote that decides whether an app reaches the platform at all."""
+    lines = agents_md.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if line.startswith("> **Most apps never need this section.**"))
+    end = next(i for i in range(start, len(lines)) if not lines[i].startswith(">"))
+    return "\n".join(lines[start:end])
+
+
+def test_the_gate_paragraph_is_the_same_on_both_stacks_and_names_governance():
+    """The gate's trigger words excluded the request (#556): "governance tag info for this dataset"
+    names none of snapshot, version, approval, policy, who made something or which Datasets exist,
+    and a literal model read that as "not this" and invented the tags. One paragraph, two templates,
+    the same rule as the reads table above."""
+    react, fast = _gate_paragraph(_AGENTS["react-vite"]), _gate_paragraph(_AGENTS["fastapi-antd"])
+    assert react == fast
+    for word in ("tag", "governance", "owner", "lineage", "classification"):
+        assert word in react, word
+    assert "never replaced by a stand-in value" in react
+
+
+def test_the_taxonomy_row_says_the_id_is_never_the_name():
+    for stack, agents_md in _AGENTS.items():
+        row = next(r for r in _reads_table(agents_md) if r.startswith("| taxonomy tags |"))
+        assert "never the name itself" in row, stack
+
+
 def test_every_read_the_instructions_name_passes_the_fence():
     """The table and `PLATFORM_READS` are two lists edited by different people for different reasons,
     and nothing but this makes them argue (#493). Both directions: a row nobody can call, and a family

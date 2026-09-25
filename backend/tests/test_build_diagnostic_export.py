@@ -384,3 +384,34 @@ def test_nested_metadata_truncation_means_capture_is_incomplete():
     row = diagnostics.snapshot(rec, identity(), terminal=True)
     assert row["capture"]["upstreamTruncated"]["toolInvocations"] is True
     assert row["capture"]["complete"] is False
+
+
+# ---- the decision, not only the bounded status (#555) --------------------------------------------
+
+
+def _finished(tmp_path, event):
+    timing.start_turn("build", turn_id="turn_a", app_id="app_a", conversation_id="thr_a")
+    diagnostics.begin(tmp_path, turn_id="turn_a", app_id="app_a",
+                      conversation_id="thr_a", kind="build")
+    diagnostics.observe(event)
+    diagnostics.finish(timing.finish_turn())
+    return diagnostics.Store(tmp_path).get("turn_a", "app_a", "thr_a")
+
+
+@pytest.mark.parametrize("decision", ["plan title repair failed", "dataset files", "no_edit-2"])
+def test_a_failed_done_exports_its_decision_beside_the_status(tmp_path, decision):
+    """A "dataset files" card and a "plan title repair failed" turn both exported `status: error`,
+    and a download could not say which. The decision is the fixed vocabulary the turn ended on."""
+    row = _finished(tmp_path, {"type": "done", "ok": False, "decision": decision})
+    assert row["buildOutcome"] == {"status": "error", "decision": decision}
+
+
+@pytest.mark.parametrize("decision", ["PRIVATE Sentinel", "x" * 65, "path/with/slash", "", None])
+def test_a_decision_outside_the_safe_alphabet_is_omitted_not_copied(tmp_path, decision):
+    event = {"type": "done", "ok": False}
+    if decision is not None:
+        event["decision"] = decision
+    row = _finished(tmp_path, event)
+    assert "decision" not in row["buildOutcome"]
+    if decision:
+        assert decision not in json.dumps(row)

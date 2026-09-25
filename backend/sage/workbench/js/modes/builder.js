@@ -471,8 +471,8 @@ window.SW = window.SW || {};
       // Read off the store rather than taken as props, the way `startConversation` reads the
       // selected app: this control is handed the app list and nothing else, and passing every
       // thread through it would make each caller re-state what the store already holds.
-      const { threads, thread } = SW.store.get();
-      const next = SW.util.threadForApp(threads, app.id, thread);
+      const { thread } = SW.store.get();
+      const next = SW.store.conversationForApp(app.id);
       const here = thread ? thread.id : null;
       const there = next ? next.id : null;
       // On the click, for the reason `openConversation` closes it there (#198): the sheet covers
@@ -1507,7 +1507,7 @@ window.SW = window.SW || {};
 
   SW.BuildMode = function BuildMode({ conversationId, appId }) {
     const { thread, activeApp, buildMessages, buildTranscript, buildTyping, buildRunning, turnWedged,
-            projectPlan, runningTurn } = SW.store.get();
+            projectPlan, runningTurn, buildHistoryLoading, buildHistoryError } = SW.store.get();
     const scroller = useRef(null);
 
     // The only thing keeping app state fresh, and it moved here with the rail it used to live in
@@ -1564,23 +1564,46 @@ window.SW = window.SW || {};
     // dependency, because selecting the resolved app would re-run this and ask again.
     useEffect(() => {
       if (appId || !conversationId) return;
+      let current = true;
       SW.store
         .resolveConversationApp(conversationId)
-        .then((bound) => bound && SW.store.selectApp(bound))
+        .then((bound) => current && bound && SW.store.selectApp(bound))
         .catch(() => {});
+      return () => { current = false; };
     }, [appId, conversationId]);
 
     useEffect(() => {
+      let current = true;
       if (!conversationId) {
-        // The route named no conversation, so this is a new one. Build's transcript is per
-        // conversation now, so the old turns have to leave the screen with it.
-        SW.store.clearConversation();
+        // Explicit New stays empty; an app return uses this viewer's last conversation.
+        const next = !SW.store.get().pendingConversation
+          && SW.store.conversationForApp(appId || (activeApp && activeApp.id));
+        if (next) SW.router.replace(`#/build/${next.id}?app=${appId || activeApp.id}`);
+        else SW.store.clearConversation();
         return;
       }
       if (!thread || thread.id !== conversationId) {
-        SW.store.openThread(conversationId).catch(() => {});
+        SW.store.openThread(conversationId, { appId }).catch((error) => {
+          if (!current) return;
+          if (error.status === 404 || error.status === 403) {
+            SW.store.set({ threads: SW.store.get().threads.filter(t => t.id !== conversationId) });
+            const targetApp = appId || (SW.store.get().activeApp || {}).id;
+            const next = SW.store.conversationForApp(targetApp, conversationId);
+            const query = targetApp ? `?app=${targetApp}` : '';
+            SW.store.clearConversation();
+            SW.router.replace(next ? `#/build/${next.id}${query}` : `#/build${query}`);
+          } else SW.store.set({ buildHistoryError: "Couldn't load this conversation. Retry to read it again." });
+        });
       }
-    }, [conversationId]);
+      return () => { current = false; };
+    }, [conversationId, appId]);
+
+    useEffect(() => {
+      if (conversationId && thread && thread.id === conversationId
+          && activeApp && (!appId || activeApp.id === appId)) {
+        SW.store.rememberAppConversation(activeApp.id, conversationId);
+      }
+    }, [conversationId, appId, thread && thread.id, activeApp && activeApp.id]);
 
     // The transcript follows the open conversation rather than the mount. While the route names
     // one that is still opening, loading would replay the conversation we are leaving.
@@ -1637,7 +1660,8 @@ window.SW = window.SW || {};
     // pretend the conversation never happened, which is why it sits under the transcript below
     // rather than in place of it. Under the split view there is no transcript to sit under, and
     // this is the screen Build has always drawn.
-    const noAppTurns = buildMessages.length === 0 && !buildTyping;
+    const noAppTurns = buildMessages.length === 0 && !buildTyping
+      && !buildHistoryLoading && !buildHistoryError && !opening;
     // Two facts, and they are independent (#172). "Is there an app" is the rail row's `built`; "is
     // a plan waiting" is the pin's status. Both were read off the pin alone, which made them
     // mutually exclusive by construction — `status: built` means plan.md has been ARCHIVED, so the
@@ -1743,7 +1767,17 @@ window.SW = window.SW || {};
             h(
               'div',
               { className: 'sw-builder-chat-messages sw-scroll', ref: scroller },
-              buildTranscript.map((message) => h(SW.Message, { key: message.id, message })),
+              (opening || (buildHistoryLoading && !buildTranscript.length)) && !buildHistoryError
+                && h('div', { role: 'status' }, 'Loading conversation…'),
+              buildHistoryError && h('div', { role: 'alert' }, buildHistoryError,
+                h(Button, { onClick: async () => {
+                  if (conversationId && (!thread || thread.id !== conversationId)) {
+                    const loaded = await SW.store.openThread(conversationId, { appId }).catch(() => null);
+                    if (!loaded) return;
+                  }
+                  await SW.store.loadBuild({ keepPreview: true });
+                } }, 'Retry')),
+              !opening && buildTranscript.map((message) => h(SW.Message, { key: message.id, message })),
               noAppTurns &&
                 h(
                   'div',

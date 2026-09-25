@@ -63,3 +63,42 @@ def test_an_ending_the_platform_really_did_cause_still_buys_one():
     ])
 
     assert result["healthCalls"] == 1, "a gateway failure is exactly what the listing is for"
+
+
+@needs_node
+def test_an_empty_answer_is_not_reported_as_a_gateway_fault():
+    result = _node("chat_stream_harness.mjs", [
+        {"type": "user", "text": "summarize the file"},
+        {"type": "error", "reason": "empty answer", "message": "No answer was produced."},
+        {"type": "done", "ok": False, "decision": "empty answer", "advanced": False},
+    ])
+    assert result["healthCalls"] == 0
+    assert any(b.get("ok") is False for b in result["final"])
+
+
+@needs_node
+def test_a_stale_question_is_not_reported_as_a_gateway_fault():
+    result = _node("chat_stream_harness.mjs", [
+        {"type": "user", "text": "summarize the file"},
+        {"type": "error", "message": "That question has changed. Use the current question."},
+        {"type": "done", "ok": False, "decision": "stale question"},
+    ])
+    assert result["healthCalls"] == 0
+
+
+@needs_node
+def test_table_failure_replaces_provisional_success_in_the_live_view():
+    result = _node("chat_stream_harness.mjs", [
+        {"type": "user", "text": "summarize the file"},
+        {"type": "delta", "text": "Saved all 36 customers successfully.", "final": True},
+        {"type": "agent", "kind": "text", "text": ""},
+        {"type": "artifacts", "items": [{"kind": "chart", "path": "examples/t1/trend.png"}]},
+        {"type": "error", "reason": "table generation failed",
+         "message": "The chart is ready, but I could not generate the table: customers."},
+        {"type": "done", "ok": False, "decision": "table generation failed"},
+    ])
+    said = " ".join(str(b.get("value", "")) for b in result["final"])
+    assert "36 customers" not in said
+    assert "could not generate the table: customers" in said
+    assert any(b.get("type") == "image" and b.get("path") == "examples/t1/trend.png"
+               for b in result["final"])

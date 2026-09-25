@@ -39,6 +39,7 @@ import httpx
 
 if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
+    from ..workspace.chat_tables import ChatTables
 
 from .. import build_diagnostics, degraded, timing
 from ..assets.provider import (
@@ -190,6 +191,7 @@ from ..router.models import (
 )
 from ..router.phase_classifier import SHELL_TOOLS, WRITE_TOOLS
 from ..shim.enforcement import EnforcementShim
+from ..shim.keepalive import cut_off_finish_reason, terminal_finish_reason, upstream_error
 from ..tool_timing import MAX_PROGRAMS, program_name
 from ..workspace import plan_doc
 from ..workspace.manager import (
@@ -200,7 +202,7 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import TurnSnapshot
-from ..workspace.stack import preview_stack_of, resolve_stack, stack_of
+from ..workspace.stack import default_stack_name, preview_stack_of, resolve_stack, stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     FINDINGS_MAX,
@@ -218,7 +220,17 @@ from ..workspace.threads import (
     title_from_prompt,
     withhold_table_rows,
 )
-from . import attachment_repair, brand, chat_compact, chat_intent, recall, scope, table_rank, withhold
+from . import (
+    attachment_repair,
+    brand,
+    chat_compact,
+    chat_intent,
+    chat_task,
+    recall,
+    scope,
+    table_rank,
+    withhold,
+)
 from . import handoff as chat_handoff
 from .describe import describe, fit_image
 from .plan_steps import (
@@ -1151,6 +1163,23 @@ def _dataset_entry(dataset_id: str, dataset_name: str, file_path: str, rel: str,
     return {"dataset_id": dataset_id, "dataset": dataset_name, "file": file_path, "path": rel,
             "size": size, "source": "dataset", "dataset_rel_path": file_path,
             "added_by": added_by, "conversation_id": conversation_id, "sage_upload": sage_upload}
+
+
+def _platform_id(entry: dict) -> str:
+    """The id the platform API knows this entry's Dataset by, or "" (#556).
+
+    A Dataset file's entry carries it and the reads table takes it — `datasets-v2?datasetIds=<id>`
+    — and it was never on the surface the agent reads, so a turn holding the name and nothing else
+    sent the name. An upload's entry carries the id of the Dataset its bytes sit in and answers ""
+    here on purpose: the platform does not know the upload by any id a call takes, and a line that
+    named one would hand the agent an id for a thing it cannot read that way.
+    """
+    return str(entry.get("dataset_id") or "") if entry.get("source") == "dataset" else ""
+
+
+def _dataset_credit(name: str, platform_id: str) -> str:
+    """`**name**`, with the platform id beside it when there is one."""
+    return f"**{name}** (platform id `{platform_id}`)" if platform_id else f"**{name}**"
 
 
 def _context_author(row: dict) -> str:
@@ -3486,6 +3515,20 @@ def _error_raw(err: object) -> str:
     return ""
 
 
+def _plan_failure_fields(error: dict) -> dict:
+    code = str(error.get("code") or "model_call_failed")
+    if not re.fullmatch(r"[a-z0-9_-]{1,64}", code):
+        code = "model_call_failed"
+    return {"errorCode": code, "errorStage": "planning"}
+
+
+class PlanCallFailed(ValueError):
+    def __init__(self, error: dict):
+        raw = _error_raw(error) or "The model call failed."
+        super().__init__(_guardrail_sentence(raw) or f"model call failed: {raw}")
+        self.failure = _plan_failure_fields(error)
+
+
 def _at_last_rung(history: list[dict], reason: str) -> bool:
     """Is the refusal ABOUT to be appended the one that survived a complete clear (ADR-0022)?
 
@@ -4060,7 +4103,7 @@ def _at_token_hits(token: str, name: str, path: str) -> bool:
 
 
 def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = "",
-                       thread_id: str = "<threadId>") -> str:
+                       thread_id: str = "<threadId>", investigating: bool = False) -> str:
     """One context row for the Chat turn prompt.
 
     `thread_id` fills the scratch destination in the two Dataset rows, which hand the model a
@@ -4227,6 +4270,12 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             # Python is kept rather than deleted. An unbounded Chat turn has the shell and may have
             # no live-read tool at all — the MCP handshake can land after the tool list is fixed —
             # and a row that names a store while leaving the route unsaid is #370.
+            table_scope = (
+                "{dotted} is the starting table. Discover and query other relevant tables in "
+                "{name} when the question needs them. Use only sources attached to this conversation. "
+                if investigating else
+                "Either way, {dotted} is the one table in this conversation: do not query another "
+                "table in {name} — if the question needs one, say which and stop. ")
             return brand.text(
                 "- {dataSource} {name}, table {dotted}.{extra} To work a number out of it — a "
                 "count, a total, an average, a ranking, a group-by — call `live_read_query` with "
@@ -4236,8 +4285,7 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "`from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
                 '"SELECT * FROM {dotted} LIMIT 50").to_pandas()`. '
-                "Either way, {dotted} is the one table in this conversation: do not query another "
-                "table in {name} — if the question needs one, say which and stop. "
+                + table_scope +
                 "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
                 "If the query errors, tell the person.",
                 name=name, dotted=dotted, extra=extra, quoted=repr(store),
@@ -4500,6 +4548,34 @@ def _tidy_plan(plan_md: str) -> str:
             seen.add(key)
         out.append(block.strip())
     return _drop_empty_questions(_drop_i_will_openers("\n\n".join(out)))
+
+
+_PLAN_NAME_HEADING = re.compile(r"^#[ \t]+\S")
+_PLAN_SECTION_HEADING = re.compile(r"^##")
+
+
+def _drop_plan_preamble(plan_md: str) -> str:
+    """Drop the planner's narration ahead of the plan's `# ` heading (#555).
+
+    A weak planner writes a sentence before every tool call — "I'll read the current app files
+    before proposing the plan." — and the gated turn joins every text part into the plan, so that
+    sentence lands ABOVE the `# Name` the model then wrote. `plan_doc.parse_sections` takes a `# `
+    heading as the title only when no prose precedes it, so the model's own name was demoted to an
+    unknown heading, a repair ran for a name that was already there, and once `# Repaired` was
+    prepended the narration became the document's summary.
+
+    The rule: a line matching `^#[ \\t]+\\S` BEFORE the first `^##` line names the app, and every
+    line before it is dropped. No such heading, and the plan comes back exactly as written — so a
+    `NO APP DESCRIBED` refusal and a plan that opens on `## Problem & outcome` reach the same
+    checks they always did, and a `# ` heading BELOW a section is never read as the name.
+    """
+    lines = plan_md.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if _PLAN_SECTION_HEADING.match(line):
+            return plan_md
+        if _PLAN_NAME_HEADING.match(line):
+            return "".join(lines[i:]) if i else plan_md
+    return plan_md
 
 
 _PLAN_HEADING = re.compile(r"^#{1,6}[ \t]*plan\b", re.IGNORECASE)
@@ -5204,6 +5280,10 @@ class Project:
     # after a clean typecheck to catch runtime crashes that tsc can't see (a blank preview) and feed
     # them back to the agent to autofix. ts-gated so a stale error from a prior turn is ignored.
     runtime_error: dict | None = None
+    # Set by the preview proxy's `on_platform_read` when the app's own relay refused a platform read
+    # (#556). Carries {"status", "path", "ts", "app"}, stamped as `runtime_error` is and read in the
+    # same window: the page catches the failed fetch and logs it where the model cannot read it.
+    platform_read_failure: dict | None = None
     # Per-turn model-call telemetry, wired by the /v1/chat/completions stream wrapper and read by
     # build_stream() to explain why a turn wrote nothing, and `tool_call_responses` also by
     # chat_stream()'s terminal row, which feeds it to `_tool_use` (#469). model_calls = model
@@ -5503,11 +5583,29 @@ def _execution_contract_error(check: PlanContractCheck) -> str:
     return "The plan is missing or has invalid " + detail + "."
 
 
+# What a missing part of the plan is called, in the words `_PLAN_OPENER` and `_PLAN_DOC_SECTIONS`
+# asked for it in (#555). The validator's own keys — `summary`, `users`, `outcomes` — appear in no
+# prompt, so a person reading "required product sections: summary" could not act on the word, and
+# neither could the clean retry, which reads the same function. `title` and `summary` are not
+# sections (`plan_doc.SECTIONS` has no such keys), so they are named here; every other key is the
+# heading the plan shape asked for, straight off `plan_doc.SECTION_BY_KEY`.
+_MISSING_PART_LABELS = {
+    "title": "the '# ' heading naming the app",
+    "summary": "exactly one sentence under that heading saying what the app is",
+}
+
+
+def _missing_part_label(key: str) -> str:
+    if key in _MISSING_PART_LABELS:
+        return _MISSING_PART_LABELS[key]
+    return f"the '## {plan_doc.SECTION_BY_KEY[key].label}' section"
+
+
 def _execution_contract_problems(check: PlanContractCheck) -> tuple[str, ...]:
     """Return only fixed validator categories, never text copied from the plan."""
     problems = []
     if check.missing_sections:
-        problems.append("required product sections: " + ", ".join(check.missing_sections))
+        problems.append(", ".join(_missing_part_label(key) for key in check.missing_sections))
     if check.malformed_steps:
         problems.append("steps with unique labels and nonempty Files, Do, and Verify fields")
     if check.invalid_file_fields:
@@ -5567,21 +5665,19 @@ def _record_execution_contract(check: PlanContractCheck, source_request_count: i
     )
 
 
-_PLAN_HEADING_REPAIR_FAILED = (
-    "Planning wrote a plan without an app name, and the repair couldn't name it. Send the "
-    "request again — adding the app name you want can help."
+# The name repair is one direct gateway call, and this is its whole system prompt (#555). It was a
+# second `sage-plan` turn in the same OpenCode session, whose agent prompt says "produce the plan
+# and nothing else" — and a weak model follows the system prompt over a user message asking for a
+# name, so it answered 1114 tokens of plan and `_repair_heading_name` refused it. Here the system
+# prompt IS the ask, the plan is the user message, and there is no agent prompt to outrank it.
+_PLAN_NAME_SYSTEM = (
+    "You name apps. The message below is a build plan whose app-name heading is missing.\n"
+    "Answer with the name only: 2-4 words, the way a product is named.\n"
+    "No leading A, An or The, no trailing full stop, and no Markdown."
 )
-_PLAN_HEADING_REPAIR_PROMPT = """\
-The build plan below is missing its required top-level app-name heading.
-
-Write only a 2-4 word app name for this plan.
-No leading A, An, or The, and no trailing full stop.
-Do not write Markdown.
-Do not rewrite, summarize, or explain the plan.
-
-Plan:
-{plan}
-"""
+# How long the repair waits for the gateway. Bounded the way `_withhold_probe` is, because the
+# gateway client sets no read timeout on streams by design and a hung repair would hang the turn.
+_PLAN_NAME_TIMEOUT_S = 30.0
 
 
 def _repair_heading_name(answer: str) -> str:
@@ -5804,14 +5900,10 @@ _PLAN_EXAMPLES = {
 
 
 def _plan_example_for(project: Project) -> str:
-    """The worked example for this turn's stack, react-vite when the record names neither.
-
-    One lookup for both readers — the gated plan turn and the invalid-plan retry — so the retry
-    cannot show a fastapi-antd app a react-vite plan. `stack_of` already falls back on an app with
-    no record, which is what the Chat handoff has: it plans before any app exists.
-    """
-    return _PLAN_EXAMPLES.get(stack_of(project.app_for_turn().path).name,
-                              _PLAN_EXAMPLES["react-vite"])
+    """Use the recorded app stack, or the new-app default before a Chat handoff creates one."""
+    resolution = resolve_stack(project.app_for_turn().path)
+    name = default_stack_name() if resolution.state == "empty" else resolution.require_stack().name
+    return _PLAN_EXAMPLES.get(name, _PLAN_EXAMPLES["react-vite"])
 
 
 # Heads the person's own words in a gated plan turn (#537). The data notes ride AFTER the request
@@ -6096,7 +6188,7 @@ class Orchestrator:
         self._gate: SensitivityGate | None = None
         self._resources = resources or FakeResourceProvider()
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
-        self._live_read: dict[str, tuple[str, float]] = {}
+        self._live_read: dict[str, tuple[str, float, bool]] = {}
         self._live_read_lock = threading.Lock()
         # Live reads this turn has served, per Conversation, under the same lock as the token they
         # spend. Reset when the token is minted, so a count is always about one turn.
@@ -6149,6 +6241,8 @@ class Orchestrator:
         # not possible — the tuple is replaced, never mutated.
         self._alias_listing_at: tuple[float, dict[str, LlmAlias]] | None = None
         self._data_use_turns: dict[str, str] = {}
+        # The controlled writer and Chat finalization share this turn's validation evidence.
+        self._chat_tables: dict[str, ChatTables] = {}
         # Reads that ended in the model querying the table itself. ADR-0041 permits it — "a
         # read-only turn may read the world", and Chat queries Data Sources every day — but it is a
         # DIFFERENT door from the one the person bound the table for, and rows go into the model's
@@ -8112,6 +8206,7 @@ class Orchestrator:
                 project.record.path, turn_id=ticket.id,
                 app_id=project.app_for_turn().app_id,
                 conversation_id=str(conversation or ""), kind="build")
+            self._record_build_attempt(project, conversation)
             project.context_continuations.invalidate_available()
             self._adopt_legacy_build_history(project.app_for_turn(), project.record)
         # Same reason as the streaming turns: neither the archive nor the Artifacts link is
@@ -8918,6 +9013,7 @@ class Orchestrator:
             build_diagnostics.begin(project.record.path, turn_id=ticket.id,
                                     app_id=project.app_for_turn().app_id,
                                     conversation_id=project.build_conversation, kind="build")
+            self._record_build_attempt(project, project.build_conversation)
             # The model gate's listing, kicked off here so the gate below reads a local answer
             # instead of paying 2.5-2.9s for one (#125). A no-op when it is already warm, which the
             # rail's own poll usually keeps it.
@@ -9198,6 +9294,7 @@ class Orchestrator:
                 project.record.path, turn_id=turn_ticket.id,
                 app_id=continuation.app_id,
                 conversation_id=continuation.conversation, kind="build")
+            self._record_build_attempt(project, project.build_conversation)
             explicit_references = live_reference.plan_records(
                 continuation.file_references())
             resources = continuation.resource_references()
@@ -9540,8 +9637,12 @@ class Orchestrator:
         `_recross_handoff` — an entry naming an app that has since been deleted names nothing.
         """
         store = ThreadStore(self._chat_project().record.path)
+        apps = {app_id: self._wm.app_workspace(self._project_id, app_id)
+                for app_id in self._wm.app_ids()}
+        store.backfill_attempts({app_id: (app.display_name(), app.history_path)
+                                 for app_id, app in apps.items()})
         rows = store.list()
-        live = set(self._wm.app_ids())
+        live = set(apps)
         for row in rows:
             bound = [r for r in store.read_handoffs(str(row.get("id") or ""))
                      if r.get("status") == "bound" and str(r.get("appId") or "") in live]
@@ -9600,7 +9701,7 @@ class Orchestrator:
     _INVESTIGATION_DECISIONS = ("open", "decline", "close")
 
     def decide_thread_investigation(self, thread_id: str, decision: str,
-                                    reason: str = "") -> dict:
+                                    reason: str = "", *, task_id: str = "") -> dict:
         """Open an investigation on this Thread, decline one, or close the one that is open.
 
         WHAT OPENING GRANTS is the whole of it: every turn in this Thread keeps its shell and its
@@ -9626,6 +9727,7 @@ class Orchestrator:
         # The stamp every other row on this record carries (`threads._now`), so a reader of
         # `context.json` meets one time format rather than two.
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chat_task.require(store.read_context(thread_id), task_id)
         current = store.read_investigation(thread_id)
         if decision == "open":
             if current.get("state") == "open":
@@ -9644,7 +9746,7 @@ class Orchestrator:
                 # a state the first already reached.
                 return {"investigation": current}
             row = {**current, "state": "closed", "closedAt": now}
-        store.write_investigation(thread_id, row)
+        store.write_investigation(thread_id, row, task_id=task_id)
         # In the conversation, not only in the record. The review that rejected #381's design named
         # this exactly: nothing told the person their Thread was now unbounded, and nothing took it
         # back. A `decline` writes no row — the card it answers is already in the transcript, and a
@@ -10021,7 +10123,7 @@ class Orchestrator:
                     already_asked: bool = False, skip_table_gate: bool = False,
                     skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                     skip_investigation_gate: bool = False, declined: bool = False,
-                    other_lane_grant: str = "", turn_id: str | None = None,
+                    other_lane_grant: str = "", task_id: str = "", turn_id: str | None = None,
                     turn_ticket: _TurnTicket | None = None,
                     _already_granted: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
@@ -10124,6 +10226,7 @@ class Orchestrator:
                                         skip_investigation_gate=skip_investigation_gate,
                                         declined=declined,
                                         other_lane_grant=other_lane_grant,
+                                        task_id=task_id,
                                         timing_record=timing_record,
                                         turn_generation=turn_generation):
                 if ev.get("type") == "done":
@@ -10838,7 +10941,8 @@ class Orchestrator:
                     directory=getattr(client, "_dirs", {})[session_id],
                     rebuild_pending=bool(record.get("rebuild_pending")))
         except ValueError as e:
-            self._record_plan_refusal(store, thread_id, project, str(e))
+            self._record_plan_refusal(store, thread_id, project, str(e),
+                                      failure=getattr(e, "failure", None))
             raise
         if not plan_md:
             # Said in words, because this sentence is what the route answers 502 with and the click
@@ -10904,18 +11008,27 @@ class Orchestrator:
                 client.send_prompt(sid, original_prompt, model=_tool_handle(project), agent="sage-plan")
                 client.wait_for_idle(sid)
                 parts: list[str] = []
+                turn_failure = None
                 for message in client.messages(sid):
                     if message.get("type") != "assistant":
                         continue
+                    # Only this request's messages count. A later successful message clears a
+                    # failed step, just as it does in Build's terminal check.
+                    if _message_error_key(message) not in seen:
+                        turn_failure = message.get("error") or None
+                        if turn_failure:
+                            parts.clear()
+                            continue
                     for index, part in enumerate(message.get("content", [])):
+                        if not isinstance(part, dict):
+                            continue
                         if _part_key(message, index, part) in seen:
                             continue
                         if part.get("type") == "text" and part.get("text"):
                             parts.append(part["text"])
-                plan_md = _tidy_plan("\n".join(parts))
-                if plan_md:
-                    return plan_md, sid
-                error = project.last_gateway_error
+                plan_md = _drop_plan_preamble(_tidy_plan("\n".join(parts)))
+                error = project.last_gateway_error or (
+                    {"message": _error_raw(turn_failure)} if turn_failure else None)
                 if error is not None and error.get("code") == "model_no_action_timeout":
                     if project.stop_requested:
                         raise ValueError("Planning was stopped.")
@@ -10947,8 +11060,9 @@ class Orchestrator:
                     sid = client.create_session(directory=directory)
                     continue
                 if error is not None:
-                    raw = str(error["message"])
-                    raise ValueError(_guardrail_sentence(raw) or f"model call failed: {raw}")
+                    raise PlanCallFailed(error)
+                if plan_md:
+                    return plan_md, sid
                 log.warning("sage-plan produced no text (session=%s, model_calls=%d)",
                             sid, project.model_calls)
                 return plan_md, sid
@@ -10976,12 +11090,10 @@ class Orchestrator:
                 project, current_prompt, sid, recovery=recovery)
             if not plan_md:
                 return plan_md, sid
-            plan_md, sid = self._repair_plan_heading(
-                project, plan_md, sid, where, recovery=recovery)
             contract = validate_execution_contract(plan_md)
             _record_execution_contract(contract, source_request_count)
             if contract.valid:
-                return plan_md, sid
+                return self._repair_plan_heading(project, plan_md, where), sid
             attempt, action = recovery.choose()
             timing.planning_recovery(
                 "invalid_execution_plan", attempt, action,
@@ -11013,28 +11125,100 @@ class Orchestrator:
                 original_prompt + "\n\n" +
                 _execution_contract_recovery_prompt(contract, _plan_example_for(project)))
 
-    def _repair_plan_heading(self, project: Project, plan_md: str, session_id: str,
-                             where: str, *,
-                             recovery: PlanRecoveryBudget | None = None) -> tuple[str, str]:
-        """Ask the planner for the missing app-name heading, once."""
+    def _repair_plan_heading(self, project: Project, plan_md: str, where: str) -> str:
+        """Ask for the missing app-name heading, once, with one direct gateway call (#555).
+
+        Not a second `_run_sage_plan`. That was a second OpenCode turn in the same session, and it
+        failed twice over: the agent's system prompt outranked the name-only ask on a weak model,
+        and its own `arm_read_only("plan")` DISARMED in `finally` — clearing the live token the
+        gated turn had armed for its whole duration, so every request the clean retry then made
+        carried the implement block and the write tools (measured: 39862 instruction bytes and 9
+        tool schemas against 12303 and 7 on the calls either side). A gateway call arms nothing.
+
+        A failed optional name call keeps the valid body and its empty title. The existing app
+        display name/caption remains a display value, never a fabricated Markdown heading.
+        """
         if chat_handoff.plan_heading(plan_md):
-            return plan_md, session_id
+            return plan_md
         try:
-            answer, session_id = self._run_sage_plan(
-                project,
-                _PLAN_HEADING_REPAIR_PROMPT.replace("{plan}", plan_md),
-                session_id,
-                recovery=recovery,
-            )
-        except ValueError as e:
-            log.warning("%s: plan heading repair failed: %s", where, e)
-            raise ValueError(_PLAN_HEADING_REPAIR_FAILED) from None
+            answer = self._ask_for_app_name(project, plan_md)
+        except Exception as e:
+            log.warning("%s: plan heading repair failed: %s: %s", where, type(e).__name__, e)
+            return plan_md
         repaired = _prepend_repaired_heading(plan_md, answer)
         if not repaired:
             log.warning("%s: plan heading repair returned no valid app name: %r",
                         where, answer[:120])
-            raise ValueError(_PLAN_HEADING_REPAIR_FAILED)
-        return repaired, session_id
+            return plan_md
+        return repaired
+
+    def _ask_for_app_name(self, project: Project, plan_md: str) -> str:
+        """The gateway half of the repair: the plan in, the model's text out. Raises on any fault.
+
+        The model is the one the plan turn runs on — `Phase.PLAN` through `llm_router.resolve`,
+        the way `_tool_handle` reads it — so the plan model assignment and the sensitivity lock
+        (ADR-0043) are honoured. Tagged `component="repair"` and recorded as its own `repair` call
+        on the timing ledger, so a diagnostics download shows the repair as a row of its own rather
+        than as one more plan call. The body is read the way `scope.start` reads its verdict.
+        """
+        state = replace(project.control.snapshot(), phase=Phase.PLAN)
+        model = llm_router.resolve(state, project.shim.catalog).model
+        labels = CostLabels(phase="plan", mode="auto", component="repair",
+                            session=project.session_id, version=project.shim.version)
+        request = {
+            "model": model,
+            "messages": [{"role": "system", "content": _PLAN_NAME_SYSTEM},
+                         {"role": "user", "content": plan_md}],
+            "max_tokens": 32,
+            "temperature": 0,
+            "stream": True,
+        }
+        gateway = project.shim.gateway
+
+        def _call() -> str:
+            call = timing.model_call(model, "repair")
+            chunks = []
+            try:
+                for chunk in gateway.route(request, labels):
+                    call.first_byte()
+                    call.chunk()
+                    chunks.append(chunk)
+                raw = b"".join(chunks)
+                # Validate complete protocol frames, including frames split across transport
+                # chunks. A partial two-word answer is not a successful name on a failed call.
+                framed = raw if raw.lstrip().startswith(b"data:") else b"data: " + raw
+                failure = upstream_error(framed)
+                cutoff = cut_off_finish_reason(framed)
+                if failure or cutoff:
+                    raise ValueError(failure or f"name answer ended with {cutoff}")
+                if raw.lstrip().startswith(b"{"):
+                    whole = json.loads(raw)
+                    complete = isinstance(whole, dict) and any(
+                        isinstance(choice, dict) and isinstance(choice.get("message"), dict)
+                        for choice in whole.get("choices", []))
+                else:
+                    complete = (terminal_finish_reason(raw) == "stop"
+                                or re.search(rb"(?m)^data:\s*\[DONE\]\s*$", raw) is not None)
+                if not complete:
+                    raise ValueError("name answer ended without a completion signal")
+                answer = scope._extract(raw)
+                if not _repair_heading_name(answer):
+                    raise ValueError("name answer was not a valid app name")
+            except BaseException as e:
+                call.done(ok=False, error=f"{type(e).__name__}: {e}")
+                raise
+            call.done()
+            return answer
+
+        # A timeout releases the TURN, not the thread: the worker stays on the gateway read until
+        # the stream ends, and process exit joins it. `_withhold_probe` accepts the same, and both
+        # retire together when the gateway client gains a read timeout or a cancel on `route`.
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="sage-plan-name")
+        try:
+            return pool.submit(_call).result(timeout=_PLAN_NAME_TIMEOUT_S)
+        finally:
+            pool.shutdown(wait=False)
 
     def _confirm_handoff(self, thread_id: str, include: dict, target: dict) -> dict:
         # Read and refuse BEFORE anything is created: this is where a Built App is born (ADR-0008),
@@ -11801,7 +11985,8 @@ class Orchestrator:
         return ask
 
     def _record_plan_refusal(self, store: ThreadStore, thread_id: str, project: Project,
-                             said: str, *, offer: bool = True) -> None:
+                             said: str, *, offer: bool = True,
+                             failure: dict | None = None) -> None:
         """Put a failed handoff plan on the Thread, and advance the ladder if it earned a rung.
 
         `offer` is False for a plan that came back empty with nothing refused. The row still goes
@@ -11846,7 +12031,7 @@ class Orchestrator:
             # be the one with no offer under it AND no reason given for the silence.
             message += _last_rung_note(history, reason)
             store.append_history(thread_id, {
-                "type": "error", "reason": reason, "message": message})
+                "type": "error", "reason": reason, "message": message, **(failure or {})})
             # Opened on ONE refusal here, unlike every other caller. A failed handoff is not a turn
             # somebody can shrug at and retry: it is a deliberate click, on a card already on
             # screen, and the planner runs in the Thread's own session — so it is a fact about the
@@ -11994,6 +12179,8 @@ class Orchestrator:
                 self.decide_thread_investigation(thread_id, "close", reason="clear")
             if state:
                 store.write_investigation(thread_id, {})
+            store.update_context(thread_id, lambda ctx: {
+                key: value for key, value in ctx.items() if key != "pendingTask"})
         store.clear_session_id(thread_id)
         ev = {"type": recall.CLEARED, "scope": scope}
         offers = [e for e in store.read_history(thread_id) if e.get("type") == recall.SUGGEST]
@@ -12322,7 +12509,7 @@ class Orchestrator:
         return {"asked": True, "ok": True, "url": url, "tools": held,
                 "ours": [n for n in held if "live_read" in n]}
 
-    def _mint_live_read_token(self, thread_id: str) -> str:
+    def _mint_live_read_token(self, thread_id: str, *, include_app_bindings: bool = True) -> str:
         token = "lrt_" + secrets.token_urlsafe(15)
         self._data_use_turns[thread_id] = new_id("du_turn")
         project = self._chat_project()
@@ -12342,7 +12529,7 @@ class Orchestrator:
             project.shim.data_use.restore(workspace.read_history(thread_id),
                                           lambda ev: workspace.append_history(ev, thread_id))
         with self._live_read_lock:
-            self._live_read[thread_id] = (token, time.monotonic())
+            self._live_read[thread_id] = (token, time.monotonic(), include_app_bindings)
             self._live_reads.pop(thread_id, None)
             self._live_read_refused.pop(thread_id, None)
         # The same token names this turn for a Delegated model call, so this is the moment that
@@ -12365,7 +12552,7 @@ class Orchestrator:
         now, found = time.monotonic(), None
         expired: list[str] = []
         with self._live_read_lock:
-            for thread_id, (tok, at) in list(self._live_read.items()):
+            for thread_id, (tok, at, _) in list(self._live_read.items()):
                 if now - at > _LIVE_READ_TTL_S:
                     self._live_read.pop(thread_id, None)
                     self._live_reads.pop(thread_id, None)
@@ -12401,15 +12588,21 @@ class Orchestrator:
         Conversation while its turn runs, and "may this be read" deserves the current answer.
         """
         thread_id = self._live_read_thread(token)
-        return self._live_read_turn_for(thread_id) if thread_id else None
+        if not thread_id:
+            return None
+        with self._live_read_lock:
+            current = self._live_read.get(thread_id)
+            if current is None or current[0] != token:
+                return None
+            include_app_bindings = current[2]
+        return self._live_read_turn_for(thread_id, include_app_bindings=include_app_bindings)
 
-    def _live_read_turn_for(self, thread_id: str) -> live_read.Turn:
+    def _live_read_turn_for(self, thread_id: str, *, include_app_bindings: bool = True) -> live_read.Turn:
         """The same thing for a Conversation named directly rather than by a turn's token.
 
-        **Read again** has no turn and no token — it is a person pressing a button on a card (#256)
-        — but it reaches exactly what that Conversation's agent could reach, through the same
-        records. One builder, so the button and the agent cannot drift into two answers about what
-        is in range.
+        **Read again** has no turn and no token — it is a person pressing a button on a card (#256).
+        It and Build retain the app's bindings. Chat tokens explicitly exclude those bindings;
+        their source scope stays with the conversation even after the Chat control pin is cleared.
         """
         project = self._chat_project()
         store = ThreadStore(project.record.path)
@@ -12423,7 +12616,7 @@ class Orchestrator:
         scope_for: dict[tuple[str, str], tuple[str, str]] = {}
         for item in (store.read_context(thread_id).get("items") or []):
             kind = str(item.get("kind") or "")
-            if kind in ("data_source", "table"):
+            if kind in ("data_source", "datasource", "table"):
                 name = str(item.get("sourceName") or item.get("subtitle") or item.get("name") or "")
                 key = "datasource"
                 scope = item.get("scope") if isinstance(item.get("scope"), dict) else None
@@ -12443,7 +12636,7 @@ class Orchestrator:
         # this is per app and not per Project, which is what "what this app reads" has to mean.
         bound: dict[str, tuple[str, ...]] = {}
         binding_for: dict[tuple[str, str], str] = {}
-        for row in project.workspace.read_bindings():
+        for row in project.workspace.read_bindings() if include_app_bindings else []:
             name = str(row.get("name") or "")
             kind = "dataset" if str(row.get("kind") or "") == "dataset" else "datasource"
             if not name:
@@ -12679,6 +12872,7 @@ class Orchestrator:
         if (not state.chat_artifact_turn or state.read_only_turn
                 or not thread_id or thread_id != state.chat_thread_id):
             raise ValueError("Artifact writes require the active data artifact Chat turn.")
+        tables = self._chat_tables.get(thread_id)
         path = body.get("path")
         content = body.get("content")
         if not isinstance(path, str) or not isinstance(content, str):
@@ -12687,12 +12881,17 @@ class Orchestrator:
         if (rel.is_absolute() or ".." in rel.parts or "\\" in path
                 or not path.startswith(f"examples/{thread_id}/")):
             raise ValueError(f"Artifact writes must stay under examples/{thread_id}/.")
+        path = rel.as_posix()
         folder = project.record.path.resolve() / "examples" / thread_id
         dest = (project.record.path / path).resolve()
         if folder.resolve() != folder or dest == folder or not dest.is_relative_to(folder):
             raise ValueError("Artifact path escapes its thread folder.")
         if not path.endswith((".png", ".table.json")):
             raise ValueError("Artifact writes must use .png or .table.json so row protection applies.")
+        # Keep a rejected attempt even when it leaves no file for the final scan to find.
+        # Clear only after replacement succeeds, including an unchanged valid replacement.
+        if path.endswith(".table.json") and tables is not None:
+            tables.write_failures[path] = "table write did not complete"
         encoding = body.get("encoding", "utf8")
         if encoding == "svg" and path.endswith(".png"):
             import xml.etree.ElementTree as ET
@@ -12750,11 +12949,29 @@ class Orchestrator:
             except ValueError as e:
                 raise ValueError("Artifact content is not valid base64.") from e
         elif encoding == "utf8" and path.endswith(".table.json"):
+            from ..workspace.chat_tables import validate_table_bytes
+
             data = content.encode("utf-8")
+            if reason := validate_table_bytes(data):
+                if tables is not None:
+                    tables.write_failures[path] = reason
+                raise ValueError(f"Invalid table JSON: {reason}.")
         else:
             raise ValueError("Use utf8 for table JSON, or svg/base64 for PNG charts.")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
+        if path.endswith(".table.json"):
+            with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", delete=False) as candidate:
+                temporary = Path(candidate.name)
+                try:
+                    candidate.write(data)
+                    candidate.close()
+                    os.replace(temporary, dest)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            if tables is not None:
+                tables.write_failures.pop(path, None)
+        else:
+            dest.write_bytes(data)
         return {"path": path, "bytes": len(data)}
 
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
@@ -13549,7 +13766,7 @@ class Orchestrator:
                      artifacts: list[dict] | None = None,
                      handoffs: list[dict] | None = None,
                      history: list[dict] | None = None,
-                     declined: bool = False, rebuilt: str = "") -> str:
+                     declined: bool = False, rebuilt: str = "", investigating: bool = False) -> str:
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
@@ -13570,7 +13787,8 @@ class Orchestrator:
             # THING and what you would do once it is there (`template/chat/AGENTS.md:23-25`) — which
             # is why this says "what you would need" and never "which tool", since naming a tool to
             # the person stays forbidden there (:21). Same edit in the pack and in `opencode.json`.
-            (f"Read token: {self._mint_live_read_token(thread_id)}. Pass it as `token` on every "
+            (f"Read token: {self._mint_live_read_token(thread_id, include_app_bindings=False)}. "
+             "Pass it as `token` on every "
              "`live_read_table`, `live_read_files` or `live_read_query` call. Use those tools to look "
              "at a bound table or Dataset, and `live_read_query` to work a number out of one, "
              "rather "
@@ -13591,6 +13809,14 @@ class Orchestrator:
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]
+        if investigating:
+            lines += [
+                ("Investigation is open for this conversation. A selected table is a starting table. "
+                 "Discover and query other relevant tables when needed, using only sources attached "
+                 "to this conversation. Python and queries across those tables are available under "
+                 "the existing data disclosure rules. Do not ask to open another investigation."),
+                "",
+            ]
         # The first turn after a summary-scoped clear keeps the promise the offer made: the model
         # starts over, but is told what was said. Empty on every other turn, including the first
         # turn after a complete clear, where being told nothing is the whole point.
@@ -13629,7 +13855,7 @@ class Orchestrator:
                     # `describe()` on a directory says "Is a directory", which is true and useless.
                     folder = _context_folder_state(workspace, it)
                 lines.append(_chat_context_line(it, file_note=note, folder_note=folder,
-                                               thread_id=thread_id))
+                                               thread_id=thread_id, investigating=investigating))
             for url in urls:
                 lines.append(
                     f"- URL {url}. Read this page and answer from what it contains. "
@@ -13709,7 +13935,7 @@ class Orchestrator:
                      already_asked: bool = False, skip_table_gate: bool = False,
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                      skip_investigation_gate: bool = False, declined: bool = False,
-                     other_lane_grant: str = "", timing_record=None,
+                     other_lane_grant: str = "", task_id: str = "", timing_record=None,
                      turn_generation: int = 0):
         import time
 
@@ -13769,7 +13995,8 @@ class Orchestrator:
             done["reads"] = sorted(set(turn_writes))
             # The guard is load-bearing. An empty set is a subset of everything, so without "wrote
             # at least one" every ordinary conversational turn would report `advanced: false`.
-            done["advanced"] = not (turn_writes and set(turn_writes) <= turn_rewrites)
+            done["advanced"] = (done.get("decision") != "empty answer"
+                                and not (turn_writes and set(turn_writes) <= turn_rewrites))
             # What this turn's model did with the tools Chat handed it (#469). Counted here and
             # judged by `_tool_use`, which is the whole of the decision: ONE TURN CANNOT TELL
             # "this model cannot call a tool" from "this turn did not need one", so a per-turn
@@ -13838,6 +14065,22 @@ class Orchestrator:
         if asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
+
+        try:
+            prompt = chat_task.resolve(
+                store, thread_id, prompt, task_id=task_id, asking=asking,
+                needs_source=(_looks_investigative(prompt)
+                              and not _plain_chat_answer_only(prompt)
+                              and not chat_handoff.looks_like_build_request(prompt)
+                              and not any(i.get("kind") in {"data_source", "datasource", "table",
+                                                            "file", "dataset", "artifact"}
+                                          for i in items)))
+        except ValueError as exc:
+            error = {"type": "error", "message": str(exc)}
+            store.append_history(thread_id, error)
+            yield error
+            yield finish({"type": "done", "ok": False, "decision": "stale question"})
+            return
 
         recovery_message = _pending_refusal_recovery_message(
             store.read_history(thread_id), prompt)
@@ -14132,6 +14375,7 @@ class Orchestrator:
             finish(done)
             yield done
 
+        chat_task.started(store, thread_id, prompt)
         chat_token = project.control.arm_chat(thread_id)
         # What this Conversation has stopped sending, read back out of its own transcript (ADR-0022).
         # Derived per turn rather than held, so it survives a Sage Builder restart — which matters
@@ -14227,12 +14471,14 @@ class Orchestrator:
                 chat_approved.names, chat_approved.order
             )
         tap: _EventTap | None = None
-        from ..workspace.chat_tables import ChatTables, failed_table_name, without_failed_tables
+        from ..workspace.chat_tables import ChatTables, failed_table_name, validate_table_bytes
 
         tables: ChatTables | None = None
+        recovery_used = False
         primary_body = ""
         last_text = ""
         streamed_body = ""
+        completed_stream_body = ""
         artifacts_finished = False
         # #418. Read at the turn's end to decide whether the workspace is worth re-reading: a turn
         # that ran no tool cannot have written a file, so there is nothing for the revert scan to
@@ -14243,6 +14489,15 @@ class Orchestrator:
         # rather than a return value because every exit from this turn goes through
         # `publish_chat_artifacts`, and only one of them — the completed one — may draw the card.
         asked_for_the_other_lane = False
+
+        def has_chat_result(body: str, invalid: dict[str, str]) -> bool:
+            body = _take_needs_more_than_sql_marker(_take_no_build_marker(body)[0])[0]
+            if body.strip():
+                return True
+            roles = live_data_use.artifact_roles(
+                project.shim.data_use.events(self._data_use_turns.get(thread_id, "")))
+            return any(rel not in invalid and roles.get(rel, "answer") != "working"
+                       for rel in new_artifact_paths(project.record.path, thread_id, tables.before))
 
         def publish_chat_artifacts(outcome: str):
             """Every active Chat exit validates bytes before retention, text and artifacts."""
@@ -14273,13 +14528,17 @@ class Orchestrator:
                     revert_denied_writes(project.record.path, thread_id, tables.before)
                 invalid = tables.check(body)
                 tables.diagnose(invalid, outcome)
-                # A failed replacement must not turn an earlier turn's valid card into an empty
-                # receipt. Restore only this turn's damage; unchanged prior files stay untouched.
+                # Restore an earlier valid table after a bad replacement. Remove only failed
+                # candidates written by this turn; retention must not turn them into valid-looking
+                # empty receipts. An unchanged invalid file stays eligible for a later repair.
                 for rel in invalid:
-                    if rel in tables.before and rel not in tables.prior_paths:
-                        path = project.record.path / rel
+                    path = project.record.path / rel
+                    previous = tables.before.get(rel)
+                    if previous is not None and not validate_table_bytes(previous):
                         path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(tables.before[rel])
+                        path.write_bytes(previous)
+                    elif previous is None or not path.exists() or path.read_bytes() != previous:
+                        path.unlink(missing_ok=True)
                 withhold_table_rows(project.record.path, thread_id, tables.before,
                                     kept_rows=project.record.kept_rows())
                 runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
@@ -14303,8 +14562,11 @@ class Orchestrator:
                 turn_rewrites.update(rel for rel in written if rel in tables.before)
             events = []
             if body.strip() or invalid:
+                # The failure text below is authoritative. A phrase filter cannot remove every
+                # possible success claim or know which surrounding numbers remain supported. An
+                # empty final text event also removes provisional streamed prose in Workbench.
                 ev = {"type": "agent", "kind": "text",
-                      "text": without_failed_tables(body, set(invalid))}
+                      "text": "" if invalid else body}
                 events.append(ev)
             if artifacts:
                 immediate = immediate or "artifacts"
@@ -14385,6 +14647,7 @@ class Orchestrator:
                 # unlink on `prev is None`.
                 before = snapshot_files(project.record.path)
                 tables = ChatTables(project.record.path, thread_id, before)
+                self._chat_tables[thread_id] = tables
             # Cleared here so what is read at the end of this turn belongs to this turn. Every build
             # entry point already does this; Chat never did, because Chat never read the field —
             # which is the gap, not the clearing. The turn lock means no other turn is running to
@@ -14429,7 +14692,8 @@ class Orchestrator:
                                                 handoffs=store.read_handoffs(thread_id),
                                                 history=prompt_history,
                                                 declined=declined,
-                                                rebuilt=rebuilt)
+                                                rebuilt=rebuilt,
+                                                investigating=investigating)
                 if artifact_token is not None:
                     # Says what to do, never what this turn is or cannot do. The block is
                     # model-facing, so every word in it is a word the model can hand back to the
@@ -14515,6 +14779,7 @@ class Orchestrator:
             # question that was never the problem.
             step_error = ""
             step_reason = ""
+            unanswered_stream_error = False
             answered = False
             idle_quiet = _CHAT_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
             tool_quiet = _CHAT_TOOL_QUIET_TIMEOUT_S if timeout_s is None else timeout_s
@@ -14857,6 +15122,8 @@ class Orchestrator:
                             # anything arrive AFTER this went wrong" — a step that fails and is
                             # retried still says something afterwards and still stays quiet.
                             answered = False
+                            completed_stream_body = ""
+                            unanswered_stream_error = True
                         log.warning("chat: step failed — %s", ev.payload.get("error"))
                         # A turn refused at its first step may never register as running, and
                         # `finished` needs to have seen it run. Without this the loop cannot end on
@@ -14929,10 +15196,14 @@ class Orchestrator:
                     if live is not None:
                         answered = answered or bool(live.get("text"))
                         if live.get("type") == "delta":
+                            if live.get("final") and live.get("text", "").strip():
+                                unanswered_stream_error = False
                             if tables.repair_ran:
                                 continue
                             streamed_body = (live.get("text", "") if live.get("final")
                                              else streamed_body + live.get("text", ""))
+                            if live.get("final"):
+                                completed_stream_body = streamed_body
                             tables.check(streamed_body)
                             # A table answer is held until its files have been checked. Ordinary
                             # Chat still streams. Repair prose never replaces the useful answer.
@@ -15108,18 +15379,32 @@ class Orchestrator:
                     # well as this session's, so the chat agent is told the rule it belongs to; the
                     # Thread must not show it either way. Stripped here, where the reply is both
                     # persisted and replayed, so a reload does not bring it back.
-                    body = _take_no_build_marker(pending_text)[0] if pending_text else ""
+                    # A final stream message is an answer even if the transcript copy is late.
+                    # Partial narration and words before a failed step do not meet that test.
+                    body = _take_no_build_marker(pending_text or completed_stream_body)[0]
                     if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                         continue
-                    answered = bool(body.strip()) and not turn_failed
                     invalid = tables.check(primary_body if tables.repair_ran else body)
+                    answered = (has_chat_result(primary_body if tables.repair_ran else body, invalid)
+                                and not turn_failed and not unanswered_stream_error
+                                and project.last_gateway_error is None)
                     repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
-                    if (repairable and not tables.repair_ran and not turn_failed and not step_error
+                    if ((repairable or (not invalid and not answered))
+                            and not recovery_used and not turn_failed and not step_error
                             and project.last_gateway_error is None):
                         if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                             continue
-                        primary_body = body
-                        tables.repair_ran = True
+                        recovery_used = True
+                        table_repair = bool(repairable)
+                        if table_repair:
+                            primary_body = body
+                            tables.repair_ran = True
+                        correction = (tables.repair_prompt(repairable) if table_repair else
+                                      "Your turn ended without an answer or an answer artifact. "
+                                      "Answer the user's question using the work already done. "
+                                      "This is the only recovery attempt. Keep the current source "
+                                      "permissions. If you cannot answer, say what prevented it. "
+                                      "Do not invent findings or claim an artifact was saved.")
                         # Ignore the first request's transcript on the next poll, while keeping
                         # the same session, Chat enforcement pin and original turn deadline.
                         for m in msgs:
@@ -15127,25 +15412,33 @@ class Orchestrator:
                                 if isinstance(part, dict):
                                     seen.add(_part_key(m, i, part))
                         try:
-                            with timing.span("chat.table_repair"):
+                            with timing.span("chat.table_repair" if table_repair else "chat.answer_repair"):
                                 client.send_prompt(sid,
-                                                   tables.repair_prompt(repairable)
+                                                   correction
                                                    + (("\n\n" + chat_patch_note)
                                                       if chat_patch_note else ""),
                                                    model=chat_handle,
                                                    agent="sage-chat", chat=True)
                         except Exception:
-                            log.warning("chat: table repair request failed")
+                            log.warning("chat: result repair request failed")
                             try:
                                 client.interrupt(sid)
                             except Exception:
                                 log.warning("chat: interrupt after repair request failed")
                             yield from publish_chat_artifacts("repair request failed")
+                            if not table_repair:
+                                err = {"type": "error", "reason": "empty answer",
+                                       "message": "No answer was produced, and the recovery attempt failed."}
+                                store.append_history(thread_id, err)
+                                yield err
                             yield finish({"type": "done", "ok": False,
-                                          "decision": "table repair failed", "artifacts": artifacts})
+                                          "decision": ("table repair failed" if table_repair
+                                                       else "empty answer"), "artifacts": artifacts})
                             return
                         appeared = False
                         last_text = ""
+                        streamed_body = ""
+                        completed_stream_body = ""
                         last_activity = time.monotonic()
                         running_tools.clear()
                         running_paths.clear()
@@ -15174,9 +15467,7 @@ class Orchestrator:
             # its wait; Chat never did, so a refusal the shim had already written down in full could
             # still end a Chat turn in silence.
             #
-            # Only when there is nothing to keep, the same rule the handoff planner uses: an error
-            # the shim recovered from is still recorded, and an answer that came back whole is worth
-            # more than the note of a call that went wrong on the way to it.
+            # A terminal provider error takes precedence over partial answer text.
             if not answered and not step_error and project.last_gateway_error is not None:
                 failed = project.last_gateway_error
                 if said := _chat_error_text(failed):
@@ -15186,6 +15477,12 @@ class Orchestrator:
             done = {"type": "done", "ok": True, "decision": "answered"}
             if invalid:
                 done.update(ok=False, decision="table generation failed")
+            elif not answered and not step_error:
+                err = {"type": "error", "reason": "empty answer",
+                       "message": "No answer was produced. Try the request again."}
+                store.append_history(thread_id, err)
+                yield err
+                done.update(ok=False, decision="empty answer")
             # The door onto the lane that can compute (#411, ADR-0058). AFTER the answer, and that
             # position is the decision rather than a convenience.
             #
@@ -15265,6 +15562,8 @@ class Orchestrator:
             yield finish({"type": "done", "ok": False, "decision": "session failed",
                           "artifacts": artifacts})
         finally:
+            if self._chat_tables.get(thread_id) is tables:
+                self._chat_tables.pop(thread_id, None)
             # Generator close and exceptions also end the retention window. In particular Stop
             # used to save straight from this finally without removing generated table rows.
             if tables is not None and not artifacts_finished:
@@ -16525,6 +16824,7 @@ class Orchestrator:
                                       binding: Binding, ranking: table_search.Ranking,
                                       skipped: list[str] | None = None):
         """The card itself, written to the Thread rather than to a Built App's transcript."""
+        task = chat_task.await_input(store, thread_id, prompt, "table")
         name = binding.display_name
         if ranking.matched:
             # What the pick actually buys, rather than a fence it does not hold (#392, ADR-0059).
@@ -16552,7 +16852,7 @@ class Orchestrator:
                    # What tells the click which door to write through. The Build card carries the
                    # gates its turn was already past instead; a Chat turn has none to carry, and
                    # the record it writes is this Thread's.
-                   "threadId": thread_id,
+                   "threadId": thread_id, "taskId": task["id"],
                    "groups": table_search.grouped(shortlist),
                    "allGroups": table_search.grouped(ranking.candidates),
                    "total": len(ranking.candidates), "matched": ranking.matched},
@@ -16672,6 +16972,7 @@ class Orchestrator:
         settles for every reader of the stream. `ok: False` because nothing was answered — the
         question is still open, and it is the click that runs it.
         """
+        task = chat_task.await_input(store, thread_id, prompt, "investigation")
         message = brand.text(
             "This question looks like it needs more than one answer. {assistantName} can open an "
             "investigation for this conversation: {turnPlural} here can query your "
@@ -16690,7 +16991,7 @@ class Orchestrator:
         events = ({"type": "investigation-offer", "prompt": prompt, "message": message,
                    # What tells the click which conversation to record the decision on, the way the
                    # table card carries the same for the same reason.
-                   "threadId": thread_id},
+                   "threadId": thread_id, "taskId": task["id"]},
                   {"type": "done", "ok": False, "decision": "investigation offer"})
         for ev in events:
             store.append_history(thread_id, ev)
@@ -17411,6 +17712,14 @@ class Orchestrator:
         except httpx.HTTPError as e:
             log.warning("could not baseline session messages, prior-turn echo possible: %s", e)
         return seen
+
+    def _record_build_attempt(self, project: Project, conversation: str | None) -> None:
+        thread_id = str(conversation or "")
+        if not thread_id:
+            return
+        app = project.app_for_turn()
+        ThreadStore(project.record.path).record_attempt(
+            thread_id, app_id=app.app_id, app_name=app.display_name())
 
     def _tag_conversation(self, project: Project, ev: dict) -> None:
         """Name the app on the conversation's own record, so the rail can tag, filter and search it.
@@ -18586,6 +18895,12 @@ class Orchestrator:
         # to project.runtime_error; we feed them back to fix, bounded so a crash we can't fix can't loop.
         runtime_fixes = 0
         max_runtime_fixes = self._build_policy.runtime_repair_limit
+        # A platform read the app's own relay refused (#556): the page catches the failed fetch and
+        # logs it in the browser, so without this the turn never hears that `datasetIds=<name>` was
+        # a 404. Once, and not a setting: one nudge says what a 404 on a named path means, and a
+        # second copy of it would not say more.
+        platform_fixes = 0
+        max_platform_fixes = 1
         leak_fixes = 0
         max_leak_fixes = self._build_policy.leak_repair_limit
         # An app that declares a model has a live gateway URL in its own source, and nothing stops
@@ -18624,6 +18939,12 @@ class Orchestrator:
             "The app compiled but threw a runtime error when it rendered in the browser, so the "
             "preview is blank. Fix the code so it renders without throwing. Do not just guard the "
             "symptom — find and fix the root cause.\n\nError: {message}\n\nStack:\n{stack}"
+        )
+        PLATFORM_READ_NUDGE = (
+            "The app's read of the platform API was refused while the preview ran it: {status} on "
+            "`{path}`. A 404 on a path the reads table names is a wrong id — use the platform id "
+            "from the attached-data block in AGENTS.md, never the name. Fix the call; do not hide "
+            "the failure and do not substitute values for what the platform did not answer."
         )
         # What the retry below adds to the turn it re-sends. It is orientation, not instruction: the
         # retry runs in a FRESH session that heard none of the broken one, so the note says what
@@ -19786,9 +20107,15 @@ class Orchestrator:
                                 "build: %d tool calls and %.0fs since the last change to the app "
                                 "— stopping the session and checking it (session=%s)",
                                 progress_calls, time.monotonic() - progress_at, sid)
-                            self._stop_wedged_session(
+                            stopped = self._stop_wedged_session(
                                 client, sid,
                                 grace_seconds=self._build_policy.stop_grace_seconds)
+                            if not stopped:
+                                if owns_turn:
+                                    self._turn_gave_up = True
+                                yield from refused_to_stop(in_tool=tool_open, quiet_for=0.0)
+                            # Only a confirmed stop hands the tree to the checker. The progress
+                            # budget does not give a still-running writer different ownership.
                             # A `break`, NOT the `return` every cap above takes, and not
                             # `_turn_gave_up`. Code WAS written this turn or an earlier one, so the
                             # app is worth checking: the three existing breaks all land on the tap
@@ -20094,7 +20421,9 @@ class Orchestrator:
                     message += brand.text(
                         '\n\nThe plan is still here. Say "try again" to build it.')
                 message += _last_rung_note(build_history, reason)
-                yield persist({"type": "error", "message": message, "reason": reason})
+                failure_fields = _plan_failure_fields(err) if gate else {}
+                yield persist({"type": "error", "message": message, "reason": reason,
+                               **failure_fields})
                 # Between the error and the `done`, for the reason Chat puts it there: a client
                 # reading the stream in order sees what failed before it is offered a way out of it.
                 #
@@ -20105,7 +20434,8 @@ class Orchestrator:
                 offered = self._record_build_recall_offer(project)
                 if offered is not None:
                     yield offered
-                yield persist({"type": "done", "ok": False, "decision": "gateway error"})
+                yield persist({"type": "done", "ok": False, "decision": "gateway error",
+                               **failure_fields})
                 return
 
             if broken_call is not None and broken_retries < 1:
@@ -20230,6 +20560,9 @@ class Orchestrator:
             # violation check below and is reverted.
             if gate and not agent_wrote():
                 plan_md = _tidy_plan("\n".join(plan_text_parts))
+                # An architecture document may open with prose; a plan opens with its name.
+                if not arch:
+                    plan_md = _drop_plan_preamble(plan_md)
                 # A weak planner can finish this read-only turn without emitting any plan text,
                 # leaving nothing to approve. Don't persist a blank plan or present an approve card
                 # that would build from an empty plan; report it as a failed planning turn, with the
@@ -20281,15 +20614,6 @@ class Orchestrator:
                     yield persist({"type": "done", "ok": False, "decision": "no app described"})
                     return
                 if not arch:
-                    try:
-                        plan_md, sid = self._repair_plan_heading(
-                            project, plan_md, sid, "plan gate", recovery=plan_recovery)
-                    except ValueError as e:
-                        restore_mode()
-                        yield persist({"type": "error", "message": str(e)})
-                        yield persist({"type": "done", "ok": False,
-                                       "decision": "plan title repair failed"})
-                        return
                     source_request_messages = (prompt,)
                     contract = validate_execution_contract(plan_md)
                     _record_execution_contract(contract, len(source_request_messages))
@@ -20322,6 +20646,7 @@ class Orchestrator:
                         yield persist({"type": "done", "ok": False,
                                        "decision": "invalid execution plan"})
                         return
+                    plan_md = self._repair_plan_heading(project, plan_md, "plan gate")
                 restore_mode()
                 # An architecture is a reference document, not the one-shot plan→implement handoff, so
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it
@@ -20543,6 +20868,22 @@ class Orchestrator:
                         yield {"type": "iterate", "reason": iterate_reason}
                         current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
                         continue
+                # The relay refused a platform read while this turn's code ran (#556). No wait of
+                # its own: the runtime wait above is the window, and a refusal that landed inside
+                # it is here to read. Its own block, for the reason the gateway one below is: one
+                # `continue` fires per iteration, so a turn that both crashed and misread gets the
+                # crash first and this on the next pass.
+                if report.ok and wrote_code and platform_fixes < max_platform_fixes:
+                    refused = self._fresh_platform_read_failure(project, since=send_ts)
+                    if refused is not None:
+                        platform_fixes += 1
+                        project.platform_read_failure = None  # consume so a later turn starts clean
+                        iterate_reason = (f"platform read refused — fixing ({refused['status']} "
+                                          f"{refused['path'][:140]})")
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = PLATFORM_READ_NUDGE.format(status=refused["status"],
+                                                             path=refused["path"])
+                        continue
                 # The agent may have copied attached data into src/ — that leaks it into git
                 # (public/data/ is gitignored on purpose) and is why deleting the attachment leaves the
                 # dashboard still working. Treat it like a build error: nudge the agent to remove the
@@ -20687,6 +21028,7 @@ class Orchestrator:
             build_diagnostics.begin(project.record.path, turn_id=ticket.id,
                                     app_id=project.app_for_turn().app_id,
                                     conversation_id=project.build_conversation, kind="approve")
+            self._record_build_attempt(project, project.build_conversation)
             yield from self._approve_locked(
                 answers, plan_edits, plan_id=plan_id, build_again=build_again,
                 # The transcript replays what the person did, and this is a different act from
@@ -21290,6 +21632,30 @@ class Orchestrator:
             return
         self._project.runtime_error = {"message": message, "stack": stack, "ts": time.monotonic(),
                                        "app": self._project.workspace.app_id}
+
+    def record_platform_read_failure(self, status: int, path: str) -> None:
+        """Store a platform read the app's own relay refused in the preview (the proxy's
+        `on_platform_read`, #556), stamped exactly as `record_runtime_error` stamps a crash: the
+        time, so build_stream can tell this turn's refusal from a stale one, and the app, because
+        the preview serves whichever app is ON SCREEN (#77). Best-effort: no active project, dropped."""
+        import time
+
+        if self._project is None:
+            return
+        self._project.platform_read_failure = {"status": int(status), "path": str(path),
+                                               "ts": time.monotonic(),
+                                               "app": self._project.workspace.app_id}
+
+    def _fresh_platform_read_failure(self, project: Project, since: float) -> dict | None:
+        """The refusal recorded after `since` (this turn's send time) for the app this turn is
+        building, or None. The same two rules `_await_runtime_error` applies to a crash, and no
+        wait of its own: that wait is the window, and this reads what landed in it."""
+        refused = project.platform_read_failure
+        app_id = project.app_for_turn().app_id
+        if (refused is not None and refused.get("ts", 0.0) >= since
+                and refused.get("app", app_id) == app_id):
+            return refused
+        return None
 
     def _await_runtime_error(self, project: Project, since: float, timeout: float = 4.0) -> dict | None:
         """Poll up to `timeout`s for a preview-reported runtime error newer than `since` (this turn's
@@ -22789,10 +23155,10 @@ class Orchestrator:
         return self._wm.app_workspace(self._project_id).history_row_detail(index)
 
     def history(self, conversation: str | None = None,
-                tool_detail: bool = True) -> list[dict]:
+                tool_detail: bool = True, app_id: str = "") -> list[dict]:
         """Reads straight from the app's directory on the volume, so the transcript is available
         without starting the preview (attaching the project) — a plain GET must not spin up Vite."""
-        workspace = self._wm.app_workspace(self._project_id)
+        workspace = self._wm.app_workspace(self._project_id, app_id or None)
         self._adopt_legacy_build_history(workspace, self._wm.project_record(self._project_id))
         history = workspace.read_history(conversation, tool_detail=tool_detail)
         _warn_if_history_lossy(history, "Orchestrator.history")
@@ -24197,6 +24563,7 @@ class Orchestrator:
 
     def confirm_thread_table_candidate(
         self, thread_id: str, source_id: str, database: str, schema: str, table: str,
+        *, task_id: str = "",
     ) -> dict:
         """A candidate clicked in Chat: prove the table is still there, record it on the Thread.
 
@@ -24214,6 +24581,7 @@ class Orchestrator:
         if store.get(thread_id) is None:
             raise KeyError(thread_id)
         ctx = store.read_context(thread_id)
+        chat_task.require(ctx, task_id)
         items = ctx.get("items") or []
         rows = [i for i in items
                 if str(i.get("kind") or "") in ("data_source", "datasource", "table")
@@ -24239,6 +24607,7 @@ class Orchestrator:
         columns = self._columns_for_context(source, scope)
 
         def apply(body: dict) -> dict | None:
+            chat_task.require(body, task_id)
             live = next((i for i in body.get("items") or [] if str(i.get("id") or "") == row_id),
                         None)
             if live is None:
@@ -26349,7 +26718,7 @@ class Orchestrator:
         path = entry["path"]
         return (f"- disk `{path}` — {self._descriptor(project, entry)['summary']} "
                 f"— fetch `{path.removeprefix('public/')}` (relative to base) "
-                f"— from dataset **{entry['dataset']}**")
+                f"— from dataset {_dataset_credit(entry['dataset'], _platform_id(entry))}")
 
     @staticmethod
     def _shared_shape(descriptors: list[dict]) -> str:
@@ -26397,7 +26766,13 @@ class Orchestrator:
             # because `_slug` collapses punctuation, so two Datasets named `my data` and `my-data`
             # share a slug and land in one tree — and naming only the first would credit one
             # Dataset for the other's files.
-            sources = sorted({e["dataset"] for e in entries})
+            # One id per source, when its entries agree on it (#556): the line stands for every
+            # file in the group, and a group whose files name two ids under one name is two
+            # Datasets sharing a slug — say the name and no id rather than the wrong one.
+            sources = []
+            for name in sorted({e["dataset"] for e in entries}):
+                ids = {_platform_id(e) for e in entries if e["dataset"] == name} - {""}
+                sources.append(_dataset_credit(name, ids.pop() if len(ids) == 1 else ""))
             # `<name>` only when the files really sit in this folder. `_by_folder` rolls the deepest
             # level up into its parent, so a group's key can be an ANCESTOR of where its files are —
             # a Dataset partitioned to the day rolls `raw/2026/01/part.csv` up to `raw/2026`, and a
@@ -26409,7 +26784,7 @@ class Orchestrator:
             lines.append(
                 f"- {len(entries)} files in `{folder}` — {shape} "
                 f"— fetch `{folder.removeprefix('public/')}/{leaf}` (relative to base) "
-                f"— from dataset **{'**, **'.join(sources)}**"
+                f"— from dataset {', '.join(sources)}"
                 # The collapse is right (per-file lines grow with file count, forever) but it leaves
                 # the agent holding a folder and a placeholder. Grep is banned three lines up and
                 # would find nothing anyway, so without this sentence the only move left is to list

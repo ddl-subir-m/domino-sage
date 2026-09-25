@@ -50,6 +50,10 @@ _LLM_PREFIX = "api/llm/"
 # The page's read-only road to the platform API (#489): `sage_domino.RELAY_PREFIX`, minus the slash.
 _PLATFORM_PREFIX = "api/domino/"
 
+# How much of a refused read's path, query included, is handed on (#556). It rides into a prompt,
+# and the query string is the page's to write at any length.
+_PLATFORM_READ_PATH_MAX = 200
+
 # Headers the app sets that must survive the hop. The tag headers are how spend is attributed to the
 # app (see `tagHeaders` in appLlm.ts); dropping them would put preview traffic in "unknown".
 _LLM_FORWARD = ("content-type", "accept")
@@ -192,7 +196,8 @@ async def _forward_llm(request: Request, path: str, get_llm, approve_model=None)
     return StreamingResponse(body(), status_code=upstream.status_code, headers=passthrough)
 
 
-async def _relay_platform(request: Request, path: str, module) -> Response | None:
+async def _relay_platform(request: Request, path: str, module,
+                          on_platform_read: Callable[[int, str], None] | None = None) -> Response | None:
     """One platform read for the previewed page, made by the app's own `sage_domino.py` (#489). None
     when the template has no such file.
 
@@ -201,13 +206,22 @@ async def _relay_platform(request: Request, path: str, module) -> Response | Non
     fence, the statuses and every sentence are the published app's. It reads as the creator, with
     the workspace's host and sidecar — the identity rule `preview/queries.py` states for queries,
     one route over. In a thread, because the module blocks on `urlopen` for up to its timeout.
+
+    `on_platform_read` hears every answer that is a refusal — status 400 and up — as the status and
+    the path the page asked for, query included, capped at `_PLATFORM_READ_PATH_MAX` (#556). The
+    page catches a failed `fetch` and logs it in the browser, where the model cannot read it; this
+    is the one place that sees every status, so it is where the turn gets told. A read that worked
+    is nobody's business, and the answer itself is untouched either way.
     """
     if module is None:
         return None
     if request.method != "GET":
         return JSONResponse(status_code=405, content={"error": "This endpoint takes GET."})
-    status, headers, body = await run_in_threadpool(
-        module.relay, path[len(_PLATFORM_PREFIX):], request.url.query)
+    relayed, query = path[len(_PLATFORM_PREFIX):], request.url.query
+    status, headers, body = await run_in_threadpool(module.relay, relayed, query)
+    if on_platform_read is not None and status >= 400:
+        asked = "/" + relayed + (f"?{query}" if query else "")
+        on_platform_read(status, asked[:_PLATFORM_READ_PATH_MAX])
     return Response(content=body, status_code=status, headers=headers)
 
 
@@ -217,6 +231,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                      approve_model: Callable[[str], str | None] | None = None,
                      get_platform: Callable[[], object | None] | None = None,
                      get_mount_base: Callable[[], str] | None = None,
+                     on_platform_read: Callable[[int, str], None] | None = None,
                      get_status: Callable[[], dict] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
@@ -240,6 +255,9 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
     Vite and 404s exactly as it did before #24, which `appQuery.ts` already reads correctly as
     "not published yet". `get_platform` is the app's `sage_domino.py` on the same terms (#489):
     absent, `/api/domino/*` goes to Vite and 404s.
+
+    `on_platform_read` is told of each platform read the relay refused, as `(status, path)` (#556).
+    Optional, and absent means nobody is told — the page still gets the relay's own answer.
     """
     vite_base = f"{base_prefix}/preview"  # what the browser sees == what Vite serves at
 
@@ -311,7 +329,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
         if path.startswith(_PLATFORM_PREFIX):
             # The page's platform reads (#489), by the app's own relay. Falls through to Vite's 404
             # when the template has no relay, which is what an app born before it would answer.
-            relayed = await _relay_platform(request, path, get_platform and get_platform())
+            relayed = await _relay_platform(request, path, get_platform and get_platform(),
+                                            on_platform_read)
             if relayed is not None:
                 return relayed
         try:

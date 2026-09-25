@@ -42,6 +42,11 @@ MAX_STORE_BYTES = MAX_RECORDS * MAX_RECORD_BYTES + 4096
 _lock = threading.RLock()
 _active: set[tuple[str, str]] = set()
 _TOKEN = re.compile(r"[\w.:/@+-]{1,160}\Z", re.ASCII)
+# The `done` event's decision, exported beside the bounded status (#555). The status folds every
+# non-ok end into `error`, so a "dataset files" card and a "plan title repair failed" turn read the
+# same in a download. A decision is Sage's own fixed vocabulary, never model or transcript text,
+# and this alphabet is what keeps that true at the boundary: anything else is omitted, not copied.
+_DECISION = re.compile(r"[a-z0-9 _-]{1,64}\Z")
 _MODEL_NAME = re.compile(r"[^\x00-\x1f\x7f]{1,160}\Z")
 
 # No catch-all copy: new recorder fields are private until this contract admits them.
@@ -486,7 +491,8 @@ def _started_at(value: object) -> str | float | int | None:
 
 
 def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
-             terminal=False, revision=None, plan_contract: dict | None = None) -> dict:
+             terminal=False, revision=None, plan_contract: dict | None = None,
+             decision: str = "") -> dict:
     raw = timing.as_dict(rec) if rec is not None else {}
     record = {
         "schemaVersion": SCHEMA_VERSION,
@@ -494,7 +500,9 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
         "turn": {**_metadata(identity, ["turnId", "appId", "conversationId", "kind"]),
                  "phase": _phase(raw, str(identity.get("kind") or "")),
                  "startedAt": raw.get("startedAt", identity.get("startedAt", time.time()))},
-        "buildOutcome": {"status": _outcome(outcome)},
+        "buildOutcome": ({"status": _outcome(outcome), "decision": decision}
+                         if isinstance(decision, str) and _DECISION.fullmatch(decision)
+                         else {"status": _outcome(outcome)}),
         "capture": {"status": "finished" if terminal else "interrupted",
                     "complete": False, "recorderEnabled": timing.enabled(), "recordAvailable": rec is not None,
                     "droppedEvents": {}, "upstreamTruncated": {}},
@@ -727,6 +735,7 @@ class Capture:
     outcome: str = "error"
     terminal: bool = False
     plan_contract: dict | None = None
+    decision: str = ""
 
 
 _current: contextvars.ContextVar[Capture | None] = contextvars.ContextVar("build_diagnostic_capture", default=None)
@@ -759,6 +768,7 @@ def observe(event: dict) -> str | None:
     if event.get("type") == "done":
         capture.terminal = True
         decision = str(event.get("decision") or "")
+        capture.decision = decision
         capture.outcome = (
             "success" if event.get("ok") is True
             else "repeat_brake" if decision in {"repeat_brake", "repeated", "looped"}
@@ -818,7 +828,8 @@ def finish(rec: timing.TurnRecord | None):
             rec = None  # Never export a neighbour's record as this turn.
         capture.store.put(snapshot(rec, capture.identity, outcome=capture.outcome,
                                    terminal=capture.terminal, revision=capture.revision,
-                                   plan_contract=capture.plan_contract))
+                                   plan_contract=capture.plan_contract,
+                                   decision=capture.decision))
     except Exception as exc:
         log.warning("Build diagnostic finish failed (%s)", type(exc).__name__)
     finally:

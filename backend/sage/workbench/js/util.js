@@ -496,15 +496,21 @@ window.SW = window.SW || {};
     // transcript where it was, so the header, the preview and the composer named one app while the
     // messages beside them — and the row lit in the rail — belonged to another.
     //
-    // One sentence: stay in the Conversation you are standing in if it has already touched that
-    // app, otherwise open the newest one that has, and if none has, `null` — there is nothing to
-    // carry and the caller starts clean. No sort: `ThreadStore.list` answers newest-activity-first
-    // and the client keeps the server's order, so the first match IS the newest. Sorting here would
-    // be a second, quieter opinion about recency, and the two would drift.
-    threadForApp(threads, appId, openThread) {
-      const touched = (t) => !!t && (t.touched || []).some((x) => x.appId === appId);
-      if (touched(openThread)) return openThread;
-      return (threads || []).find(touched) || null;
+    // Use this viewer's last successful explicit choice for the app, then the newest associated
+    // conversation. The server supplies newest-activity-first order. An attempt associates a
+    // conversation even when planning failed before any file changed; touched stays a receipt.
+    appAssociations(thread) {
+      const changed = (thread && thread.touched) || [];
+      return changed.concat(((thread && thread.attempted) || [])
+        .filter(attempt => !changed.some(tag => tag.appId === attempt.appId)));
+    },
+
+    threadForApp(threads, appId, preferredId) {
+      const rows = (threads || []).filter(t => t && !t.deleted);
+      const preferred = typeof preferredId === 'string'
+        ? rows.find(t => t.id === preferredId) : null;
+      return preferred || rows.find(t => SW.util.appAssociations(t)
+        .some(x => x.appId === appId)) || null;
     },
 
     // What every control that offers a one-click act does with a click: mark which button is

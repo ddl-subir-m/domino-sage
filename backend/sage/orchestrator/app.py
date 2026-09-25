@@ -2025,14 +2025,15 @@ def unpin_project_resource(
 
 
 @control_app.get("/api/project/history")
-def project_history(conversation: str = "", detail: str = "full") -> JSONResponse:
+def project_history(conversation: str = "", detail: str = "full", app: str = "") -> JSONResponse:
     """The chat transcript persisted in the workspace, so the UI can replay it after a reload or
     restart (see Workspace.append_history / Orchestrator.history). Reads disk without starting the
     preview.
 
     `conversation` is a Thread id: Build's transcript is per conversation (ADR-0005). Naming none
-    returns the selected Built App's whole log, which is what the agent's own archive renders. It
-    is never another app's: the log lives in the app's directory (ADR-0008).
+    returns the selected Built App's whole log, which is what the agent's own archive renders.
+    `app` addresses that app's log without changing the selection, so a delayed read cannot
+    silently follow a newer selection (ADR-0008).
 
     `detail=off` keeps every row and drops what each tool was CALLED WITH, which on a real log is
     six bytes in seven. The Build history drawer asks that way: it names no conversation, so it
@@ -2041,7 +2042,8 @@ def project_history(conversation: str = "", detail: str = "full") -> JSONRespons
     `/project/history/row/{index}`. The default is unchanged, because the transcript beside it
     draws those cards open."""
     return JSONResponse(content={
-        "history": orchestrator.history(conversation or None, tool_detail=detail != "off"),
+        "history": orchestrator.history(conversation or None, tool_detail=detail != "off",
+                                        **({"app_id": app} if app else {})),
     })
 
 
@@ -3583,7 +3585,7 @@ def draft_handoff_plan(thread_id: str) -> JSONResponse:
     except TurnBusy as e:
         return JSONResponse({"error": str(e)}, status_code=409)
     except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
+        return JSONResponse({"error": str(e), **getattr(e, "failure", {})}, status_code=502)
 
 
 @control_app.post("/api/threads/{thread_id}/handoff/confirm")
@@ -3654,7 +3656,8 @@ async def decide_thread_investigation(thread_id: str, request: Request) -> JSONR
         return JSONResponse(status_code=400, content={"error": "Send a JSON body naming a decision."})
     try:
         return JSONResponse(content=orchestrator.decide_thread_investigation(
-            thread_id, str((body or {}).get("decision") or "")))
+            thread_id, str((body or {}).get("decision") or ""),
+            task_id=str((body or {}).get("taskId") or "")))
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "unknown thread"})
     except ValueError as e:
@@ -3862,6 +3865,7 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     dset = bool((body or {}).get("skipDatasetGate"))
     dropped = str((body or {}).get("datasetDismissed") or "")
     invq = bool((body or {}).get("investigationAnswered"))
+    task_id = str((body or {}).get("taskId") or "")
     turn_id = new_id("turn")
     turn_ticket, turn_state = orchestrator.prepare_stream_turn(
         turn_id, kind="chat", conversation=thread_id)
@@ -3869,7 +3873,7 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
         _turn_sse(orchestrator.chat_stream(
             thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
             skip_dataset_gate=dset, dismissed_dataset=dropped,
-            skip_investigation_gate=invq,
+            skip_investigation_gate=invq, task_id=task_id,
             other_lane_grant=grant, turn_ticket=turn_ticket), "chat_stream"),
         media_type="text/event-stream",
         headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
@@ -3895,7 +3899,8 @@ async def confirm_thread_table_candidate(thread_id: str, resource_id: str,
         )})
     try:
         return JSONResponse(content=orchestrator.confirm_thread_table_candidate(
-            thread_id, resource_id, database, schema, table))
+            thread_id, resource_id, database, schema, table,
+            task_id=str((body or {}).get("taskId") or "")))
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "unknown thread"})
     except ResourceNotBound:
@@ -4675,6 +4680,13 @@ def _preview_platform():
     return domino_module(template) if template is not None else None
 
 
+# What the relay refused, told to the turn (#556). The page catches the failed fetch and logs it in
+# the browser, where the model cannot read it; the proxy sees every status, and this is the record
+# the build loop reads in the same window it reads a crash.
+def _preview_platform_read(status: int, path: str) -> None:
+    orchestrator.record_platform_read_failure(status, path)
+
+
 # The previewed app's own model calls (#7). A published app calls the gateway straight from the
 # viewer's browser because both sit on `apps.<domino-host>` — same origin. The preview is served from
 # here instead, so that call is cross-origin and the browser blocks it; the proxy makes it instead.
@@ -4747,6 +4759,7 @@ control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _
                                                _preview_llm, _preview_approve_model,
                                                get_platform=_preview_platform,
                                                get_mount_base=_preview_mount_base,
+                                               on_platform_read=_preview_platform_read,
                                                get_status=_preview_status))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no

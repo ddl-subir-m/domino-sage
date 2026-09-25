@@ -143,3 +143,39 @@ what it had already read and it repeated anyway, which is a different and rarer 
 that was measured.
 
 #378 — building the investigation feature — is untouched by this.
+
+## A completed Chat turn must produce a result (#557, 2026-09-25)
+
+An answer is nonempty final text or a validated, visible answer artifact. Tool activity and
+artifacts marked `working` do not suffice. A terminal provider error takes precedence over
+partial text. The existing session may make one recovery attempt, within the original deadline
+and permissions. This allowance is shared with table repair, not added to it.
+
+If recovery still leaves no result, Chat records `ok: false`, `decision: "empty answer"`, and
+`advanced: false`, plus a clear error in the live stream and saved history. The Workbench treats
+this as a failed answer, not a gateway fault. Successful conversational answers retain the
+existing `advanced` rule. This does not detect repeated numerical findings or prove factual
+correctness; those are separate from whether the turn produced a result.
+A completed stream message counts when its transcript copy is late. Partial stream text and text
+that arrived before a step failure cannot satisfy that fallback.
+
+## A failed table cannot become an answer (#557 P7, 2026-09-25)
+
+The controlled artifact writer checks strict JSON and the existing table schema before an atomic
+replacement. The same check applies to tables written through general investigation tools at the
+end of the turn. Valid empty results and withheld-row receipts remain valid; the literal
+`[local data withheld]`, malformed JSON, and non-JSON numeric constants do not.
+Rejected controlled writes remain evidence for the current turn even when they leave no new file
+or preserve an older valid one. A successful replacement clears that failure; a later turn starts
+with its own evidence. Thus an unlinked success sentence cannot hide a rejected write.
+
+On final validation failure, retain valid sibling cards and show the server's table failure
+message. Clear the model's provisional answer text; a phrase filter cannot reliably remove all
+success claims or decide which surrounding numbers remain supported. This is not a numerical
+fact checker.
+
+A failed replacement restores a prior valid table. A new failed candidate is removed before row
+retention can convert it into an apparently valid empty receipt. Invalid files from prior turns
+that the current answer references remain repairable; file age alone is not proof of validity.
+Unreferenced older files are left alone. Table repair shares the single Chat result recovery
+allowance described above.

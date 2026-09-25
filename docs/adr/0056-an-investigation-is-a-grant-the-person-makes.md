@@ -32,6 +32,34 @@ person confirmed, written through `ThreadStore.write_investigation`
 and the door that does (`POST /api/threads/{id}/investigation`) is reachable only from the
 Workbench.
 
+### Clarification keeps the question (#557, P5)
+
+The Thread context also holds one `pendingTask`: an ID, the original question, the missing input,
+the attached source IDs at that point, and the offer decision. This is task state, not a grant.
+A narrow source reply resumes it only when that conversation gained an attached source. Routing,
+table ranking, cards and the model then use the original question; the transcript keeps the user's
+literal messages. A new question or cancellation replaces or clears the task. A complete Recall
+clear removes it; a summary clear keeps it.
+
+Table and investigation cards carry the task ID through both the decision and replay requests.
+An older card cannot change the current task or start it again. Starting the resolved question
+clears the waiting state. Investigation acceptance still lasts until Close, including across new
+questions; a task change does not revoke that grant. Pending tasks and investigation decisions
+write through `ThreadStore.update_context`, so they preserve concurrent chip changes.
+
+### Instructions match the accepted scope (#557, P6)
+
+The Chat prompt explicitly states when investigation is open. A selected table then supplies a
+starting position and known columns; it does not forbid related tables in the conversation's
+attached sources. The static Chat instructions and OpenCode mirror state the same conditional
+rule. Ordinary Chat keeps its selected-table instruction. Disclosure and bounded-read policies
+continue to apply.
+
+A Chat read token records that it excludes app bindings when it is minted. That scope does not
+change when the turn ends or the selected app changes. A source used only by the app cannot enter
+the investigation through `_live_read_turn_for`. Build and explicit Read again keep their existing
+binding behavior. Closing the investigation still affects later turns and preserves findings.
+
 ## Why it is not the file
 
 #381 gated the exemption on `findings.md` existing, and ADR-0055 wrote that rule down along with
