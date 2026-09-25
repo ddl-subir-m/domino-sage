@@ -339,6 +339,14 @@ class EnforcementShim:
         # that silently did not fire.
         self._progress_note = ""
         self._progress_note_lock = threading.Lock()
+        # One pending syntax note PER FILE (#547), set by the same poll loop and taken by the same
+        # next request. A dict where the progress note above is a single string, and the difference
+        # is the thing being carried: that note is a COUNT, where only the newest is worth telling,
+        # and this one is a SET of distinct errors. Overwriting would drop four broken files out of
+        # five and tell the model to fix one per turn across five turns, which is the loop this
+        # exists to end. Keyed by file, so a file written twice reports once, at its latest state.
+        self._syntax_notes: dict[str, str] = {}
+        self._syntax_note_lock = threading.Lock()
         self.resolve_capability = legacy
 
     @property
@@ -384,6 +392,27 @@ class EnforcementShim:
         with self._progress_note_lock:
             note, self._progress_note = self._progress_note, ""
         return note
+
+    def note_syntax_error(self, file: str, detail: str) -> None:
+        """Queue one file's failed syntax check for the next request this shim serves (#547).
+
+        `detail` is already the `file:line:col CODE: message` the repair turn is told, so the model
+        reads the same shape from the check that ran the moment it wrote the file and from the one
+        that runs after the turn.
+        """
+        with self._syntax_note_lock:
+            self._syntax_notes[file] = detail
+
+    def _take_syntax_note(self) -> str:
+        with self._syntax_note_lock:
+            notes, self._syntax_notes = self._syntax_notes, {}
+        if not notes:
+            return ""
+        # One wording for one file and for several: a note that has to pluralise is a note with a
+        # branch nobody tests.
+        return ("Sage checks each file as your write lands, and these do not parse:\n"
+                + "\n".join(f"- {detail}" for detail in notes.values())
+                + "\nFix this before you write anything else.")
 
     def handle(self, request: dict[str, Any], project: str, session: str | None = None,
                on_resolved=None, on_refused=None) -> Iterator[bytes]:
@@ -823,6 +852,19 @@ class EnforcementShim:
             if progress_note:
                 request = {**request, "messages": [*request["messages"], {
                     "role": "system", "content": f"[sage] Progress note: {progress_note}",
+                }]}
+
+        # The per-file syntax check (#547), a third block for the reason the second one is its own:
+        # these notes answer different questions, a turn can earn more than one, and folding them
+        # together would silently drop whichever lost. `system` rather than `user` for the reason
+        # given above — `_current_turn` treats a user message as a turn boundary — and taken only
+        # where there is somewhere to put it, so the one warning is not spent on a request that
+        # could not carry it.
+        if isinstance(request.get("messages"), list):
+            syntax_note = self._take_syntax_note()
+            if syntax_note:
+                request = {**request, "messages": [*request["messages"], {
+                    "role": "system", "content": f"[sage] Syntax check: {syntax_note}",
                 }]}
 
         request = self.data_use.apply_restrictions(

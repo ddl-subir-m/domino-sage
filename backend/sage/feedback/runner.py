@@ -177,6 +177,68 @@ def _python() -> str:
     return sys.executable
 
 
+#: How long one file's check may take. Two orders of magnitude under the end-of-turn check's 120s,
+#: because this one runs on the build's poll loop while the turn is live: a hung `node` there is a
+#: turn that stops being watched, not just a check that fails.
+_PER_FILE_TIMEOUT_S = 20.0
+
+
+def check_file(workspace: Path, path: str) -> FeedbackReport | None:
+    """One file's own check, for the moment its write lands rather than after the turn ends (#547).
+
+    `None` is "this stack does not check this file", and it is the answer for most writes: a
+    react-vite app (whose check is `tsc`, project-wide by construction — see `FeedbackRunner.check`),
+    a file that is not a `.py` or a page `.js`, a vendored bundle, a path outside the workspace, a
+    write that left nothing on disk. The caller says nothing then, and says nothing on a clean
+    report either — the model hears from this only when the file it just wrote will not parse.
+
+    The two commands are the ones `check_python_stack` runs over the whole workspace, each over one
+    file. That is what makes running them per write affordable: a `py_compile` of one module and a
+    `node --check` of one script are tens of milliseconds, where the workspace pass is every file
+    the app has. The end-of-turn check is unchanged and still runs.
+    """
+    workspace = Path(workspace)
+    if stack_of(workspace).checker != "python":
+        return None
+    target = Path(path)
+    if not target.is_absolute():
+        target = workspace / target
+    try:
+        rel = target.resolve().relative_to(workspace.resolve())
+    except (ValueError, OSError):
+        # Outside the app: not this app's file to check, and not a path to hand a subprocess.
+        return None
+    if not target.is_file():
+        return None
+    parts = rel.parts
+    if any(part.startswith(".") or part == "__pycache__" for part in parts):
+        return None
+    # Which file gets which check is the same rule the end-of-turn pass uses, read off the same
+    # constants: every `.py`, and the `.js` under `static/` that the page loads, minus the bundles
+    # and Sage's own scripts.
+    if target.suffix == ".py":
+        command = [_python(), "-m", "py_compile", str(target)]
+        parse = parse_py_compile
+    elif (target.suffix == ".js" and parts[0] == "static"
+            and not any(rel.as_posix().startswith(skip) for skip in _JS_SKIP)):
+        node = shutil.which("node")
+        if not node:
+            return None
+        command = [node, "--check", str(target)]
+        parse = parse_node_check
+    else:
+        return None
+    try:
+        proc = subprocess.run(command, cwd=workspace, capture_output=True, text=True,
+                              timeout=_PER_FILE_TIMEOUT_S, check=False)
+    except subprocess.TimeoutExpired as e:
+        return FeedbackReport(ok=False, raw=f"syntax check timed out after {_PER_FILE_TIMEOUT_S}s: {e}",
+                              kind="Syntax check")
+    out = (proc.stdout or "") + (proc.stderr or "")
+    errors = parse(out, workspace)
+    return FeedbackReport(ok=not errors, errors=errors, raw=out, kind="Syntax check")
+
+
 class FeedbackRunner:
     def __init__(self, tsconfig: str = "tsconfig.app.json", timeout_s: float = 120.0) -> None:
         self._tsconfig = tsconfig

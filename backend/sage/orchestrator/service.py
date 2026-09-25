@@ -62,7 +62,7 @@ from ..delegated import mcp as delegated_mcp
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
-from ..feedback.runner import FeedbackRunner
+from ..feedback.runner import FeedbackRunner, check_file
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..liveread import data_use as live_data_use
 from ..liveread import mcp as live_mcp
@@ -3763,6 +3763,39 @@ def _progress_armed(project) -> bool:
     return guard is not None and guard.state is PreEditState.DISARMED
 
 
+def _note_written_file_errors(project, args: object) -> None:
+    """Check the files a landed write just produced, and tell the model about the broken ones (#547).
+
+    Sage's own check runs when the TURN ends, which is too late to help the turn that wrote the
+    file. The trace that opened this issue wrote two files in one call, learned about its
+    `SyntaxError` only once the turn was over, and then spent 268s in a repair turn that made no
+    edit at all. This puts the same error in front of the model while it is still working.
+
+    Silence is half the contract: a clean file, a file this stack does not check, and a check that
+    could not run all add nothing to the next request. Only a parsed error is worth a note — a
+    check that broke is not evidence about the file.
+    """
+    paths = _written_paths(args)
+    if not paths:
+        return
+    workspace = project.app_for_turn().path
+    for path in paths:
+        try:
+            report = check_file(workspace, path)
+        except Exception:
+            # The same call `_tool_detail` makes about a label: this is not worth crashing the
+            # build's stream over. The turn still gets the after-turn check it always had.
+            log.warning("per-file syntax check failed on %s", path, exc_info=True)
+            continue
+        if report is None or report.ok or not report.errors:
+            continue
+        # The shape `FeedbackReport.as_agent_message` gives the repair turn, so the model reads one
+        # format whether the error reached it during the turn or after it.
+        detail = "; ".join(f"{e.file}:{e.line}:{e.col} {e.code}: {e.message}"
+                           for e in report.errors)
+        project.shim.note_syntax_error(report.errors[0].file, detail)
+
+
 class _RepeatBrake:
     """Identical tool calls IN A ROW, within one turn.
 
@@ -4772,6 +4805,40 @@ def _patch_detail(inp: dict, status: object) -> str:
             f"crlf={text.count(chr(13))} esc={text.count(chr(92) + 'n')} "
             f"fenced={'y' if '```' in text else 'n'} "
             f"numbered={sum(1 for ln in lines if _NUMBERED_LINE.match(ln))}")
+
+
+def _written_paths(args: object) -> list[str]:
+    """The files a landed edit tool wrote, read off its ARGUMENTS rather than off its name (#547).
+
+    Keyed on the arguments because the tool's name cannot answer it. OpenCode picks a model's edit
+    tools from the model HANDLE (#539): a `gpt-` handle is offered `apply_patch` and never
+    `edit`/`write`, every other handle is offered `edit`/`write` and never `apply_patch`. So a
+    reader that looks for a `path` argument finds nothing on every GPT build, and one that looks
+    for `patchText` finds nothing on every other build. Both are read here, and a tool that carries
+    neither yields nothing and costs nothing — which is the right answer for the aliases in
+    `WRITE_TOOLS` that no driver in this repo has ever offered.
+
+    `_patch_detail` above reads the same headers for the UI card, and RETURNS ON THE FIRST ONE: it
+    answers "which file is this card about". This is not that function reused — a patch may update
+    three files and all three have to be checked, so the loop runs to the end. `*** Delete File` is
+    left out on purpose: there is no file left to check.
+    """
+    if not isinstance(args, dict):
+        return []
+    path = args.get("path") or args.get("filePath")
+    if isinstance(path, str) and path.strip():
+        return [path.strip()]
+    text = args.get("patchText")
+    if not isinstance(text, str):
+        return []
+    paths: list[str] = []
+    for line in text.splitlines():
+        head, sep, name = line.partition(": ")
+        if sep and head.strip() in ("*** Update File", "*** Add File"):
+            name = name.strip()
+            if name and name not in paths:
+                paths.append(name)
+    return paths
 
 
 def _writing_progress(detail: str, lines: int | None) -> str:
@@ -19432,6 +19499,15 @@ class Orchestrator:
                                             progress_programs) < MAX_PROGRAMS:
                                         progress_programs[name] = progress_programs.get(name, 0) + 1
                                 publish_progress()
+                            # The file this call just wrote, checked now rather than when the turn
+                            # ends (#547). Gated on the same `WRITE_TOOLS` + `completed` pair the
+                            # budget above is gated on, so the two cannot drift apart over which
+                            # tool counts as a write — and for the same #539 reason, since the
+                            # ("edit", "write") pair names no tool at all on a GPT build. WHICH
+                            # FILE is then read off the arguments, which is the only thing that can
+                            # answer it: `apply_patch` carries a `patchText` and no path.
+                            if tool in WRITE_TOOLS and status == "completed":
+                                _note_written_file_errors(project, args)
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
                             ms = _tool_duration_ms(part)
