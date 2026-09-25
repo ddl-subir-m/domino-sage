@@ -2025,14 +2025,15 @@ def unpin_project_resource(
 
 
 @control_app.get("/api/project/history")
-def project_history(conversation: str = "", detail: str = "full") -> JSONResponse:
+def project_history(conversation: str = "", detail: str = "full", app: str = "") -> JSONResponse:
     """The chat transcript persisted in the workspace, so the UI can replay it after a reload or
     restart (see Workspace.append_history / Orchestrator.history). Reads disk without starting the
     preview.
 
     `conversation` is a Thread id: Build's transcript is per conversation (ADR-0005). Naming none
-    returns the selected Built App's whole log, which is what the agent's own archive renders. It
-    is never another app's: the log lives in the app's directory (ADR-0008).
+    returns the selected Built App's whole log, which is what the agent's own archive renders.
+    `app` addresses that app's log without changing the selection, so a delayed read cannot
+    silently follow a newer selection (ADR-0008).
 
     `detail=off` keeps every row and drops what each tool was CALLED WITH, which on a real log is
     six bytes in seven. The Build history drawer asks that way: it names no conversation, so it
@@ -2041,7 +2042,8 @@ def project_history(conversation: str = "", detail: str = "full") -> JSONRespons
     `/project/history/row/{index}`. The default is unchanged, because the transcript beside it
     draws those cards open."""
     return JSONResponse(content={
-        "history": orchestrator.history(conversation or None, tool_detail=detail != "off"),
+        "history": orchestrator.history(conversation or None, tool_detail=detail != "off",
+                                        **({"app_id": app} if app else {})),
     })
 
 
@@ -3583,7 +3585,7 @@ def draft_handoff_plan(thread_id: str) -> JSONResponse:
     except TurnBusy as e:
         return JSONResponse({"error": str(e)}, status_code=409)
     except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
+        return JSONResponse({"error": str(e), **getattr(e, "failure", {})}, status_code=502)
 
 
 @control_app.post("/api/threads/{thread_id}/handoff/confirm")
@@ -4413,6 +4415,7 @@ async def chat_completions(request: Request):
     import json
 
     project = orchestrator.project()
+    recovered = planning_error_recovery(orchestrator, project, request.headers.get("x-session-id"))
     # Read as bytes and parse here, rather than `await request.json()`, so the ledger can record how
     # big this step's request was without re-serialising it. The size is the whole point: a first
     # byte that grew while the payload grew is a conversation getting heavier, and one that grew on
@@ -4519,6 +4522,23 @@ async def chat_completions(request: Request):
     )
 
     def stream():
+        # Observe only an eligible planning recovery. The legacy relay keeps its existing wire
+        # behavior; invalid/incomplete streams simply cannot erase the captured earlier failure.
+        from ..gateway.events import StreamEvents
+        from ..gateway.protocol import Protocol
+
+        recovery_events = StreamEvents(Protocol.CHAT) if recovered is not None else None
+
+        def complete_recovery():
+            if recovery_events is None:
+                return
+            try:
+                recovery_events.finish()
+            except ValueError:
+                return
+            if not recovery_events.error and not recovery_events.refused:
+                recovered()
+
         # Flag once if this response carries a tool call (streamed as choices[].delta.tool_calls, or
         # finish_reason "tool_calls"). Substring sniff is enough — we only need "did the model try a
         # tool this turn", and it stays harness-agnostic (no SSE parsing).
@@ -4572,7 +4592,12 @@ async def chat_completions(request: Request):
         stopped = False
 
         def relay(chunk: bytes):
-            nonlocal stopped
+            nonlocal stopped, recovery_events
+            if recovery_events is not None:
+                try:
+                    recovery_events.feed(chunk)
+                except (ValueError, TypeError):
+                    recovery_events = None
             upstream_msg = ka.upstream_error(chunk)
             if upstream_msg:
                 log.error("gateway returned an error frame inside a 200 stream: %s", upstream_msg)
@@ -4595,6 +4620,7 @@ async def chat_completions(request: Request):
             yield chunk
 
         if first is ka.DONE:
+            complete_recovery()
             call.done()
             return
         if first is not ka.EMPTY:
@@ -4607,6 +4633,7 @@ async def chat_completions(request: Request):
                 yield ka.KEEPALIVE  # SSE comment: ignored by the parser, resets the client's read timer
                 continue
             if item is ka.DONE:
+                complete_recovery()
                 call.done()
                 return
             if ka.is_error(item):
@@ -4630,6 +4657,7 @@ async def chat_completions(request: Request):
 
 
 from .native_routes import install as _install_native_routes
+from .native_routes import planning_error_recovery
 
 _install_native_routes(control_app, lambda: orchestrator)
 
@@ -4641,6 +4669,25 @@ def _preview_upstream() -> str:
     project = orchestrator._ensure_seeded()
     orchestrator._ensure_preview_running(project)
     return project.supervisor.upstream()
+
+
+@control_app.get("/api/preview/status")
+def _preview_status() -> dict:
+    project = orchestrator.project(start_preview=False, seed_app=False)
+    return project.supervisor.status()
+
+
+@control_app.post("/api/preview/retry")
+def _preview_retry(appId: str | None = None) -> dict:
+    with orchestrator._app_lock:
+        project = orchestrator.project(start_preview=False, seed_app=False)
+        if appId is not None and appId != project.workspace.app_id:
+            return JSONResponse(status_code=409, content={
+                "error": "The selected app changed. Retry its preview again.",
+            })
+        project = orchestrator._ensure_seeded()
+        project.supervisor.retry_start(explicit=True)
+        return project.supervisor.status()
 
 
 # The previewed app's own named queries (#24). Answered by `serve.py` on loopback rather than 404'd
@@ -4655,7 +4702,8 @@ def _preview_queries():
 # so a page that reads the platform works before it is published. Loaded once per template; None
 # for a template that ships no relay, which the proxy reads as "let Vite 404 it".
 def _preview_platform():
-    return domino_module(orchestrator._wm.template)
+    template = orchestrator._wm.template
+    return domino_module(template) if template is not None else None
 
 
 # What the relay refused, told to the turn (#556). The page catches the failed fetch and logs it in
@@ -4737,7 +4785,8 @@ control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _
                                                _preview_llm, _preview_approve_model,
                                                get_platform=_preview_platform,
                                                get_mount_base=_preview_mount_base,
-                                               on_platform_read=_preview_platform_read))
+                                               on_platform_read=_preview_platform_read,
+                                               get_status=_preview_status))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of

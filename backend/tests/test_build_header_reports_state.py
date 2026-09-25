@@ -313,7 +313,7 @@ def test_the_way_to_try_again_is_on_the_overlay_not_only_the_toolbar():
     coming. Sending them to an icon-only Reload at the other end of the row is the part that made
     it a dead end."""
     step = _build(select="app_a", preview="starting", giveUp=True)
-    assert "Check again" in step["labels"] or "Check again" in step["words"]
+    assert "Retry" in step["labels"] or "Retry" in step["words"]
 
 
 @needs_node

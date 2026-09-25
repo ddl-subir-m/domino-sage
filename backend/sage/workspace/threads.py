@@ -224,6 +224,8 @@ class ThreadStore:
             # (see `record_touch`). Born empty rather than absent so the rail's tags, filter and
             # app-name search read one shape on a Thread that has never built.
             "touched": [],
+            "attempted": [],
+            "attemptIndexVersion": 1,
         }
         self.thread_dir(row["id"]).mkdir(parents=True, exist_ok=True)
         self._write_json(self.meta_path(row["id"]), row)
@@ -496,6 +498,63 @@ class ThreadStore:
 
         return self._edit_meta(thread_id, edit)
 
+    def record_attempt(self, thread_id: str, *, app_id: str, app_name: str) -> dict | None:
+        """Associate an admitted turn with its app even when no files change (#557).
+
+        This is not a change receipt. Keep it beside `touched`, and do not move the
+        conversation's activity time merely because an old association was recovered.
+        """
+        def edit(row: dict) -> None:
+            entries = [x for x in row.get("attempted", []) if isinstance(x, dict)
+                       and x.get("appId") != app_id]
+            entries.append({"appId": app_id, "appName": app_name, "kind": "attempted"})
+            row["attempted"] = entries
+        return self._edit_meta(thread_id, edit)
+
+    def backfill_attempts(self, apps: dict[str, tuple[str, Path]]) -> None:
+        """Recover old associations once, streaming each app log without changing it.
+
+        The completion marker is per conversation, never a shared project index.
+        New conversations start indexed; ordinary rail reads only inspect metadata.
+        A failed read leaves the marker unset so the next read can retry.
+        """
+        pending = {row["id"] for row in self.list() if row.get("attemptIndexVersion") != 1}
+        if not pending:
+            return
+        failed = False
+        for app_id, (name, history) in apps.items():
+            try:
+                if history.exists():
+                    with history.open() as stream:
+                        found = set()
+                        for line in stream:
+                            try:
+                                event = json.loads(line)
+                            except ValueError:
+                                continue
+                            if not isinstance(event, dict):
+                                continue
+                            tid = event.get("conversation")
+                            if (isinstance(tid, str) and tid in pending
+                                    and event.get("app", app_id) == app_id):
+                                found.add(tid)
+                        for tid in found:
+                            self.record_attempt(tid, app_id=app_id, app_name=name)
+                for tid in pending:
+                    session = self.thread_dir(tid) / f"build-session-{app_id}.json"
+                    if session.exists():
+                        try:
+                            body = json.loads(session.read_text())
+                        except ValueError:
+                            continue
+                        if isinstance(body, dict) and body.get("session_id"):
+                            self.record_attempt(tid, app_id=app_id, app_name=name)
+            except (OSError, UnicodeError):
+                failed = True
+        if not failed:
+            for tid in pending:
+                self._edit_meta(tid, lambda row: row.update(attemptIndexVersion=1))
+
     def record_touch(self, thread_id: str, *, app_id: str, app_name: str, kind: str) -> dict | None:
         """Name a Built App this conversation changed, for the rail's tags, filter and search.
 
@@ -539,8 +598,9 @@ class ThreadStore:
         app is not new activity in a conversation for the rail to sort on.
         """
         def edit(row: dict) -> None:
-            row["touched"] = [{**t, "appName": name} if t.get("appId") == app_id else t
-                              for t in (row.get("touched") or []) if isinstance(t, dict)]
+            for key in ("touched", "attempted"):
+                row[key] = [{**t, "appName": name} if t.get("appId") == app_id else t
+                            for t in (row.get(key) or []) if isinstance(t, dict)]
 
         for d in self._thread_dirs():
             # Read before write, as forget_app does: a rename rewrites the few records that name
@@ -548,7 +608,7 @@ class ThreadStore:
             row = self._read_meta(d.name)
             if not _is_live(row):
                 continue
-            tags = row.get("touched") or []
+            tags = (row.get("touched") or []) + (row.get("attempted") or [])
             if any(isinstance(t, dict) and t.get("appId") == app_id for t in tags):
                 self._edit_meta(d.name, edit)
 
@@ -563,8 +623,9 @@ class ThreadStore:
         Deliberately not called by Reset, which empties an app and keeps it: that conversation did
         change that app, and the app is still there to be named."""
         def edit(row: dict) -> None:
-            row["touched"] = [t for t in (row.get("touched") or [])
-                              if isinstance(t, dict) and t.get("appId") != app_id]
+            for key in ("touched", "attempted"):
+                row[key] = [t for t in (row.get(key) or [])
+                            if isinstance(t, dict) and t.get("appId") != app_id]
 
         for d in self._thread_dirs():
             # Read before the write, so a delete rewrites the few records that named this app rather
@@ -572,7 +633,7 @@ class ThreadStore:
             row = self._read_meta(d.name)
             if not _is_live(row):
                 continue
-            tags = row.get("touched") or []
+            tags = (row.get("touched") or []) + (row.get("attempted") or [])
             if any(isinstance(t, dict) and t.get("appId") == app_id for t in tags):
                 self._edit_meta(d.name, edit)
 

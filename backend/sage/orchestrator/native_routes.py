@@ -119,6 +119,34 @@ def _error_event(protocol, message):
     return b'event: error\ndata: ' + json.dumps(event).encode() + b'\n\n'
 
 
+def planning_error_recovery(orchestrator, project, session):
+    """Capture the one old error a proven-successful root planner call may retire.
+
+    Child calls and unscoped legacy requests cannot establish recovery of the root. The callback
+    rechecks ownership at completion; a late response must not erase a newer call's failure.
+    """
+    previous = project.last_gateway_error
+    root_session = project.active_session_id
+    if previous is None or not root_session or session != root_session:
+        return None
+    ticket = orchestrator._turns.running()
+    if (ticket is None or not orchestrator._turn_lock.locked()
+            or orchestrator._project is not project
+            or project.control.snapshot().read_only_reason != "plan"):
+        return None
+
+    def completed():
+        if (orchestrator._project is project
+                and orchestrator._turn_lock.locked()
+                and orchestrator._turns.running() is ticket
+                and project.active_session_id == root_session
+                and project.control.snapshot().read_only_reason == "plan"
+                and project.last_gateway_error is previous):
+            project.last_gateway_error = None
+
+    return completed
+
+
 def install(app, get_orchestrator):
     @app.post("/v1/sage/resolve")
     async def resolve_route(request: Request):
@@ -167,6 +195,7 @@ def install(app, get_orchestrator):
             if not same_owner:
                 return _native_local_error(
                     protocol, _TURN_SCOPE_CHANGED, "sage_turn_scope_changed")
+            recovered = planning_error_recovery(orchestrator, project, session)
             diagnostic_record = record if (
                 record is not None
                 and record.turn_id == running_ticket.id
@@ -568,6 +597,8 @@ def install(app, get_orchestrator):
                 while True:
                     if item is ka.DONE:
                         settled = True
+                        if recovered is not None and not events.refused:
+                            recovered()
                         call.done(ok=not events.refused, outcome="refusal" if events.refused else "success")
                         return
                     if ka.is_error(item):

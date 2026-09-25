@@ -50,6 +50,7 @@ from .fake_opencode import Turn
 # autouse fixture only applies where its name is bound, so the Chat poll loop in these tests waits
 # on real seconds without it.
 from .test_model_calls_answers_this_turn_on_chat import (
+    PHASED_PLAN,
     CountingOpenCode,
     _chat_orch,
     _no_real_waiting,  # noqa: F401
@@ -59,7 +60,7 @@ _READING = re.compile(r"sage-plan produced no text \(session=.*, model_calls=(\d
 
 # A plan with no `# ` heading, so `_draft_handoff_plan` has to repair a name — at the gateway,
 # not through `_run_sage_plan` (#555).
-HEADLESS_PLAN = "A dashboard of trades.\n\n## Plan\n\n- Show the rows.\n"
+HEADLESS_PLAN = "\n".join(PHASED_PLAN.splitlines()[1:]).lstrip()
 
 
 def _readings(caplog: pytest.LogCaptureFixture) -> list[int]:
@@ -152,7 +153,7 @@ def test_the_heading_repair_is_not_a_second_send(
         tmp_path: Path, caplog: pytest.LogCaptureFixture):
     """The second caller is gone (#555). The draft comes back with a plan that has no `# `
     heading, and the name is asked for with one direct gateway call — never a second prompt
-    through `_run_sage_plan`. So the door logs exactly one reading, the draft's own, and the
+    through `_run_sage_plan`. The complete body is usable even when the optional name fails, and the
     prompt that asked OpenCode for a name-only answer is sent to nobody.
 
     Before #555 this test read the repair's own line as `1`, which needed the per-call reset to
@@ -162,12 +163,13 @@ def test_the_heading_repair_is_not_a_second_send(
                           plan_texts=(HEADLESS_PLAN,))
 
     with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
-        with pytest.raises(ValueError):
-            orch.draft_handoff_plan(tid)
+        orch.draft_handoff_plan(tid)
 
     assert _readings(caplog) == [], caplog.text
     assert [p["agent"] for p in oc.prompts if p["agent"] == "sage-plan"] == ["sage-plan"]
     assert not any("2-4 word app name" in p["text"] for p in oc.prompts)
+    assert oc.seen_on_entry[-1] == 0
+    assert orch._chat_project().model_calls == 3
 
 
 def test_a_second_click_does_not_inherit_the_first_ones_count(

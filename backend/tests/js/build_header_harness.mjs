@@ -1174,6 +1174,204 @@ async function arrive(threadId, appId, mode) {
 // --- the run ---------------------------------------------------------------
 const report = [];
 for (const step of steps) {
+  if (step.historyUnavailable) {
+    await arrive('thr_many', 'app_a');
+    SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });
+    await SW.store.reloadThreads();
+    SW.prefs.set('lastAppConversations', { project_one: { app_a: 'thr_one' } });
+    const routes = [];
+    SW.router.replace = path => routes.push(path);
+    const realThread = SW.api.thread;
+    SW.api.thread = id => id === 'thr_one'
+      ? Promise.reject(Object.assign(new Error('unavailable'), { status: step.historyUnavailable }))
+      : realThread(id);
+    effects.length = 0;
+    SW.BuildMode({ conversationId: 'thr_one', appId: 'app_a' });
+    effects.forEach(e => e.fn());
+    await settle();
+    report.push({ routes, available: SW.store.get().threads.map(t => t.id), saved: !!THREADS.thr_one });
+    continue;
+  }
+  if (step.historyMutationError) {
+    await arrive('thr_one', 'app_a');
+    SW.api.clearBuildRecall = SW.api.withholdBuildContent = async () => { throw new Error('failed'); };
+    if (step.historyMutationError === 'recall') await SW.store.clearBuildRecall('summary');
+    else await SW.store.withholdContent({ surface: 'build', carriers: [{ key: 'one', label: 'One' }] });
+    report.push({ loading: SW.store.get().buildHistoryLoading });
+    continue;
+  }
+  if (step.historyExplicitChoice) {
+    await arrive('thr_many', 'app_a');
+    SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });
+    await SW.store.reloadThreads();
+    await SW.store.openThread('thr_one', { appId: 'app_a' });
+    await SW.store.openThread('thr_many'); // Chat/background open must not change the app choice.
+    const afterChat = SW.store.conversationForApp('app_a').id;
+    let release;
+    const realThread = SW.api.thread;
+    SW.api.thread = (id) => id === 'thr_many' ? new Promise(r => { release = r; }) : realThread(id);
+    const older = SW.store.openThread('thr_many', { appId: 'app_a' });
+    await SW.store.openThread('thr_one', { appId: 'app_a' });
+    release(THREADS.thr_many);
+    await older;
+    const afterStale = SW.store.conversationForApp('app_a').id;
+    SW.store.newConversation();
+    effects.length = 0;
+    SW.BuildMode({ appId: 'app_a' });
+    effects.forEach(e => e.fn());
+    await settle();
+    report.push({ afterChat, afterStale, pending: SW.store.get().pendingConversation,
+      thread: SW.store.get().thread && SW.store.get().thread.id });
+    continue;
+  }
+  if (step.historyConversion) {
+    await arrive('thr_one', 'app_a');
+    SW.store.set({ me: { id: 'viewer' } });
+    SW.prefs.set('conversationView', 'unified');
+    let release;
+    const realFetch = sandbox.fetch;
+    sandbox.fetch = (url, opts) => String(url).includes('delayed.table.json')
+      ? new Promise(resolve => { release = resolve; }) : realFetch(url, opts);
+    SW.api.conversation = async () => [
+      { half: 'chat', type: 'artifacts', items: [{ kind: 'table', path: 'examples/thr_one/delayed.table.json' }] },
+      { half: 'build', app: 'app_a', type: 'user', text: 'old conversion' },
+    ];
+    const old = SW.store.loadBuild({ keepPreview: true });
+    for (let i = 0; i < 20 && !release; i++) await settle();
+    if (!release) throw new Error('artifact conversion did not start');
+    selected = 'app_b';
+    SW.store.set({ activeApp: { ...APPS[1] }, thread: { ...THREADS.thr_two } });
+    SW.api.conversation = async () => [{ half: 'build', app: 'app_b', type: 'user', text: 'current answer' }];
+    await SW.store.loadBuild({ keepPreview: true });
+    release({ ok: true, json: async () => ({ content: '{"columns":["x"],"rows":[[1]]}' }) });
+    await old;
+    report.push({ text: SW.store.get().buildHistory.map(r => r.text),
+      chat: SW.store.get().conversationChat.length, error: SW.store.get().buildHistoryError });
+    continue;
+  }
+  if (step.historyCache) {
+    await arrive('thr_one', 'app_a');
+    SW.prefs.set('conversationView', 'split');
+    SW.api.history = async (thread, app) => ({ history: [{ type: 'user', text: `${app}/${thread}` }] });
+    await SW.store.loadBuild({ keepPreview: true });
+    selected = 'app_b';
+    SW.store.set({ activeApp: { ...APPS[1] }, thread: { ...THREADS.thr_two } });
+    const emptyOnSwitch = SW.store.get().buildHistory.length;
+    await SW.store.loadBuild({ keepPreview: true });
+    selected = 'app_a';
+    SW.store.set({ activeApp: { ...APPS[0] }, thread: { ...THREADS.thr_one } });
+    const cached = SW.store.get().buildHistory.map(r => r.text);
+    report.push({ emptyOnSwitch, cached });
+    continue;
+  }
+  if (step.historyRefreshRace) {
+    await arrive('thr_one', 'app_a');
+    SW.store.set({ me: { id: 'viewer' } });
+    SW.prefs.set('conversationView', 'unified');
+    let release;
+    SW.api.conversation = () => new Promise(resolve => { release = resolve; });
+    let old;
+    if (step.historyRefreshRace === 'watcher') {
+      SW.store._watchBuild();
+      old = timers.find(t => t.ms === 2000).fn();
+    } else {
+      SW.api.clearBuildRecall = async () => ({});
+      old = SW.store.clearBuildRecall('summary');
+    }
+    for (let i = 0; i < 20 && !release; i++) await settle();
+    if (!release) throw new Error('refresh did not start');
+    const releaseOld = release;
+    selected = 'app_b';
+    SW.store.set({ activeApp: { ...APPS[1] }, thread: { ...THREADS.thr_two } });
+    SW.api.conversation = async () => [{ half: 'build', app: 'app_b', type: 'user', text: 'current answer' }];
+    await SW.store.loadBuild({ keepPreview: true });
+    releaseOld([{ half: 'build', app: 'app_a', type: 'user', text: 'old answer' }]);
+    await old;
+    report.push({ text: SW.store.get().buildHistory.map(r => r.text) });
+    continue;
+  }
+  if (step.historyAttempt) {
+    await arrive('thr_one', 'app_a');
+    SW.store.set({ threads: [{ id: 'thr_failed', title: 'Failed plan', touched: [],
+      attempted: [{ appId: 'app_c', appName: 'Rate curve viewer', kind: 'attempted' }] }],
+      railAppFilter: 'app_c', railHidden: false });
+    const result = SW.store.conversationForApp('app_c');
+    report.push({ id: result && result.id, rail: railOf('build'),
+      labels: words(flatten(SW.ConversationRow({ thread: result, mode: 'build', onFilter: () => {} }))),
+      titles: flatten(SW.ConversationRow({ thread: result, mode: 'build', onFilter: () => {} }))
+        .map(n => n.title).filter(Boolean) });
+    continue;
+  }
+  if (step.historyRace) {
+    await arrive('thr_one', 'app_a');
+    SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });
+    SW.prefs.set('conversationView', 'unified');
+    const pending = [];
+    const row = (app, text) => [{ half: 'build', app, type: 'user', text }];
+    SW.api.conversation = (id) => new Promise((resolve, reject) => pending.push({ id, resolve, reject }));
+    const snapshot = () => ({ app: SW.store.get().activeApp.id,
+      thread: SW.store.get().thread.id, text: SW.store.get().buildHistory.map(r => r.text).filter(Boolean),
+      error: SW.store.get().buildHistoryError || '', loading: !!SW.store.get().buildHistoryLoading });
+    const load = async () => {
+      const count = pending.length;
+      const promise = SW.store.loadBuild({ keepPreview: true });
+      for (let i = 0; i < 20 && pending.length === count; i++) await settle();
+      if (pending.length === count) throw new Error('history request did not start');
+      return { promise, request: pending[pending.length - 1] };
+    };
+    const old = await load();
+    if (step.historyRace === 'project') SW.store.set({ scope: { id: 'project_two' } });
+    if (step.historyRace === 'thread') SW.store.set({ thread: { ...THREADS.thr_many } });
+    if (!['same', 'project', 'thread'].includes(step.historyRace)) {
+      selected = 'app_b';
+      SW.store.set({ activeApp: { ...APPS[1] }, thread: { ...THREADS.thr_two } });
+    }
+    if (step.historyRace === 'return') {
+      selected = 'app_a';
+      SW.store.set({ activeApp: { ...APPS[0] }, thread: { ...THREADS.thr_one } });
+    }
+    const next = await load();
+    next.request.resolve(row(selected, 'newest history'));
+    await next.promise;
+    const before = snapshot();
+    if (step.historyRace === 'error') old.request.reject(new Error('old failure'));
+    else old.request.resolve(row('app_a', 'old history'));
+    await old.promise;
+    report.push({ before, after: snapshot() });
+    continue;
+  }
+  if (step.historyFailure) {
+    await arrive('thr_one', 'app_a');
+    SW.prefs.set('conversationView', 'split');
+    SW.api.history = async () => ({ history: [{ type: 'user', text: 'saved answer' }] });
+    await SW.store.loadBuild({ keepPreview: true });
+    SW.api.history = async () => { throw new Error('network unavailable'); };
+    await SW.store.loadBuild({ keepPreview: true });
+    const failed = { text: SW.store.get().buildHistory.map(r => r.text),
+      error: SW.store.get().buildHistoryError || '',
+      words: words(flatten(SW.BuildMode({ conversationId: 'thr_one', appId: 'app_a' }))) };
+    SW.api.history = async () => ({ history: [{ type: 'user', text: 'retried answer' }] });
+    await SW.store.loadBuild({ keepPreview: true });
+    report.push({ failed, after: SW.store.get().buildHistory.map(r => r.text),
+      error: SW.store.get().buildHistoryError || '' });
+    continue;
+  }
+  if (step.historyPreference) {
+    await arrive('thr_many', 'app_a');
+    SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });
+    await SW.store.reloadThreads();
+    await SW.store.openThread('thr_one', { appId: 'app_a' });
+    await SW.store.openThread('thr_many', { appId: 'app_a' });
+    await SW.store.openThread('thr_one', { appId: 'app_a' });
+    const remembered = SW.store.conversationForApp('app_a');
+    SW.store.set({ scope: { id: 'project_two' } });
+    const otherProject = SW.store.conversationForApp('app_a');
+    SW.store.set({ scope: { id: 'project_one' }, threads: [THREADS.thr_many] });
+    const deleted = SW.store.conversationForApp('app_a');
+    report.push({ remembered: remembered && remembered.id,
+      otherProject: otherProject && otherProject.id, deleted: deleted && deleted.id });
+    continue;
+  }
   if (step.build) {
     await arrive(step.build, step.select);
     if (step.noapps) {

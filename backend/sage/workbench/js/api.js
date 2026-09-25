@@ -714,8 +714,9 @@ SW.api = {
 
   // Build's transcript is per conversation, the way Chat's already was. No conversation
   // means the whole project — the agent's view, not the rail's.
-  history: (conversation) =>
-    request(`/project/history${conversation ? `?conversation=${encodeURIComponent(conversation)}` : ''}`),
+  history: (conversation, app) =>
+    request(`/project/history?conversation=${encodeURIComponent(conversation || '')}`
+      + (app ? `&app=${encodeURIComponent(app)}` : '')),
   // The SELECTED Built App's whole build log, every conversation that drove it included (#88).
   // The same route, asked the other question it has always been able to answer and nobody asked:
   // no conversation on the wire, deliberately. One Conversation can drive several apps (#72), so a
