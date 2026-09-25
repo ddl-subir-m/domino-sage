@@ -7,12 +7,13 @@ carried uncaught throws. Eight implement turns and ~131 model calls later the id
 and the screen said "No governance tags assigned", over a Dataset that carries one.
 
 The channel is the preview proxy's `on_platform_read`, wired to `record_platform_read_failure`,
-which stamps the record the way `record_runtime_error` stamps a crash (#77): with the app the
-preview was serving, because the person may have switched away from the one being built. The loop
-reads it in the same window it reads a crash, and iterates once.
+which now captures the app and validation document before the request waits (#557 P10). A late
+response cannot become another app's evidence. The loop reads it in the same window it reads a
+crash, and iterates once.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from sage.router.models import Mode
 
 from .fake_opencode import Turn
 from .test_an_approved_plan_runs_as_implement import _build
+from .test_changed_page_validation import Preview
 from .test_switch_app import _two_apps
 
 PATH = "/v4/datasetrw/datasets-v2?datasetIds=ABC123_ADAE&includeTaxonomyTags=true"
@@ -45,20 +47,26 @@ def _direct(tmp: Path, turns: list[Turn]):
     return orch, oc, project
 
 
-def _refused_during_the_first_send(orch: Orchestrator, oc, status: int = 404, path: str = PATH):
-    """The preview reports while the turn runs: after `send_ts` is taken and before the loop looks.
-    The fake dispatches inside `send_prompt`, so "during" is right after it returns."""
-    send_prompt = oc.send_prompt
-    sends: list[int] = []
-
-    def capture(*args, **kwargs):
-        out = send_prompt(*args, **kwargs)
-        if not sends:
-            orch.record_platform_read_failure(status, path)
-        sends.append(1)
-        return out
-
-    oc.send_prompt = capture
+def _refused_during_the_first_validation(orch: Orchestrator, status: int = 404, path: str = PATH):
+    """A page request belongs to the document loaded after the writer's changed code."""
+    project = orch.project(start_preview=False)
+    project.supervisor = Preview(project.workspace.app_id)
+    orch._build_policy = replace(orch._build_policy, page_ack_wait_seconds=0.5)
+    orch._restart_preview_for_config_change = lambda project: None
+    validate = orch._validate_page
+    first = True
+    def report(project, kind):
+        nonlocal first
+        for event in validate(project, kind):
+            orch.record_preview_ack(event['validationId'])
+            if first:
+                route, _, query = path.partition('?')
+                context = orch.capture_preview_read(event['validationId'], route, query)
+                orch.record_platform_read_failure(status, route, context=context)
+                first = False
+            yield event
+        return project.page_validation
+    orch._validate_page = report
 
 
 def test_a_refused_read_gets_one_iterate_that_names_the_status_and_path(tmp_path: Path):
@@ -66,7 +74,7 @@ def test_a_refused_read_gets_one_iterate_that_names_the_status_and_path(tmp_path
         Turn(writes={"src/dominoApi.ts": "// by name\n"}),
         Turn(writes={"src/dominoApi.ts": "// by id\n"}),
     ])
-    _refused_during_the_first_send(orch, oc)
+    _refused_during_the_first_validation(orch)
 
     events = list(orch.build_stream("show the taxonomy tags this dataset has"))
 
@@ -76,7 +84,8 @@ def test_a_refused_read_gets_one_iterate_that_names_the_status_and_path(tmp_path
     assert "404" in iterates[0]["reason"] and "/v4/datasetrw/datasets-v2" in iterates[0]["reason"]
     # The nudge is the next prompt: the status, the path, and the two rules the eight turns broke.
     nudge = oc.prompts[1]["text"]
-    assert "404" in nudge and PATH in nudge
+    assert "404" in nudge and PATH.split("?")[0] in nudge
+    assert "ABC123_ADAE" in nudge and "includeTaxonomyTags" not in nudge
     assert "platform id" in nudge and "do not substitute" in nudge
     assert events[-1]["type"] == "done" and events[-1]["ok"] is True
     assert project.platform_read_failure is None       # consumed, so a later turn starts clean
@@ -134,12 +143,12 @@ def test_the_control_app_hands_the_proxys_report_to_the_record(monkeypatch):
     class Stub:
         heard = None
 
-        def record_platform_read_failure(self, status, path):
-            self.heard = (status, path)
+        def record_platform_read_failure(self, status, path, **kwargs):
+            self.heard = (status, path, kwargs)
 
     stub = Stub()
     monkeypatch.setattr(app_module, "orchestrator", stub)
 
     app_module._preview_platform_read(404, PATH)
 
-    assert stub.heard == (404, PATH)
+    assert stub.heard == (404, PATH, {"context": None, "body": None})

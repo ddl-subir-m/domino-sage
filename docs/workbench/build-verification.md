@@ -22,3 +22,27 @@ says “Code checks passed; runtime not verified.” Python compilation is label
 
 Written files are kept and recorded as app code even when code, startup, or runtime verification
 fails. Failed phases keep their resume point. Saving work does not claim that the app works.
+
+Data validation observes only the page's own query and platform requests. The reporter captures the
+validation ID when the document loads and attaches it when each same-origin data request starts.
+The proxy captures the app and validation before it waits for a response. An old response cannot
+become evidence for a new app, document, or completed turn. Streamed responses remain pending until
+the body completes; a body read failure is a failed request.
+
+Read evidence distinguishes success, explicit empty results, failure, pending requests, and no
+observed request. Bound data with no observed request, or a request still pending at the deadline,
+is unverified. With page checks passed, the UI says “Page checks passed; data access not verified.”
+HTTP 200 proves only that a request returned successfully, not business correctness. Empty taxonomy
+tags require explicit empty arrays for every requested Dataset. Missing rows or omitted tag fields
+do not establish that no tags exist. A mismatched bound/requested Dataset ID is actionable; 401/403
+is access failure, while 404 alone does not prove a wrong ID. The platform repair remains one
+attempt. Warehouse failures and unasked-source notices still reach the user, and written code stays
+saved.
+
+Diagnostic exports retain at most 20 safe read summaries: route without query values, bounded
+resource IDs, HTTP status, outcome, and a fixed failure reason. Requests with more than 20 Dataset
+IDs carry an identity-truncation flag and cannot establish an empty-tag result. Exports contain no response rows or
+request tokens. Existing readable query failure details stay in the query feedback path, outside
+these diagnostic records. More reads leave validation unverified. Sage does not replay requests,
+click controls, run extra SQL, or make model calls to establish data correctness. Fresh templates
+require distinct loading, error/retry, and valid-empty states; saved apps are not rewritten.

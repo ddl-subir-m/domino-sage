@@ -24,6 +24,7 @@ None for it.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,6 +39,7 @@ from sage.router.models import ModelCatalog
 
 from .fake_opencode import FakeOpenCode, Turn
 from .test_a_shape_only_table_artifact_renders_as_a_receipt import _node, needs_node
+from .test_changed_page_validation import Preview
 
 TEMPLATE = Path(__file__).resolve().parents[2] / "template" / "react-vite"
 
@@ -113,7 +115,22 @@ def _ready(orch: Orchestrator, answer) -> None:
     """Bind a store, write a catalog against it, and hand the turn a preview that saw `answer`."""
     orch.bind_data_source("ds-dwh")
     _catalog(orch, [{"name": "usage", "binding": "ds-dwh", "sql": "SELECT 1"}])
-    orch.project(start_preview=False).queries = FakeQueries(answer)
+    project = orch.project(start_preview=False)
+    project.queries = FakeQueries(answer)
+    project.supervisor = Preview(project.workspace.app_id)
+    orch._build_policy = replace(orch._build_policy, page_ack_wait_seconds=0.5)
+    orch._restart_preview_for_config_change = lambda project: None
+    validate = orch._validate_page
+    def report(project, kind):
+        for event in validate(project, kind):
+            orch.record_preview_ack(event['validationId'])
+            if answer is not None:
+                context = orch.capture_preview_read(event['validationId'], '/api/queries/usage', kind='query')
+                orch.record_platform_read_failure(503 if answer else 200, '/api/queries/usage',
+                                                   context=context, body=b'{"rows":[]}')
+            yield event
+        return project.page_validation
+    orch._validate_page = report
 
 
 def _write_catalog(workspace: Path, statements: dict[str, str]) -> None:

@@ -16,6 +16,29 @@ window.sage = window.sage || {};
   const ENDPOINT = API + "preview/runtime-error";
   // Fixed when this document loads; a later app selection cannot retag its reports.
   const validationId = new URLSearchParams(window.location.search).get("sageValidation") || "";
+  // Capture the document identity when its own data fetch is issued. The proxy observes HTTP
+  // results; this catches a rejected fetch even if app code catches it and renders an empty state.
+  if (sage.preview && validationId) {
+    const originalFetch = window.fetch.bind(window);
+    const previewBase = new URL(sage.base.replace(/\/$/, "") + "/", window.location.href).pathname;
+    window.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+      if (url.origin !== window.location.origin
+          || !(url.pathname.startsWith(previewBase + "api/queries/")
+               || url.pathname.startsWith(previewBase + "api/domino/"))) {
+        return originalFetch(input, init);
+      }
+      const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+      headers.set("X-Sage-Validation", validationId);
+      return originalFetch(input, { ...init, headers }).catch((error) => {
+        void originalFetch(API + "preview/data-error", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ validationId, path: url.pathname }), keepalive: true,
+        }).catch(() => {});
+        throw error;
+      });
+    };
+  }
   function acknowledgePage() {
     if (!sage.preview || !validationId || document.visibilityState === "hidden") return;
     void fetch(API + "preview/ack", {

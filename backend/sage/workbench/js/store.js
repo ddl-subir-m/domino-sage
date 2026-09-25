@@ -3117,7 +3117,10 @@ window.SW = window.SW || {};
             ok: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified' ? null : ev.ok,
             warn: !!(ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'),
             value: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'
-              ? 'Code checks passed; runtime not verified'
+              ? (ev.verification.stages && ev.verification.stages.runtime === 'passed'
+                && ev.verification.stages.data === 'unverified'
+                ? 'Page checks passed; data access not verified'
+                : 'Code checks passed; runtime not verified')
               : ev.decision === 'answered'
               ? 'Answered'
               : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),

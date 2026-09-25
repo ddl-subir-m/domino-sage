@@ -193,6 +193,11 @@ window.SW = window.SW || {};
     if (record && record.capture && record.capture.status === 'running') return 'Running';
     if (record && record.capture && record.capture.status === 'interrupted') return 'Interrupted';
     const status = record && record.buildOutcome && record.buildOutcome.status;
+    const verification = record && record.buildOutcome && record.buildOutcome.verification;
+    if (status === 'unverified' && verification && verification.stages
+        && verification.stages.runtime === 'passed' && verification.stages.data === 'unverified') {
+      return 'Data access not verified';
+    }
     return {
       repeat_brake: 'Stopped — repeated calls',
       user_stop: 'Stopped by user',
