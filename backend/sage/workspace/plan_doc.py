@@ -43,6 +43,12 @@ SECTIONS: tuple[Section, ...] = (
     Section("users", "Who uses this", "text"),
     Section("outcomes", "What it does", "list"),
     Section("screens", "Screens", "screens"),
+    # Which data the app reads, so a person reading the plan can see it without reading the code
+    # (#543). Optional, and deliberately NOT in `plan_steps._REQUIRED_SECTIONS`: an app that reads
+    # no data has nothing to put here, and `render` already leaves an empty section out rather than
+    # writing a bare heading. Every plan saved before this key existed parses to an empty list for
+    # it, which is what `empty_sections` already gives every section a plan skipped.
+    Section("data", "Data", "list"),
     Section("nonGoals", "Not doing", "list"),
     Section("acceptance", "Done when", "list"),
     Section("plan", "Plan", "raw"),
@@ -59,6 +65,7 @@ _SYNONYMS = {
     "users": "users", "who uses this": "users", "who uses it": "users", "audience": "users",
     "what it does": "outcomes", "outcomes": "outcomes", "features": "outcomes",
     "screens": "screens", "pages": "screens", "views": "screens",
+    "data": "data", "datasets": "data", "data sources": "data",
     "not doing": "nonGoals", "non goals": "nonGoals", "nongoals": "nonGoals",
     "out of scope": "nonGoals",
     "done when": "acceptance", "acceptance": "acceptance", "acceptance criteria": "acceptance",

@@ -5431,7 +5431,7 @@ def _execution_contract_problems(check: PlanContractCheck) -> tuple[str, ...]:
     if check.missing_sections:
         problems.append("required product sections: " + ", ".join(check.missing_sections))
     if check.malformed_steps:
-        problems.append("steps with unique labels and nonempty Files, Do, and Done when fields")
+        problems.append("steps with unique labels and nonempty Files, Do, and Verify fields")
     if check.invalid_file_fields:
         problems.append("nonempty Files fields with workspace-relative file paths")
     if check.contradictory_file_fields:
@@ -5561,6 +5561,21 @@ _PLAN_OPENER = ("Format it exactly like this, in Markdown, and write nothing out
 # The sections a colleague reads to decide whether the app is worth building, and the
 # durable half of the plan document. Kept short on purpose: the plan still has to be
 # skimmable in the approval card, so each section is a line or a few bullets, not an essay.
+#
+# THIS STRING CARRIES BRAND TOKENS and is not a finished prompt. The Data bullet names the
+# platform's nouns, and ADR-0014 puts the workspace's own word there rather than Domino's — so
+# `brand.apply_voice` resolves it at each of the two sends below (the gated plan turn and the
+# Chat handoff), never at import: `brand.load()` reads a pack a deployment replaces, and a
+# constant built at import would freeze whatever the process booted with. The HEADINGS stay
+# literal on purpose — `plan_doc._SYNONYMS` matches on them and the page labels them, so a
+# renamed noun must not move where a section lands.
+#
+# `apply_voice` and not `brand.text`, which is the marked position the lint scans: it reads the
+# constant through the name, and a turn prompt is not screen copy, so the whole 4 KB format was
+# reported as unkeyed names ('## Plan' is a glossary term). `apply_voice` is the door prompt and
+# AGENTS.md bodies already go through (`workspace/manager.py`), and it resolves the same tokens.
+# It also means NO lint reads this string, so test_a_plan_names_its_data.py is what checks the
+# noun is written as a token and never spelled out.
 _PLAN_DOC_SECTIONS = (
     "- Then a '## Problem & outcome' heading and one or two sentences: what is wrong today, "
     "and what is true once the app exists.\n"
@@ -5568,6 +5583,9 @@ _PLAN_DOC_SECTIONS = (
     "- Then a '## What it does' heading and short bullets, one capability each.\n"
     "- Then a '## Screens' heading and one bullet per screen: a bolded name, then ' — ', "
     "then one sentence on what it shows.\n"
+    "- Then, ONLY if the app reads data, a '## Data' heading and short bullets: one per "
+    "{dataset}, {dataSource} or file the app reads, naming it, the columns it uses, and what "
+    "those columns mean. Leave the heading out entirely if the app reads no data.\n"
     "- Then a '## Not doing' heading and short bullets naming what is deliberately out of "
     "scope. Leave the heading out entirely if nothing is.\n"
     "- Then a '## Done when' heading and short bullets, each one an observable result "
@@ -5584,7 +5602,7 @@ _PLAN_DOC_SECTIONS = (
 # because in a phased build the model that executes step 4 is a BRAND-NEW session: it never
 # read this plan, never saw steps 1-3, and can't ask. Every field below exists because a cold
 # executor fails without it — `Files` so its first act isn't a whole-tree grep that refills
-# the context the fresh session just bought us, `Done when` so verification travels with the
+# the context the fresh session just bought us, `Verify` so verification travels with the
 # work instead of being inferred, `Don't touch` so a later step doesn't rewrite an earlier
 # one's output it has never seen. Single-context builds use the same durable document shape.
 #
@@ -5606,7 +5624,12 @@ _PLAN_STEP_SHAPE = (
     "step should not name the app's main component at all. "
     "Name them even if you are guessing; a wrong guess is cheaper than no guess.\n"
     "  - Do — one or two sentences of the work itself, starting with a verb.\n"
-    "  - Done when — one sentence naming the observable result that proves this step is "
+    # `Verify` rather than `Done when` (#543): the document already has a '## Done when', and a
+    # person reading a plan met the same two words as an acceptance list and again inside every
+    # step. `plan_steps._CANON` has always read `verify` as `done_when`, so this renames what the
+    # planner is ASKED for and nothing the parser does — a saved plan spelled `Done when` still
+    # parses, which is what keeps every plan written before today valid.
+    "  - Verify — one sentence naming the observable result that proves this step is "
     "finished (a file exports something, the preview renders something, the app compiles).\n"
     "  - Don't touch — earlier files this step has no business editing at all, so it can't "
     "rewrite finished work it cannot see. Never list a file that also appears in this step's "
@@ -5667,6 +5690,11 @@ The lab coordinator who checks arrivals each morning.
 ## Screens
 - **Arrivals** — a table of samples with a late flag and a site filter.
 
+## Data
+- The attached arrivals file, one row per sample. It uses `sample_id` (the sample's label on the \
+tube), `site` (which lab sent it), `due_date` (when it was expected) and `received_at` (when it \
+actually arrived).
+
 ## Done when
 - The table shows every row of the arrivals file.
 - A sample three days past due shows the late flag.
@@ -5675,12 +5703,12 @@ The lab coordinator who checks arrivals each morning.
 ### 1. Arrivals data
 - Files — {data_step[0]}
 - Do — {data_step[1]}
-- Done when — Each sample comes back with its due date and a late flag.
+- Verify — Each sample comes back with its due date and a late flag.
 
 ### 2. Arrivals table
 - Files — {screen_files}
 - Do — Replace the starter screen with a table of samples, a site filter and a late tag.
-- Done when — The preview shows the table with late rows tagged.
+- Verify — The preview shows the table with late rows tagged.
 - Don't touch — {data_step[0]}"""
 
 
@@ -10668,8 +10696,10 @@ class Orchestrator:
         # The digest rides in the prompt rather than through a file: `plan_prompt` embeds it, and
         # the app that would hold `.sage/handoff.md` does not exist yet. The confirm writes that
         # file, for the implement turn that reads it (chat_handoff.implement_note).
-        prompt = chat_handoff.plan_prompt(thread_id, digest,
-                                          voice=_PLAN_VOICE, shape=_PLAN_SHAPE)
+        # Voiced for the same reason the gated turn voices its own copy: the shape's Data bullet
+        # names the platform's nouns as tokens (#543).
+        prompt = chat_handoff.plan_prompt(thread_id, digest, voice=_PLAN_VOICE,
+                                          shape=brand.apply_voice(_PLAN_SHAPE))
         client = self._ensure_opencode()
         # This planner runs in the THREAD'S OWN session, which is what makes a refusal here a
         # Conversation-level fact rather than one click's bad luck: whatever the gateway refused in
@@ -17991,7 +18021,10 @@ class Orchestrator:
         elif gate:
             # Both names now carry the same durable contract. The preference still controls only
             # execution, below: it does not change what a plan document contains.
-            shape = _PLAN_SHAPE_PHASED if (phased_build and mode_at_start is Mode.AUTO) else _PLAN_SHAPE
+            # Voiced because the shape's Data bullet names the platform's nouns as tokens (#543),
+            # and resolved here rather than at import, where the pack has not been read yet.
+            shape = brand.apply_voice(
+                _PLAN_SHAPE_PHASED if (phased_build and mode_at_start is Mode.AUTO) else _PLAN_SHAPE)
             # Labelled (#537). The person's sentence was ~0.4 KB of a 14 KB message, unmarked, with
             # ~10 KB of data notes after it; a planner took the notes for the request and refused.
             current = _PLAN_REQUEST_LABEL + current

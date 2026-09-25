@@ -37,7 +37,10 @@ JUDGED_BY_THE_AGENT = {"## What it does", "## Screens"}
 
 # The step layout's distinctive strings. Used in both directions below: every one of them belongs
 # in the retry prompt, and none of them in the sentence the person reads.
-LAYOUT_TOKENS = ("'## Plan'", "'### N. Label'", "- Files —", "- Do —", "- Done when —",
+# `- Verify —` rather than `- Done when —` since #543: the document's acceptance list is the
+# '## Done when' heading, and the step field was renamed so a reader does not meet the same two
+# words twice. `plan_steps._CANON` still reads both.
+LAYOUT_TOKENS = ("'## Plan'", "'### N. Label'", "- Files —", "- Do —", "- Verify —",
                  "- Don't touch —")
 
 # A plan in the layout the agent prompt used to teach: numbered, bolded label, one sentence each.

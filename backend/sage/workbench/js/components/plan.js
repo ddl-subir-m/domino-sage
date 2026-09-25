@@ -15,6 +15,10 @@ window.SW = window.SW || {};
     { key: 'users', label: 'Who uses this', kind: 'text' },
     { key: 'outcomes', label: 'What it does', kind: 'list' },
     { key: 'screens', label: 'Screens', kind: 'screens' },
+    // Optional (#543). A plan whose app reads no data — and every plan saved before this key
+    // existed — comes back with an empty list here, which draws the same as 'Not doing' already
+    // does when nothing is out of scope.
+    { key: 'data', label: 'Data', kind: 'list' },
     { key: 'nonGoals', label: 'Not doing', kind: 'list' },
     { key: 'acceptance', label: 'Done when', kind: 'list' },
     // The build steps, kept as markdown rather than broken into fields: this is the section
