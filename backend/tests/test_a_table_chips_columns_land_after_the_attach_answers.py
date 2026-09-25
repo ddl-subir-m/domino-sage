@@ -35,6 +35,7 @@ from pathlib import Path
 from sage.orchestrator import service as svc
 from sage.workspace.threads import ThreadStore
 
+from .fake_opencode import Turn
 from .test_a_bare_data_source_chip_carries_its_columns import NAMED, _row
 from .test_a_chat_build_request_is_asked_which_table import _gong_warehouse, _orch
 
@@ -250,7 +251,8 @@ def test_a_read_that_never_returns_costs_one_turn_the_bound_and_not_the_next(
         tmp_path: Path, monkeypatch):
     """(f). `list_columns` has no timeout of its own, so a hung describe stays registered for the
     life of the process. The first turn after it waits the bound; the one after must not."""
-    orch, oc = _orch(tmp_path)
+    # One answer per turn: an unanswered turn is asked again (#557 P3), and this counts prompts.
+    orch, oc = _orch(tmp_path, [Turn(text="Here it is."), Turn(text="Here it is again.")])
     _gong_warehouse(orch)
     gate = threading.Event()  # never set
     _slow_columns(orch, gate, monkeypatch)

@@ -43,7 +43,17 @@ from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import HelperNames, helpers_for
 from ..router.models import ASSIGNABLE_SLOTS
 from . import plan_doc
-from .stack import LEGACY_STACK, REACT_VITE, STACK_KEY, STACKS, Stack, default_stack_name, read_stack_name
+from .stack import (
+    LEGACY_STACK,
+    REACT_VITE,
+    STACK_KEY,
+    STACKS,
+    Stack,
+    default_stack_name,
+    read_stack_name,
+    resolve_stack,
+    stack_of,
+)
 from .threads import CHAT_WORK, HistoryRows, new_id, safe_id
 
 log = logging.getLogger(__name__)
@@ -1174,9 +1184,8 @@ class Workspace:
         return self.path / self.stack.entry_file
 
     @property
-    def stack_name(self) -> str:
-        """The kind of app this is, as its record says (#490): `react-vite` for one born before
-        the record existed. Never worked out from the files — see `stack.py`."""
+    def stack_name(self) -> str | None:
+        """The resolved or recorded kind; None when identity needs recovery."""
         return read_stack_name(self.path)
 
     @property
@@ -1184,11 +1193,14 @@ class Workspace:
         """The stack behind `stack_name`, for what it names: helpers, entry file, sentinel. A caller
         that wants the TEMPLATE goes through the manager, whose react-vite entry may point at an
         overridden directory (`SAGE_TEMPLATE`)."""
-        return STACKS.get(self.stack_name, REACT_VITE)
+        return stack_of(self.path)
 
     def record_stack(self, name: str) -> None:
         """Write the kind of app this is, once. Write-if-absent like `mark_created`, and for the
         same reason: it names a fact settled at birth that must never move."""
+        resolution = resolve_stack(self.path)
+        if resolution.state in ("invalid", "unsupported", "ambiguous"):
+            raise ValueError(resolution.reason)
         settings = _read_settings_file(self._settings_path)
         if isinstance(settings.get(STACK_KEY), str) and settings[STACK_KEY].strip():
             return
@@ -2065,9 +2077,11 @@ class WorkspaceManager:
         self._selected: str | None = None
 
     @property
-    def template(self) -> Path:
+    def template(self) -> Path | None:
         """The template the selected app was seeded from. Read by the orchestrator so it can ask the
         Built App's own query module what it will and will not run (#15)."""
+        if resolve_stack(self.app_path).stack is None:
+            return None
         return self.stack.template_dir
 
     @property
@@ -2077,16 +2091,8 @@ class WorkspaceManager:
         return self.stack_for(self.selected_app_id())
 
     def stack_for(self, app_id: str) -> Stack:
-        """The stack recorded for one app. Absent reads as react-vite: every app born before the
-        record existed is one. A record naming a stack this Sage does not carry reads the same way,
-        because the app is still on the disk and something has to answer for it.
-
-        ONE registry, the module's: `Workspace` answers off it too, and a stack this manager knew
-        that the value object did not would seed one template and name another's entry file. The
-        react-vite entry is rebuilt around THIS manager's template directory — `SAGE_TEMPLATE` has
-        always been that one override, and the argument every caller already passes.
-        """
-        kind = STACKS.get(read_stack_name(self.apps_dir / app_id), REACT_VITE)
+        """One resolver, with this manager's React template override applied to its answer."""
+        kind = stack_of(self.apps_dir / app_id)
         return replace(kind, template_dir=self._template) if kind.name == LEGACY_STACK else kind
 
     def _default_stack_name(self) -> str:
@@ -2217,6 +2223,10 @@ class WorkspaceManager:
         AGENTS.md is re-seeded like any other template file, so the caller is responsible for
         splicing the user's project instructions back into it (see Orchestrator.reset_app)."""
         app = self.app_path
+        # Resolve BEFORE removing files. Without this an unrecorded app loses the only evidence
+        # of its kind, and reset used to replace Python with React. Unresolved apps lose nothing.
+        kind = self.stack
+        Workspace("", app, self.selected_app_id()).record_stack(kind.name)
         keep = _RESET_KEEP | {p.parts[0] for p in _RESET_KEEP_NESTED}
         for item in app.iterdir():
             if item.name in keep:
@@ -2242,7 +2252,7 @@ class WorkspaceManager:
             (app / rel).unlink(missing_ok=True)
         # The app's own stack, which `.sage/` — kept above — still records: a reset puts the app back
         # to the starter it was born from, never to a different kind of app.
-        for item in self.stack.template_dir.iterdir():
+        for item in kind.template_dir.iterdir():
             if item.name in _SEED_SKIP:
                 continue
             dest = app / item.name
@@ -2254,9 +2264,11 @@ class WorkspaceManager:
         self.link_warm_deps()
 
     def ensure(self, project_id: str, seed_app: bool = True, stack: str | None = None) -> Workspace:
-        """Get-or-seed this Project's Built App. Idempotent: seeds the template into
-        `apps/<appId>/` only when that directory has no app yet (none of the stack's sentinel file,
-        `package.json` for react-vite), never clobbering an app already there.
+        """Seed a confirmed new app, or resume Sage's recorded interrupted seed.
+
+        Existing apps are preserved. A recorded app missing a template file gets that file back and
+        nothing else; an unresolved one is left alone. A missing record can recover only metadata
+        from an unambiguous complete layout; it never authorizes a seed.
 
         `stack` is the kind of app to seed if this call is the app's birth (#490); it is ignored for
         an app that already exists, whose kind is the one its record holds.
@@ -2278,42 +2290,50 @@ class WorkspaceManager:
         self._move_legacy_root_agents_md()
         app = self.app_path
         if seed_app:
+            resolution = resolve_stack(app)
             app.mkdir(parents=True, exist_ok=True)
-            # Empty BEFORE the seed runs, which is the only honest signal that this is a birth
-            # rather than a repair. The branch below re-seeds any app missing its `package.json` —
-            # a file the agent can delete — and an app seeded before the birth stamp existed would
-            # otherwise be dated the day it was repaired, which is a wrong date rather than none.
-            #
-            # Stamped BEFORE the seed rather than after it (#217), because "the directory is empty"
-            # is a fact that only holds now: a copy that dies half way through would otherwise
-            # leave an app this method can never call a birth again, and so one that carries no
-            # date for the rest of its life. `_write_settings_file` makes `.sage/` itself, and the
-            # template ships no `.sage/` for the loop below to find already standing.
-            if not any(app.iterdir()):
-                born = Workspace(project_id, app, self.selected_app_id())
-                born.mark_created()
-                # The kind of app is recorded at the same moment, for the same reason (#490): only
-                # an empty directory says which template this app is about to come from, and a copy
-                # that dies half way through must not leave an app that re-seeds from a different
-                # one next time. Recorded, never detected — the sentinel below is a file the agent
-                # can delete.
-                born.record_stack(stack or self._default_stack_name())
-            kind = self.stack
-            if not (app / kind.sentinel).exists():
-                # Seed the template INTO the (possibly pre-existing) directory entry by entry, so
-                # anything already there is preserved.
-                for item in kind.template_dir.iterdir():
-                    if item.name in _SEED_SKIP:
-                        continue
-                    dest = app / item.name
-                    if dest.exists():
-                        continue
-                    if item.is_dir():
-                        shutil.copytree(item, dest, ignore=_IGNORE)
-                    else:
-                        _seed_file(item, dest)
-            self.link_warm_deps()
+            born = Workspace(project_id, app, self.selected_app_id())
+            if resolution.state == "empty":
+                # One atomic birth record, before the first copy: createdAt without stack was
+                # itself an interrupted state the old two-write sequence could not recover.
+                _write_settings_file(born._settings_path, {
+                    "createdAt": _now(), STACK_KEY: stack or self._default_stack_name(),
+                    "seedState": "pending",
+                })
+                resolution = resolve_stack(app)
+            elif resolution.state == "recovered":
+                born.record_stack(resolution.require_stack().name)
+            if resolution.seed_pending or resolution.state == "incomplete":
+                # A recorded app names its template, so putting back only what is missing cannot
+                # replace anything of the person's. An interrupted seed and a template file the
+                # agent deleted (`package.json` is one it can) are the same repair; an UNRECORDED
+                # app with a partial layout never reaches here, because nothing says which template.
+                kind = self.stack
+                self._seed_missing(kind.template_dir, app)
+                if resolution.seed_pending:
+                    settings = _read_settings_file(born._settings_path)
+                    settings["seedState"] = "complete"
+                    _write_settings_file(born._settings_path, settings)
+            if resolve_stack(app).ready:
+                self.link_warm_deps()
         return Workspace(project_id, app, self.selected_app_id())
+
+    def _seed_missing(self, source: Path, destination: Path) -> None:
+        """Resume a recorded copy without replacing edits, including inside partial directories."""
+        ignored = set(_IGNORE(str(source), [p.name for p in source.iterdir()]))
+        for item in source.iterdir():
+            if item.name in _SEED_SKIP or item.name in ignored:
+                continue
+            dest = destination / item.name
+            if dest.is_symlink():
+                continue
+            if item.is_dir():
+                if dest.exists() and not dest.is_dir():
+                    continue
+                dest.mkdir(exist_ok=True)
+                self._seed_missing(item, dest)
+            elif not dest.exists():
+                _seed_file(item, dest)
 
     def _ensure_project_ignores(self) -> None:
         """Put the Project's own ignore rules at the volume root, and keep them there.

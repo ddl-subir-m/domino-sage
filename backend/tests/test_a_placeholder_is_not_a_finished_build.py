@@ -18,6 +18,8 @@ CONNECTED = 'import Dashboard from "./components/Dashboard";\nexport default Das
 
 def test_a_clean_typecheck_does_not_accept_the_starter_screen(tmp_path, monkeypatch):
     (tmp_path / "src/components").mkdir(parents=True)
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage/settings.json").write_text('{"stack": "react-vite"}')  # a bare dir is nobody's app (#503)
     (tmp_path / "src/App.tsx").write_text(STARTER)
     (tmp_path / "src/components/Dashboard.tsx").write_text(COMPONENT)
     monkeypatch.setattr("sage.feedback.runner.subprocess.run",

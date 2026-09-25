@@ -297,8 +297,10 @@ function serve(url, options) {
   // Conversation. The same rows the merged read labels `build`, minus the label and minus every
   // other app — which is exactly the difference the merged read exists to close.
   if ((m = path.match(/^\/project\/history\?conversation=(.+)$/))) {
-    const rows = (CONVERSATIONS[decodeURIComponent(m[1])] || [])
-      .filter((row) => row.half === 'build' && (!row.app || row.app === selected))
+    const query = new URLSearchParams(path.split('?')[1]);
+    const app = query.get('app') || selected;
+    const rows = (CONVERSATIONS[query.get('conversation')] || [])
+      .filter((row) => row.half === 'build' && (!row.app || row.app === app))
       .map(({ half, ...row }) => row);
     return json({ history: rows });
   }
@@ -534,6 +536,8 @@ for (const step of steps) {
       // full of talk answers no, and is still right to say so (#74).
       appTurns: (now.buildMessages || []).length,
       app: (now.activeApp && now.activeApp.id) || null,
+      // What a read that fell over left on screen in place of a transcript (#557 P4).
+      error: now.buildHistoryError || null,
       calls: calls.slice(),
     });
   } else if (step.echo) {

@@ -274,7 +274,10 @@ def test_preview_returns_502_not_500_while_vite_restarting():
     app = make_preview_app(not_ready, "")
     r = TestClient(app, raise_server_exceptions=False).get("/src/main.tsx")
     assert r.status_code == 502
-    assert r.json()["preview"] == "upstream Vite dev server not ready"
+    # The body is the supervisor's own status since #557 (P8b), so the pane can say which server
+    # and why. With no status to read, the proxy still says the server is not up.
+    assert r.json()["preview"]["state"] == "failed"
+    assert "not ready" in r.json()["error"]
 
 
 def test_preview_through_mount_and_middleware_no_double_prefix(monkeypatch):

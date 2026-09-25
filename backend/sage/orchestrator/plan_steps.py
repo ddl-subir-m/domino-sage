@@ -198,8 +198,8 @@ def validate_execution_contract(markdown: str) -> PlanContractCheck:
     parsed = plan_doc.parse_sections(markdown)
     sections = parsed["sections"]
     missing = []
-    if not _present(parsed["title"]):
-        missing.append("title")
+    # The app name is optional metadata. Required content must stand on its own if the
+    # bounded name-only call fails; a display caption must never become a stored heading.
     if not _one_sentence(parsed["summary"]):
         missing.append("summary")
     missing.extend(key for key in _REQUIRED_SECTIONS if not _present(sections.get(key)))

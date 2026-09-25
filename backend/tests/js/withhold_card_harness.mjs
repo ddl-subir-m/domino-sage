@@ -83,10 +83,11 @@ const SW = sandbox.SW;
 // that transcript and no other. This is what a real conversation looks like at the moment a turn
 // is refused: both send paths refuse text that trims to nothing, so a user row always carries one.
 const ASKED = [{ role: 'user', blocks: [{ type: 'text', value: 'chart the weekly panel spend' }] }];
-SW.store.set({
-  messages: spec.messages || ASKED,
-  buildMessages: spec.buildMessages || ASKED,
-});
+// Two calls, not one. `set` re-derives Build's transcript from its history whenever the read
+// target settles (#557 P4), and the first call is where it settles — a `buildMessages` handed in
+// with it is rebuilt from an empty history before the card ever reads it.
+SW.store.set({ messages: spec.messages || ASKED });
+SW.store.set({ buildMessages: spec.buildMessages || ASKED });
 
 // Recording stubs, applied over the real store rather than in place of it. The primary act writes
 // a row that changes what every later turn sends, and the other only hides a card.

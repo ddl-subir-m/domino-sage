@@ -36,13 +36,13 @@ class Warehouse(FakeResourceProvider):
         return SampleRows(table, ["ID", "TITLE"], [[7, "Acme <> Domino"]][:limit])
 
 
-def _orch(tmp: Path, resources):
+def _orch(tmp: Path, resources, turns=None):
     template = tmp / "template"
     (template / "src").mkdir(parents=True)
     (template / "src" / "App.tsx").write_text("export default function App() { return null }\n")
     (template / "package.json").write_text("{}")
     ws = tmp / "mnt" / "code"
-    oc = FakeOpenCode(ws, [Turn(text="ok")])
+    oc = FakeOpenCode(ws, turns or [Turn(text="ok")])
     orch = Orchestrator(workspace_dir=ws, template=template, gateway=ScriptedGateway(),
                         catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
                         opencode_client=oc, resources=resources)
@@ -131,10 +131,10 @@ def test_a_token_from_no_turn_at_all_reads_nothing(tmp_path: Path):
     assert resources.asked == []
 
 
-def _granted(tmp_path: Path):
+def _granted(tmp_path: Path, turns=None):
     """A Conversation with the warehouse in front of it and one turn run, so a token exists."""
     resources = Warehouse()
-    orch, oc = _orch(tmp_path, resources)
+    orch, oc = _orch(tmp_path, resources, turns)
     tid = orch.create_thread()["id"]
     orch.add_thread_context(tid, {"kind": "data_source", "id": "ds1",
                                   "name": "Snowflake-Data-Warehouse"})
@@ -170,7 +170,9 @@ def test_the_cap_refuses_loudly_rather_than_letting_a_loop_of_reads_spend_the_tu
 def test_the_next_turn_starts_the_read_count_over(tmp_path: Path):
     """The count is per TURN, reset when the next turn's token is minted. A turn that died holding
     a count would otherwise hand the next question a cap it never spent."""
-    orch, oc, tid, resources = _granted(tmp_path)
+    # Two answers for two turns: an unanswered one is asked again (#557 P3), and the token this
+    # reads is on the LAST prompt sent.
+    orch, oc, tid, resources = _granted(tmp_path, turns=[Turn(text="ok"), Turn(text="ok")])
     for _ in range(LIVE_READ_LIMIT):
         _read(orch, oc)
     assert "already made" in _read(orch, oc)

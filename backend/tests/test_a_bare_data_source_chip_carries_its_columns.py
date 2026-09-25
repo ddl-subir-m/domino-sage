@@ -39,6 +39,7 @@ import pytest
 from sage.orchestrator.service import Orchestrator
 from sage.workspace.threads import ThreadStore
 
+from .fake_opencode import Turn
 from .test_a_chat_build_request_is_asked_which_table import (
     _gong_warehouse,
     _orch,
@@ -199,7 +200,9 @@ def test_a_later_turn_in_the_same_thread_still_renders_the_columns(tmp_path: Pat
     ordering. It is here to catch a fix that moves the columns onto this turn by taking them off
     the next one.
     """
-    orch, oc = _orch(tmp_path)
+    # One answer per turn: a turn the fake leaves unanswered is a turn Sage asks again (#557 P3),
+    # and this counts prompts.
+    orch, oc = _orch(tmp_path, [Turn(text="Here it is."), Turn(text="Here it is again.")])
     _gong_warehouse(orch)
     tid = _thread_with_source(orch)
 

@@ -194,3 +194,23 @@ comparison — the first outlives it, the second belongs to ADR-0008.
   there too.
 - **Nothing migrates.** The merge is a read model. Turning the arm off leaves no residue, which is
   what makes #61 cheap in the direction it may have to go.
+
+
+## Returning to an app (#557)
+
+An explicit Conversation URL or **New conversation** action takes precedence. Otherwise, Build
+opens this viewer's last-used Conversation for the app, then the newest live associated Conversation.
+The preference is a validated project/app map in the existing per-viewer browser preferences. A
+successful explicit open records it; a background or stale read does not. A deleted or inaccessible
+Conversation falls back to the next available association without deleting its history.
+
+An admitted Build or Plan turn records an `attempted` app relation on its Conversation after the
+turn pins its app. This relation makes a failed first plan discoverable even if no file changed.
+`touched` remains a receipt of an actual app change. The rail labels attempt-only associations as
+**Attempted**. Older Conversation metadata is indexed once from app history and session metadata;
+this does not rewrite transcript events or generated app code. New Conversations start indexed.
+
+Build transcript reads carry project, app, Conversation, and request generation. All refresh callers
+share the ordering, including the watcher and Recall. The generation is checked again after message
+and artifact conversion. A target switch shows that target's cached transcript or a loading state.
+A failed refresh keeps its last good transcript and shows Retry, never a previous-plan placeholder.

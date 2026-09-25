@@ -70,7 +70,9 @@ def test_declining_is_recorded_the_question_still_runs_and_the_card_does_not_com
 
     # A second investigative question in the same conversation meets no card. An offer that came
     # back would be the same question asked until it got the answer it wanted.
-    oc.turns = [Turn(text="Answered again.")]
+    # Appended, not replaced: the fake's cursor is past the first script, and a turn it leaves
+    # unanswered is asked again (#557 P3), which this counts.
+    oc.turns.append(Turn(text="Answered again."))
     events = list(orch.chat_stream(tid, "Investigate which accounts look like adopters."))
     assert not any(e.get("type") == "investigation-offer" for e in events)
     assert len(oc.prompts) == 2

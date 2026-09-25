@@ -238,7 +238,9 @@ def test_without_a_gateway_the_call_falls_through_to_vite(gateway: _Gateway):
     r = _client(None).get("/api/llm/models")
 
     assert r.status_code == 502
-    assert r.json()["preview"] == "upstream Vite dev server not ready"
+    assert r.json()["preview"]["state"] == "failed"
+    assert r.json()["preview"]["server"] is None  # this fixture supplies no supervisor status
+    assert r.json()["error"] == "RuntimeError: upstream Vite dev server not ready"
 
 
 def test_a_gateway_that_will_not_answer_is_reported_readably(gateway: _Gateway):

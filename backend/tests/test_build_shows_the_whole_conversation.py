@@ -449,10 +449,12 @@ def test_an_adopted_row_with_no_app_is_not_dropped():
 
 # ---- the merged read falling over ---------------------------------------------------------------
 
-def test_a_broken_merged_read_still_shows_this_apps_turns():
-    """Build short of its Chat turns is half the story; Build short of its own turns is a blank
-    screen. The fallback is the split read, the same one the split view makes."""
+def test_a_broken_merged_read_says_so_rather_than_showing_less():
+    """A merged read that fell over used to drop to the split read. Since #557 (P4) it says it
+    failed and offers Retry: a quieter transcript under a working-looking screen hid a broken
+    endpoint from everyone, and the last good transcript, where there is one, stays up instead."""
     step = _build("thr_broken")
 
-    assert ["user", ["add a date filter"]] in _texts(step)
-    assert step["appTurns"] > 0
+    assert step["error"]
+    assert _texts(step) == []
+    assert step["appTurns"] == 0

@@ -6,7 +6,7 @@ extends: ADR-0002 (Python serves the Built App — the no-build stack removes th
   stack-neutral and both stacks read them)
 ---
 
-# A Built App declares its stack at birth, and the record answers, never the disk
+# A Built App declares its stack at birth; safe recovery restores a missing record
 
 Sage seeded one kind of app for a long time: React + TypeScript + Vite, built by Node and served by
 Python (ADR-0002). A second kind is now seeded by default — FastAPI serving a page that loads React,
@@ -28,13 +28,24 @@ the shape out again.
 ## The record, and why it is not detection
 
 An app records its kind as `stack` in its own `.sage/settings.json`, written at birth beside
-`createdAt`, write-if-absent. **Absent reads as `react-vite`**: every app born before the record
-existed is one, and an old app is not rewritten for being opened.
+`createdAt`. A valid known record is authoritative, even when files from another stack exist.
 
-The kind is never worked out from the files. The seed sentinel is a file the agent can delete —
-`WorkspaceManager.ensure` has said so since #40 — and a stack guessed from what is left on disk
-would re-seed the wrong template over a real app. Recording it at the one moment the directory is
-empty is what makes a half-finished copy safe: the next `ensure` re-seeds the SAME kind.
+Updated by #503 / #557: a missing record no longer means React. One pure resolver serves the
+manager, preview, instructions, scope and feedback. Only one complete layout (the stack's sentinel
+and entry file), with no evidence of another stack, permits metadata recovery. The manager writes
+only the missing stack field. Mixed or incomplete unrecorded apps, malformed settings and unknown
+stack names are preserved and need recovery. Readers never write metadata. A directory with no
+stack file at all — whatever else Chat has recorded in it, a bindings manifest or a display
+name — is an app not yet born, and seeds.
+
+Deleting a sentinel from an UNRECORDED app no longer reseeds it: the app reads as ambiguous and
+is left alone. A recorded app that lost a template file gets the missing files back on the next
+attach, without replacing anything else — the record names the template, so nothing is guessed.
+Explicit Reset still restores the recorded stack, and resolves it before removing any files. New apps get
+one atomic birth record with `seedState: pending` before the copy. Only this marker permits an
+interrupted copy to resume, recursively copying missing files without replacing edits. Completion
+records `seedState: complete`. Old apps without this marker are never assumed to be interrupted
+seeds. This deliberately replaces the old sentinel-deletion recovery rule.
 
 One registry. `Workspace` (a value object built in many places) and the manager both answer off
 the module's `STACKS`; the first run of the seam's tests found a manager-local registry seeding

@@ -36,6 +36,11 @@ So a result reaches the model when, and only when:
 
 Anything else goes to the card, where rows go.
 
+Snowflake catalog discovery has a separate narrow exception: direct schema fields from known
+metadata tables may reach the model without an aggregate. Table names and column types describe where to
+query; withholding them makes the investigation skill's own discovery query unusable. This does
+not admit general catalog rows, comments, defaults, expressions, or values from ordinary tables.
+
 **Group-by labels are allowed on purpose, not by accident.** `SELECT ACCOUNT_NAME, COUNT(*) … GROUP
 BY 1` returns stored values in its first column, and it is the shape every real analysis takes. The
 permitted alternative is a rule that forbids the most ordinary useful query there is, and the shell
@@ -95,6 +100,13 @@ _DERIVED = frozenset({
 # different things: one is "this is always a number", the other is "this is a number if it is".
 _NUMERIC_IF_VALUES_ARE = frozenset({"Min", "Max"})
 
+_TABLE_IDENTITY = frozenset({"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME"})
+_CATALOGUE_FIELDS = {
+    "TABLES": _TABLE_IDENTITY | {"ROW_COUNT"},
+    "COLUMNS": _TABLE_IDENTITY | {"COLUMN_NAME", "DATA_TYPE", "ORDINAL_POSITION", "IS_NULLABLE"},
+    "SCHEMATA": frozenset({"CATALOG_NAME", "SCHEMA_NAME"}),
+}
+
 # `sqlglot` has no class for a function it does not know, and parses it as `Anonymous` carrying the
 # name — so these are matched by NAME rather than by type, and the ADR's own allowed list is why the
 # first set is not empty. The whole `REGR_*` family is named in ADR-0058 as reaching the model and
@@ -129,13 +141,15 @@ class Verdict:
     discloses: bool
     reason: str = ""
     derived: tuple[int, ...] = field(default_factory=tuple)
+    # Schema facts are selected fields, not derived numbers. Keep the receipt honest about both.
+    catalogue: tuple[int, ...] = field(default_factory=tuple)
 
 
 def _refuse(reason: str) -> Verdict:
     return Verdict(False, reason)
 
 
-def decide(sql: str, rows: list[list]) -> Verdict:
+def decide(sql: str, rows: list[list], *, connector_type: str = "") -> Verdict:
     """Whether `rows`, produced by `sql`, may be put in front of the model.
 
     Both halves in one call, rather than a static pass and a value pass a caller must remember to
@@ -173,6 +187,12 @@ def decide(sql: str, rows: list[list]) -> Verdict:
     projections = list(select.expressions)
     if not projections:
         return _refuse("That statement selects nothing to share; only the card has the result.")
+
+    catalogue = _catalogue_projection(select, exp, connector_type)
+    if catalogue:
+        if any(len(row) != len(projections) for row in rows):
+            return _refuse("The result did not line up with the statement, so only the card has it.")
+        return Verdict(True, catalogue=catalogue)
 
     grouped = _grouped_expressions(select, exp)
     derived: list[int] = []
@@ -217,6 +237,53 @@ def decide(sql: str, rows: list[list]) -> Verdict:
                        "here.")
 
     return _confirm(tuple(derived), projections, rows)
+
+
+def _catalogue_projection(select, exp, connector_type: str) -> tuple[int, ...]:
+    """Direct schema facts from one parsed metadata table, never a name-like substring.
+
+    This is narrower than `run.catalogue_read`, which only decides whether to fold a card. A
+    comments column can be working material without being safe to disclose. Joins, nested queries
+    and CTEs need provenance analysis that this exception does not attempt; the existing derived
+    number policy still handles their aggregate results.
+    """
+    if (connector_type != "SnowflakeConfig" or select.find(exp.CTE)
+            or select.find(exp.Subquery) or select.find(exp.Join)
+            or len(list(select.find_all(exp.Select))) != 1):
+        return ()
+    tables = list(select.find_all(exp.Table))
+    if len(tables) != 1 or not isinstance(tables[0].this, exp.Identifier):
+        return ()
+    table = tables[0]
+    name = _metadata_identifier(table.this, connector_type)
+    schema = _metadata_identifier(table.args.get("db"), connector_type)
+    if schema == "INFORMATION_SCHEMA":
+        fields = _CATALOGUE_FIELDS.get(name)
+    elif (connector_type == "SnowflakeConfig"
+          and (_metadata_identifier(table.args.get("catalog"), connector_type), schema)
+          == ("SNOWFLAKE", "ACCOUNT_USAGE")):
+        fields = _CATALOGUE_FIELDS.get(name) if name in {"TABLES", "COLUMNS"} else None
+    else:
+        fields = None
+    if not fields:
+        return ()
+    for projection in select.expressions:
+        column = projection.unalias()
+        if not isinstance(column, exp.Column) or column.name.upper() not in fields:
+            return ()
+    return tuple(range(len(select.expressions)))
+
+
+def _metadata_identifier(identifier, connector_type: str) -> str:
+    if identifier is None:
+        return ""
+    name = identifier.name
+    # Quoting preserves case. PostgreSQL's quoted uppercase lookalike is not its lowercase
+    # built-in catalog, and Snowflake's quoted lowercase one is not its uppercase catalog. The
+    # provider uses quoted uppercase names on Snowflake; other quoted dialects stay conservative.
+    if identifier.args.get("quoted"):
+        return name if connector_type == "SnowflakeConfig" and name == name.upper() else ""
+    return name.upper()
 
 
 def _confirm(derived: tuple[int, ...], projections: list, rows: list[list]) -> Verdict:

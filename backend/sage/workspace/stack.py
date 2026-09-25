@@ -11,11 +11,9 @@ app and keeps it.
 So a Stack is a property of the app in hand, fixed at birth, and this is the ONE place that answers
 what each kind needs. Every caller takes a `Stack` and asks it; nobody works the shape out again.
 
-The record is `stack` in the app's own `.sage/settings.json`, beside `createdAt` — the app's record,
-committed to its repo, so a collaborator's clone reads the same answer. Absent means the app was born
-before the record existed, and every such app is react-vite. It is never DETECTED from the files:
-the seed sentinel is a file the agent can delete (`WorkspaceManager.ensure` says so), and a stack
-guessed from what is left on disk would re-seed the wrong template over a real app.
+The record is `stack` in the app's own `.sage/settings.json`, beside `createdAt`. A valid record
+is authoritative. Without one, only one complete, unambiguous layout can recover its identity.
+An unresolved app is preserved, not guessed to be React. This reader never writes or seeds files.
 """
 from __future__ import annotations
 
@@ -30,7 +28,7 @@ _REPO = Path(__file__).resolve().parents[3]
 
 #: The key in `.sage/settings.json` that records an app's stack.
 STACK_KEY = "stack"
-#: What an app with no record is. Every app seeded before #490 is one of these.
+#: The original stack; also the target of the SAGE_TEMPLATE override.
 LEGACY_STACK = "react-vite"
 
 
@@ -40,7 +38,7 @@ class Stack:
 
     name: str
     template_dir: Path
-    # The file whose presence says "an app has been seeded here". `ensure` seeds when it is absent.
+    # The server entry used with entry_file to identify an unrecorded, complete app.
     sentinel: str
     # What Domino runs to serve a published App, refreshed from the template at publish. ORDERED:
     # the entry script last, after everything it calls, so a refresh that dies partway leaves an app
@@ -148,57 +146,80 @@ FASTAPI_ANTD = Stack(
 STACKS: dict[str, Stack] = {REACT_VITE.name: REACT_VITE, FASTAPI_ANTD.name: FASTAPI_ANTD}
 
 
+@dataclass(frozen=True)
+class StackResolution:
+    stack: Stack | None
+    state: str
+    reason: str = ""
+    recorded_name: str | None = None
+    seed_pending: bool = False
+
+    @property
+    def ready(self) -> bool:
+        return self.state in ("recorded", "recovered")
+
+    def require_stack(self) -> Stack:
+        if self.stack is None:
+            raise ValueError(self.reason)
+        return self.stack
+
+
+def resolve_stack(app_path: Path) -> StackResolution:
+    """Read one stack decision for seeding, instructions, checks and preview. Never writes."""
+    app_path = Path(app_path)
+    try:
+        settings = json.loads((app_path / ".sage/settings.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        settings = {}
+    except (OSError, ValueError):
+        return StackResolution(None, "invalid", "Repair this app's unreadable .sage/settings.json.")
+    if not isinstance(settings, dict):
+        return StackResolution(None, "invalid", "Repair this app's .sage/settings.json: expected an object.")
+    if STACK_KEY in settings:
+        name = settings[STACK_KEY]
+        if not isinstance(name, str) or not name.strip():
+            return StackResolution(None, "invalid", "Repair this app's stack in .sage/settings.json.")
+        name = name.strip()
+        kind = STACKS.get(name)
+        if kind is None:
+            return StackResolution(None, "unsupported", f"This app records an unsupported stack: {name}.", name)
+        missing = [p for p in (kind.sentinel, kind.entry_file) if not (app_path / p).is_file()]
+        return StackResolution(
+            kind, "incomplete" if missing else "recorded",
+            f"The {name} app is incomplete: missing {', '.join(missing)}. Restore the files or reset the app."
+            if missing else "", name, settings.get("seedState") == "pending")
+    # A partial layout from another stack is conflicting evidence too: a complete Python app
+    # plus package.json must not silently become either kind. Registry order cannot decide it.
+    evidence = [kind for kind in STACKS.values()
+                if any((app_path / p).exists() for p in (kind.sentinel, kind.entry_file))]
+    if len(evidence) == 1:
+        kind = evidence[0]
+        if all((app_path / p).is_file() for p in (kind.sentinel, kind.entry_file)):
+            return StackResolution(kind, "recovered")
+    if not evidence:
+        # No stack has left a file here, so there is no identity to guess at: this is an app that
+        # has not been born yet, whatever else the directory holds. Chat writes into `apps/<id>/`
+        # before Build ever seeds it — a bindings manifest, a display name — and each of those made
+        # the directory non-empty, which read as "mixed" and left the app unseedable for the rest
+        # of its life. "Ambiguous" is for files that ARGUE: a partial layout, or two stacks' worth.
+        return StackResolution(None, "empty", "No app has been built yet.")
+    return StackResolution(None, "ambiguous", "This app's stack needs recovery: its files are incomplete or mixed.")
+
+
 def stack_of(app_path: Path) -> Stack:
-    """The stack behind one app directory's record, for a caller that holds only the path."""
-    return STACKS.get(read_stack_name(app_path), REACT_VITE)
+    """Return the resolved stack; refuse an unsupported or ambiguous app."""
+    return resolve_stack(app_path).require_stack()
 
 
 def preview_stack_of(app_path: Path) -> Stack | None:
-    """Which SERVER to run for the app on disk, or None when there is nothing to serve yet.
-
-    Deliberately not `stack_of`. This module refuses to work the stack out from files, and the
-    reason in the header is sound: the answer decides which template `ensure` SEEDS, and a wrong
-    guess re-seeds over a real app. That danger belongs to seeding. Choosing a server is a
-    different question — a wrong answer costs a failed start and writes nothing — and it is the
-    question the record's absence got wrong.
-
-    Measured 2026-09-24 (#554): a Built App with no readable `.sage/settings.json` read as
-    `LEGACY_STACK`, which is right for an app born before the record existed and wrong for one that
-    LOST its record. Sage ran `npm run dev` on a Python app: `ENOENT ... package.json`, exit 254,
-    "max restarts reached", and a dead pane that read like a broken build.
-
-    The record still decides whenever it exists, so nothing about a recorded app changes. With no
-    record the disk decides, by each stack's own `sentinel` — so a genuine pre-record react-vite app
-    still answers react-vite, because it has the `package.json` this looks for. When no sentinel is
-    there, there is no app here to serve and the caller must spawn nothing rather than guess.
-    """
-    try:
-        settings = json.loads((app_path / ".sage" / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        settings = {}
-    name = settings.get(STACK_KEY) if isinstance(settings, dict) else None
-    if isinstance(name, str) and name.strip() in STACKS:
-        return STACKS[name.strip()]
-    for stack in STACKS.values():
-        if (app_path / stack.sentinel).is_file():
-            return stack
-    return None
+    """The same identity the other stack readers use, including a recorded incomplete app."""
+    return resolve_stack(app_path).stack
 
 
-def read_stack_name(app_path: Path) -> str:
-    """The stack an app's own record names, or `react-vite` when it names none.
-
-    Reads `.sage/settings.json` directly rather than through the manager's reader, because the
-    manager imports this module: a stack is a fact the manager keys on, not one it owns. Unreadable
-    reads as absent, for the reason the manager's reader treats a broken settings file as empty — a
-    stray comma in a record must not decide that an app on the disk cannot be opened.
-    """
-    try:
-        settings = json.loads((app_path / ".sage" / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return LEGACY_STACK
-    name = settings.get(STACK_KEY) if isinstance(settings, dict) else None
-    return name.strip() if isinstance(name, str) and name.strip() else LEGACY_STACK
+def read_stack_name(app_path: Path) -> str | None:
+    """The resolved or explicitly recorded name, for a rail that must still show broken apps."""
+    resolution = resolve_stack(app_path)
+    return resolution.stack.name if resolution.stack else resolution.recorded_name
 
 
 def default_stack_name() -> str:

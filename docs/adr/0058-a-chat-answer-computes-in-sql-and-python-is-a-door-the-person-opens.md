@@ -236,3 +236,30 @@ shipped unreachable.
 So the rate belongs in a live measurement, and until one exists this feature is UNVERIFIED in
 production however green the suite is. A `log.info` fires on both arms of the check — offered, and
 claimed-without-a-statement — so a silent zero is visible rather than assumed.
+
+## Catalog discovery — #557, 2026-09-25
+
+A live model replay found a conflict in the investigation path. The skill told the model to read
+table names and column facts. The query ran, but the number-only disclosure rule hid those facts.
+Haiku then guessed table names and could not answer; Xiaomi encountered the same refusal. Adding
+a grouped count let the control model see the same names. Models must not need that workaround.
+
+Direct catalog fields now have a narrow exception on a verified Snowflake connector. One plain
+SELECT may read allowlisted fields from `INFORMATION_SCHEMA.TABLES`, `COLUMNS`, or `SCHEMATA`,
+or from `SNOWFLAKE.ACCOUNT_USAGE.TABLES` or `COLUMNS`. The fields are catalog/schema/table/
+column names, data type, ordinal position, nullability, and table row count. The source identity is
+parsed from SQL; an ordinary table with a metadata-like name or alias does not qualify. Returned
+wildcards, comments, defaults and computed expressions do not get this exception, nor do joins,
+CTEs or nested queries. A predicate or ordering may use LOWER/UPPER while the returned fields stay
+direct schema facts. Other connectors keep their existing disclosure policy. Existing derived-number
+rules still apply independently.
+
+Quoted identifiers keep their case. Only the known uppercase Snowflake catalog spellings qualify
+when quoted; ambiguous quoted spellings on other connectors are refused. A SQL Server database
+named `SNOWFLAKE` does not get Snowflake's system-catalog exception.
+
+The source grant, 500-row store request and model value-size limit stay in force. The operation
+receipt names the metadata fields sent and classifies the read as working material. It records no
+SQL text or metadata values in saved history. Ordinary stored row values remain under the existing
+disclosure rule. The replay used real models with synthetic local tables, so it does not establish
+production warehouse access.
