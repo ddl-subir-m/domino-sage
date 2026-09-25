@@ -36,8 +36,8 @@ So a result reaches the model when, and only when:
 
 Anything else goes to the card, where rows go.
 
-Catalog discovery has a separate narrow exception: direct schema fields from known metadata
-tables may reach the model without an aggregate. Table names and column types describe where to
+Snowflake catalog discovery has a separate narrow exception: direct schema fields from known
+metadata tables may reach the model without an aggregate. Table names and column types describe where to
 query; withholding them makes the investigation skill's own discovery query unusable. This does
 not admit general catalog rows, comments, defaults, expressions, or values from ordinary tables.
 
@@ -247,8 +247,9 @@ def _catalogue_projection(select, exp, connector_type: str) -> tuple[int, ...]:
     and CTEs need provenance analysis that this exception does not attempt; the existing derived
     number policy still handles their aggregate results.
     """
-    if (select.find(exp.CTE) or select.find(exp.Subquery) or select.find(exp.Join)
-            or select.find(exp.Func) or len(list(select.find_all(exp.Select))) != 1):
+    if (connector_type != "SnowflakeConfig" or select.find(exp.CTE)
+            or select.find(exp.Subquery) or select.find(exp.Join)
+            or len(list(select.find_all(exp.Select))) != 1):
         return ()
     tables = list(select.find_all(exp.Table))
     if len(tables) != 1 or not isinstance(tables[0].this, exp.Identifier):
