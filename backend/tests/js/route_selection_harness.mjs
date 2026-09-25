@@ -297,6 +297,62 @@ for (const step of steps) {
   selected = step.selected || 'app_a';
   calls.length = 0;
 
+  if (step.followThenChoose) {
+    const tab = makeTab('t1', '#/build/thr_many?app=app_a');
+    await tab.settle();
+    tab.SW.store.set({ scope: { id: 'project' }, me: { id: 'viewer' } });
+    selected = 'app_b';
+    await tab.poll();
+    tab.go('#/build/thr_twice?app=app_b');
+    await tab.settle();
+    report.push(tab.SW.prefs.get('lastAppConversations'));
+    tab.unmount();
+    continue;
+  }
+
+  if (step.selectionABA) {
+    const tab = makeTab('t1', '#/build/thr_many?app=app_a');
+    await tab.settle();
+    const release = [];
+    tab.SW.api.selectApp = () => new Promise(resolve => release.push(resolve));
+    const first = tab.SW.store.selectApp('app_b');
+    const middle = tab.SW.store.selectApp('app_c');
+    const last = tab.SW.store.selectApp('app_b');
+    release[0]({});
+    await first;
+    const afterFirst = tab.SW.store.get().selectingAppId;
+    release[1]({});
+    await middle;
+    const afterMiddle = tab.SW.store.get().selectingAppId;
+    release[2]({});
+    await last;
+    report.push({ afterFirst, afterMiddle, final: tab.SW.store.get().selectingAppId });
+    tab.unmount();
+    continue;
+  }
+  if (step.delayedSelection) {
+    const tab = makeTab('t1', '#/build/thr_many?app=app_a');
+    await tab.settle();
+    tab.SW.store.set({ scope: { id: 'project' }, me: { id: 'viewer' } });
+    tab.SW.store.rememberAppConversation('app_a', 'thr_many');
+    const select = tab.SW.api.selectApp;
+    let release;
+    tab.SW.api.selectApp = (id) => new Promise((resolve, reject) => {
+      release = () => step.delayedSelection === 'failure'
+        ? reject(new Error('selection unavailable')) : resolve(select(id));
+    });
+    tab.go('#/build/thr_twice?app=app_d');
+    await tab.settle();
+    const pending = { view: tab.view(), prefs: tab.SW.prefs.get('lastAppConversations') };
+    release();
+    await tab.settle();
+    const after = { view: tab.view(), prefs: tab.SW.prefs.get('lastAppConversations'),
+      selecting: tab.SW.store.get().selectingAppId || null };
+    tab.unmount();
+    report.push({ pending, after });
+    continue;
+  }
+
   // Two tabs, two `?app=` values, one Project. Each seeds, then both poll — which is the shape the
   // ticket describes: whatever the second tab wrote, the first one's poll sees as drift.
   if (step.tabs) {

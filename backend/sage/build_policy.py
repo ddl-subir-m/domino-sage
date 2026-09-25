@@ -10,6 +10,7 @@ quiet_timeout_seconds            SAGE_BUILD_QUIET_TIMEOUT_SECONDS               
 open_tool_quiet_timeout_seconds  SAGE_BUILD_OPEN_TOOL_QUIET_TIMEOUT_SECONDS        600
 stop_grace_seconds               SAGE_BUILD_STOP_GRACE_SECONDS                     30
 runtime_error_wait_seconds       SAGE_BUILD_RUNTIME_ERROR_WAIT_SECONDS             4
+page_ack_wait_seconds            SAGE_BUILD_PAGE_ACK_WAIT_SECONDS                  10
 poll_message_limit               SAGE_BUILD_POLL_MESSAGE_LIMIT                     40
 live_read_limit                  SAGE_BUILD_LIVE_READ_LIMIT                        25
 exact_repeat_limit               SAGE_BUILD_EXACT_REPEAT_LIMIT                     3
@@ -86,6 +87,7 @@ class BuildPolicy:
     open_tool_quiet_timeout_seconds: float = 600.0
     stop_grace_seconds: float = 30.0
     runtime_error_wait_seconds: float = 4.0
+    page_ack_wait_seconds: float = 10.0
     poll_message_limit: int = 40
     live_read_limit: int = 25
     exact_repeat_limit: int = 3
@@ -152,6 +154,7 @@ _SETTINGS = (
     _Setting("open_tool_quiet_timeout_seconds",
              "SAGE_BUILD_OPEN_TOOL_QUIET_TIMEOUT_SECONDS", "duration"),
     _Setting("stop_grace_seconds", "SAGE_BUILD_STOP_GRACE_SECONDS", "duration"),
+    _Setting("page_ack_wait_seconds", "SAGE_BUILD_PAGE_ACK_WAIT_SECONDS", "duration"),
     _Setting("runtime_error_wait_seconds", "SAGE_BUILD_RUNTIME_ERROR_WAIT_SECONDS", "duration"),
     _Setting("poll_message_limit", "SAGE_BUILD_POLL_MESSAGE_LIMIT"),
     _Setting("live_read_limit", "SAGE_BUILD_LIVE_READ_LIMIT"),

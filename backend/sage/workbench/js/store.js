@@ -221,6 +221,7 @@ window.SW = window.SW || {};
     // other (ADR-0008).
     apps: [],
     activeApp: null,
+    selectingAppId: null,
     activePlanId: null,
     activePlan: null,
     // plan.md, for the app the preview is showing. Not the plan document above. The panel reads
@@ -1286,6 +1287,7 @@ window.SW = window.SW || {};
   // and the second request would be refused by the turn lock the first one is holding, which
   // reaches the person as a warning about a build that is not running.
   let selecting = null;
+  let selectionSequence = 0;
 
   // Whether a New app is in flight. The turn lock is released before `create_app` returns, so
   // nothing downstream refuses a second click — it mints a SECOND app, and the person is left
@@ -3065,7 +3067,7 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push({
           type: 'status',
           ok: ev.ok,
-          value: ev.ok ? 'Typecheck passed' : `Typecheck: ${ev.errors} error(s)`,
+          value: ev.ok ? `${ev.kind || 'Typecheck'} passed` : `${ev.kind || 'Typecheck'}: ${ev.errors} error(s)`,
         });
       } else if (ev.type === 'build-recovery') {
         ensureAssistant().blocks.push({
@@ -3114,8 +3116,11 @@ window.SW = window.SW || {};
         if (!GATE_DECISIONS[ev.decision]) {
           ensureAssistant().blocks.push({
             type: 'status',
-            ok: ev.ok,
-            value: ev.decision === 'answered'
+            ok: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified' ? null : ev.ok,
+            warn: !!(ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'),
+            value: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'
+              ? 'Code checks passed; runtime not verified'
+              : ev.decision === 'answered'
               ? 'Answered'
               : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),
           });
@@ -4231,6 +4236,20 @@ window.SW = window.SW || {};
       state.buildTyping = null;
       return;
     }
+    if (ev.type === 'preview-validation') {
+      const running = state.runningTurn;
+      if (ev.appId === (state.activeApp && state.activeApp.id)
+          && (!running || !running.turnId || running.turnId === ev.turnId)
+          && SW.router.get().mode === 'build' && document.visibilityState !== 'hidden') {
+        // Retire a status probe issued before this document request.
+        previewProbe += 1;
+        state.previewSrc = `./preview/?sageValidation=${encodeURIComponent(ev.validationId)}`;
+        state.previewStatus = 'ok';
+        state.previewDetail = null;
+        state.buildTyping = 'Checking the changed page…';
+      }
+      return;
+    }
     if (ev.type === 'user') return;
     if (ev.type === 'model-active') {
       state.buildTyping = ev.active === false ? null
@@ -4242,7 +4261,7 @@ window.SW = window.SW || {};
       const labels = TOOL_LABELS[ev.tool] || {};
       state.buildTyping = (ev.tool === 'bash' ? labels.doing : (ev.detail || labels.doing)) || 'Working';
     } else if (ev.type === 'typecheck-start') {
-      state.buildTyping = 'Typechecking…';
+      state.buildTyping = `${ev.kind || 'Typecheck'}…`;
     } else if (ev.type === 'iterate') {
       state.buildTyping = ev.reason || 'Fixing errors…';
     } else if (ev.type === 'build-recovery') {
@@ -7426,7 +7445,10 @@ window.SW = window.SW || {};
         return state.activeApp;
       }
       selecting = id;
+      const selection = ++selectionSequence;
+      state.selectingAppId = id;
       buildReadGeneration += 1;
+      notify();
       try {
         await SW.api.selectApp(id);
         // Reloads the app list with it: the transcript, the Bindings, the plan pin and the preview
@@ -7444,7 +7466,11 @@ window.SW = window.SW || {};
         );
         return state.activeApp;
       } finally {
-        selecting = null;
+        if (selection === selectionSequence) {
+          selecting = null;
+          state.selectingAppId = null;
+          notify();
+        }
       }
     },
 

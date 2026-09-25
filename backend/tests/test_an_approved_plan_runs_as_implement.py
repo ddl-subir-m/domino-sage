@@ -254,8 +254,18 @@ def test_runtime_repair_reuses_the_direct_build_intent(tmp_path: Path, monkeypat
     project = orch.project(start_preview=False)
     project.record.write_settings({"skip_planning": True})
     project.control.set_mode(Mode.IMPLEMENT)
+    from sage.preview.validation import PageValidation
+
     crashes = iter([{"message": "render failed", "stack": "stack"}, None])
-    monkeypatch.setattr(orch, "_await_runtime_error", lambda *args, **kwargs: next(crashes))
+
+    def validated(*args, **kwargs):
+        validation = PageValidation("validation_test", project.id, project.workspace.app_id,
+                                    "turn_test", "code", "Typecheck")
+        validation.error = next(crashes)
+        yield from ()
+        return validation
+
+    monkeypatch.setattr(orch, "_validate_page", validated)
     intents = []
     send_prompt = oc.send_prompt
 

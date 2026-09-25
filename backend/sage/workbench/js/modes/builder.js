@@ -1507,7 +1507,7 @@ window.SW = window.SW || {};
 
   SW.BuildMode = function BuildMode({ conversationId, appId }) {
     const { thread, activeApp, buildMessages, buildTranscript, buildTyping, buildRunning, turnWedged,
-            projectPlan, runningTurn, buildHistoryLoading, buildHistoryError } = SW.store.get();
+            projectPlan, runningTurn, buildHistoryLoading, buildHistoryError, selectingAppId } = SW.store.get();
     const scroller = useRef(null);
 
     // The only thing keeping app state fresh, and it moved here with the rail it used to live in
@@ -1536,6 +1536,7 @@ window.SW = window.SW || {};
       // A rewrite this tab made to follow the server is not somebody asking for an app. Selecting
       // on it would put the selection back where it had just come from.
       if (!appId || appId === followed.current) return;
+      followed.current = null;
       SW.store.selectApp(appId);
     }, [appId]);
 
@@ -1549,6 +1550,9 @@ window.SW = window.SW || {};
     // person to open it.
     useEffect(() => {
       const shown = activeApp && activeApp.id;
+      // A requested selection is still on the wire. The old app is not a later server choice.
+      // Read the store here: the seed effect above can start the request in this same render.
+      if (SW.store.get().selectingAppId) return;
       if (!appId || !shown || shown === appId) return;
       // `SW.appRoute` names the conversation off the STORE's thread. While the route names one that
       // is still opening, the grammar would name the conversation being left and this would send
@@ -1556,7 +1560,7 @@ window.SW = window.SW || {};
       if ((thread ? thread.id : null) !== (conversationId || null)) return;
       followed.current = shown;
       SW.router.replace(SW.appRoute(activeApp));
-    }, [appId, activeApp && activeApp.id, conversationId, thread && thread.id]);
+    }, [appId, activeApp && activeApp.id, conversationId, thread && thread.id, selectingAppId]);
 
     // A link naming NO app still names one: the Built App this conversation bound last. Resolving
     // it is what keeps an older link landing where it landed, rather than on whichever app the
@@ -1599,11 +1603,14 @@ window.SW = window.SW || {};
     }, [conversationId, appId]);
 
     useEffect(() => {
+      if (SW.store.get().selectingAppId) return;
+      // Following a server selection is not the person choosing this app's conversation.
+      if (appId && appId === followed.current) return;
       if (conversationId && thread && thread.id === conversationId
           && activeApp && (!appId || activeApp.id === appId)) {
         SW.store.rememberAppConversation(activeApp.id, conversationId);
       }
-    }, [conversationId, appId, thread && thread.id, activeApp && activeApp.id]);
+    }, [conversationId, appId, thread && thread.id, activeApp && activeApp.id, selectingAppId]);
 
     // The transcript follows the open conversation rather than the mount. While the route names
     // one that is still opening, loading would replay the conversation we are leaving.
