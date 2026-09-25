@@ -245,34 +245,35 @@ BAD_NAMES = [
 
 
 @pytest.mark.parametrize("repair", BAD_NAMES)
-def test_direct_build_repair_failure_creates_no_plan_card(tmp_path: Path, repair):
+def test_direct_build_repair_failure_keeps_an_unnamed_plan(tmp_path: Path, repair):
     orch, gateway, _root = _orch(tmp_path, [Turn(text=UNNAMED)])
     gateway.word = "BUILD"
     gateway.name = repair
 
     events = list(orch.build_stream("build me a desk exposure dashboard", conversation=CONVERSATION))
 
-    assert not any(e.get("type") == "plan-proposed" for e in events)
-    assert "repair couldn't name it" in next(e for e in events if e["type"] == "error")["message"]
-    assert next(e for e in events if e["type"] == "done")["decision"] == "plan title repair failed"
-    assert orch.list_plan_docs() == []
-    assert orch.project(start_preview=False).workspace.read_plan() is None
+    proposed = next(e for e in events if e.get("type") == "plan-proposed")
+    assert proposed["plan"] == UNNAMED.strip()
+    assert not any(e["type"] == "error" for e in events)
+    doc = orch.project(start_preview=False).record.read_plan_doc(orch.list_plan_docs()[0]["id"])
+    assert doc["title"] == ""
+    assert orch.project(start_preview=False).workspace.read_plan() == UNNAMED.strip()
     assert len(orch._oc_client.prompts) == 1
     assert len(gateway.repair_requests()) == 1
 
 
 @pytest.mark.parametrize("repair", BAD_NAMES)
-def test_handoff_repair_failure_creates_no_planned_handoff(tmp_path: Path, repair):
+def test_handoff_repair_failure_keeps_an_unnamed_plan(tmp_path: Path, repair):
     orch, gateway, _root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=UNNAMED)])
     gateway.name = repair
     thread = orch.create_thread()["id"]
     list(orch.chat_stream(thread, "build me a desk exposure dashboard"))
 
-    with pytest.raises(ValueError, match="repair couldn't name it"):
-        orch.draft_handoff_plan(thread)
+    result = orch.draft_handoff_plan(thread)
 
-    assert (orch.get_thread(thread)["handoff"] or {}).get("status") != "planned"
-    assert orch.list_plan_docs() == []
+    assert result["plan"] == UNNAMED.strip()
+    assert orch.get_thread(thread)["handoff"]["status"] == "planned"
+    assert orch._chat_project().record.read_plan_doc(orch.list_plan_docs()[0]["id"])["title"] == ""
     assert len(orch._oc_client.prompts) == 2
     assert len(gateway.repair_requests()) == 1
 
@@ -319,11 +320,152 @@ def test_named_plans_do_not_run_a_repair_pass(tmp_path: Path):
     assert chat._gateway.repair_requests() == []
 
 
+@pytest.mark.parametrize("witness", ["message", "gateway"])
+def test_partial_main_plan_is_rejected_before_name_repair(tmp_path, witness):
+    failure = {"name": "APIError", "data": {"message": "provider refused the main plan"}}
+    orch, gateway, _ = _orch(tmp_path, [Turn(text=UNNAMED, error=failure if witness == "message" else None)])
+    project = orch.project(start_preview=False)
+    client = orch._oc_client
+    sid = client.create_session(directory=str(project.workspace.path))
+    if witness == "gateway":
+        send = client.send_prompt
+
+        def fail(*args, **kwargs):
+            send(*args, **kwargs)
+            project.last_gateway_error = {"message": "provider refused the main plan", "code": "provider_error"}
+
+        client.send_prompt = fail
+    with pytest.raises(service.PlanCallFailed, match="provider refused the main plan") as caught:
+        orch._run_sage_execution_plan(project, "write a plan", sid, where="test", source_request_count=1)
+    assert caught.value.failure == {"errorStage": "planning", "errorCode": (
+        "provider_error" if witness == "gateway" else "model_call_failed")}
+    assert gateway.repair_requests() == []
+
+
+def test_failed_main_plan_http_and_history_keep_its_stage(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from sage.orchestrator import app as routes
+    from sage.workspace.threads import ThreadStore
+
+    orch, gateway, _ = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(
+        text=NAMED, error={"message": "provider refused the main plan"})])
+    thread = orch.create_thread()["id"]
+    list(orch.chat_stream(thread, "build me a desk exposure dashboard"))
+    monkeypatch.setattr(routes, "orchestrator", orch)
+    with TestClient(routes.control_app) as client:
+        response = client.post(f"/api/threads/{thread}/handoff/plan")
+    assert response.status_code == 502
+    assert response.json()["errorStage"] == "planning"
+    assert response.json()["errorCode"] == "model_call_failed"
+    errors = [e for e in ThreadStore(orch._chat_project().record.path).read_history(thread)
+              if e["type"] == "error"]
+    assert errors[-1]["errorStage"] == "planning"
+    assert errors[-1]["errorCode"] == "model_call_failed"
+    assert orch.list_plan_docs() == []
+    assert gateway.repair_requests() == []
+
+
+def test_failed_gated_plan_with_partial_text_keeps_its_stage(tmp_path):
+    orch, gateway, _ = _orch(tmp_path, [Turn(text=NAMED, error={"message": "main plan refused"})])
+    gateway.word = "BUILD"
+    events = list(orch.build_stream("build me a desk exposure dashboard", conversation=CONVERSATION))
+    done = next(e for e in events if e["type"] == "done")
+    assert done["ok"] is False
+    assert done["decision"] == "gateway error"
+    assert done["errorCode"] == "model_call_failed"
+    assert done["errorStage"] == "planning"
+    assert orch.list_plan_docs() == []
+    assert gateway.repair_requests() == []
+
+
+@pytest.mark.parametrize("older", ["previous_turn", "recovered_step"])
+def test_a_recovered_or_previous_failure_does_not_reject_a_plan(tmp_path, older):
+    orch, _, _ = _orch(tmp_path, [Turn(text=NAMED)])
+    project = orch.project(start_preview=False)
+    client = orch._oc_client
+    sid = client.create_session(directory=str(project.workspace.path))
+    old = {"id": "old", "type": "assistant", "error": {"message": "old refusal"},
+           "content": [{"type": "text", "text": "Broken previous answer."}]}
+    if older == "previous_turn":
+        client._by_session[sid].append(old)
+    else:
+        send = client.send_prompt
+
+        def recover(*args, **kwargs):
+            client._by_session[sid].append(old)
+            send(*args, **kwargs)
+
+        client.send_prompt = recover
+    plan, _ = orch._run_sage_execution_plan(project, "write a plan", sid, where="test", source_request_count=1)
+    assert plan == NAMED.strip()
+
+
+@pytest.mark.parametrize("ending", ["error", "length", "content_filter", "eof"])
+def test_partial_optional_name_with_a_failed_stream_keeps_title_empty(tmp_path, ending):
+    orch, gateway, _ = _orch(tmp_path, [Turn(text=UNNAMED)])
+    gateway.word = "BUILD"
+    route = gateway.route
+
+    def failed_stream(request, labels):
+        if _system_prompt(request) != _PLAN_NAME_SYSTEM:
+            yield from route(request, labels)
+            return
+        gateway.requests.append((request, labels))
+        # Split frames across transport chunks: errors are protocol frames, not chunks.
+        frame = json.dumps({"choices": [{"delta": {"content": "False Name"}}]})
+        end = {"error": {"message": "refused"}} if ending == "error" else {
+            "choices": [{"delta": {}, "finish_reason": ending}]}
+        body = f"data: {frame}\n\ndata: {json.dumps(end)}\n\ndata: [DONE]\n\n".encode()
+        if ending == "eof":
+            body = f"data: {frame}\n\n".encode()
+        yield body[:17]
+        yield body[17:]
+
+    gateway.route = failed_stream
+    events = list(orch.build_stream("build me a desk dashboard", conversation=CONVERSATION))
+    assert next(e for e in events if e["type"] == "plan-proposed")["plan"] == UNNAMED.strip()
+    assert orch.project(start_preview=False).record.read_plan_doc(orch.list_plan_docs()[0]["id"])["title"] == ""
+
+
+@pytest.mark.parametrize("wire", ["json", "sse_stop"])
+def test_complete_optional_name_reply_keeps_the_name(tmp_path, wire):
+    orch, gateway, _ = _orch(tmp_path, [])
+    project = orch.project(start_preview=False)
+
+    def answer(_request, _labels):
+        if wire == "json":
+            yield json.dumps({"choices": [{"message": {"content": "Desk Exposure"}}]}).encode()
+        else:
+            body = {"choices": [{"delta": {"content": "Desk Exposure"}, "finish_reason": "stop"}]}
+            yield f"data: {json.dumps(body)}\n\n".encode()
+
+    gateway.route = answer
+    assert orch._repair_plan_heading(project, UNNAMED, "test").startswith("# Desk Exposure\n")
+
+
+def test_unnamed_plan_edit_archive_and_later_name_do_not_invent_a_heading(tmp_path):
+    orch, gateway, _ = _orch(tmp_path, [Turn(text=UNNAMED), Turn(writes={"src/App.tsx": "export default function App() { return <main /> }\n"})])
+    gateway.word = "BUILD"
+    gateway.name = ""
+    project = orch.project(start_preview=False)
+    project.workspace.set_display_name("Existing Name")
+    list(orch.build_stream("build me a desk dashboard", conversation=CONVERSATION))
+    plan_id = orch.list_plan_docs()[0]["id"]
+    orch.patch_plan_doc(plan_id, {"summary": "A desk dashboard sorted by date."})
+    assert not project.workspace.read_plan().startswith("# ")
+    assert project.workspace.display_name() == "Existing Name"
+    assert project.record.read_plan_doc(plan_id)["title"] == ""
+    list(orch.approve_stream(conversation=CONVERSATION))
+    assert not project.workspace.read_archived_plan().startswith("# ")
+    orch.patch_plan_doc(plan_id, {"title": "Chosen Name"})
+    assert project.record.read_plan_doc(plan_id)["title"] == "Chosen Name"
+
+
 @pytest.mark.parametrize("path", ["direct", "handoff"])
-def test_a_repair_call_that_never_answers_reports_a_planning_error(tmp_path: Path, monkeypatch,
+def test_a_repair_call_that_never_answers_keeps_the_plan(tmp_path: Path, monkeypatch,
                                                                   path: str):
-    """The hung gateway. The wait is bounded, and running out of it is the same failure as a bad
-    name: no card, no document, and the sentence that says to send the request again."""
+    """The optional call has a finite wait and cannot discard a usable plan."""
     turns = [Turn(text=UNNAMED)] if path == "direct" else [
         Turn(text="A dashboard, then."), Turn(text=UNNAMED),
     ]
@@ -334,15 +476,14 @@ def test_a_repair_call_that_never_answers_reports_a_planning_error(tmp_path: Pat
         if path == "direct":
             gateway.word = "BUILD"
             events = list(orch.build_stream("build me a desk dashboard", conversation=CONVERSATION))
-            assert not any(e.get("type") == "plan-proposed" for e in events)
-            assert "repair couldn't name it" in next(e for e in events if e["type"] == "error")["message"]
+            assert any(e.get("type") == "plan-proposed" for e in events)
+            assert not any(e["type"] == "error" for e in events)
         else:
             thread = orch.create_thread()["id"]
-            list(orch.chat_stream(thread, "build me a desk dashboard"))
-            with pytest.raises(ValueError, match="repair couldn't name it"):
-                orch.draft_handoff_plan(thread)
-            assert (orch.get_thread(thread)["handoff"] or {}).get("status") != "planned"
-        assert orch.list_plan_docs() == []
+            list(orch.chat_stream(thread, "build me a desk exposure dashboard"))
+            orch.draft_handoff_plan(thread)
+            assert orch.get_thread(thread)["handoff"]["status"] == "planned"
+        assert len(orch.list_plan_docs()) == 1
         assert len(gateway.repair_requests()) == 1
     finally:
         gateway.released.set()
@@ -399,12 +540,8 @@ def test_narration_before_the_heading_does_not_hide_the_name(tmp_path: Path):
     assert gateway.repair_requests() == []
 
 
-def test_two_narration_sentences_and_no_heading_repair_once_and_retry_in_plain_words(tmp_path: Path):
-    """No heading to find, so the preamble stays (a plan opening on a section is left exactly as
-    it is) and the name is asked for once, at the gateway. The narration is then the summary and
-    fails the one-sentence rule, and the clean retry is told so in the prompt's own words rather
-    than as a validator key. (#555 wrote this case as `planContract` valid; under rule A, which
-    drops a preamble only ahead of a `# ` heading, it cannot be — see the WORKER report.)"""
+def test_invalid_core_plan_retries_before_any_optional_name_call(tmp_path: Path):
+    """No heading means the preamble stays; the invalid summary needs a new plan, not a name."""
     narration = "I'll read the current app files first. Then I'll propose the plan."
     orch, gateway, _root = _orch(
         tmp_path, [Turn(prelude=narration, text=UNNAMED), Turn(text=NAMED)])
@@ -414,7 +551,7 @@ def test_two_narration_sentences_and_no_heading_repair_once_and_retry_in_plain_w
 
     proposed = next(e for e in events if e["type"] == "plan-proposed")
     assert proposed["plan"] == NAMED.strip()
-    assert len(gateway.repair_requests()) == 1
+    assert gateway.repair_requests() == []
     prompts = orch._oc_client.prompts
     assert [p["agent"] for p in prompts] == ["sage-plan", "sage-plan"]
     assert "Write only a 2-4 word app name" not in prompts[1]["text"]

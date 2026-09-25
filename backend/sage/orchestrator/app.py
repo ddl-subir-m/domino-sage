@@ -3583,7 +3583,7 @@ def draft_handoff_plan(thread_id: str) -> JSONResponse:
     except TurnBusy as e:
         return JSONResponse({"error": str(e)}, status_code=409)
     except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
+        return JSONResponse({"error": str(e), **getattr(e, "failure", {})}, status_code=502)
 
 
 @control_app.post("/api/threads/{thread_id}/handoff/confirm")
