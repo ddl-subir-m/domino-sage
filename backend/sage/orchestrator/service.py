@@ -2260,6 +2260,34 @@ def _tool_handle(project) -> dict:
     return {"providerID": "sage-gateway", "modelID": "gpt-5.4" if patch else "sage-model"}
 
 
+# The patch envelope, for the only turns that get `apply_patch` and no `edit`/`write` (#541).
+#
+# It cannot live in the `sage-implement` prompt, which is where the rest of the edit guidance is:
+# that prompt is one static string in `opencode.json` and cannot know which handle this prompt
+# carries, and in Auto the turn runs on OpenCode's DEFAULT agent and never reads that string at
+# all. So it rides the turn prompt, beside the read token, which is chosen in the same place as
+# the handle. Every other model is told about `edit`/`write` and is never shown a tool it has not
+# been offered — a weaker model reading instructions for a missing tool calls it.
+#
+# Not the batching rule from the templates: `edit` takes one oldString per call, so "put every
+# change in one call" is true of a patch envelope and false of `edit`. The templates keep the
+# sequential rule, and this note carries the one that only holds here.
+_PATCH_ENVELOPE_NOTE = (
+    "Your edit tool for this turn is `apply_patch`, and you have no `edit` or `write`. "
+    "Put every change to one file in one call, new files included: each hunk starts with a bare "
+    "@@ line (no line numbers), and the envelope is `*** Begin Patch` and `*** End Patch` on "
+    "their own lines. Each extra call is another round trip."
+)
+
+
+def _patch_envelope_note(handle: dict) -> str:
+    """The patch guidance, for a handle OpenCode answers with `apply_patch` alone.
+
+    Read off the HANDLE and through `_gives_patch`, which is OpenCode's own test — so the note and
+    the tool set can never disagree, however `_tool_handle` spells the handle it picked."""
+    return _PATCH_ENVELOPE_NOTE if _gives_patch(handle["modelID"]) else ""
+
+
 # Interrogative leads and build verbs for _looks_like_question. Kept tight on purpose: ambiguous
 # leads ("give", "show", "tell", "list", "get") stay OUT so they fall through to gating.
 _QUESTION_LEAD = frozenset({
@@ -18935,17 +18963,26 @@ class Orchestrator:
                         persisted=implementation_session_persisted,
                         dispatch_started=True,
                     )
+                handle = _tool_handle(project)
+                # Only a turn that may edit. Plan, Ask and the architect are read-only, and naming
+                # an edit tool there would describe work they are forbidden to do. Same three the
+                # implementation-session timing above is gated on.
+                patch_note = ("" if gate or answer_only or arch
+                              else _patch_envelope_note(handle))
                 client.send_prompt(sid,
                                    # `live_read_note` leads rather than trails. Everything after
                                    # `current` is a block ABOUT this request, and the tail is load-
                                    # bearing: the forks below wrap `current` in their own preamble and
                                    # a turn with no notes must still end on the person's own sentence.
                                    # The token is a standing fact about the turn, so it goes in front.
-                                   "\n\n".join(p for p in (live_read_note, source_note, current, chat_note,
+                                   # `patch_note` is one too, and rides every send of the turn for
+                                   # that reason — the nudge and fix follow-ups edit as well.
+                                   "\n\n".join(p for p in (live_read_note, patch_note, source_note,
+                                                           current, chat_note,
                                                            resource_note,
                                                            unusable_note, ambiguous_note,
                                                            broken_retry_note) if p),
-                                   model=_tool_handle(project), agent=agent,
+                                   model=handle, agent=agent,
                                    attachments=mention_files,
                                    # Passed only when set, so every other client keeps its shape.
                                    **({"tail": _PLAN_REQUEST_AGAIN + prompt}
