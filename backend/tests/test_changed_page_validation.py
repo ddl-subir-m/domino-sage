@@ -232,3 +232,65 @@ def test_failed_phase_retains_its_code_check_outcome(tmp_path, monkeypatch):
     assert done['ok'] is False
     assert done['verification']['stages']['code'] == 'failed'
     assert done['verification']['stages']['runtime'] == 'not_applicable'
+
+
+@pytest.mark.parametrize('stack', ['react-vite', 'fastapi-antd'])
+def test_validation_keeps_the_generation_reserved_before_async_spawn(build, monkeypatch, stack):
+    import json
+    import threading
+
+    from sage.preview.supervisor import UvicornSupervisor, ViteSupervisor
+
+    orch, project, _ = build
+    app = project.workspace.path
+    if stack == 'fastapi-antd':
+        settings_path = app / '.sage/settings.json'
+        settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+        settings_path.write_text(json.dumps({**settings, 'stack': stack}))
+        (app / 'app.py').write_text('# fake launch boundary\n')
+        (app / 'static').mkdir(exist_ok=True)
+        (app / 'static/app.js').write_text('// app\n')
+    sup = (UvicornSupervisor if stack == 'fastapi-antd' else ViteSupervisor)(app)
+    project.supervisor = sup
+    orch._build_policy = replace(orch._build_policy, page_ack_wait_seconds=1,
+                                 runtime_error_wait_seconds=0)
+    entered, release = threading.Event(), threading.Event()
+    launched = []
+    start = sup.start
+    def delayed_start():
+        entered.set()
+        assert release.wait(2), 'the validation never released the scheduled start'
+        return start(ready_timeout_s=1)
+    def launch(command, env, port, generation):
+        launched.append(generation)
+        sup._upstream = 'http://127.0.0.1:7'
+        sup._state = 'ready'
+        sup._ready.set()
+        sup._settled.set()
+    # Real retry_start -> start -> each class's _spawn. Only the OS process boundary is fake.
+    monkeypatch.setattr(sup, 'start', delayed_start)
+    monkeypatch.setattr(sup, '_launch', launch)
+    reserved = []
+    def advance(seconds):
+        assert entered.wait(1)
+        reserved.append(sup.status()['generation'])
+        release.set()
+        sup._retry_thread.join(2)
+        assert not sup._retry_thread.is_alive()
+    monkeypatch.setattr(service, 'time', SimpleNamespace(
+        time=time.time, monotonic=time.monotonic, sleep=advance))
+    events = []
+    try:
+        for event in orch._validate_page(project, 'Typecheck' if stack == 'react-vite' else 'Syntax check'):
+            events.append(event)
+            assert orch.record_preview_ack(event['validationId']) is True
+    finally:
+        release.set()
+        if sup._retry_thread:
+            sup._retry_thread.join(2)
+        sup.stop()
+    assert len(events) == 1, 'the reserved generation must reach the browser validation event'
+    assert len(launched) == 1
+    assert project.page_validation.generation == reserved[0]
+    assert events[0]['generation'] == reserved[0]
+    assert project.page_validation.summary()['overall'] == 'passed'

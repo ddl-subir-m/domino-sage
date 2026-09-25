@@ -277,3 +277,72 @@ def test_status_and_stop_do_not_wait_for_process_launch(tmp_path, monkeypatch):
         sup._retry_thread.join(3)
         sup.stop()
     assert sup._proc is None
+
+
+def _generation_fixture(root, supervisor):
+    if supervisor is UvicornSupervisor:
+        _fixture(root)
+    else:
+        (root / 'package.json').write_text('{}')
+        (root / 'src').mkdir()
+        (root / 'src/App.tsx').write_text('// app')
+    return supervisor(root)
+
+
+@pytest.mark.parametrize('supervisor', [ViteSupervisor, UvicornSupervisor])
+def test_retry_reservation_is_single_use_and_crash_gets_a_new_generation(tmp_path, monkeypatch, supervisor):
+    from .test_a_dead_preview_does_not_take_the_session_with_it import _Pipe, _Proc
+
+    sup = _generation_fixture(tmp_path, supervisor)
+    launched = []
+    def launch(command, env, port, generation):
+        launched.append(generation)
+        sup._proc = _Proc(_Pipe([]))
+        sup._upstream = 'http://127.0.0.1:7'
+        sup._state = 'ready'
+        sup._ready.set()
+        sup._settled.set()
+    monkeypatch.setattr(sup, '_launch', launch)
+    try:
+        sup.start(ready_timeout_s=1)  # direct start still allocates its own generation
+        assert sup.retry_start(explicit=True)
+        sup._retry_thread.join(2)
+        assert not sup._retry_thread.is_alive()
+        sup._read_output(sup._proc)  # actual crash-reader -> _spawn(previous=proc)
+        assert sup.retry_start(explicit=True)
+        sup._retry_thread.join(2)
+        assert not sup._retry_thread.is_alive()
+        assert launched == [1, 2, 3, 4]
+        assert sup.status()['generation'].endswith(':4')
+    finally:
+        sup.stop()
+
+
+@pytest.mark.parametrize('supervisor', [ViteSupervisor, UvicornSupervisor])
+def test_stop_before_reserved_spawn_is_not_undone_by_the_retry_thread(tmp_path, monkeypatch, supervisor):
+    sup = _generation_fixture(tmp_path, supervisor)
+    entered, release = threading.Event(), threading.Event()
+    launched = []
+    start = sup.start
+    def delayed_start():
+        entered.set()
+        assert release.wait(2)
+        return start(ready_timeout_s=1)
+    monkeypatch.setattr(sup, 'start', delayed_start)
+    monkeypatch.setattr(sup, '_launch', lambda *args: launched.append(args))
+    try:
+        assert sup.retry_start(explicit=True)
+        assert entered.wait(1)
+        generation = sup.status()['generation']
+        sup.stop()
+        release.set()
+        sup._retry_thread.join(2)
+        assert not sup._retry_thread.is_alive()
+        assert launched == []
+        assert sup.status()['generation'] == generation
+        assert sup.status()['state'] == 'failed'
+        assert sup._stopped
+    finally:
+        release.set()
+        sup._retry_thread.join(2)
+        sup.stop()
