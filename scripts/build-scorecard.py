@@ -54,8 +54,11 @@ from collections import Counter
 
 SCHEMA_VERSION = 1  # build_diagnostics.SCHEMA_VERSION
 
-# Mirrored from `sage/tool_timing.py`, which is what decides these things about a tool run when the
-# record is written. A landed edit is its line 171: a completed call to an edit tool.
+# Mirrored from `sage/tool_timing.py`, which decides these things about a tool run as the record is
+# written. A landed edit here is a completed call to an edit tool. `tool_timing` additionally
+# requires a `targetFingerprint` before it books an edit, because it keys edits by file to answer a
+# later read; counting is a different question, and an edit whose path argument never reached the
+# stream still landed. So this counts a few that `tool_timing` does not, and never the reverse.
 EDIT_TOOLS = {"edit", "write"}  # tool_timing._EDITS
 SHELL_TOOLS = {"bash", "shell", "sh", "run", "run_command", "execute", "exec", "terminal"}
 
