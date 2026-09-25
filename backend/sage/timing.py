@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from .router.models import EffortDecision
-from .tool_timing import ToolObserver, tool_readout
+from .tool_timing import MAX_PROGRAMS, ToolObserver, program_name, tool_readout
 
 log = logging.getLogger(__name__)
 
@@ -175,6 +175,7 @@ class TurnRecord:
     implementation_session: dict = field(default_factory=dict)
     planning_recovery: dict = field(default_factory=dict)
     pre_edit_guard: dict = field(default_factory=dict)
+    progress_budget: dict = field(default_factory=dict)
     context_rollover: dict = field(default_factory=dict)
     counters: dict[str, float] = field(default_factory=dict)
     observations: dict[str, list[float]] = field(default_factory=dict)
@@ -428,6 +429,39 @@ def pre_edit_guard(value: dict) -> None:
             rec.pre_edit_guard = safe
     except Exception:
         log.debug("timing: pre-edit guard update failed", exc_info=True)
+
+
+def progress_budget(*, max_calls_since_change: int, limit_fired: str,
+                    programs: dict[str, int]) -> None:
+    """Record one turn's progress budget: how far it got from a change, and what stopped it (#544).
+
+    Program NAMES and counts, never commands — `program_name` has already reduced each call to a
+    bare name or to "other", and this re-checks that reduction rather than trusting it, because
+    this is the last place before a diagnostic record that someone will read and share.
+    """
+    rec = _current
+    if rec is None:
+        return
+    try:
+        if (not isinstance(max_calls_since_change, int)
+                or isinstance(max_calls_since_change, bool) or max_calls_since_change < 0):
+            return
+        if limit_fired not in {"none", "notice", "stop"}:
+            return
+        names: dict[str, int] = {}
+        for name, count in sorted(programs.items())[:MAX_PROGRAMS]:
+            if (program_name(name) != name or not isinstance(count, int)
+                    or isinstance(count, bool) or count < 0):
+                continue
+            names[name] = count
+        with _lock:
+            rec.progress_budget = {
+                "maxCallsSinceChange": max_calls_since_change,
+                "limitFired": limit_fired,
+                "programs": names,
+            }
+    except Exception:
+        log.debug("timing: progress budget update failed", exc_info=True)
 
 
 def context_rollover(value: dict) -> None:
@@ -826,6 +860,7 @@ def as_dict(rec: TurnRecord) -> dict:
         "implementationSession": dict(rec.implementation_session),
         "planningRecovery": dict(rec.planning_recovery),
         "preEditGuard": dict(rec.pre_edit_guard),
+        "progressBudget": dict(rec.progress_budget),
         "contextRollover": dict(rec.context_rollover),
         "spans": [{"name": s.name, "depth": s.depth, "atMs": round((s.t0 - rec.t0) * 1000),
                    "ms": round(s.ms), "open": s.t1 is None, **s.fields} for s in rec.spans],

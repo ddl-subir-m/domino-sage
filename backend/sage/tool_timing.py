@@ -6,6 +6,7 @@ import hmac
 import json
 import math
 import posixpath
+import re
 import secrets
 import time
 
@@ -32,6 +33,50 @@ _KNOWN_ARGUMENT_KEYS = {
     "write": frozenset({"filePath", "path", "file_path", "content"}),
     "edit": frozenset({"filePath", "path", "file_path", "oldString", "newString", "replaceAll"}),
 }
+
+
+_PROGRAM_NAME = re.compile(r"[A-Za-z0-9._+-]{1,32}\Z")
+# `NAME=value` exactly: a leading environment assignment, which is a prefix and not the program.
+# Anchored on both ends so `--flag=x` and `a=b=c` are not mistaken for one.
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\s]*\Z")
+MAX_PROGRAMS = 24
+
+
+def program_name(command: object) -> str:
+    """The program a shell command runs, as a bare name — never the command (#544).
+
+    The whole point is that nothing here can carry a person's data. A command line holds file
+    paths, table names, hostnames and occasionally a secret; a program name holds none of those,
+    and it is the only part of the line that answers "what was this turn doing" at all. So this
+    reduces to the basename of the first non-assignment token and then REFUSES anything that does
+    not look like a plain program name, rather than truncating or escaping it — a rejected token
+    becomes "other", which is a fact, where a mangled one would be a leak with a length limit.
+
+    Leading `NAME=value` assignments are stripped because `FOO=1 npm run build` runs npm, and an
+    unstripped first token would record the variable — which is the half of the line most likely
+    to hold a credential.
+
+    A quoted token is refused OUTRIGHT, before the basename is taken, and that check is load-
+    bearing rather than tidy. Splitting on whitespace cuts `'/opt/My Tools/run'` at the space, so
+    the first token is `'/opt/My` and its basename is `My` — a fragment of somebody's DIRECTORY
+    NAME, which passes the name pattern cleanly and is exactly the leak this exists to prevent.
+    Caught by testing the rule against a path with a space in it; a quoting-free path never shows
+    it, and neither does reading the code.
+
+    `other` also covers everything else this deliberately cannot read: a pipeline starting in a
+    subshell, `./script.sh` with an odd name, an empty command. Those are not worth a parser;
+    knowing the call was a shell call whose program could not be named is enough.
+    """
+    if not isinstance(command, str):
+        return "other"
+    for token in command.strip().split():
+        if _ASSIGNMENT.fullmatch(token):
+            continue
+        if "'" in token or '"' in token:
+            return "other"
+        name = posixpath.basename(token)
+        return name if _PROGRAM_NAME.fullmatch(name) else "other"
+    return "other"
 
 
 def argument_keys_for_tool(tool: str, keys) -> list[str]:

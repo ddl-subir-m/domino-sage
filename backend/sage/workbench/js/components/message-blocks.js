@@ -857,7 +857,7 @@ window.SW = window.SW || {};
           // `draft`, not `block.plan`. The button that leaves edit mode is labelled "Preview", so
           // rendering the original showed a person their own edits vanishing. `approveBuild` was
           // sending `draft` all along — only the screen disagreed.
-          : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.markdown(draft))),
+          : h('div', { className: 'sw-plan-card-problem sw-plan-md' }, SW.util.planMarkdown(draft))),
       !folded &&
         block.kind !== 'architecture' &&
         block.planId &&

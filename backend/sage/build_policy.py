@@ -32,6 +32,10 @@ pre_edit_clean_recovery_limit    SAGE_BUILD_PRE_EDIT_CLEAN_RECOVERY_LIMIT       
 model_no_action_notice_seconds  SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS         30
 model_no_action_timeout_seconds SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS        120
 plan_no_action_recovery_limit   SAGE_BUILD_PLAN_NO_ACTION_RECOVERY_LIMIT          1
+progress_notice_call_limit       SAGE_BUILD_PROGRESS_NOTICE_CALL_LIMIT             4 [3]
+progress_stop_call_limit         SAGE_BUILD_PROGRESS_STOP_CALL_LIMIT               8 [3]
+progress_notice_seconds          SAGE_BUILD_PROGRESS_NOTICE_SECONDS                90 [3]
+progress_stop_seconds            SAGE_BUILD_PROGRESS_STOP_SECONDS                  180 [3]
 build_context_non_media_max_bytes
                                  SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES            786432
 build_context_automatic_rollover_limit
@@ -44,6 +48,17 @@ implement_reasoning_effort       SAGE_BUILD_IMPLEMENT_REASONING_EFFORT          
 
 [1] ``SAGE_MAX_NUDGES`` remains an alias.
 [2] ``SAGE_PHASED_MAX_SECONDS`` remains an alias.
+[3] The progress budget (#544). Measured from the two traces on that issue, and each half owns one
+    of them. Haiku ran ~8.9 s per call and its run after the last landed change was 8 calls, so the
+    CALL half fires first there. GLM ran ~45 s per call and would need ~360 s to reach 8 calls, so
+    the TIME half fires first there — at 180 s, inside a turn that ran 268 s and 589 s before the
+    person pressed Stop. That is why both halves exist rather than either one: a fast model makes
+    many short calls and a reasoning model makes few long ones.
+
+    180 s also sits between the two anchors already here. It is longer than
+    ``quiet_timeout_seconds``, because a turn that is visibly working deserves more rope than one
+    that has gone silent, and far shorter than ``open_tool_quiet_timeout_seconds``, which is what a
+    single legitimately long command is already allowed to take.
 """
 
 from __future__ import annotations
@@ -91,6 +106,10 @@ class BuildPolicy:
     model_no_action_notice_seconds: float = 30.0
     model_no_action_timeout_seconds: float = 120.0
     plan_no_action_recovery_limit: int = 1
+    progress_notice_call_limit: int = 4
+    progress_stop_call_limit: int = 8
+    progress_notice_seconds: float = 90.0
+    progress_stop_seconds: float = 180.0
     build_context_non_media_max_bytes: int = 786_432
     build_context_automatic_rollover_limit: int = 1
     build_context_continuation_reference_max_count: int = 100
@@ -110,6 +129,13 @@ class BuildPolicy:
             raise ValueError(
                 "BuildPolicy model_no_action_notice_seconds must be less than "
                 "model_no_action_timeout_seconds")
+        # Both halves of the progress budget, for the reason the pair above is checked: a notice
+        # at or past its own stop is a notice that can never be sent, and the turn would be
+        # stopped with nothing on the record having warned it.
+        for notice, stop in (("progress_notice_call_limit", "progress_stop_call_limit"),
+                             ("progress_notice_seconds", "progress_stop_seconds")):
+            if getattr(self, notice) >= getattr(self, stop):
+                raise ValueError(f"BuildPolicy {notice} must be less than {stop}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +179,10 @@ _SETTINGS = (
              "SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS", "duration"),
     _Setting("plan_no_action_recovery_limit",
              "SAGE_BUILD_PLAN_NO_ACTION_RECOVERY_LIMIT"),
+    _Setting("progress_notice_call_limit", "SAGE_BUILD_PROGRESS_NOTICE_CALL_LIMIT"),
+    _Setting("progress_stop_call_limit", "SAGE_BUILD_PROGRESS_STOP_CALL_LIMIT"),
+    _Setting("progress_notice_seconds", "SAGE_BUILD_PROGRESS_NOTICE_SECONDS", "duration"),
+    _Setting("progress_stop_seconds", "SAGE_BUILD_PROGRESS_STOP_SECONDS", "duration"),
     _Setting("build_context_non_media_max_bytes",
              "SAGE_BUILD_CONTEXT_NON_MEDIA_MAX_BYTES"),
     _Setting("build_context_automatic_rollover_limit",
@@ -217,4 +247,14 @@ def load_build_policy(environ: Mapping[str, str] | None = None) -> BuildPolicy:
         raise ValueError(
             "Invalid settings SAGE_BUILD_MODEL_NO_ACTION_NOTICE_SECONDS and "
             "SAGE_BUILD_MODEL_NO_ACTION_TIMEOUT_SECONDS")
+    # Named by ENVIRONMENT key, like the pair above. `__post_init__` catches these too, but it can
+    # only name the field, and a person who got here by exporting a variable needs the variable.
+    if values["progress_notice_call_limit"] >= values["progress_stop_call_limit"]:
+        raise ValueError(
+            "Invalid settings SAGE_BUILD_PROGRESS_NOTICE_CALL_LIMIT and "
+            "SAGE_BUILD_PROGRESS_STOP_CALL_LIMIT")
+    if values["progress_notice_seconds"] >= values["progress_stop_seconds"]:
+        raise ValueError(
+            "Invalid settings SAGE_BUILD_PROGRESS_NOTICE_SECONDS and "
+            "SAGE_BUILD_PROGRESS_STOP_SECONDS")
     return BuildPolicy(**values)

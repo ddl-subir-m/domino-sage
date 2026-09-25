@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h } = React;
+  const { createElement: h, Fragment } = React;
 
   // The world's "today". Fixture dates are written against this, so relative
   // times read correctly no matter when the prototype is demoed.
@@ -1305,6 +1305,83 @@ window.SW = window.SW || {};
         }
         return h('p', { key: blockIndex }, SW.util.inline(block));
       });
+    },
+
+    // The same markdown, with each build step's file bookkeeping folded away (#542). A step
+    // carries `Files` and `Don't touch` so a phased build can execute it in a session that
+    // never read the plan (`orchestrator/plan_steps.py`), and those two fields are the only
+    // lines in a step addressed to the machine rather than to the person deciding whether to
+    // approve. Folded, never dropped: nothing is stored differently, and the raw markdown view
+    // and the edit box still show the file line for line.
+    //
+    // The three patterns are spelled from `plan_steps._HEADING`, `_BOLD_HEADING`, and the
+    // `files` and `dont_touch` halves of `_FIELD` / `_CANON` — every separator and every
+    // synonym that parser accepts, so a step the executor can read is a step this can fold.
+    // `Do`, `Change`, `Work`, `Done`, `Done when` and `Verify` are deliberately absent: those
+    // say what the step is FOR, which is the thing being decided on.
+    //
+    // The patterns are the parser's; the SCOPE is not, and only at one of the two call sites.
+    // `plan.js` hands over the `plan` section, which is what `validate_execution_contract` reads.
+    // The approve card hands over the whole document, so a numbered heading in another section —
+    // a numbered Screens list is the realistic one — turns `inStep` on here and would not over
+    // there. That is deliberate: a bullet spelled `Files — src/x.ts` is file bookkeeping wherever
+    // it is written, and hiding it is what #542 asks for. It is only the "same population as the
+    // parser" reading that is narrower than this, so do not derive one from the other.
+    //
+    // Two lines of divergence from `markdown` proper, both wanted: whitespace-only input renders
+    // nothing rather than a blank paragraph, because a chunk boundary would otherwise leave one
+    // behind; and a step heading written with no blank line before it renders as a heading rather
+    // than being swallowed into the paragraph above, which only happens on malformed markdown.
+    planMarkdown(text) {
+      if (!text) return null;
+      const HEADING = /^#{2,4}[ \t]*\d{1,2}[.)]?[ \t]+.+$/;
+      const BOLD_HEADING = /^[ \t]*(?:[-*][ \t]+)?\*\*[ \t]*\d{1,2}[.)]?[ \t]*[^*]+?[ \t]*\*\*[ \t]*:?[ \t]*$/;
+      const FOLDED = /^[ \t]*[-*][ \t]*(do not touch|don'?t touch|leave alone|files|touch)[ \t]*[—–:-][ \t]*.+$/i;
+
+      const out = [];
+      let visible = [];
+      let folded = [];
+      let inStep = false;
+
+      const flushText = () => {
+        const body = visible.join('\n');
+        visible = [];
+        if (body.trim()) out.push(h(Fragment, { key: `t${out.length}` }, SW.util.markdown(body)));
+      };
+      // The disclosure goes at the END of the step it belongs to, so the reader meets the
+      // heading and then what the step is for; a fold sitting between the two would put a
+      // closed box where the sentence they came for should be.
+      const flushStep = () => {
+        if (!folded.length) return;
+        const body = folded.join('\n');
+        folded = [];
+        flushText();
+        out.push(h(
+          'details',
+          { key: `d${out.length}`, className: 'sw-plan-step-files' },
+          h('summary', null, 'Files for this step'),
+          SW.util.markdown(body)
+        ));
+      };
+
+      String(text).split('\n').forEach((line) => {
+        if (HEADING.test(line) || BOLD_HEADING.test(line)) {
+          flushStep();
+          inStep = true;
+        } else if (line.startsWith('#')) {
+          // A heading that is not a numbered step ends the step, exactly as `parse_steps` reads
+          // it: "## Open questions" is not more of step 3.
+          flushStep();
+          inStep = false;
+        } else if (inStep && FOLDED.test(line)) {
+          folded.push(line);
+          return;
+        }
+        visible.push(line);
+      });
+      flushStep();
+      flushText();
+      return out;
     },
 
     inline(text) {
