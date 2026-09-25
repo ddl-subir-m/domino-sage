@@ -401,6 +401,77 @@ def test_the_call_half_fires_on_the_same_turn_once_the_clock_has_run(tmp_path: P
     assert oc.emitted == 1 + policy.progress_stop_call_limit
 
 
+@pytest.mark.parametrize("stop_state", ["running", "unreadable", "idle"])
+def test_the_progress_budget_checks_only_after_a_confirmed_stop(
+        tmp_path: Path, monkeypatch, request, stop_state: str):
+    monkeypatch.setattr(svc, "_PROGRESS_CALL_MIN_SECONDS", 0.0)
+    policy = _replace(TEST_POLICY, stop_grace_seconds=0.0,
+                      progress_stop_seconds=3600.0, progress_notice_seconds=1800.0)
+    oc = ScriptedPartsOpenCode(tmp_path / "mnt" / "code",
+                               [[_write(1)]] + [[_bash(n)] for n in range(12)],
+                               [Turn(text="built it", writes={"src/App.tsx": "v1\n"})])
+    orch = _orch(tmp_path, oc, policy)
+    checks, saves, releases, queued = [], [], [], []
+    # If the regression returns, discard the promoted but unstarted test ticket too.
+    request.addfinalizer(lambda: [orch.release_stream_turn(t) for t in queued
+                                  if not orch._turn_wedged])
+    original_check = orch._feedback.check
+    original_running = oc.is_running
+    original_release = orch._release_turn
+
+    def check(path):
+        checks.append(oc.stay_running)
+        return original_check(path)
+
+    def interrupt(sid):
+        assert orch._turn_lock.locked()
+        ticket, state = orch.prepare_stream_turn("next-writer", kind="build", app=True)
+        assert state == "pending"
+        queued.append(ticket)
+        oc.interrupted += 1
+        oc.stay_running = stop_state != "idle"
+
+    def is_running(sid):
+        if oc.interrupted and stop_state == "unreadable":
+            raise OSError("session status unavailable")
+        return original_running(sid)
+
+    def release():
+        releases.append(oc.stay_running)
+        original_release()
+
+    monkeypatch.setattr(oc, "interrupt", interrupt)
+    monkeypatch.setattr(oc, "is_running", is_running)
+    monkeypatch.setattr(orch._feedback, "check", check)
+    monkeypatch.setattr(orch, "_save_to_git", lambda *a, **k: saves.append(True))
+    monkeypatch.setattr(orch, "_release_turn", release)
+    events = list(orch.build_stream("build me a chart"))
+    done = [e for e in events if e["type"] == "done"]
+    assert len(done) == 1
+    assert oc.interrupted == 1
+    assert queued
+
+    if stop_state == "idle":
+        assert done[0]["ok"] is True
+        assert checks == [False]
+        assert saves == [True]
+        assert releases == [False]
+        assert orch._turn_wedged is False
+        assert queued[0].outcome == "ready"
+        orch.release_stream_turn(queued[0])
+        assert not orch._turn_lock.locked()
+    else:
+        assert done[0] == {"type": "done", "ok": False, "decision": "wedged"}
+        assert checks == saves == releases == []
+        assert not any(e["type"] in {"typecheck-start", "app-change", "saved"}
+                       for e in events)
+        assert orch._turn_wedged and orch._turn_lock.locked()
+        assert queued[0].outcome == "wedged"
+        assert list(orch.build_stream("start another build"))[-1]["decision"] == "wedged"
+        history = orch.project(start_preview=False).app_for_turn().read_history()
+        assert next(e for e in history if e["type"] == "build-stalled")["stuck"]
+
+
 def test_a_heredoc_write_before_the_first_threshold_still_resets_the_window(tmp_path: Path,
                                                                            monkeypatch):
     """The window is baselined where it STARTS, not at its first threshold.

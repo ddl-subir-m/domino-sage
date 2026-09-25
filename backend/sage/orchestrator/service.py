@@ -19778,9 +19778,15 @@ class Orchestrator:
                                 "build: %d tool calls and %.0fs since the last change to the app "
                                 "— stopping the session and checking it (session=%s)",
                                 progress_calls, time.monotonic() - progress_at, sid)
-                            self._stop_wedged_session(
+                            stopped = self._stop_wedged_session(
                                 client, sid,
                                 grace_seconds=self._build_policy.stop_grace_seconds)
+                            if not stopped:
+                                if owns_turn:
+                                    self._turn_gave_up = True
+                                yield from refused_to_stop(in_tool=tool_open, quiet_for=0.0)
+                            # Only a confirmed stop hands the tree to the checker. The progress
+                            # budget does not give a still-running writer different ownership.
                             # A `break`, NOT the `return` every cap above takes, and not
                             # `_turn_gave_up`. Code WAS written this turn or an earlier one, so the
                             # app is worth checking: the three existing breaks all land on the tap
