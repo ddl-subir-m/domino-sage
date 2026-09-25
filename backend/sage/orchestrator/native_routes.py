@@ -512,9 +512,15 @@ def install(app, get_orchestrator):
                     "turn_id": running_ticket.id,
                     "elapsed_ms": round(snapshot["elapsedSeconds"] * 1000),
                     "chunk_count": snapshot["chunkCount"],
-                    # What the stall hint needs (#538): was the effort left to the provider, and
-                    # could this alias have taken one on a request like this.
+                    # What the stall hint needs (#538): what reached the WIRE, and what this alias
+                    # could have taken on a request of this shape. `effort` rather than the source
+                    # alone, because since #545 an unset Build level resolves to the stage default
+                    # and can still be dropped by the alias — a turn that sent no field while
+                    # carrying a source other than `provider_default` (gpt-5.4 keeps only `none`
+                    # beside tools). The hint is about the absence, so it reads the absence.
                     "model": outbound.get("model", ""),
+                    "effort": (effort_decision.effective_effort
+                               if effort_decision is not None else None),
                     "effort_source": (effort_decision.source.value
                                       if effort_decision is not None else ""),
                     "efforts": list(capability.efforts_with_tools if outbound.get("tools")
