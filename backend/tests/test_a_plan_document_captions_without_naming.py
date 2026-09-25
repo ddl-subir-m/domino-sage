@@ -579,3 +579,39 @@ def test_the_gated_turn_stays_armed_read_only_across_the_repair(tmp_path: Path, 
 
     assert any(e.get("type") == "plan-proposed" for e in events)
     assert seen == ["plan"]
+
+
+def test_a_fenced_shell_comment_in_the_narration_is_not_read_as_the_app_name():
+    """A shell comment and a Markdown `# ` heading are the same characters, so a model that narrates
+    by showing the command it is about to run puts a heading-shaped line above its real one. Dropping
+    the preamble at that line names the app after the comment and throws the real heading away."""
+    plan = (
+        "I'll set the project up first:\n"
+        "\n"
+        "```bash\n"
+        "# install the deps\n"
+        "npm install\n"
+        "```\n"
+        "\n"
+        "# Desk Exposure\n"
+        "\n"
+        "A dashboard of desk exposure.\n"
+        "\n"
+        "## Problem & outcome\n"
+        "Traders cannot see exposure by desk.\n"
+    )
+
+    dropped = service._drop_plan_preamble(plan)
+
+    assert dropped.startswith("# Desk Exposure\n")
+    assert "install the deps" not in dropped
+    assert "I'll set the project up first" not in dropped
+
+
+def test_an_unterminated_fence_leaves_the_plan_alone():
+    """A fence the model never closed swallows the rest of the document, so no heading is found and
+    the plan is returned whole — the same answer an unnamed plan has always given, which the repair
+    then handles. It must never come back truncated or empty."""
+    plan = "Here is the shape:\n\n```text\n# Desk Exposure\n\nA dashboard.\n"
+
+    assert service._drop_plan_preamble(plan) == plan

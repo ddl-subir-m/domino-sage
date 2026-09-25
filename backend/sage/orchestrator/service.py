@@ -4554,6 +4554,7 @@ def _tidy_plan(plan_md: str) -> str:
 
 _PLAN_NAME_HEADING = re.compile(r"^#[ \t]+\S")
 _PLAN_SECTION_HEADING = re.compile(r"^##")
+_PLAN_FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 
 
 def _drop_plan_preamble(plan_md: str) -> str:
@@ -4570,9 +4571,21 @@ def _drop_plan_preamble(plan_md: str) -> str:
     line before it is dropped. No such heading, and the plan comes back exactly as written — so a
     `NO APP DESCRIBED` refusal and a plan that opens on `## Problem & outcome` reach the same
     checks they always did, and a `# ` heading BELOW a section is never read as the name.
+
+    A fenced block is skipped whole. The narration this drops is the model saying what it is about
+    to do, and a model that says it by showing the command opens a ```bash fence and writes a `#`
+    comment under it — which matches the heading pattern exactly, because a shell comment and a
+    Markdown `# ` heading are the same characters. Measured while landing this: without the skip,
+    `# install the deps` became the app's name and the real heading below it was never reached.
     """
     lines = plan_md.splitlines(keepends=True)
+    fenced = False
     for i, line in enumerate(lines):
+        if _PLAN_FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         if _PLAN_SECTION_HEADING.match(line):
             return plan_md
         if _PLAN_NAME_HEADING.match(line):
