@@ -60,11 +60,10 @@ _Kind_: name
 _Avoid_: resource, data source, volume, Dataset (that is the thing; this is the category it is in)
 
 **Dataset**:
-A Domino Dataset mounted into the project container, holding files. It is the one [[Asset]] a
-Project can hold, the one thing a [[Binding]] names that is not a Resource, and what an
-[[Upload]] is written into when it crosses and becomes an [[Attachment]]. The name is Domino's,
-so a pack renames it. On screen it sits in the [[Data]] section, where it is called a
-[[File volume]] — the type a row wears, never this name ([ADR-0054](docs/adr/0054-the-data-section-names-one-type-per-row.md)).
+A Domino Dataset, reached over the platform API — no mount, ever — holding files. It is the one
+[[Asset]] a Project can hold and the one thing a [[Binding]] names that is not a Resource. The
+name is Domino's, so a pack renames it. On screen it sits in the [[Data]] section, where it is
+called a [[File volume]] — the type a row wears, never this name ([ADR-0054](docs/adr/0054-the-data-section-names-one-type-per-row.md)).
 _Kind_: name
 _Avoid_: volume on its own (Domino sells a thing called Volumes and this is not it — the type label
 is the two words [[File volume]]), folder (that is a directory inside one), data source, Asset (that
@@ -350,8 +349,8 @@ what one Built App carries is two named things and not one. A Binding may also p
 Attachment, but most do not. A [[Dataset]] file becomes one by an act on the app — attaching a
 folder or a file from the Dataset tree, or mentioning one in Build, where a mention is that act and
 the control says so. The same control in Chat writes a [[Session context]] chip and no Attachment.
-An [[Upload]] becomes one by a different crossing, at a confirmed handoff. An Attachment records who
-made it. See
+An [[Upload]] is meant to become one by a different crossing, at a confirmed handoff, though that
+crossing does not work today — see [[Upload]]. An Attachment records who made it. See
 [ADR-0048](docs/adr/0048-in-build-a-mention-is-an-attachment-and-the-control-says-so.md).
 Removing an Attachment takes the declaration and the app's copy of the
 file. The source it was attached from is never touched, unless that source is a Dataset folder Sage
@@ -374,12 +373,12 @@ not built in), "Attachments" as a group label (that is "Files it carries" on scr
 **Upload**:
 A file a person puts into a Conversation from the composer. It is held at the Project root, outside
 every Built App and outside git, and no app can read it — it exists so that a Chat turn can be asked
-about it. Confirming a handoff turns an Upload into an [[Attachment]] by writing the bytes into a
-writable Dataset, and the Upload itself stays where it is, so the Conversation goes on working after
-the crossing. The same file is then two named things in two scopes, each removed from the list that
-owns it. An Upload with no writable Dataset to be written into does not cross at all, and the
-handoff says which file stayed behind rather than carrying over something a published app could
-never read. See [ADR-0023](docs/adr/0023-an-upload-crosses-by-becoming-an-attachment.md).
+about it. Confirming a handoff is meant to turn an Upload into an [[Attachment]], so the Conversation
+goes on working after the crossing while the same file is also reachable from the app — but there is
+no Dataset left to write it into (no mount, ever), so today an Upload never crosses: the handoff
+says it stayed behind rather than carrying over something a published app could never read. A
+committed-file replacement is planned and not yet built. See
+[ADR-0023](docs/adr/0023-an-upload-crosses-by-becoming-an-attachment.md), pending revision.
 _Kind_: name
 _Avoid_: attachment, scratch file, temp file, dropped file, data file
 

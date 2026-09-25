@@ -35,7 +35,12 @@ def test_reset_replaces_the_app_and_keeps_what_the_user_set_up(tmp_path: Path):
     orch = _orch(tmp_path)
     project = orch.project(start_preview=False)
     ws = project.workspace.path
-    orch.upload_file("q3.csv", b"region,revenue\nwest,10\neast,20\n")
+    # `upload_file` always refuses now (Phase 5 decision #4 — no Dataset write API in use
+    # anywhere): a real attachment via the default seeded Dataset stands in for it here, since
+    # what this test needs is any real attachment surviving the reset, not an upload specifically.
+    ds = next(a["id"] for a in orch.list_assets() if a["name"] == "sales_2026")
+    (orch._assets.roots[ds] / "q3.csv").write_bytes(b"region,revenue\nwest,10\neast,20\n")
+    orch.attach_file(ds, "q3.csv")
     attached = project.attached[0]["path"]
     orch.write_instructions(project, "Always label axes in full.")
     (ws / "src" / "App.tsx").write_text("export default function App() { return <b>built</b>; }")
@@ -53,7 +58,7 @@ def test_reset_replaces_the_app_and_keeps_what_the_user_set_up(tmp_path: Path):
     assert (ws / "src" / "App.tsx").read_text() == (orch._wm.template / "src" / "App.tsx").read_text()
     assert not (ws / "src" / "Dashboard.tsx").exists()
     # The user's setup survives: the attachment, its manifest, and their project instructions.
-    assert (ws / attached).is_symlink()
+    assert (ws / attached).is_file()
     assert [e["path"] for e in json.loads((ws / ".sage" / "attachments.json").read_text())] == [attached]
     assert orch.read_instructions(project) == "Always label axes in full."
     # The app's own Sage metadata goes with the app.

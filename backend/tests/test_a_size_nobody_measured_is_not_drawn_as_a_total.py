@@ -10,8 +10,8 @@ The card puts a size beside ONE row, so dropping the key there leaves a visible 
 sizes into a folder total, so a row that merely loses its size silently under-counts the total —
 a second wrong number in place of the first. So the tree says the total was not measured.
 
-Read off `measured` and never off `mount_path`: the platform weighs an unmounted Dataset too, so
-keying on the mount throws away sizes it did give. Nothing here needs a mount or a live platform.
+Read off `measured` alone: since #153 the platform weighs every Dataset, mounted or not — and since
+Phase 5 there is no mount to key on anyway. Nothing here needs a live platform.
 """
 from __future__ import annotations
 
@@ -30,16 +30,15 @@ from sage.router.models import ModelCatalog
 class _Listing:
     """One Dataset whose listing is staged whole — the files it names, and whether it weighed them.
 
-    No mount, because the shape this ticket is about only ever comes back from the unmounted path:
-    a mounted walk stats every file and is always measured. `mount_path` is empty for exactly that
-    reason, and no test below reads it — the flag is the answer, not the mount.
+    No mount, ever (Phase 5) — every listing goes through this same shape now, so there is nothing
+    left to key the answer on except the flag itself.
     """
 
     def __init__(self, files: dict[str, int], *, measured: bool) -> None:
         self.files, self.measured = files, measured
 
     def list_datasets(self, project_id: str | None) -> list[Asset]:
-        return [Asset("ds_revenue", "revenue", project="Revenue", mount_path="")]
+        return [Asset("ds_revenue", "revenue", project="Revenue")]
 
     def list_files(self, asset: Asset) -> FileListing:
         return FileListing([DatasetFile(p, n) for p, n in self.files.items()],

@@ -28,6 +28,17 @@ class FakeRows:
     rows: list
 
 
+def _dataset_file(root, rel):
+    """The same resolve-and-contain check `_file_rows` used to make against a mount, now made by
+    the fake in place of a real download."""
+    if root is None:
+        return None
+    target = (root / rel).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
+        return None
+    return target
+
+
 def turn_for(tmp_path: Path, **kw) -> run.Turn:
     seen = object()
     base = {
@@ -87,7 +98,7 @@ def test_a_file_head_records_the_dataset_binding_and_the_path(tmp_path: Path):
     (mount / "calls.csv").write_text("id,email\n1,a@b.com\n")
 
     run.perform("live_read_files", {"dataset": "gong-exports", "path": "calls.csv"},
-                turn_for(tmp_path, dataset_root=lambda n: mount))
+                turn_for(tmp_path, dataset_file=lambda n, rel: _dataset_file(mount, rel)))
 
     card = _artifact(tmp_path, "gong-exports-calls.table.json")
     assert card["source"] == {"kind": "file", "binding": "bnd_2", "limit": result.CAP_ROWS,
@@ -137,7 +148,7 @@ def test_a_file_read_again_is_capped_like_the_one_that_wrote_the_card(tmp_path: 
         "id,email\n" + "".join(f"{i},p{i}@acme.com\n" for i in range(result.CAP_ROWS + 40)))
 
     read = run.read_again({"kind": "file", "binding": "bnd_2", "path": "calls.csv"},
-                          turn_for(tmp_path, dataset_root=lambda n: mount))
+                          turn_for(tmp_path, dataset_file=lambda n, rel: _dataset_file(mount, rel)))
 
     assert len(read.rows) == result.CAP_ROWS
     assert read.truncated is True
@@ -170,7 +181,7 @@ def test_read_again_reads_the_file_a_file_card_came_from(tmp_path: Path):
     mount = tmp_path / "mnt"
     mount.mkdir()
     (mount / "calls.csv").write_text("id,email\n1,a@b.com\n")
-    turn = turn_for(tmp_path, dataset_root=lambda n: mount)
+    turn = turn_for(tmp_path, dataset_file=lambda n, rel: _dataset_file(mount, rel))
 
     read = run.read_again({"kind": "file", "binding": "bnd_2", "path": "calls.csv"}, turn)
 
@@ -293,7 +304,7 @@ def test_a_path_climbing_into_the_dataset_next_door_reads_nothing(tmp_path: Path
     (mounts / "gong-exports").mkdir(parents=True)
     (mounts / "gong-exports-private").mkdir()
     (mounts / "gong-exports-private" / "customers.csv").write_text("email\na@b.com\n")
-    turn = turn_for(tmp_path, dataset_root=lambda n: mounts / "gong-exports")
+    turn = turn_for(tmp_path, dataset_file=lambda n, rel: _dataset_file(mounts / "gong-exports", rel))
 
     read = run.read_again(
         {"kind": "file", "binding": "bnd_2", "path": "../gong-exports-private/customers.csv"}, turn)

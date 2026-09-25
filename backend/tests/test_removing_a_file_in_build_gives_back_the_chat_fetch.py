@@ -49,12 +49,8 @@ ATTACHED = "public/data/card_data/transactions.csv"
 
 
 class _RemoteAssets:
-    """One Dataset with NO mount — the only shape whose Chat fetch leaves real bytes in scratch.
-
-    A mounted Dataset is symlinked at both doors, so nothing Sage owns is ever on disk to give
-    back. `FakeAssetProvider` mounts everything it seeds, which is why this stands beside it
-    rather than configuring it.
-    """
+    """One Dataset, read purely over the (fake) platform API — no mount, ever (Phase 5), so every
+    Chat fetch leaves real bytes in scratch and every attach is a real downloaded copy."""
 
     def __init__(self, src: Path) -> None:
         self._src = src
@@ -75,15 +71,6 @@ class _RemoteAssets:
         return []
 
 
-class _MountedAssets(_RemoteAssets):
-    """The same Dataset, MOUNTED. Sage copies nothing here — Chat links scratch at the mount and
-    the handoff links the app at the mount too — so the two doors have only a link to give back."""
-
-    def __init__(self, src: Path) -> None:
-        super().__init__(src)
-        self._asset = Asset(DATASET, "card_data", project="Demo", mount_path=str(src))
-
-
 def _template(tmp: Path) -> Path:
     t = tmp / "template"
     (t / "src").mkdir(parents=True, exist_ok=True)
@@ -92,7 +79,7 @@ def _template(tmp: Path) -> Path:
     return t
 
 
-def _orch(tmp: Path, *, mounted: bool = False) -> Orchestrator:
+def _orch(tmp: Path) -> Orchestrator:
     src = tmp / "remote"
     src.mkdir(parents=True, exist_ok=True)
     (src / FILE).write_bytes(ROWS)
@@ -103,7 +90,7 @@ def _orch(tmp: Path, *, mounted: bool = False) -> Orchestrator:
         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",
                              plan="p", implement="i", ask="a"),
         project_id="Sage",
-        assets=_MountedAssets(src) if mounted else _RemoteAssets(src),
+        assets=_RemoteAssets(src),
         resources=FakeResourceProvider(),
     )
     orch.project(start_preview=False)
@@ -224,29 +211,6 @@ def test_deleting_the_file_takes_the_chat_fetch_too(tmp_path: Path):
     orch.delete_file(ATTACHED)
 
     assert not _scratch(orch).exists()
-
-
-def test_a_mounted_dataset_lets_the_chip_go_at_the_first_press(tmp_path: Path):
-    """Mounted, Sage copies nothing: Chat links scratch at the mount and the handoff links the app
-    at the mount too, so the app is standing on the DATASET rather than on this link.
-
-    `_links_at` resolves both sides and cannot tell those apart, so this used to be refused as
-    "the app has it" — and then no Build door could keep that promise, because there is no scratch
-    path behind the app's link to find. The link goes at the first press instead, which costs the
-    app nothing.
-    """
-    orch = _orch(tmp_path, mounted=True)
-    thread = orch.create_thread()["id"]
-    item = _chip(orch, thread)
-    _handed_off(orch, thread, item)
-    assert _scratch(orch).is_symlink()
-
-    out = orch.remove_thread_context(thread, item["id"])
-
-    assert out == {"removed": True, "heldBy": ""}
-    assert not _scratch(orch).is_symlink()
-    assert (tmp_path / "remote" / FILE).read_bytes() == ROWS      # and the Dataset is untouched
-    assert (orch.project().workspace.path / ATTACHED).is_symlink()  # and the app still serves it
 
 
 def test_a_chip_added_in_build_is_not_mistaken_for_a_fetch(tmp_path: Path):

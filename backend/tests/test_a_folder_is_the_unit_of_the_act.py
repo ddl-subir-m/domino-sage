@@ -29,8 +29,8 @@ from sage.assets.provider import FakeAssetProvider
 from sage.orchestrator import service as svc
 from sage.orchestrator.service import (
     AttachTooLarge,
-    AttachWouldClobber,
     FolderActUnavailable,
+    FolderTooManyFiles,
     Orchestrator,
 )
 from sage.router.models import ModelCatalog
@@ -54,9 +54,10 @@ def _orch(tmp: Path, assets_provider) -> Orchestrator:
 
 
 def _partitioned(tmp: Path, *, per_year: int = 2, body: str = "a,b\n1,2\n") -> FakeAssetProvider:
-    """The seeded `sales_2026` mount, with a partitioned folder under it."""
+    """The seeded `sales_2026` fake Dataset, with a partitioned folder under it."""
     provider = FakeAssetProvider(root=tmp / "mounts")
-    mount = Path(next(a.mount_path for a in provider.assets if a.name == "sales_2026"))
+    asset = next(a for a in provider.assets if a.name == "sales_2026")
+    mount = provider.roots[asset.id]
     for year in ("2024", "2025"):
         for i in range(per_year):
             f = mount / "raw" / year / f"part-{i}.csv"
@@ -94,7 +95,9 @@ def test_attaching_a_folder_takes_every_file_below_it(tmp_path: Path):
     # Recursive over its own subtree and no wider: the sibling partition is untouched.
     assert all("2025" not in e["file"] for e in orch.project().attached)
     for entry in orch.project().attached:
-        assert (ws / entry["path"]).is_symlink()
+        # A real downloaded copy, not a symlink — no mount, ever (Phase 5).
+        assert (ws / entry["path"]).is_file()
+        assert not (ws / entry["path"]).is_symlink()
 
 
 def test_the_dataset_root_is_the_same_act_at_depth_zero(tmp_path: Path):
@@ -197,14 +200,14 @@ def test_a_folder_over_the_cap_attaches_nothing_and_carries_the_three_numbers(tm
 
 
 def test_a_folder_that_fails_part_way_through_leaves_nothing_behind(tmp_path: Path, monkeypatch):
-    """No partial state is not only about the cap. A link that will not be made unwinds the ones
-    that were, so a Built App never gets a data directory nobody chose."""
+    """No partial state is not only about the cap. A download that will not be made unwinds the
+    ones that were, so a Built App never gets a data directory nobody chose."""
     orch, ds, ws = _ready(tmp_path)
     real = svc._safe_join
 
     def explode(root: Path, rel: str) -> Path:
         if rel.endswith("part-1.csv"):
-            raise OSError("the mount went away")
+            raise OSError("the platform did not answer")
         return real(root, rel)
 
     monkeypatch.setattr(svc, "_safe_join", explode)
@@ -216,6 +219,33 @@ def test_a_folder_that_fails_part_way_through_leaves_nothing_behind(tmp_path: Pa
     assert orch.project().attached == []
     assert _manifest(ws) == []
     assert not (ws / "public" / "data" / "sales_2026").exists()
+
+
+def test_a_folder_over_the_file_count_cap_attaches_nothing_and_names_both_numbers(
+        tmp_path: Path, monkeypatch):
+    """The other cap a Dataset with no mount owes (ADR-0029): a real byte total under the limit can
+    still be too many separate downloads to run in one act, each one at a time through
+    `_download_attachment` with nothing to report progress through."""
+    monkeypatch.setenv("SAGE_FOLDER_ATTACH_MAX_FILES", "3")
+    orch, ds, ws = _ready(tmp_path, per_year=2)   # 4 files, over the cap of 3
+
+    with pytest.raises(FolderTooManyFiles) as refused:
+        orch.attach_folder(ds, "raw")
+
+    assert refused.value.count == 4
+    assert refused.value.cap == 3
+    assert orch.project().attached == []
+    assert not (ws / "public" / "data" / "sales_2026").exists()
+
+
+def test_a_folder_within_the_file_count_cap_still_attaches(tmp_path: Path, monkeypatch):
+    """The cap is real, not a trap that fires for any folder act at all."""
+    monkeypatch.setenv("SAGE_FOLDER_ATTACH_MAX_FILES", "4")
+    orch, ds, _ = _ready(tmp_path, per_year=2)    # 4 files, exactly the cap
+
+    out = orch.attach_folder(ds, "raw")
+
+    assert out["attached"] == 4
 
 
 # --- What the agent is told collapses with the act ---------------------------------------------
@@ -265,8 +295,8 @@ def test_the_shared_shape_is_named_once_and_a_mixed_folder_says_so(tmp_path: Pat
     orch = _orch(tmp_path, FakeAssetProvider(root=tmp_path / "mounts"))
     ws = orch.project(start_preview=False).workspace.path
     ds = _dataset_id(orch)
-    mount = Path(next(a.mount_path for a in orch._assets.list_datasets("Sage")
-                      if a.name == "sales_2026"))
+    asset = next(a for a in orch._assets.list_datasets("Sage") if a.name == "sales_2026")
+    mount = orch._assets.roots[asset.id]
     for i in range(svc.FOLDER_COLLAPSE_THRESHOLD + 1):
         f = mount / "mixed" / (f"part-{i}.csv" if i % 2 else f"part-{i}.json")
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -286,8 +316,8 @@ def test_a_folder_partitioned_to_the_day_still_collapses(tmp_path: Path):
     the whole cost this collapse removes. The deepest level rolls up until it does not."""
     orch = _orch(tmp_path, FakeAssetProvider(root=tmp_path / "mounts"))
     ws = orch.project(start_preview=False).workspace.path
-    mount = Path(next(a.mount_path for a in orch._assets.list_datasets("Sage")
-                      if a.name == "sales_2026"))
+    asset = next(a for a in orch._assets.list_datasets("Sage") if a.name == "sales_2026")
+    mount = orch._assets.roots[asset.id]
     for day in range(1, 25):
         f = mount / "raw" / "2026" / f"{day:02d}" / "part.csv"
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -330,7 +360,7 @@ def test_the_collapse_never_rolls_two_datasets_into_one_line(tmp_path: Path):
     ws = orch.project(start_preview=False).workspace.path
     for asset in provider.assets:
         for i in range(6):
-            f = Path(asset.mount_path) / "part" / f"{i:02d}" / "f.csv"
+            f = provider.roots[asset.id] / "part" / f"{i:02d}" / "f.csv"
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("a,b\n1,2\n")
         orch.attach_folder(asset.id, "part")
@@ -360,47 +390,15 @@ def test_one_constant_governs_the_collapse(tmp_path: Path, monkeypatch):
 # --- Bulk is offered only where the size is knowable -------------------------------------------
 
 
-def test_an_unmounted_dataset_refuses_the_folder_act_with_a_reason(tmp_path: Path):
-    """Every file would come down through `_download_attachment`, one at a time, with nothing to
-    report an unbounded serial download through. (The sizes ARE known here since #153; that was the
-    second reason ADR-0029 gave, and this one is the reason that survived it.)"""
-    orch = _orch(tmp_path, _Unmounted())
-    orch.project(start_preview=False)
-
-    with pytest.raises(FolderActUnavailable) as refused:
-        orch.attach_folder("ds_shared", "raw")
-
-    assert "mounted" in refused.value.reason
-
-
-def test_the_unmounted_refusal_is_short_enough_to_read_on_a_row(tmp_path: Path):
-    """Twelve words, against the default pack. This reason is the whole of a tooltip on the
-    disabled button and the whole of `attach_folder`'s 409 body, so it owes the two things a
-    withheld act owes — why it is withheld and what to do instead — and a reader hunting those two
-    through a clause about serial downloads is being charged for the clause. That mechanism is
-    `_folder_act_reason`'s own comment now, which is where somebody who wants it looks (#181)."""
-    orch = _orch(tmp_path, _Unmounted())
-    orch.project(start_preview=False)
-
-    reason = orch.list_asset_files("ds_shared")["folder_act"]["reason"]
-
-    assert len(reason.split()) <= 12
-    assert "mounted" in reason and "Attach" in reason
-    # The sentence is templated, not spelled out, so a pack that renames the term still renders.
-    # "Dataset" is the default pack's word — the count above is this pack's, not every pack's.
-    assert "Dataset" in reason and "{" not in reason
-
-
-def test_the_listing_says_whether_the_folder_act_is_available(tmp_path: Path):
-    """The row draws the reason the refusal would carry, so the two cannot disagree — and a
-    reason is only worth drawing if the act is genuinely unavailable."""
+def test_the_listing_says_the_folder_act_is_available_for_every_dataset_now(tmp_path: Path):
+    """The row draws the reason the refusal would carry, so the two cannot disagree. Since Phase 5
+    (ONE-APP-PLAN.md — no mounts anywhere) every reachable Dataset is downloadable a file at a
+    time, mounted or not, so the ONLY thing that withholds the act is a truncated listing — see
+    `test_a_truncated_listing_refuses_the_folder_act_at_every_level` below. The file-count and byte
+    caps are real but are enforced only inside the act itself (`FolderTooManyFiles`,
+    `AttachTooLarge`), not pre-flighted here — see `_folder_act_reason`."""
     orch, ds, _ = _ready(tmp_path)
     assert orch.list_asset_files(ds)["folder_act"] == {"available": True, "reason": ""}
-
-    orch = _orch(tmp_path / "b", _Unmounted())
-    orch.project(start_preview=False)
-    unavailable = orch.list_asset_files("ds_shared")["folder_act"]
-    assert unavailable["available"] is False and "mounted" in unavailable["reason"]
 
 
 def test_a_truncated_listing_refuses_the_folder_act_at_every_level(tmp_path: Path, monkeypatch):
@@ -474,79 +472,17 @@ def test_the_route_refuses_a_folder_the_dataset_does_not_hold(route):
     assert _post(client, ds, "raw/2027").status_code == 404
 
 
-def test_the_act_refuses_rather_than_overwrite_a_file_it_did_not_put_there(route):
-    """`_link_attachment` replaces whatever is at the path, which is right for a stale symlink and
-    for a single attach. Over a folder it is not: destroyed bytes are the one thing the unwind
-    cannot give back, so this is settled before the first link rather than after the fifth."""
-    client, ds, orch, ws = route
-    theirs = ws / "public" / "data" / "sales_2026" / "raw" / "2024" / "part-1.csv"
-    theirs.parent.mkdir(parents=True, exist_ok=True)
-    theirs.write_text("not Sage's")
-
-    refused = _post(client, ds, "raw")
-
-    assert refused.status_code == 409
-    assert "raw/2024/part-1.csv" in refused.json()["error"]
-    assert theirs.read_text() == "not Sage's"                 # untouched
-    assert orch.project().attached == []                      # and nothing else attached either
-
-
-def test_a_file_standing_where_a_directory_must_go_is_named_too(route):
-    """The pre-flight has to cover the directories the links need, not only the leaves. A real file
-    at `public/data/<slug>/raw` is no leaf path, so it slipped through and surfaced as a
-    `NotADirectoryError` out of `mkdir` — a generic 500 in place of the refusal that names it."""
-    client, ds, orch, ws = route
-    theirs = ws / "public" / "data" / "sales_2026" / "raw"
-    theirs.parent.mkdir(parents=True, exist_ok=True)
-    theirs.write_text("not a directory")
-
-    refused = _post(client, ds, "raw")
-
-    assert refused.status_code == 409
-    assert "public/data/sales_2026/raw" in refused.json()["error"]
-    assert theirs.read_text() == "not a directory"
-    assert orch.project().attached == []
-
-
-def test_the_clobber_refusal_survives_a_workspace_reached_through_a_symlink(tmp_path: Path):
-    """`_safe_join` builds on `root.resolve()`, so the path being checked is resolved. Comparing it
-    against an unresolved workspace root never matched where a component of that root is a symlink:
-    the ancestor walk ran past the workspace to `/`, and naming the result raised `ValueError` —
-    answered as "invalid folder", a 400 for a refusal that had a path to give."""
-    real = tmp_path / "real"
-    real.mkdir()
-    link = tmp_path / "link"
-    link.symlink_to(real)
-    orch = Orchestrator(
-        workspace_dir=link / "code",                  # reached through the symlink, not the target
-        template=_template(tmp_path),
-        gateway=object(),
-        catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s", sovereign_ask="s",
-                             plan="p", implement="i", ask="a"),
-        project_id="Sage",
-        assets=_partitioned(tmp_path),
-    )
-    ws = orch.project(start_preview=False).workspace.path
-    theirs = ws / "public" / "data" / "sales_2026" / "raw"
-    theirs.parent.mkdir(parents=True, exist_ok=True)
-    theirs.write_text("not a directory")
-
-    with pytest.raises(AttachWouldClobber) as caught:
-        orch.attach_folder(_dataset_id(orch), "raw")
-
-    assert caught.value.path == "public/data/sales_2026/raw"
-    assert theirs.read_text() == "not a directory"
-
-
 def test_a_stale_symlink_is_replaced_rather_than_refused(route):
-    """A symlink is how a re-attach works, and how this act's own leftovers clear on a retry."""
+    """`_download_attachment` replaces whatever is at the path — no mount, ever (Phase 5), so every
+    attach is a download and a leftover from a previous act (or a re-attach) clears on retry the
+    same way a single `attach_file` already did before this act existed."""
     client, ds, _orch, ws = route
     stale = ws / "public" / "data" / "sales_2026" / "raw" / "2024" / "part-1.csv"
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.symlink_to(ws / "package.json")
 
     assert _post(client, ds, "raw").json()["attached"] == 4
-    assert stale.is_symlink() and stale.read_text() == "a,b\n1,2\n"
+    assert stale.is_file() and not stale.is_symlink() and stale.read_text() == "a,b\n1,2\n"
 
 
 def test_a_record_that_cannot_be_written_unwinds_the_links(route, monkeypatch):
@@ -572,16 +508,18 @@ def test_a_record_that_cannot_be_written_unwinds_the_links(route, monkeypatch):
     assert "part-0.csv" not in agents
 
 
-def test_the_route_does_not_blame_the_folder_for_a_file_the_mount_lost(route):
+def test_the_route_does_not_blame_the_folder_for_a_file_the_dataset_lost(route):
     """The folder plainly exists — the person picked it off a row showing its count and its size —
     so "folder not found" contradicts the screen and points at the wrong thing to fix. What changed
-    is the Dataset, under a listing already drawn."""
+    is the Dataset, under a listing already drawn. The refusal comes from the provider's own
+    download failure (`ResourceUnavailable`), not a special-cased 404: every download can fail this
+    way now, not only a listing gone stale."""
     from sage.assets.provider import DatasetFile
 
     client, ds, orch, _ = route
     real = orch._assets.list_files
-    # A listing naming a file the mount does not hold — the state a Dataset that changed since the
-    # tree was drawn leaves behind.
+    # A listing naming a file the Dataset does not hold — the state a Dataset that changed since
+    # the tree was drawn leaves behind.
     def stale(asset):
         listing = real(asset)
         listing.files.append(DatasetFile("raw/2024/ghost.csv", 12))
@@ -591,7 +529,7 @@ def test_the_route_does_not_blame_the_folder_for_a_file_the_mount_lost(route):
 
     refused = _post(client, ds, "raw/2024")
 
-    assert refused.status_code == 404
+    assert refused.status_code == 502
     error = refused.json()["error"]
     assert "raw/2024/ghost.csv" in error
     assert "folder not found" not in error
@@ -608,23 +546,6 @@ def test_the_route_refuses_over_the_cap_with_the_three_numbers(route, monkeypatc
     error = refused.json()["error"]
     assert "32 B" in error and "12 B" in error and "0 B" in error
     assert orch.project().attached == []
-
-
-def test_the_route_refuses_an_unmounted_dataset_with_the_rows_own_reason(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-
-    import sage.orchestrator.app as appmod
-
-    orch = _orch(tmp_path, _Unmounted())
-    orch.project(start_preview=False)
-    monkeypatch.setattr(appmod, "orchestrator", orch)
-    client = TestClient(appmod.control_app)
-
-    refused = _post(client, "ds_shared", "raw")
-
-    assert refused.status_code == 409
-    assert refused.json()["error"] == client.get(
-        "/api/project/assets/ds_shared/files").json()["folder_act"]["reason"]
 
 
 # --- What the Dataset tree offers, and what the click commits to -------------------------------
@@ -795,20 +716,3 @@ def test_a_refusal_reaches_the_person_in_the_servers_own_words():
                 refuse="Attaching this folder (3.5 KB) would take this app over the 1.0 KB limit.")
 
     assert [p["folder"] for p in out["posted"]] == ["raw"]   # tried, and turned down
-
-
-class _Unmounted:
-    """A Dataset this container has no mount for: readable, and its files report size 0."""
-
-    def list_datasets(self, project_id):
-        from sage.assets.provider import Asset
-        return [Asset(id="ds_shared", name="shared_ds")]
-
-    def list_files(self, asset):
-        from sage.assets.provider import DatasetFile, FileListing
-        return FileListing([DatasetFile("raw/a.csv", 0), DatasetFile("raw/b.csv", 0)])
-
-    def download_file(self, asset, rel_path, dest):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text("x")
-        return 1

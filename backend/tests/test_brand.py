@@ -369,7 +369,7 @@ def test_an_actor_string_names_the_packs_platform(tmp_path, monkeypatch):
     monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
     monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(503))
 
-    provider = DominoAssetProvider("https://acme.example", lambda: "tok", mount_roots=[])
+    provider = DominoAssetProvider("https://acme.example", lambda: "tok")
     with pytest.raises(ResourceUnavailable) as e:
         provider.list_datasets(None)
     assert str(e.value) == "The Acme Cloud API answered 503 at /api/datasetrw/v2/datasets."

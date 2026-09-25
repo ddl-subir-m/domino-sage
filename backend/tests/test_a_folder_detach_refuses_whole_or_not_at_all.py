@@ -57,7 +57,8 @@ def _partitioned(tmp: Path, *, per_year: int = 2, body: str = "a,b\n1,2\n") -> F
     basename as well as by served path — two partitions holding `part-0.csv` would make every claim
     here about one folder true of the other."""
     provider = FakeAssetProvider(root=tmp / "mounts")
-    mount = Path(next(a.mount_path for a in provider.assets if a.name == "sales_2026"))
+    asset = next(a for a in provider.assets if a.name == "sales_2026")
+    mount = provider.roots[asset.id]
     for year in ("2024", "2025"):
         for i in range(per_year):
             f = mount / "raw" / year / f"part-{year}-{i}.csv"
@@ -68,6 +69,13 @@ def _partitioned(tmp: Path, *, per_year: int = 2, body: str = "a,b\n1,2\n") -> F
 
 def _dataset_id(orch: Orchestrator, name: str = "sales_2026") -> str:
     return next(a["id"] for a in orch.list_assets() if a["name"] == name)
+
+
+def _mount_for(orch: Orchestrator, name: str = "sales_2026") -> Path:
+    """Where a fake Dataset's files live on disk — `FakeAssetProvider.roots`, not a field on
+    `Asset` itself (Phase 5 — Datasets are API/SDK-only, no mounts)."""
+    asset = next(a for a in orch._assets.assets if a.name == name)
+    return orch._assets.roots[asset.id]
 
 
 def _manifest(ws: Path) -> list[dict]:
@@ -135,7 +143,7 @@ def test_a_folder_the_app_carries_none_of_is_a_no_op_not_a_failure(tmp_path: Pat
 def test_the_dataset_bytes_are_never_touched(tmp_path: Path):
     """Removal takes the app's copy and the declaration. The Dataset's own bytes are not Sage's."""
     orch, ds, _ = _ready(tmp_path)
-    mount = Path(next(a["mount_path"] for a in orch.list_assets() if a["name"] == "sales_2026"))
+    mount = _mount_for(orch)
 
     orch.detach_folder(ds, "")
 
@@ -147,7 +155,7 @@ def test_a_sibling_folder_with_a_shared_name_prefix_is_not_taken_too(tmp_path: P
     """`raw/2024` names a folder, never a prefix of a file path — `raw/2024x/` is a different one."""
     orch = _orch(tmp_path, _partitioned(tmp_path))
     orch.project(start_preview=False)
-    mount = Path(next(a.mount_path for a in orch._assets.assets if a.name == "sales_2026"))
+    mount = _mount_for(orch)
     (mount / "raw" / "2024x").mkdir(parents=True, exist_ok=True)
     (mount / "raw" / "2024x" / "part-x.csv").write_text("a,b\n1,2\n")
     ds = _dataset_id(orch)
@@ -208,8 +216,9 @@ def test_an_unlink_that_fails_leaves_the_record_describing_what_is_still_served(
     left = _paths(orch)
     assert left == {e["path"] for e in _manifest(ws)}          # the record follows the disk
     gone = set(doomed) - left
-    assert gone and all(not (ws / p).is_symlink() for p in gone)   # the two that went are gone
-    assert left and all((ws / p).is_symlink() for p in left)
+    assert gone and all(not (ws / p).exists() for p in gone)   # the two that went are gone
+    # A real downloaded copy, not a symlink — no mount, ever (Phase 5).
+    assert left and all((ws / p).is_file() for p in left)
 
 
 # --- The refusal is over the whole set, and it names the files ----------------------------------
@@ -241,7 +250,7 @@ def test_a_refusal_unlinks_nothing_and_forgets_nothing(tmp_path: Path):
     assert _paths(orch) == _HELD
     assert {e["path"] for e in _manifest(ws)} == _HELD
     for path in _HELD:
-        assert (ws / path).is_symlink()
+        assert (ws / path).is_file()   # a real downloaded copy, not a symlink (Phase 5)
 
 
 def test_bytes_inlined_into_the_source_refuse_the_detach_the_way_a_fetch_does(tmp_path: Path):
@@ -283,7 +292,7 @@ def test_a_source_file_that_merely_shares_a_name_is_not_deleted(tmp_path: Path):
     with it, and the app would stop building for a name collision."""
     orch = _orch(tmp_path, _partitioned(tmp_path))
     ws = orch.project(start_preview=False).workspace.path
-    mount = Path(next(a.mount_path for a in orch._assets.assets if a.name == "sales_2026"))
+    mount = _mount_for(orch)
     (mount / "raw" / "2024" / "App.tsx").write_text("export default function DatasetOne() {}")
     ds = _dataset_id(orch)
     orch.attach_folder(ds, "raw")
@@ -300,7 +309,7 @@ def test_the_bytes_are_what_make_a_copy_this_acts_to_delete(tmp_path: Path):
     name the Dataset happens to share, so it stays. One rule, whatever the extension."""
     orch = _orch(tmp_path, _partitioned(tmp_path))
     ws = orch.project(start_preview=False).workspace.path
-    mount = Path(next(a.mount_path for a in orch._assets.assets if a.name == "sales_2026"))
+    mount = _mount_for(orch)
     (mount / "raw" / "2024" / "rows.json").write_text('[{"a": 1}]')
     (mount / "raw" / "2024" / "conf.json").write_text('{"from": "the dataset"}')
     ds = _dataset_id(orch)
@@ -323,7 +332,7 @@ def test_an_app_asset_that_is_not_source_is_still_the_apps(tmp_path: Path):
     must not take `src/assets/logo.svg` with it."""
     orch = _orch(tmp_path, _partitioned(tmp_path))
     ws = orch.project(start_preview=False).workspace.path
-    mount = Path(next(a.mount_path for a in orch._assets.assets if a.name == "sales_2026"))
+    mount = _mount_for(orch)
     (mount / "raw" / "2024" / "logo.svg").write_text("<svg>from the dataset</svg>")
     ds = _dataset_id(orch)
     orch.attach_folder(ds, "raw")
@@ -360,7 +369,7 @@ def test_one_path_is_never_both_taken_and_left(tmp_path: Path):
     check a file that is no longer there."""
     orch = _orch(tmp_path, _partitioned(tmp_path, body="a,b\n1,2\n"))
     ws = orch.project(start_preview=False).workspace.path
-    mount = Path(next(a.mount_path for a in orch._assets.assets if a.name == "sales_2026"))
+    mount = _mount_for(orch)
     (mount / "raw" / "2024" / "part.csv").write_text("a,b\n1,2\n")
     (mount / "raw" / "2025" / "part.csv").write_text("different bytes entirely\n")
     ds = _dataset_id(orch)
@@ -391,7 +400,7 @@ def test_a_source_file_is_the_apps_own_whatever_it_is_called(tmp_path: Path):
     is a `.svg` — the only thing that makes a file this act's to delete is being the bytes."""
     orch = _orch(tmp_path, _partitioned(tmp_path))
     ws = orch.project(start_preview=False).workspace.path
-    mount = Path(next(a.mount_path for a in orch._assets.assets if a.name == "sales_2026"))
+    mount = _mount_for(orch)
     (mount / "raw" / "2024" / "App.tsx").write_text("export default function DatasetOne() {}")
     ds = _dataset_id(orch)
     orch.attach_folder(ds, "raw")
@@ -409,7 +418,7 @@ def test_a_bare_name_in_unrelated_source_does_not_block_the_whole_folder(tmp_pat
     holding `index.html` or `data.json` would otherwise be permanently un-removable in bulk."""
     orch = _orch(tmp_path, _partitioned(tmp_path))
     ws = orch.project(start_preview=False).workspace.path
-    mount = Path(next(a.mount_path for a in orch._assets.assets if a.name == "sales_2026"))
+    mount = _mount_for(orch)
     (mount / "raw" / "2024" / "config.json").write_text('{"from": "the dataset"}')
     ds = _dataset_id(orch)
     orch.attach_folder(ds, "raw")
@@ -552,15 +561,12 @@ def test_the_agents_block_is_rewritten_once_and_stops_naming_what_left(tmp_path:
 
 
 def test_a_dataset_that_lost_its_mount_can_still_have_its_folder_removed(tmp_path: Path):
-    """Bulk ATTACH needs the Dataset: a mount to fetch the folder from, and a whole listing to
-    pre-flight the cap against. Removal needs none of it — every path and size it acts on is in the
-    app's own manifest — so a Dataset that is no longer mounted, or whose listing is now truncated,
-    does not strand what it already gave."""
+    """Bulk ATTACH needs the Dataset: a real listing to fetch the folder from and pre-flight the
+    cap against. Removal needs none of it — every path and size it acts on is in the app's own
+    manifest — so a Dataset this caller can no longer even see (unshared, or the platform is not
+    answering) does not strand what it already gave."""
     orch, ds, _ = _ready(tmp_path)
-    orch._assets.assets = [
-        a.__class__(id=a.id, name=a.name, tags=a.tags, project=a.project, mount_path=None)
-        for a in orch._assets.assets
-    ]
+    orch._assets.assets = []      # the Dataset has vanished from this caller's listing entirely
 
     assert orch.detach_folder(ds, "raw")["detached"] == 4
     assert orch.project().attached == []
@@ -571,8 +577,10 @@ def test_the_removal_acts_on_the_set_the_tree_offered_not_an_older_one(tmp_path:
     the Dataset's CURRENT name, so this has to as well — reading the record's root instead would
     take the old set, report success, and leave the files the button was drawn over still there."""
     orch, ds, _ = _ready(tmp_path)
-    renamed = [a.__class__(id=a.id, name="sales-2026", tags=a.tags, project=a.project,
-                           mount_path=a.mount_path) if a.id == ds else a
+    # Same id, so `FakeAssetProvider.roots` (keyed by id) still finds the same files on disk —
+    # only the NAME changes, which is the one thing a rename actually does.
+    renamed = [a.__class__(id=a.id, name="sales-2026", tags=a.tags, project=a.project)
+               if a.id == ds else a
                for a in orch._assets.assets]
     orch._assets.assets = renamed
     orch.attach_folder(ds, "raw")                     # a second set, under the new slug

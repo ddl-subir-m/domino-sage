@@ -21,6 +21,17 @@ class FakeRows:
     rows: list
 
 
+def _dataset_file(root, rel):
+    """The same resolve-and-contain check `_file_rows` used to make against a mount, now made by
+    the fake in place of a real download."""
+    if root is None:
+        return None
+    target = (root / rel).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
+        return None
+    return target
+
+
 def turn_for(tmp_path, **kw):
     seen = object()
     base = {
@@ -103,7 +114,7 @@ def test_a_csv_below_a_dataset_is_read_as_rows_and_columns(tmp_path):
     (root / "calls.csv").write_text("ID,TITLE\n1,Acme\n2,Globex\n")
 
     said = run.perform("live_read_files", {"dataset": "gong-exports", "path": "calls.csv"},
-                       turn_for(tmp_path, keep_rows=True, dataset_root=lambda n: root))
+                       turn_for(tmp_path, keep_rows=True, dataset_file=lambda n, rel: _dataset_file(root, rel)))
 
     assert "Columns: ID, TITLE" in said
     assert "Acme" not in said, "a file's contents are data too"
@@ -117,7 +128,7 @@ def test_a_file_that_is_not_rows_and_columns_is_not_forced_into_a_table(tmp_path
     (root / "notes.txt").write_text("just one line")
 
     said = run.perform("live_read_files", {"dataset": "gong-exports", "path": "notes.txt"},
-                       turn_for(tmp_path, dataset_root=lambda n: root))
+                       turn_for(tmp_path, dataset_file=lambda n, rel: _dataset_file(root, rel)))
     assert "not laid out as rows and columns" in said
 
 
@@ -127,7 +138,7 @@ def test_a_path_climbing_out_of_the_mount_reads_as_a_file_that_is_not_there(tmp_
     (tmp_path / "mnt" / "secret.csv").write_text("a,b\n1,2\n")
 
     said = run.perform("live_read_files", {"dataset": "gong-exports", "path": "../secret.csv"},
-                       turn_for(tmp_path, dataset_root=lambda n: root))
+                       turn_for(tmp_path, dataset_file=lambda n, rel: _dataset_file(root, rel)))
     assert "no file at ../secret.csv" in said
 
 
@@ -137,18 +148,18 @@ def test_a_dataset_out_of_range_is_refused_before_it_is_touched(tmp_path):
     assert "payroll" in said and brand.text("from {project} resources") in said
 
 
-def test_an_unmounted_dataset_still_lists_and_says_why_a_file_cannot_be_read(tmp_path):
-    # A Dataset shared from another project is never mounted here, and listing it is the whole
-    # answer to "what does it hold". Refusing the listing too would be refusing the common case.
+def test_a_dataset_still_lists_when_one_file_cannot_be_downloaded(tmp_path):
+    # Listing goes straight off the platform API and is the whole answer to "what does it hold";
+    # a file whose download failed must not take that down with it.
     from sage.assets.provider import DatasetFile, FileListing
 
     turn = turn_for(tmp_path, list_files=lambda n: FileListing([DatasetFile("a.csv", 4)]),
-                    dataset_root=lambda n: None)
+                    dataset_file=lambda n, rel: None)
     assert "Columns: File, Bytes" in run.perform("live_read_files", {"dataset": "gong-exports"}, turn)
 
     said = run.perform("live_read_files", {"dataset": "gong-exports", "path": "a.csv"}, turn)
-    assert "isn't mounted here" in said
-    assert "listing" in said
+    assert "no file at a.csv" in said
+    assert "list the" in said.lower()
 
 
 def test_the_two_tools_are_the_only_two(tmp_path):

@@ -2692,3 +2692,220 @@ whichever environment you're actually running in, never against the other one's 
 dependency table — either can start from this tree right now, no outstanding uncommitted work, no
 known regression. Phase 7 (packaging) still wants risk #13 decided first, and item 4 above is worth a
 short look before or during it.
+
+## UPDATE 2026-09-24 (new session): Phase 5 — resources without mounts (steps 1, 2, 4-partial; 3, 4b, 5, 6, 7 named below, not done)
+
+Read `ONE-APP-PLAN.md` and this file fresh; confirmed the branch matched this file's account
+(`5ce8b0d4`, clean tree) before starting. Asked the product owner which of Phase 5/Phase 6/risk #13
+to do next; chose Phase 5.
+
+**Done, production code, §2.5's steps 1 and 2 in full:**
+- `sage/assets/provider.py`: `Asset.mount_path`, `resolve_mount_roots`, `_mount_path_for`,
+  `DEFAULT_DATASET_MOUNT_ROOTS`, and the mount branch of `DominoAssetProvider.list_files` are gone —
+  every Dataset is listed and read over the datasetrw API now, mounted or not. `walk_files` survives,
+  renamed `_walk_dir` and privatized: `FakeAssetProvider` still keeps its seeded Datasets as real
+  files on disk (a laptop/local demo needs *something* to read), so it still needs a directory walk —
+  it just isn't a "mount" any more, and no real code path uses it. `FakeAssetProvider` gained a public
+  `roots: dict[id, Path]` (was a field on `Asset`; `Asset` no longer names a filesystem path at all,
+  so this bookkeeping moved to the fake that needs it) — any test handing its own `Asset`s to
+  `.assets` (the common pattern, replacing the seeded demo set) registers locations here instead of
+  via a constructor kwarg.
+- `download_file` gained a REST fallback: on a static (laptop) credential, if `domino_data` refuses,
+  it retries via the same `/v4/datasetrw/snapshot/{id}/file/raw?path=` family the Built App relay
+  already allow-lists, before giving up. A sidecar-backed caller (App/workspace) gets no fallback — a
+  real SDK failure there is real, not a credential-shape mismatch. This directly answers risk #1/#4's
+  "REST fallback for Datasets" — still not *live*-verified (no sandbox with a laptop PAT here), but no
+  longer unimplemented either. Also fixed one real lint finding (`FURB122`, `f.writelines` not a loop).
+- `attach_file`/`attach_folder` (`orchestrator/service.py`): both always download now — no mount
+  branch, no symlink for a fresh Dataset attach (a Chat→Build handoff crossing still symlinks onto its
+  own scratch copy via `local_source`; that path is untouched). `attach_folder` gained the SECOND cap
+  ADR-0029 always named for this shape and the plan's own step 2 called for: `FolderTooManyFiles` /
+  `SAGE_FOLDER_ATTACH_MAX_FILES` (default 200) — downloading hundreds of files serially through
+  `_download_attachment`, one at a time, needed a ceiling on COUNT as well as bytes, checked only
+  inside the real act (same pattern `AttachTooLarge` already uses, not pre-flighted on the row — see
+  `_folder_act_reason`'s own comment for why). The old pre-flight directory-collision guard
+  (`AttachWouldClobber`, a real concern only for symlinking) and `AttachSourceMissing` (a listing
+  naming a file the MOUNT didn't hold) are gone with their last callers — `_download_attachment`
+  already unconditionally replaces whatever sits at the destination, matching what the single-file
+  unmounted path already did before this session.
+- **A real bug found while fixing a test, not while writing the feature**: a rejected attach (over
+  the byte cap, or any other `_download_attachment` failure) used to leave the workspace exactly as it
+  found it — verified by an existing test (`test_attach_respects_configurable_size_cap`). Once every
+  attach goes through `_download_attachment`, which `mkdir(parents=True)`s the destination directory
+  *before* it knows whether the download will fit, that stopped being true: a rejected attach left an
+  empty `public/data/` directory behind. Fixed by widening `_download_attachment`'s prune boundary
+  for `attach_file`/`attach_folder` (only those two call sites — detach's own pruning is unrelated and
+  unchanged) from `public/data` to the workspace root, so a rejected or unwound attach now prunes all
+  the way back up — `_prune_empty_dirs` only ever removes directories that are genuinely empty, so
+  this cannot touch anything a prior attach or the app template put there.
+- `fetch_dataset_file_for_chat` (Chat's Session-context chip fetch): same simplification, always
+  downloads into `.sage/scratch/datasets/<slug>/` — **the plan's own §2.5 wants this relocated to
+  `data/<dataset-slug>/` at the project root instead; NOT done, see below.**
+- `list_asset_files`/`_folder_act_reason`: "not mounted" is gone as a reason the folder act is
+  withheld — every Dataset can now be bulk-attached, mounted or not. The only remaining reason is a
+  truncated listing (ADR-0029's other concern, unchanged).
+- `list_assets()` dropped the `writable`/`mount_path` response fields; `bind_dataset` dropped the
+  now-always-`None` `path` metadata it used to record.
+- `sage/liveread/run.py` + `calculate.py`: `Turn.dataset_root: Callable[[str], Path | None]` (a mount
+  directory) replaced by `Turn.dataset_file: Callable[[str, str], Path | None]` (name, rel →
+  downloaded local path), implemented in `service.py` by calling the SAME
+  `fetch_dataset_file_for_chat` the Session-context chip already uses — a live-read file-head/CSV-sum
+  read and a chip fetch now share one downloader and one cache, instead of the file-head path needing
+  its own mount resolution. `_file_rows` (run.py) and `_rows_from_dataset` (calculate.py) simplified
+  to match — no more manual path-containment checking, since the download itself is the only way in.
+- Uploads (§3 decision #4, confirmed 2026-09-22 — "no Dataset write API in use anywhere," now
+  literally true with no mounts either): `upload_file`, `_resolve_upload_target`, `_default_dataset`,
+  `_delete_upload_bytes` are gutted to their safe, honest end state — always `UploadUnavailable` /
+  always `None` / always `False` — rather than crashing on `asset.mount_path` (which no longer
+  exists). **This is NOT the plan's own replacement** (§2.5: uploads become plain committed files
+  under `uploaded_files/`, copied into `apps/<appId>/uploaded_files/` on attach) — that redesign is
+  real, substantial work (a new commit-tracked file location, a new manifest entry shape distinct from
+  a Dataset attachment, `upload_scratch`'s relationship to it, the "Add upload" UI) and was not
+  attempted this session; what's here is the minimum honest placeholder so the door refuses cleanly
+  instead of throwing `AttributeError`. `_cross_chat_upload` already had graceful-refusal handling for
+  "no writable Dataset" (this was always a possible outcome, e.g. on a laptop with nothing mounted),
+  so this makes an already-handled path permanent rather than opening a new failure mode. Route-level
+  refusal messages in `app.py` rewritten to match ("Uploading straight to a {dataset} isn't available
+  yet. Drag the file into {chat} instead." / "There is nowhere yet to keep this outside {chat}.").
+  `upload_scratch` (Chat-local, `.sage/scratch/`) is untouched — it never wrote to a Dataset.
+  `_note_sage_upload` (the ledger's write-of-record) is now genuinely dead code (no caller left) and
+  was removed, not left; `_delete_upload_bytes`/`_forget_sage_upload`/`_is_sage_upload`/the ledger
+  READ side stay, because an OLD project's ledger entries (written before this session) still need to
+  be readable and still correctly report "unreachable" rather than crash.
+- Docs: `CONTEXT.md`'s **Dataset** entry no longer says "mounted into the project container"; its
+  **Upload**/**Attachment** entries now say plainly that a crossing does not work today, rather than
+  describing the retired mechanism as live. `docs/adr/0023-...md` gained a status note ("accepted,
+  pending revision") and a paragraph at the top saying the same, rather than a full rewrite — the real
+  revision needs the replacement mechanism designed first, and that's Phase 5 step 3's job, not
+  something to improvise while flagging it.
+
+**Deliberately NOT done this session, named rather than silently skipped:**
+1. **Step 3 in full** — the `uploaded_files/` redesign itself. See above; this is the largest single
+   remaining piece of Phase 5.
+2. **Step 4's location move** — the plan wants a Chat-fetched Dataset file to live at
+   `data/<dataset-slug>/` at the PROJECT ROOT instead of `.sage/scratch/datasets/<slug>/`. Investigated,
+   not done: this location is load-bearing for the ADR-0023 handoff-crossing mechanism (`_fetch_behind`,
+   `_links_at`, `_is_chat_upload` all key off a fetched file living inside `.sage/scratch/` specifically
+   — `_is_chat_upload` in particular distinguishes an Upload from a Dataset fetch by whether the path is
+   under scratch-but-not-under-the-dataset-subpath). Moving the location without re-deriving those three
+   functions' invariants together risks quietly breaking the crossing mechanism in a way a quick edit
+   would not catch — this needs its own pass, not a rename done in passing.
+3. **Step 4b** — the new `dataset_fetch` custom tool (so the agent can pull a whole Dataset file itself,
+   the case the deleted `DatasetClient()` prompt lines used to cover). Not started.
+4. **Step 5** — deleting `shim/chat_paths.py`'s `/mnt/code/` prefix stripping, `threads.py`'s symlink
+   skip rules, and `driver/opencode.py`'s `/mnt/data` read-hang guard. Not touched; these are all still
+   harmless (they just never fire now that nothing is mounted), not yet removed.
+5. **Step 6** — `rehydrate_data.py`'s mount-linking step 1 removal, and `sage_domino.py`/
+   `sage_queries.py`'s `token()` reading `SAGE_DOMINO_TOKEN`. Not touched. Re-read the Phase 4
+   `## CORRECTION` section before touching the second half of this — the plan's literal wording (an
+   env var) was already tried and reverted once as a security hole; the module-attribute-override
+   technique (`_apply_static_platform_override`) is the pattern to extend, not an env var.
+6. **JS**: `resource-panel.js`'s "Add to `<dataset>`" menu, `api.js`'s `mount_path`/`writable` field
+   reads, `store.js`'s `datasetTargets` derivation are all still there, unremoved. They degrade safely
+   on their own, without any JS change needed: every field they read is now absent/falsy from the
+   Python side, so `datasetTargets` computes empty and the menu naturally never offers itself — verified
+   by reading the derivation, not by opening a browser (no browser in this sandbox, same caveat every
+   phase here has carried). The dead code itself is real, though, and worth a cleanup pass.
+
+**Test sweep — every file broken by the production change, fixed rather than left red, following
+CLAUDE.md's own protocol of diffing against a `git stash`-restored baseline rather than assuming:**
+- 16 test files fixed for the direct, mechanical fallout of the mount/`Asset.mount_path` removal
+  (`test_assets.py` — rewritten with the REST-fallback tests added; `test_a_bound_dataset_with_no_files_asks_which_ones.py`;
+  `test_a_declared_dataset_narrows_by_every_door.py`; `test_a_folder_detach_refuses_whole_or_not_at_all.py`;
+  `test_a_folder_is_the_unit_of_the_act.py` — the biggest of these, plus new tests for
+  `FolderTooManyFiles`; `test_a_non_utf8_app_agents_md_does_not_stop_a_write_to_it.py`;
+  `test_a_size_nobody_measured_is_not_drawn_as_a_total.py`; `test_a_truncated_listing_says_so.py`;
+  `test_above_the_threshold_the_folder_is_the_row.py`; `test_brand.py`;
+  `test_removing_a_file_in_build_gives_back_the_chat_fetch.py` — one whole test class
+  (`_MountedAssets`) deleted, its premise gone now that "mounted" and "unmounted" behave identically;
+  `test_the_lock_follows_the_conversation.py`; `test_the_lock_names_the_model_the_pin_will_run.py`;
+  `test_the_workbench_can_see_the_sensitivity_lock.py`; `test_orchestrator.py`;
+  `test_the_control_plane_routes_speak_the_packs_words.py`; `test_a_live_read_answers_about_a_table_it_never_shows_the_assistant.py`,
+  `test_a_live_read_artifact_commits_its_shape_not_its_rows.py`, `test_read_again_puts_todays_rows_on_the_card.py`
+  — the `Turn.dataset_root`→`dataset_file` rename).
+- 6 more files fixed because they used `upload_file` purely as convenient SETUP for an unrelated
+  invariant (leak detection, AGENTS.md block placement, retry-budget accounting, a real-OpenCode CSV
+  calculation) rather than testing upload-ledger behavior itself: `test_instructions.py`,
+  `test_an_app_that_calls_the_gateway_without_askmodel.py`,
+  `test_a_retry_budget_is_spent_in_whole_agent_turns.py`, `test_csv_calculation_data_used.py`,
+  `test_csv_calculation_opencode.py` (skipped in this sandbox, no OpenCode binary — fixed anyway per
+  CLAUDE.md's own real-OpenCode caveats), `test_reset.py`. Each got a small local helper
+  (`_attach_data`/`_build_upload`) that writes bytes into the default seeded Dataset's fake root and
+  calls `attach_file` — a real download landing at the same served path `upload_file` used to, with no
+  production code touched to make this work.
+- `test_the_build_tab_crosses_what_the_conversation_carries.py` (5 tests) — this is the OTHER shape of
+  "uses upload as setup": the Chat→Build crossing bar's own tests, which cross a Binding, a Dataset
+  file AND an Upload in one click and asserted all three moved. Adapted rather than skipped: where the
+  test's whole point was "two chips share a name but get different outcomes," swapped the Upload chip
+  for a second Dataset file so the point (folded by chip id, not name) still holds without needing an
+  Upload to succeed; everywhere else, updated the expectation to "the Upload is refused and named,
+  everything else still crosses" — which is what `_cross_chat_upload`'s pre-existing refusal path was
+  always going to do once "no writable Dataset" became permanent.
+- `test_attach_upload.py` (1659 lines, ~85 tests) — genuinely the biggest single item. Roughly 30 of
+  its tests are the same "upload as convenient setup" shape as above and were fixed the same way
+  (`attach_file` against the seeded Dataset in place of `upload_file`). The remaining **55 tests are
+  marked `@pytest.mark.skip`**, not fixed, not deleted: they pin the #274 upload-ledger CONTRACT itself
+  — `source: "upload"`, the `sage_upload` stamp, the destroy-door second gate, the pre-#274 migration/
+  backfill machinery, the "two apps, one Dataset, one ledger" cross-app door semantics — and that
+  contract has no way to hold when `upload_file` can never write real bytes anywhere. Skipping rather
+  than deleting keeps this as real spec for whoever builds the `uploaded_files/` replacement (some of
+  it may transfer almost unchanged — a committed file still wants a "did Sage write this" answer, just
+  keyed differently); deleting it would look like the coverage never existed. A shared
+  `_UPLOAD_DEPENDENT` reason string names the plan decision and points at this file.
+
+**Verification:**
+- `make lint` (repo-wide `cd backend && uv run ruff check ..`): clean — including one real `FURB122`
+  finding in the new REST-fallback code, fixed (`f.writelines`, not a manual loop).
+- Every touched test file green individually as it was fixed (recorded above).
+- **Full suite, run twice, reconciled against the documented 97-failure baseline rather than assumed
+  clean:**
+  1. First run (before this update's last few fixes): `113 failed, 7665 passed, 69 skipped` (7847
+     collected) — 16 MORE than the documented baseline. Investigated every one of the 16 rather than
+     assuming they were pre-existing noise: traced each to a real, fixable cause from this session's
+     own changes — three genuinely new production bugs (the prune-boundary bug above; two stale
+     brand-pack message assertions the route-message rewrite invalidated) and 13 tests using
+     `upload_file` as setup, scattered across 7 files this session's original mount-only grep had not
+     caught (`test_orchestrator.py`'s own attach/detach tests, `test_the_build_tab_crosses_...py`,
+     `test_the_control_plane_routes_speak_the_packs_words.py`, `test_the_service_speaks_the_packs_words.py`
+     — confirmed pre-existing/unrelated via `git stash` — and the 6 files above). Fixed all of them.
+  2. Re-ran exactly the 113 originally-failing test IDs after every fix: **97 failed, 16 passed** — the
+     97 are byte-for-byte the same test names as the documented baseline class (`publish_available()`
+     dogfood-safety + `test_native_gateway_transport.py`'s Node ESM failure), confirmed individually
+     against a `git stash`-restored tree for the two that looked least obviously "publish" (`test_builtapp_queries.py::test_without_an_executor_the_app_says_it_cannot_reach_its_data`,
+     `test_a_binding_the_app_never_calls_says_so.py`'s two) — identical failures on the unmodified
+     baseline. One test in the original 113
+     (`test_an_opening_conversation_shows_it.py::test_a_cross_project_open_keeps_its_marker_through_the_scope_switch`)
+     passed on baseline AND passed when re-run alone on this tree — did not reproduce; per CLAUDE.md,
+     reported as such rather than chased further, since it shares no file or domain with anything this
+     session touched.
+  3. A third, full run (not scoped to the 113) confirmed the complete picture: `97 failed, 7681
+     passed, 69 skipped` (7847 collected — same collected count as run 1, confirming nothing new was
+     added or lost to collection). Diffed the 97 failing test IDs against the original 113: a strict
+     subset — every one of the 16 that disappeared is a test this update names as fixed above, and no
+     new failing test name appears anywhere. This is the same 97-test baseline class byte-for-byte.
+- **Zero net new regressions**: every one of the 16 non-baseline failures traced to a real, named cause
+  and fixed; the baseline count and failing-test-name set are unchanged from before this session.
+
+**Open, not blocking, recorded so nobody has to rediscover them:**
+1. Phase 5 steps 3, 4 (partial), 4b, 5, 6 (partial), 7 (partial) — see "Deliberately NOT done" above.
+   Step 3 (the `uploaded_files/` redesign) is the load-bearing one; the rest are smaller and mostly
+   independent of it.
+2. `resource-panel.js`/`api.js`/`store.js`'s dead upload-mount UI (item 6 above) — safe, not cleaned up.
+3. Risk #1/#4: a PAT passed to `DatasetClient(token=...)`/`DataSourceClient(token=...)` is still not
+   live-verified either way — the REST fallback added this session covers the Dataset-download half of
+   this risk if the SDK does reject it, but nobody has run either path against a real cluster.
+4. Everything the 2026-09-24 Phase 3/4 updates already flagged as open and untouched by this session:
+   manual GitHub/Domino test-repo cleanup, `test_sage_domino_relay.py` never written,
+   `test_feedback.py`'s weakened drift guard, ADR-0004 needing a successor, `SAGE_PROXY_MODE`/
+   `preview/prefix.py` deletion (Phase 7's), risk #13 (shared vs. per-project OpenCode server).
+
+**Test baseline, unchanged**: this sandbox sits at 97 pre-existing failures (`publish_available()`
+dogfood-safety class + `test_native_gateway_transport.py`'s Node ESM failure) — same count, same
+names, as every prior session recorded. Diff any new red against a `git stash`-restored baseline
+before assuming it's yours; this session found 16 that looked like new red and were.
+
+**Next up**: Phase 5 step 3 (the `uploaded_files/` redesign) is the natural next piece — it unblocks
+re-enabling the 55 skipped tests in `test_attach_upload.py` and the 5 adapted ones in
+`test_the_build_tab_crosses_what_the_conversation_carries.py`, and it's the one piece of this phase
+big enough to want its own dedicated session the way this one was. Steps 4 (location move), 4b, 5, 6
+are smaller and could go first or in parallel if someone wants a lighter session.

@@ -18,7 +18,7 @@ from sage.driver.opencode import OpenCodeClient
 
 from .opencode_server import BINARY, _opencode_server
 from .test_a_live_read_reaches_the_person_end_to_end import Warehouse, _orch
-from .test_csv_calculation_data_used import SALES, args
+from .test_csv_calculation_data_used import SALES, _build_upload, args
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -30,7 +30,7 @@ def test_real_opencode_calculates_sales_without_sending_the_email_column(tmp_pat
     project = orch.project(start_preview=False)
     tid = orch.create_thread()["id"]
     upload = (orch.upload_scratch("sales.csv", SALES.encode()) if mode == "chat"
-              else orch.upload_file("sales.csv", SALES.encode()))
+              else _build_upload(orch, "sales.csv", SALES.encode()))
     orch.add_thread_context(tid, {"kind": "file", "path": upload["path"], "name": "sales.csv"})
     project.build_conversation = tid
     control_token = project.control.arm_chat(tid) if mode == "chat" else None

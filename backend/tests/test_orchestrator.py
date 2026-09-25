@@ -88,7 +88,7 @@ def test_attach_file_symlinks_live_bytes_into_public_data(tmp_path: Path):
     res = orch.attach_file(ds, "train.csv")
     link = ws / "public" / "data" / "sales_2026" / "train.csv"
     assert res["path"] == "public/data/sales_2026/train.csv"
-    assert link.is_symlink() and link.is_file()          # points at the live mount, not a copy
+    assert link.is_file() and not link.is_symlink()   # a real downloaded copy — no mount, ever
     assert "month,revenue" in link.read_text()
     assert [e["file"] for e in orch.project().attached] == ["train.csv"]
     listed = orch.list_asset_files(ds)["files"]
@@ -105,7 +105,7 @@ def test_detach_removes_symlink_and_clears_the_attachment(tmp_path: Path):
     ds = _dataset(orch, "customer_pii")
     orch.attach_file(ds, "customers.csv")
     link = ws / "public" / "data" / "customer_pii" / "customers.csv"
-    assert link.is_symlink()
+    assert link.is_file() and not link.is_symlink()   # a real downloaded copy — no mount, ever
 
     orch.detach_file("public/data/customer_pii/customers.csv")
     assert not link.exists()

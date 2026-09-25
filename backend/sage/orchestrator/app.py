@@ -112,13 +112,12 @@ from .brand import text as brand_text
 from .describe import human_bytes
 from .service import (
     _CHAT_TOOL_QUIET_TIMEOUT_S,
-    AttachSourceMissing,
     AttachTooLarge,
-    AttachWouldClobber,
     ChartFontsMissing,
     DataReferenced,
     DetachStopped,
     FolderActUnavailable,
+    FolderTooManyFiles,
     NotThisProjectsDataset,
     Orchestrator,
     PlanArchiveRefused,
@@ -3231,19 +3230,6 @@ async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
         return JSONResponse(content=orchestrator.attach_folder(dataset_id, folder))
     except LookupError:
         return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
-    except AttachWouldClobber as e:
-        # Nothing was attached, and nothing was overwritten either — which is the point of saying so
-        # instead of writing over it. Named at the path, because that is where the person looks.
-        return JSONResponse(status_code=409, content={"error": brand_text(
-            "Nothing was attached. {path} already exists and wasn't overwritten. Move or remove "
-            "it, then try again.",
-            path=e.path)})
-    except AttachSourceMissing as e:
-        # The folder is there; a file the listing named is not. Saying "folder not found" would
-        # contradict the row that was just clicked, which showed the count and the size.
-        return JSONResponse(status_code=404, content={"error": brand_text(
-            "Nothing was attached. {assistantName} listed a file this {dataset} no longer holds "
-            "({path}). Reopen this panel to list it again.", path=e.path)})
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": brand_text(
             "folder not found in the {dataset}")})
@@ -3253,6 +3239,14 @@ async def attach_folder(dataset_id: str, request: Request) -> JSONResponse:
         # The reason the row already carried, said again by the act it withheld — one reason,
         # composed once, so the two can never disagree.
         return JSONResponse(status_code=409, content={"error": e.reason})
+    except FolderTooManyFiles as e:
+        # The same shape as AttachTooLarge below, for the OTHER cap: a folder with a real byte
+        # total under the limit can still be too many separate downloads to run in one request.
+        return JSONResponse(status_code=413, content={"error": brand_text(
+            "Attaching this folder would download {count} files, over the {cap} limit for one "
+            "attach. Attach a smaller folder, or attach files individually.",
+            count=e.count, cap=e.cap,
+        )})
     except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
     except OSError:
@@ -3385,12 +3379,10 @@ async def upload_file(request: Request) -> JSONResponse:
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "invalid filename"})
     except UploadUnavailable:
-        msg = brand_text(
-            "The {dataset} you picked isn't mounted and writable in this workspace."
-            if dataset_id
-            else "No writable {dataset} is available to store uploads in this project."
-        )
-        return JSONResponse(status_code=409, content={"error": msg})
+        return JSONResponse(status_code=409, content={"error": brand_text(
+            "Uploading straight to a {dataset} isn't available yet. Drag the file into {chat} "
+            "instead."
+        )})
     except AttachTooLarge as e:
         mb = e.cap / (1024 * 1024)
         return JSONResponse(
@@ -3416,7 +3408,7 @@ async def promote_scratch(request: Request) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content={"error": brand_text(
-                "The {dataset} you picked isn't mounted and writable in this workspace.")},
+                "There is nowhere yet to keep this outside {chat}.")},
         )
     except AttachTooLarge as e:
         mb = e.cap / (1024 * 1024)

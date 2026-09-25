@@ -28,15 +28,16 @@ def _rows_from_dataset(args, turn):
                               chips=turn.chips.get("dataset", ()))
     if refused:
         return None, refused.says
-    root = turn.dataset_root(dataset) if turn.dataset_root else None
-    if root is None or not Path(root).is_dir():
+    if Path(rel).suffix.lower() != ".csv":
         return None, brand.text(
-            "{name} isn't mounted here, so files in it can't be opened. Ask about the listing instead.",
-            name=dataset or "that {dataset}",
+            "There is no CSV file at {path} in {name}. List the {dataset} first and name one it holds.",
+            path=rel, name=dataset,
         )
-    target = (Path(root) / rel).resolve()
-    if (not target.is_relative_to(Path(root).resolve()) or not target.is_file()
-            or target.suffix.lower() != ".csv"):
+    # `dataset_file` downloads this one path off the platform API and returns the local copy, or
+    # None for anything it could not resolve — a bad path, an unreachable Dataset, a failed
+    # download. One refusal covers all of those.
+    target = turn.dataset_file(dataset, rel) if turn.dataset_file else None
+    if target is None:
         return None, brand.text(
             "There is no CSV file at {path} in {name}. List the {dataset} first and name one it holds.",
             path=rel, name=dataset,

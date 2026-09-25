@@ -62,7 +62,8 @@ def _template(tmp: Path) -> Path:
 
 def _provider(tmp: Path) -> FakeAssetProvider:
     p = FakeAssetProvider(root=tmp / "mounts")
-    mount = Path(next(a.mount_path for a in p.assets if a.name == "sales_2026"))
+    asset = next(a for a in p.assets if a.name == "sales_2026")
+    mount = p.roots[asset.id]
     for i in range(2):
         f = mount / "raw" / "2025" / f"part-{i}.csv"
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -152,15 +153,6 @@ def test_detaching_a_folder_survives_a_non_utf8_agents_md(tmp_path: Path):
     orch.detach_folder(ds, "raw/2025")
 
     assert _manifest(orch) == []
-
-
-def test_uploading_survives_a_non_utf8_agents_md(tmp_path: Path):
-    orch, ds, agents = _ready(tmp_path)
-    agents.write_bytes(NOT_UTF8)
-
-    orch.upload_file("up.csv", b"a,b\n5,6\n", ds)
-
-    assert "up.csv" in {Path(e["path"]).name for e in _manifest(orch)}
 
 
 def test_binding_and_releasing_a_resource_survive_a_non_utf8_agents_md(tmp_path: Path):

@@ -1,9 +1,19 @@
 ---
-status: accepted
+status: accepted, pending revision (see note below)
 extends: ADR-0011 (removal doors, now including one that destroys bytes), ADR-0021 (addition doors, now including a file's)
 ---
 
 # An Upload crosses by becoming an Attachment
+
+**Pending revision (ONE-APP-PLAN.md Phase 5, §3 decision #4, confirmed 2026-09-22):** the crossing
+this ADR describes — writing an Upload's bytes into a writable Dataset — no longer has a Dataset to
+write into (no mount, ever; no Dataset write API in use anywhere). `promote_scratch_to_dataset` and
+`upload_file` now always refuse (`UploadUnavailable`), so an Upload never crosses today; the handoff
+reports it stayed in Chat. The plan's replacement — a plain committed file under `uploaded_files/`
+at the project root, copied into `apps/<appId>/uploaded_files/` on attach — is not yet built. This
+document still records the mechanism and reasoning below as history; do not read it as the current
+behavior, and do not treat its `_promote_chat_file`/`upload_file` line references as current either
+— see `ONE-APP-STATUS.md` for what actually changed and what a real revision still owes.
 
 Chat can be handed a file. Ask it a question about that file, accept the nudge, cross into Build, and
 the file is not there. Every sentence on the Build page still talks about Chat: the panel row's menu

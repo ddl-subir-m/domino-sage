@@ -48,10 +48,14 @@ load_dotenv()
 
 import httpx
 
-from ..assets.provider import DEFAULT_DATASET_MOUNT_ROOTS
 from ..gateway.client import sidecar_token
 from ..orchestrator import brand
 
+# Where Domino used to mount a project's datasets in the running container, back when Sage read
+# them off a mount (`assets/provider.py` dropped this in Phase 5 — API/SDK only, no mounts
+# anywhere). Kept here, inlined, only because this probe's own D-Q7 question is specifically
+# about mount placement and needs a mount path to walk regardless of what Sage itself reads today.
+_DATASET_MOUNT_ROOTS = ("/domino/datasets/local", "/mnt/data", "/mnt/imported/data")
 # Artifacts is the other candidate the research rules out on mechanism (manual sync, no
 # write-back from an App). Listed here anyway: if it is not even mounted, that is one more
 # nail, and it costs nothing to look while we are already walking /mnt.
@@ -175,7 +179,7 @@ def _probe_mounts() -> None:
     print(f"  exists: {root.exists()}")
 
     verdict_inside = []
-    for candidate in (*DEFAULT_DATASET_MOUNT_ROOTS, *_ARTIFACT_ROOTS):
+    for candidate in (*_DATASET_MOUNT_ROOTS, *_ARTIFACT_ROOTS):
         p = Path(candidate)
         if not p.exists():
             print(f"\n  {candidate}  -- absent")

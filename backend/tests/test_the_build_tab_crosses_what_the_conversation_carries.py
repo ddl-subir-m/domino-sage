@@ -77,8 +77,10 @@ def _client(orch: Orchestrator, monkeypatch) -> TestClient:
 
 
 def test_the_build_tab_writes_the_bindings_and_the_bytes(tmp_path: Path):
-    """Criterion 2. One click performs the same three acts the handoff sheet performs: the Binding
-    is recorded, the Dataset file is attached, and the Upload lands on a Dataset."""
+    """Criterion 2. One click performs the same acts the handoff sheet performs: the Binding is
+    recorded and the Dataset file is attached. The Upload does not cross (Phase 5 decision #4: no
+    Dataset write API in use anywhere) — it is refused and named, like any other chip that cannot
+    move, rather than silently dropped."""
     orch = _orch(tmp_path, assets=FakeAssetProvider())
     tid = _a_conversation_with_three_chips(orch)
 
@@ -89,11 +91,13 @@ def test_the_build_tab_writes_the_bindings_and_the_bytes(tmp_path: Path):
     # app that ships a file out of a Dataset depends on that Dataset to rehydrate it.
     assert [b["id"] for b in project.workspace.read_bindings()] == ["ds-1", "ds_sales_2026"]
     attached = {e["dataset_rel_path"] for e in project.attached}
-    assert attached == {"train.csv", "uploads/note.csv"}
+    assert attached == {"train.csv"}
     assert res["appId"] == project.workspace.app_id
     # Per chip, not per act: `train.csv` binds its Dataset and attaches its bytes, and is one chip.
-    assert sorted(res["crossed"]) == ["note.csv", "trades", "train.csv"]
-    assert res["refused"] == []
+    assert sorted(res["crossed"]) == ["trades", "train.csv"]
+    assert res["refused"] == [
+        {"name": "note.csv",
+         "reason": "note.csv stayed in Chat — there is nowhere yet to keep an upload outside Chat"}]
 
 
 def test_the_door_writes_no_digest_and_no_transcript(tmp_path: Path):
@@ -147,7 +151,7 @@ def test_a_refused_upload_is_named_and_everything_beside_it_still_crosses(tmp_pa
     assert res["crossed"] == ["trades"]
     assert res["refused"] == [
         {"name": "note.csv",
-         "reason": "note.csv stayed in Chat — no writable Dataset is mounted here"}]
+         "reason": "note.csv stayed in Chat — there is nowhere yet to keep an upload outside Chat"}]
     assert [b["id"] for b in orch.project(start_preview=False).workspace.read_bindings()] == ["ds-1"]
 
 
@@ -201,30 +205,31 @@ def test_a_scope_somebody_set_by_hand_survives_the_crossing(tmp_path: Path):
                  if b["id"] == "ds-dwh")
     assert (bound.get("database"), bound.get("schema"), bound.get("table")) \
         == ("DWH", "MARTS", "ORDERS")
-    # And the Upload beside it still crossed — leaving the Binding alone is not skipping the chip.
-    assert res["crossed"] == ["q3.csv"]
+    # The Upload beside it is still NAMED — leaving the Binding alone is not skipping the chip —
+    # though it cannot cross itself (Phase 5 decision #4: no Dataset write API in use anywhere).
+    assert res["crossed"] == []
+    assert [r["name"] for r in res["refused"]] == ["q3.csv"]
 
 
 def test_two_chips_with_one_name_keep_their_own_outcomes(tmp_path: Path):
-    """An Upload and a Dataset file can both be called `data.csv` — different rows out of different
-    stores — so an outcome is folded against the CHIP and never against its name. Folded by name, one
-    chip's refusal reports over the other chip's bytes, which crossed: the person is told the file
-    stayed in Chat while it sits under `public/data/`."""
+    """Two Dataset files can both be called `data.csv` — different rows out of different Datasets —
+    so an outcome is folded against the CHIP and never against its name. Folded by name, one chip's
+    refusal reports over the other chip's bytes, which crossed."""
     orch = _orch(tmp_path, assets=FakeAssetProvider())
     thread_id = orch.create_thread()["id"]
-    scratch = orch.upload_scratch("data.csv", b"x")
     ThreadStore(orch.project(start_preview=False).record.path).write_context(thread_id, {"items": [
-        {"id": "ctx_1", "kind": "file", "name": "data.csv", "path": scratch["path"]},
+        {"id": "ctx_1", "kind": "file", "name": "data.csv",
+         "datasetId": "ds_sales_2026", "datasetRelPath": "train.csv"},
         {"id": "ctx_2", "kind": "file", "name": "data.csv",
          "datasetId": "ds_sales_2026", "datasetRelPath": "gone.csv"},
     ]})
 
     res = orch.cross_chat_context(thread_id)
 
-    assert res["crossed"] == ["data.csv"], "the Upload crossed and must be reported as crossed"
+    assert res["crossed"] == ["data.csv"], "the resolvable file crossed and must be reported as crossed"
     assert [r["name"] for r in res["refused"]] == ["data.csv"]
     attached = {e["dataset_rel_path"] for e in orch.project(start_preview=False).attached}
-    assert "uploads/data.csv" in attached
+    assert "train.csv" in attached
 
 
 def test_a_store_that_will_not_open_is_named_rather_than_reported_as_added(tmp_path: Path):
@@ -279,7 +284,10 @@ def test_the_route_crosses_and_answers_what_it_moved(tmp_path: Path, monkeypatch
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["ok"] is True
-    assert sorted(body["crossed"]) == ["note.csv", "trades", "train.csv"]
+    # `note.csv` (the Upload) is refused, not crossed — Phase 5 decision #4: no Dataset write API
+    # in use anywhere.
+    assert sorted(body["crossed"]) == ["trades", "train.csv"]
+    assert [r["name"] for r in body["refused"]] == ["note.csv"]
     # The app the crossing wrote into, named in the answer. The toast reads this rather than the
     # selection it captured before the request, because the server resolves the target from the live
     # selection — a switch that lands first crosses somewhere else.

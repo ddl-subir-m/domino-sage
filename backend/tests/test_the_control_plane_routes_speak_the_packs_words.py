@@ -230,13 +230,11 @@ def test_the_asset_routes_name_the_packs_dataset(acme, client, monkeypatch):
     monkeypatch.setattr(appmod.orchestrator, "upload_file", unavailable)
     monkeypatch.setattr(appmod.orchestrator, "upload_scratch", unavailable)
     picked = client.post("/api/project/upload?name=a.csv&dataset=ds-1", content=b"x")
-    assert _error(picked) == "The Cube you picked isn't mounted and writable in this workspace."
-    none = client.post("/api/project/upload?name=a.csv", content=b"x")
-    assert _error(none) == "No writable Cube is available to store uploads in this project."
+    assert _error(picked) == "Uploading straight to a Cube isn't available yet. Drag the file into Chat instead."
 
     monkeypatch.setattr(appmod.orchestrator, "promote_scratch_to_dataset", unavailable)
     r = client.post("/api/project/scratch/promote", json={"path": "a.csv", "dataset": "ds-1"})
-    assert _error(r) == "The Cube you picked isn't mounted and writable in this workspace."
+    assert _error(r) == "There is nowhere yet to keep this outside Chat."
 
     monkeypatch.setattr(appmod.orchestrator, "promote_scratch_to_dataset", missing)
     r = client.post("/api/project/scratch/promote", json={"path": "a.csv", "dataset": "ds-1"})

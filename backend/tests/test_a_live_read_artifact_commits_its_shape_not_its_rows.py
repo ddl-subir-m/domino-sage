@@ -31,6 +31,17 @@ class FakeRows:
     rows: list
 
 
+def _dataset_file(root, rel):
+    """The same resolve-and-contain check `_file_rows` used to make against a mount, now made by
+    the fake in place of a real download."""
+    if root is None:
+        return None
+    target = (root / rel).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
+        return None
+    return target
+
+
 def turn_for(tmp_path: Path, **kw) -> run.Turn:
     seen = object()
     base = {
@@ -101,7 +112,7 @@ def test_a_file_head_commits_its_shape_and_none_of_its_values(tmp_path: Path):
     """The same rule over a second writer. Deciding by the kind of source would need the audience
     fact ADR-0045 was shown Sage cannot obtain, so there is one rule over every writer."""
     run.perform("live_read_files", {"dataset": "gong-exports", "path": "calls.csv"},
-                turn_for(tmp_path, dataset_root=lambda n: _mount(tmp_path)))
+                turn_for(tmp_path, dataset_file=lambda n, rel: _dataset_file(_mount(tmp_path), rel)))
 
     card = _artifact(tmp_path, "gong-exports-calls.table.json")
     assert card["keptRows"] is False
@@ -113,7 +124,7 @@ def test_a_file_head_commits_its_shape_and_none_of_its_values(tmp_path: Path):
 
 def test_a_file_head_writes_its_rows_where_the_project_kept_rows(tmp_path: Path):
     run.perform("live_read_files", {"dataset": "gong-exports", "path": "calls.csv"},
-                turn_for(tmp_path, keep_rows=True, dataset_root=lambda n: _mount(tmp_path)))
+                turn_for(tmp_path, keep_rows=True, dataset_file=lambda n, rel: _dataset_file(_mount(tmp_path), rel)))
 
     card = _artifact(tmp_path, "gong-exports-calls.table.json")
     assert card["rows"] == [["1", "person1@acme.com"], ["2", "person2@acme.com"]]

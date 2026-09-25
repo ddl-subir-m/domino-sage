@@ -2,7 +2,7 @@
 
 What `mcp.handle` calls when a tool call arrives. Everything the read needs about the world is
 injected on `Turn`, so this is testable with no provider, no workspace and no network — and so that
-resolving a Dataset's mount, which only the orchestrator knows how to do, stays where it is known.
+downloading a Dataset file, which only the orchestrator knows how to do, stays where it is known.
 
 Every path through here returns text the ASSISTANT reads. A refusal is text too: it is a sentence
 the person is owed, and returning it as a failure leaves the assistant to invent why it could not
@@ -65,11 +65,11 @@ class Turn:
     # different jobs, and ADR-0058 says so in as many words. The agent never gets a shell, a token or
     # a gateway URL — it composes SQL and Sage runs it.
     run_statement: Callable[..., Any] | None = None
-    # Listing and reading are two different reaches. Every Dataset can be LISTED, mounted or not —
-    # an unmounted one is listed through the data library, which is how a Dataset shared from
-    # another project is reached at all. Only a mounted one can have a file read out of it here.
+    # Listing and reading are two different reaches, but both go through the platform API now
+    # (Phase 5 — no mounts anywhere). `dataset_file(name, rel)` downloads one file out of a Dataset
+    # to a local scratch copy and returns its path, or None when it could not be reached at all.
     list_files: Callable[[str], Any] | None = None
-    dataset_root: Callable[[str], Path | None] | None = None
+    dataset_file: Callable[[str, str], Path | None] | None = None
     upload_for: Callable[[str], Path | None] | None = None
     record_data_use: Callable[..., None] | None = None
     analyze_text_batch: Callable[[dict[str, Any]], Any] | None = None
@@ -388,7 +388,7 @@ def _files(args: dict, turn: Turn) -> str:
 
 
 def _file_rows(turn: Turn, name: str, rel: str) -> Read:
-    """The head of one file inside a mounted Dataset, or the sentence saying why not.
+    """The head of one Dataset file, or the sentence saying why not.
 
     The other half of the pair `_table_rows` is half of: the agent's read and **Read again** take
     the same road here too, including the grant, so a Dataset that stopped being reachable refuses
@@ -399,23 +399,12 @@ def _file_rows(turn: Turn, name: str, rel: str) -> Read:
     if refused:
         return Read(refused=refused.says)
 
-    root = turn.dataset_root(name) if turn.dataset_root else None
-    if root is None or not Path(root).is_dir():
-        return Read(refused=brand.text(
-            "{name} isn't mounted here, so files in it can't be opened. Ask about the listing "
-            "instead.",
-            name=name or "that {dataset}",
-        ))
-
-    # One file below the Dataset. Resolved inside the mount, so a path climbing out of it reads as
-    # a file that is not there rather than as a file somewhere else.
-    #
-    # `is_relative_to` and not `startswith`: mounts are siblings under one parent, so a string
-    # prefix lets `../sales-private/rows.csv` out of `/mnt/data/sales` and into the Dataset next to
-    # it — a grant this function just refused. It mattered less when only the model could name the
-    # path; **Read again** takes it from a request body (#256).
-    target = (Path(root) / rel).resolve()
-    if not target.is_relative_to(Path(root).resolve()) or not target.is_file():
+    # `dataset_file` downloads this one path off the platform API and returns the local copy, or
+    # None for anything it could not resolve into a real file — a bad path, an unreachable Dataset,
+    # a failed download. One refusal covers all of those: there is nothing further to distinguish
+    # from here, and the listing is the door to finding a path that does exist.
+    target = turn.dataset_file(name, rel) if turn.dataset_file else None
+    if target is None:
         return Read(refused=brand.text(
             "There is no file at {path} in {name}. List the {dataset} first and name one it holds.",
             path=rel, name=name,

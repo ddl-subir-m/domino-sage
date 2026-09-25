@@ -24,7 +24,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from sage.assets.provider import Asset, AssetProvider, DatasetFile, FakeAssetProvider, FileListing, walk_files
+from sage.assets.provider import (
+    Asset,
+    AssetProvider,
+    DatasetFile,
+    FakeAssetProvider,
+    FileListing,
+    _walk_dir,
+)
 from sage.orchestrator import app as appmod
 from sage.orchestrator import handoff
 from sage.orchestrator.service import Orchestrator
@@ -71,7 +78,9 @@ def _dataset(tmp: Path, name: str, files: dict[str, str]) -> FakeAssetProvider:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body)
     assets = FakeAssetProvider(root=root)
-    assets.assets = [Asset(f"ds_{name}", name, project="Revenue", mount_path=str(where))]
+    asset = Asset(f"ds_{name}", name, project="Revenue")
+    assets.assets = [asset]
+    assets.roots[asset.id] = where
     return assets
 
 
@@ -110,7 +119,7 @@ class _Unmounted:
         return [self.asset]
 
     def list_files(self, asset: Asset) -> FileListing:
-        walked = walk_files(self.root).files
+        walked = _walk_dir(self.root).files
         if self.measured:
             return FileListing(walked)
         return FileListing([DatasetFile(f.path, 0) for f in walked], measured=False)
@@ -128,8 +137,7 @@ def _unmounted(tmp: Path, name: str, files: dict[str, str], *, measured: bool = 
         p = where / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body)
-    return _Unmounted(where, Asset(f"ds_{name}", name, project="Revenue", mount_path=""),
-                      measured=measured)
+    return _Unmounted(where, Asset(f"ds_{name}", name, project="Revenue"), measured=measured)
 
 
 def _orch(tmp: Path, assets: AssetProvider, turns: list[Turn] | None = None):

@@ -73,11 +73,10 @@ def _assets(root: Path) -> FakeAssetProvider:
     (mount / "logs" / "rows.csv").write_text(CLAIMS_CSV)
     provider = FakeAssetProvider(root=mount)
     provider.assets = [
-        Asset("ds_claims", "claims", tags=["sensitive"], project="Revenue",
-              mount_path=str(mount / "claims")),
-        Asset("ds_logs", "logs", tags=["curated"], project="Revenue",
-              mount_path=str(mount / "logs")),
+        Asset("ds_claims", "claims", tags=["sensitive"], project="Revenue"),
+        Asset("ds_logs", "logs", tags=["curated"], project="Revenue"),
     ]
+    provider.roots.update({"ds_claims": mount / "claims", "ds_logs": mount / "logs"})
     return provider
 
 

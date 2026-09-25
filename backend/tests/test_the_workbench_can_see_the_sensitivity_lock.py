@@ -59,13 +59,13 @@ def _assets(root: Path) -> FakeAssetProvider:
     # Assigned AFTER construction, because `__post_init__` seeds its own three Datasets over
     # whatever was handed in — the seeds are for a local demo run, and this fixture is not one.
     provider.assets = [
-        Asset("ds_claims", "claims", tags=["Sensitive"], project="Revenue",
-              mount_path=str(mount / "claims")),
-        Asset("ds_logs", "logs", tags=["curated"], project="Revenue",
-              mount_path=str(mount / "logs")),
-        Asset("ds_shared", "shared", tags=["sensitive"], project="Platform",
-              mount_path=str(mount / "shared")),
+        Asset("ds_claims", "claims", tags=["Sensitive"], project="Revenue"),
+        Asset("ds_logs", "logs", tags=["curated"], project="Revenue"),
+        Asset("ds_shared", "shared", tags=["sensitive"], project="Platform"),
     ]
+    provider.roots.update({
+        "ds_claims": mount / "claims", "ds_logs": mount / "logs", "ds_shared": mount / "shared",
+    })
     return provider
 
 

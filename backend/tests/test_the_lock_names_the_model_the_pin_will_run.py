@@ -188,10 +188,8 @@ def _template(tmp: Path) -> Path:
 def _assets(tmp: Path) -> FakeAssetProvider:
     mount = tmp / "mnt" / "data"
     provider = FakeAssetProvider(root=mount)
-    provider.assets = [
-        Asset("ds_claims", "claims", tags=["Sensitive"], project="Revenue",
-              mount_path=str(mount / "claims")),
-    ]
+    provider.assets = [Asset("ds_claims", "claims", tags=["Sensitive"], project="Revenue")]
+    provider.roots["ds_claims"] = mount / "claims"
     return provider
 
 

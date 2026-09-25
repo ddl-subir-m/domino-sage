@@ -65,7 +65,8 @@ def _partitioned(tmp: Path, *, per_year: int = 8) -> FakeAssetProvider:
     keep it too.
     """
     provider = FakeAssetProvider(root=tmp / "mounts")
-    mount = Path(next(a.mount_path for a in provider.assets if a.name == "sales_2026"))
+    asset = next(a for a in provider.assets if a.name == "sales_2026")
+    mount = provider.roots[asset.id]
     for year in ("2024", "2025"):
         for i in range(per_year):
             f = mount / "raw" / year / f"part-{i}.csv"
@@ -253,8 +254,8 @@ def test_a_folder_mention_never_inlines_an_image(tmp_path: Path):
     """Images ride the prompt as data URIs. A folder of two hundred would ride two hundred, which
     is the same bloat measured in megabytes."""
     orch, ds, _ = _ready(tmp_path)
-    mount = Path(next(a.mount_path for a in orch._assets.list_datasets("Sage")
-                      if a.name == "sales_2026"))
+    asset = next(a for a in orch._assets.list_datasets("Sage") if a.name == "sales_2026")
+    mount = orch._assets.roots[asset.id]
     shots = mount / "raw" / "shots"
     shots.mkdir(parents=True, exist_ok=True)
     for i in range(3):
@@ -293,7 +294,8 @@ def _deep(tmp: Path, partitions: int) -> tuple[Orchestrator, str, Path]:
     so the level the rows sit at moves as the attachment count crosses the threshold.
     """
     provider = FakeAssetProvider(root=tmp / "mounts")
-    mount = Path(next(a.mount_path for a in provider.assets if a.name == "sales_2026"))
+    asset = next(a for a in provider.assets if a.name == "sales_2026")
+    mount = provider.roots[asset.id]
     for day in range(partitions):
         f = mount / "raw" / "2026" / f"{day:02d}" / "part.csv"
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -355,8 +357,8 @@ def test_the_widening_takes_the_row_that_absorbed_it_and_not_the_app(tmp_path: P
     """The smallest widening there is. A question about one day answered with everything the app
     holds would be a worse failure than the silence it replaces."""
     orch, ds, _ = _deep(tmp_path, partitions=12)
-    mount = Path(next(a.mount_path for a in orch._assets.list_datasets("Sage")
-                      if a.name == "sales_2026"))
+    asset = next(a for a in orch._assets.list_datasets("Sage") if a.name == "sales_2026")
+    mount = orch._assets.roots[asset.id]
     (mount / "elsewhere").mkdir(parents=True, exist_ok=True)
     (mount / "elsewhere" / "other.csv").write_text("a,b\n7,7\n")
     orch.attach_folder(ds, "")
@@ -374,11 +376,13 @@ def test_a_folder_mention_whose_files_are_gone_is_refused_like_a_file(tmp_path: 
 
     A Dataset can go away under an app: the mount is unmounted, or a rehydrate leaves the symlinks
     dangling. The record still says the files are attached, and only the disk says otherwise."""
-    orch, ds, _ = _ready(tmp_path)
+    orch, ds, ws = _ready(tmp_path)
     orch.attach_folder(ds, "raw")
     project = orch.project()
-    shutil.rmtree(next(a.mount_path for a in orch._assets.list_datasets("Sage")
-                       if a.name == "sales_2026"))
+    # No mount, ever (Phase 5): every attach is a real downloaded copy in the workspace, so the
+    # Dataset going away no longer touches it — what has to go missing is the copy itself, the same
+    # state a rehydrate that never ran, or a person deleting the file by hand, would leave.
+    shutil.rmtree(ws / "public" / "data" / "sales_2026" / "raw" / "2024")
 
     resolved = orch._resolve_mentions(project, [P2024])
     line, rows = orch._unusable_mentions(project, resolved, [P2024], None)
@@ -394,14 +398,15 @@ def test_a_split_apart_folder_whose_files_are_gone_is_held_not_missing(tmp_path:
     """The month is no longer a group key, so `in folders` cannot see it. The files under it are
     still attached; calling that 'not attached' would offer the wrong door for a Dataset that
     went away — attach them again, when they are already in the panel."""
-    orch, ds, _ = _deep(tmp_path, partitions=12)
+    orch, ds, ws = _deep(tmp_path, partitions=12)
     orch.attach_folder(ds, "raw")
     for day in range(8, 12):
         orch.detach_folder(ds, f"raw/2026/{day:02d}")
     project = orch.project()
     month = "public/data/sales_2026/raw/2026"
-    shutil.rmtree(next(a.mount_path for a in orch._assets.list_datasets("Sage")
-                       if a.name == "sales_2026"))
+    # No mount, ever (Phase 5) — see the sibling test above for why this deletes the workspace's
+    # own downloaded copy rather than the fake Dataset's backing directory.
+    shutil.rmtree(ws / "public" / "data" / "sales_2026" / "raw" / "2026")
 
     resolved = orch._resolve_mentions(project, [month])
     line, rows = orch._unusable_mentions(project, resolved, [month], None)
@@ -460,8 +465,8 @@ def test_a_folder_mention_names_the_set_its_row_and_its_block_line_name(tmp_path
     own block line both said two. One grouping, so the row, the block and the turn agree."""
     orch = _orch(tmp_path, _partitioned(tmp_path))
     ws = orch.project(start_preview=False).workspace.path
-    mount = Path(next(a.mount_path for a in orch._assets.list_datasets("Sage")
-                      if a.name == "sales_2026"))
+    asset = next(a for a in orch._assets.list_datasets("Sage") if a.name == "sales_2026")
+    mount = orch._assets.roots[asset.id]
     for name in ("loose-a.csv", "loose-b.csv"):
         (mount / name).write_text("a,b\n1,2\n")
     orch.attach_folder(_dataset_id(orch), "")
@@ -488,8 +493,8 @@ def test_a_token_whose_folder_split_apart_still_carries_what_it_covered(tmp_path
     walk from `raw/2026` must not pick those up.
     """
     orch, ds, _ = _deep(tmp_path, partitions=12)
-    mount = Path(next(a.mount_path for a in orch._assets.list_datasets("Sage")
-                      if a.name == "sales_2026"))
+    asset = next(a for a in orch._assets.list_datasets("Sage") if a.name == "sales_2026")
+    mount = orch._assets.roots[asset.id]
     (mount / "elsewhere").mkdir(parents=True, exist_ok=True)
     (mount / "elsewhere" / "other.csv").write_text("a,b\n7,7\n")
     orch.attach_folder(ds, "")

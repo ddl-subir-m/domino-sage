@@ -1,4 +1,5 @@
-"""Asset provider — tags, snapshots (Step 6), and reading a Dataset with no mount."""
+"""Asset provider — tags, snapshots (Step 6), and reading a Dataset — API/SDK only, no mounts
+anywhere (Phase 5, ONE-APP-PLAN.md)."""
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,6 @@ from sage.assets.provider import (
     dataset_unique_name,
     parse_tag_snapshots,
     parse_tags,
-    walk_files,
 )
 from sage.resources.provider import ResourceUnavailable
 
@@ -76,9 +76,9 @@ class _FakeDatasetClient:
         return self._dataset
 
 
-def _provider(client=None):
-    # mount_roots deliberately empty: this is the case the rail used to call unreadable.
-    return DominoAssetProvider("http://domino", lambda: "t", mount_roots=[], dataset_client=client)
+def _provider(client=None, sdk_credential=None):
+    return DominoAssetProvider("http://domino", lambda: "t", dataset_client=client,
+                              sdk_credential=sdk_credential)
 
 
 # --- the datasetrw file listing (#153) ----------------------------------------------------------
@@ -190,15 +190,7 @@ def test_a_sizeless_row_past_the_cut_does_not_unmeasure_the_prefix(monkeypatch):
     assert listing.measured is True
 
 
-def test_a_mounted_walk_is_always_measured(tmp_path):
-    """`stat()` weighs everything it names, so an empty file on a mount is genuinely empty and the
-    card says "0 bytes" about it rather than going quiet."""
-    (tmp_path / "empty.csv").write_text("")
-
-    assert walk_files(tmp_path).measured is True
-
-
-def test_a_nested_file_keeps_the_path_a_mount_would_have_given_it(monkeypatch):
+def test_a_nested_file_keeps_its_full_path(monkeypatch):
     """`fileName`, not `label`: the basename would collapse siblings across folders together.
 
     The two paths have to agree, because the Workbench re-nests one tree from whichever produced
@@ -211,26 +203,6 @@ def test_a_nested_file_keeps_the_path_a_mount_would_have_given_it(monkeypatch):
     files = _provider().list_files(Asset(id="i1", name="autodoc")).files
 
     assert [f.path for f in files] == ["docs/model_docs.docx", "notes/model_docs.docx"]
-
-
-def test_the_two_paths_describe_the_same_tree_the_same_way(tmp_path, monkeypatch):
-    """Whether a Dataset is mounted here is an accident of which Project this workspace belongs to,
-    and it must not change what its tree looks like. The Workbench re-nests folders out of these
-    paths and the app manifest keys on them, so a Dataset that gains or loses a mount between two
-    listings has to produce the same rows both times.
-    """
-    tree = {"README.md": 12, "raw/train.csv": 400, "raw/2024/part-0.csv": 7}
-    for rel, size in tree.items():
-        f = tmp_path / rel
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_bytes(b"x" * size)
-
-    mounted = _provider().list_files(Asset(id="i1", name="ds", mount_path=str(tmp_path)))
-    _install(monkeypatch, _FakeApi(snapshots=[_snapshot("s1", 0)],
-                                   rows=[_row(rel, size) for rel, size in tree.items()]))
-    unmounted = _provider().list_files(Asset(id="i1", name="ds"))
-
-    assert [(f.path, f.size) for f in unmounted.files] == [(f.path, f.size) for f in mounted.files]
 
 
 def test_a_directory_row_is_not_reported_as_an_empty_file(monkeypatch):
@@ -274,17 +246,6 @@ def test_a_dataset_with_nothing_committed_yet_lists_nothing_and_asks_no_further(
     assert len(api.asked) == 1
 
 
-def test_a_mounted_dataset_still_reads_from_disk(tmp_path, monkeypatch):
-    # The mount stays a fast path: no API call at all when the files are already here.
-    (tmp_path / "on_disk.csv").write_text("a,b\n")
-    api = _install(monkeypatch, _FakeApi(snapshots=[_snapshot("s1", 0)], rows=[_row("nope", 1)]))
-    files = _provider().list_files(
-        Asset(id="i1", name="local_ds", mount_path=str(tmp_path))).files
-
-    assert [f.path for f in files] == ["on_disk.csv"]
-    assert api.asked == []
-
-
 def test_listing_failure_is_reported_not_swallowed(monkeypatch):
     import httpx
 
@@ -315,6 +276,92 @@ def test_download_file_writes_the_bytes_and_reports_the_size(tmp_path):
     assert provider._dataset_client.asked == ["dataset-shared_ds-i1"]
 
 
+class _FakeStreamResponse:
+    """What `with httpx.stream(...) as r:` binds to `r` — just enough of `httpx.Response` for the
+    REST fallback to read a status code and iterate chunks."""
+
+    def __init__(self, status_code, chunks):
+        self.status_code = status_code
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_bytes(self):
+        yield from self._chunks
+
+
+def test_a_static_credentials_download_falls_back_to_rest_when_the_sdk_refuses(monkeypatch, tmp_path):
+    """A laptop's static TokenSource: a `domino_data` rejection (risk #1/#4, never live-verified
+    either way) is not the end of the road — the same REST family the Built App relay already
+    allow-lists (`file/raw?path=`) gets the bytes instead, read off the Dataset's latest snapshot."""
+    import httpx
+
+    class _Boom:
+        def download_file(self, rel, local):
+            raise RuntimeError("Anonymous principals are not supported")
+
+    def get(url, **kw):
+        assert url == "http://domino/v4/datasetrw/snapshots/i1"
+        return httpx.Response(200, json=[_snapshot("s1", 0)])
+
+    def stream(method, url, **kw):
+        assert method == "GET"
+        assert url == "http://domino/v4/datasetrw/snapshot/s1/file/raw"
+        assert kw["params"] == {"path": "raw/train.csv"}
+        assert kw["headers"] == {"Authorization": "Bearer t"}
+        return _FakeStreamResponse(200, [b"x" * 4, b"y" * 3])
+
+    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setattr(httpx, "stream", stream)
+
+    dest = tmp_path / "out" / "train.csv"
+    provider = _provider(_FakeDatasetClient(_Boom()), sdk_credential=lambda: {"api_key": "k"})
+    size = provider.download_file(Asset(id="i1", name="shared_ds"), "raw/train.csv", dest)
+
+    assert size == 7
+    assert dest.read_bytes() == b"x" * 4 + b"y" * 3
+
+
+def test_a_sidecar_backed_download_never_falls_back(tmp_path):
+    """No `sdk_credential` (an App/workspace, sidecar-implicit) means a real SDK failure is real —
+    routing it through REST would mask an actual outage as a credential-shape mismatch that only
+    applies to a laptop's static token."""
+
+    class _Boom:
+        def download_file(self, rel, local):
+            raise RuntimeError("boom")
+
+    provider = _provider(_FakeDatasetClient(_Boom()))
+
+    with pytest.raises(ResourceUnavailable, match="did not send"):
+        provider.download_file(Asset(id="i1", name="shared_ds"), "raw/train.csv",
+                               tmp_path / "train.csv")
+
+
+def test_a_static_credentials_download_reports_refusal_when_rest_also_fails(monkeypatch, tmp_path):
+    """Both doors tried, both refused: the caller still gets one clear `ResourceUnavailable`, not a
+    raw REST exception the route was never written to catch."""
+    import httpx
+
+    class _Boom:
+        def download_file(self, rel, local):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(200, json=[_snapshot("s1", 0)]))
+    monkeypatch.setattr(httpx, "stream",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
+
+    provider = _provider(_FakeDatasetClient(_Boom()), sdk_credential=lambda: {"api_key": "k"})
+
+    with pytest.raises(ResourceUnavailable, match="did not send"):
+        provider.download_file(Asset(id="i1", name="shared_ds"), "raw/train.csv",
+                               tmp_path / "train.csv")
+
+
 def test_project_name_is_read_from_the_field_that_carries_it(monkeypatch):
     # DatasetRwProjectInfoDtoV1 is {projectId, projectName, projectOwnerUsername} — there is no
     # `name`, so reading one left every row's owning project blank.
@@ -329,7 +376,7 @@ def test_project_name_is_read_from_the_field_that_carries_it(monkeypatch):
 
     import httpx
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
-    got = DominoAssetProvider("http://domino", lambda: "t", mount_roots=[]).list_datasets(None)
+    got = DominoAssetProvider("http://domino", lambda: "t").list_datasets(None)
     assert [a.project for a in got] == ["Seabed-Object-Classifier"]
 
 
@@ -400,7 +447,7 @@ def test_the_api_paths_survive_the_rename(_oem_pack, monkeypatch):
     import httpx
 
     monkeypatch.setattr(httpx, "get", lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
-    provider = DominoAssetProvider("http://domino", lambda: "t", mount_roots=[])
+    provider = DominoAssetProvider("http://domino", lambda: "t")
 
     with pytest.raises(ResourceUnavailable) as e:
         provider.list_datasets(None)
@@ -414,7 +461,7 @@ def test_a_non_json_listing_body_renames_the_platform_and_the_noun(_oem_pack, mo
     import httpx
 
     monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(200, text="<html>signed out"))
-    provider = DominoAssetProvider("http://domino", lambda: "t", mount_roots=[])
+    provider = DominoAssetProvider("http://domino", lambda: "t")
 
     with pytest.raises(ResourceUnavailable) as e:
         provider.list_datasets(None)

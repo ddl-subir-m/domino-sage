@@ -96,13 +96,14 @@ def test_bound_table_calculates_without_a_shared_sample_rows_grant(tmp_path):
     assert "North" not in json.dumps(journal)
 
 
-def test_dataset_file_calculates_from_the_mounted_dataset_without_upload_context(tmp_path):
+def test_dataset_file_calculates_from_a_downloaded_dataset_file_without_upload_context(tmp_path):
     root = tmp_path / "mounts" / "sales"
     root.mkdir(parents=True)
     (root / "sales.csv").write_text(SALES)
     turn, data, _ = setup_turn(
         tmp_path, bound={"dataset": ("sales",)},
-        dataset_root=lambda name: root if name == "sales" else None,
+        dataset_file=lambda name, rel: (root / rel)
+            if name == "sales" and (root / rel).is_file() else None,
         upload_for=lambda _p: None,
     )
 
@@ -279,6 +280,16 @@ def test_gateway_failures_are_distinguished_without_replaying_values(tmp_path, e
     assert "person0" not in json.dumps(recorded)
 
 
+def _build_upload(orch, filename: str, data: bytes) -> dict:
+    """The "build" mode's replacement for `upload_file`, which now always refuses (Phase 5 decision
+    #4 — no Dataset write API in use anywhere). What these tests actually need is a real file with
+    known bytes sitting at a Build app's own served path, and `attach_file` against the default
+    seeded Dataset still gives exactly that — a real download, not a mount write."""
+    ds = next(a["id"] for a in orch.list_assets() if a["name"] == "sales_2026")
+    (orch._assets.roots[ds] / filename).write_bytes(data)
+    return orch.attach_file(ds, filename)
+
+
 @pytest.mark.parametrize("mode", ["chat", "build"])
 def test_a_restart_reopens_the_data_operations_this_conversation_already_recorded(tmp_path, mode):
     """`_mint_live_read_token` replays this Conversation's `dataUsed` rows into a shim that has
@@ -293,7 +304,7 @@ def test_a_restart_reopens_the_data_operations_this_conversation_already_recorde
     project = orch.project(start_preview=False)
     tid = orch.create_thread()["id"]
     upload = (orch.upload_scratch("sales.csv", SALES.encode()) if mode == "chat"
-              else orch.upload_file("sales.csv", SALES.encode()))
+              else _build_upload(orch, "sales.csv", SALES.encode()))
     orch.add_thread_context(tid, {"kind": "file", "path": upload["path"], "name": "sales.csv"})
     control_token = project.control.arm_chat(tid) if mode == "chat" else None
     if mode != "chat":
@@ -319,7 +330,7 @@ def test_upload_access_and_persistent_record_use_existing_conversation_controls(
     project = orch.project(start_preview=False)
     tid = orch.create_thread()["id"]
     upload = (orch.upload_scratch("sales.csv", SALES.encode()) if mode == "chat"
-              else orch.upload_file("sales.csv", SALES.encode()))
+              else _build_upload(orch, "sales.csv", SALES.encode()))
     source = upload["path"]
     orch.add_thread_context(tid, {"kind": "file", "path": source, "name": "sales.csv"})
     if mode == "chat":

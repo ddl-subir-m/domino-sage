@@ -135,6 +135,15 @@ def _orch(tmp_path: Path, turns: list[Turn]) -> tuple[Orchestrator, FakeOpenCode
     return orch, oc
 
 
+def _attach_data(orch: Orchestrator, filename: str, data: bytes) -> dict:
+    """A real attached file with known bytes, so the leak detector has a genuine `src/<name>` copy
+    to find. `upload_file` always refuses now (Phase 5 decision #4 — no Dataset write API in use
+    anywhere), so this writes into the default seeded Dataset and attaches it instead."""
+    ds = next(a["id"] for a in orch.list_assets() if a["name"] == "sales_2026")
+    (orch._assets.roots[ds] / filename).write_bytes(data)
+    return orch.attach_file(ds, filename)
+
+
 def _agent_turns(oc: FakeOpenCode) -> int:
     """How many whole model turns the build spent, cross-checked two ways where there are two.
 
@@ -256,7 +265,7 @@ def test_a_leak_that_is_never_fixed_spends_the_whole_leak_budget(tmp_path: Path)
     orch, oc = _orch(tmp_path, [
         Turn(text="Built it.", writes={"src/sales.csv": LEAKED_CSV}),
     ] + [_writes(i) for i in range(10)])
-    orch.upload_file("sales.csv", LEAKED_CSV.encode())
+    _attach_data(orch, "sales.csv", LEAKED_CSV.encode())
 
     events = list(orch.build_stream("chart the sales data"))
 
@@ -300,7 +309,7 @@ def test_the_four_budgets_add_up_and_nothing_bounds_their_sum(tmp_path: Path, mo
     orch, oc = _orch(tmp_path, [_wrote_nothing()] * MAX_NUDGES + [
         Turn(text="Built it.", writes={"src/sales.csv": LEAKED_CSV, "src/Chat.tsx": RAW_GATEWAY_CALL}),
     ] + [_writes(i) for i in range(12)])
-    orch.upload_file("sales.csv", LEAKED_CSV.encode())
+    _attach_data(orch, "sales.csv", LEAKED_CSV.encode())
     orch.bind_llm_alias("id-sonnet")
 
     events = list(orch.build_stream("chart the sales data and add a chat box"))

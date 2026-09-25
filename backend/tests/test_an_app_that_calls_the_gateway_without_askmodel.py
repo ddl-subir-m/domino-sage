@@ -269,6 +269,15 @@ def _orch(tmp: Path, turns: list[Turn]) -> tuple[Orchestrator, FakeOpenCode]:
     return orch, oc
 
 
+def _attach_data(orch: Orchestrator, filename: str, data: bytes) -> dict:
+    """A real attached file with known bytes, so the leak detector has a genuine `src/<name>` copy
+    to find. `upload_file` always refuses now (Phase 5 decision #4 — no Dataset write API in use
+    anywhere), so this writes into the default seeded Dataset and attaches it instead."""
+    ds = next(a["id"] for a in orch.list_assets() if a["name"] == "sales_2026")
+    (orch._assets.roots[ds] / filename).write_bytes(data)
+    return orch.attach_file(ds, filename)
+
+
 def _build(orch: Orchestrator) -> list[dict]:
     """The real first-build flow: the gate proposes, the approval builds. The scripted turns are
     consumed in order, so turn 1 is the plan and turn 2 is the build under test."""
@@ -375,7 +384,7 @@ def test_a_leak_and_a_raw_call_in_one_turn_are_nudged_one_at_a_time_leaks_first(
     orch, _oc = _orch(tmp_path, _plan_then(
         {"src/sales.csv": "a,b\n1,2\n", "src/Chat.tsx": RAW_AT_BASE}, repeats=4))
     orch.bind_llm_alias("id-sonnet")
-    orch.upload_file("sales.csv", b"a,b\n1,2\n")
+    _attach_data(orch, "sales.csv", b"a,b\n1,2\n")
 
     events = _build(orch)
 

@@ -72,10 +72,8 @@ def _assets(root: Path) -> FakeAssetProvider:
     (mount / "claims").mkdir(parents=True)
     provider = FakeAssetProvider(root=mount)
     # After construction: `__post_init__` seeds its own demo Datasets over whatever was handed in.
-    provider.assets = [
-        Asset("ds_claims", "claims", tags=["sensitive"], project="Revenue",
-              mount_path=str(mount / "claims")),
-    ]
+    provider.assets = [Asset("ds_claims", "claims", tags=["sensitive"], project="Revenue")]
+    provider.roots["ds_claims"] = mount / "claims"
     return provider
 
 

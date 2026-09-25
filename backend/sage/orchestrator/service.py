@@ -794,13 +794,10 @@ class AttachTooLarge(Exception):
 
 
 class FolderActUnavailable(Exception):
-    """The folder act cannot be offered for this Dataset. Two causes, one refusal (ADR-0029):
-
-      * a Dataset this container has no mount for has to be fetched a file at a time through
-        `_download_attachment`, with nothing to report an unbounded serial download through;
-      * a truncated listing is a sorted prefix, so early folders are whole and late ones are cut
-        or absent with nothing downstream able to tell which, so the cap cannot be pre-flighted
-        and the confirmation has no numbers to show.
+    """The folder act cannot be offered for this Dataset (ADR-0029): a truncated listing is a
+    sorted prefix, so early folders are whole and late ones are cut or absent with nothing
+    downstream able to tell which, so the cap cannot be pre-flighted and the confirmation has no
+    numbers to show.
 
     `reason` is composed here rather than at the two ends, so the sentence the row draws before the
     click and the sentence the refusal carries after it are the same sentence.
@@ -809,6 +806,21 @@ class FolderActUnavailable(Exception):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+class FolderTooManyFiles(Exception):
+    """Attaching this folder would download more files than the cap allows.
+
+    Every file in a Dataset comes down one at a time through `_download_attachment` (no mount,
+    ever — Phase 5), with nothing to report an unbounded serial download through. The same reason
+    `AttachTooLarge` caps bytes, now capping count — checked only inside the real act, the same way
+    the byte cap is: pre-flighting either number on the row would need a second, per-folder listing,
+    and `_folder_act_reason` reads none.
+    """
+
+    def __init__(self, cap: int, count: int) -> None:
+        self.cap, self.count = cap, count
+        super().__init__(f"folder attach would download {count} files, over the {cap} cap")
 
 
 class ChartFontsMissing(RuntimeError):
@@ -835,20 +847,6 @@ class PlanArchiveRefused(Exception):
         super().__init__(reason)
 
 
-class AttachSourceMissing(Exception):
-    """The listing named a file the mount does not hold, part way through a folder attach.
-
-    Distinct from "no such folder", which the same `FileNotFoundError` used to cover: the folder
-    plainly exists — the person picked it off a row showing its file count and size — so a refusal
-    saying it does not points at the wrong thing to go and fix. What actually happened is that the
-    Dataset changed under a listing already on screen.
-    """
-
-    def __init__(self, path: str) -> None:
-        self.path = path
-        super().__init__(path)
-
-
 class DetachStopped(OSError):
     """A folder removal could not finish, and `detached` is how much of it went before that.
 
@@ -870,23 +868,6 @@ class DetachStopped(OSError):
         # about them matters most here, where the record and the disk have actually come apart.
         self.kept = kept
         super().__init__(str(cause))
-
-
-class AttachWouldClobber(Exception):
-    """A file already sits where one of a folder's attachments would be linked, and it is not one.
-
-    `_link_attachment` replaces whatever is at the path, which is right for a stale symlink and
-    right for the single attach — one file, one act, nothing else in flight. Over a folder it is
-    not: the bytes destroyed cannot be put back, and no unwind can restore them, so an act that
-    promises to land whole or not at all has to find out BEFORE it writes anything.
-
-    A symlink is not this. Replacing one is how a re-attach works, and how a folder act's own
-    leftovers are cleared on a retry.
-    """
-
-    def __init__(self, path: str) -> None:
-        self.path = path
-        super().__init__(path)
 
 
 class UploadUnavailable(Exception):
@@ -1529,7 +1510,7 @@ def _ledger_names(rows: list[dict], dataset_id: str | None, rel: str) -> bool:
     - `_restamp_uploads` stamps every entry False, so every destroy door in the Project disappears
       at once. Latent until a schema change, and it will look like anything except a comparison —
       nobody connects a field nobody reads to a control that stopped being drawn.
-    - `_note_sage_upload` re-adds rows it already holds. Harmless, and the only one that is.
+    - the ledger's own write path re-adds rows it already holds. Harmless, and the only one that is.
 
     Found by grepping the literal rather than by re-reading the diff. Two of the six were unified
     here in review; the other three had not CHANGED, only changed meaning, which is precisely what
@@ -1580,31 +1561,6 @@ def _edit_uploads_ledger(root: Path, change: Callable[[list[dict]], list[dict]])
         finally:
             with contextlib.suppress(OSError):
                 tmp.unlink()        # only ever reached when the replace did not happen
-
-
-def _note_sage_upload(root: Path, dataset_id: str | None, rel: str) -> bool:
-    """Record that Sage wrote these Dataset bytes. Best effort, loudly, and it says which it was.
-
-    This is bookkeeping for a door, and it must not be able to fail the act it describes: a Project
-    root that is read-only or out of quota while the Dataset mount is writable would otherwise turn
-    a good upload into a rolled-back one. Degrades to no door, never to no upload.
-
-    The caller needs the answer, because the answer is what stamps the entry. Stamped True whatever
-    happened, an upload onto an unwritable ledger draws a destroy door that the unlink then refuses
-    — a control with no undo that quietly does half of what it offers.
-
-    The migration runs first wherever it has not yet, so that this file — which is ALSO the mark
-    retiring that migration — can never come into being as the write that skipped it.
-    """
-    _backfill_uploads_ledger(root)
-    line = _uploads_ledger_line(dataset_id, rel)
-    try:
-        _edit_uploads_ledger(
-            root, lambda rows: rows if _ledger_names(rows, dataset_id, rel) else [*rows, line])
-    except (OSError, ValueError):
-        log.exception("uploads ledger: could not note %s in %s", rel, _uploads_ledger_path(root))
-        return False
-    return True
 
 
 def _attachment_bytes_gone(workspace: Path, entry: dict) -> bool:
@@ -1849,8 +1805,9 @@ def _fetch_behind(record_root: Path, link: Path) -> str:
     of which scratch file — and a path rebuilt from the entry's Dataset name would be the name that
     Dataset had at attach time, which a rename moves the served slug out from under (#271).
 
-    A mounted Dataset resolves outside scratch and answers "", which is the right answer: those
-    bytes are the Dataset's own and were never Sage's to delete (ADR-0011).
+    A downloaded attachment answers "" too — not a symlink at all (Phase 5: every fresh attach is
+    a real copy) — which is the right answer either way: those bytes are the Dataset's own copy,
+    not scratch Sage still holds a fetch behind (ADR-0011).
     """
     if not link.is_symlink():
         return ""
@@ -1862,8 +1819,8 @@ def _fetch_behind(record_root: Path, link: Path) -> str:
 
 
 def _copied_bytes(root: Path) -> int:
-    """Disk actually used under `root`. A symlink into a mount costs nothing and is not counted:
-    the cap is about what Sage copied here, not about how large the Dataset is."""
+    """Disk actually used under `root`. A symlink costs nothing and is not counted: the cap is
+    about what Sage copied here, not about how large the Dataset is."""
     if not root.is_dir():
         return 0
     total = 0
@@ -5597,9 +5554,14 @@ class Orchestrator:
         # `_await_chip_columns`.
         self._chip_column_jobs: dict[str, tuple[str, threading.Thread, float]] = {}
         self._chip_column_lock = threading.Lock()
-        # Total-size cap across all attached files (default 500 MiB). A file attach is a symlink,
-        # not a copy, but the cap bounds what the agent/preview and the published dist/ pull in.
+        # Total-size cap across all attached files (default 500 MiB). Every attach is a real
+        # downloaded copy (no mount, ever — Phase 5), and the cap bounds what the agent/preview
+        # and the published dist/ pull in.
         self._attach_max_bytes = _env_int("SAGE_ATTACH_MAX_BYTES", 500 * 1024 * 1024)
+        # How many files one folder attach may download in a single act (ADR-0029) — each comes
+        # down one at a time through `_download_attachment`, with nothing to report an unbounded
+        # serial download through.
+        self._folder_attach_max_files = _env_int("SAGE_FOLDER_ATTACH_MAX_FILES", 200)
         self._domino_project_id = domino_project_id
         # Domino control-plane wiring for Publish (None off-Domino / local runs -> the endpoints
         # report a clear "not available" instead of crashing).
@@ -10176,7 +10138,7 @@ class Orchestrator:
         try:
             result = self.promote_scratch_to_dataset(path, "", keep_scratch=True)
         except UploadUnavailable:
-            reason = brand.text("no writable {dataset} is mounted here")
+            reason = brand.text("there is nowhere yet to keep an upload outside {chat}")
             return {"name": name, "crossed": False, "reason": f"{name} stayed in Chat — {reason}"}
         except (FileNotFoundError, ValueError, AttachTooLarge, ResourceUnavailable, OSError) as e:
             return {"name": name, "crossed": False, "reason": f"{name} stayed in Chat — {e}"}
@@ -11248,10 +11210,19 @@ class Orchestrator:
         except Exception:
             pass
 
-        def dataset_root(name: str) -> Path | None:
+        def dataset_file(name: str, rel: str) -> Path | None:
+            # No mount, ever (Phase 5): the same download `fetch_dataset_file_for_chat` makes for
+            # the Session-context chip fetches the head this reads too — idempotent, gitignored,
+            # capped the same way. Reused rather than a second downloader, so a file a live read
+            # already pulled and a file the person later chips are the same bytes on disk.
             asset = datasets.get(name)
-            mount = getattr(asset, "mount_path", None) if asset else None
-            return Path(mount) if mount else None
+            if asset is None:
+                return None
+            try:
+                info = self.fetch_dataset_file_for_chat(asset.id, rel)
+            except (LookupError, FileNotFoundError, ResourceUnavailable):
+                return None
+            return _safe_join(project.record.path, info["path"])
 
         def list_files(name: str):
             asset = datasets.get(name)
@@ -11272,12 +11243,13 @@ class Orchestrator:
                 target = (root / rel).resolve()
                 allowed_root = root.resolve()
                 if not chat:
+                    # Proves this attachment really came from a Dataset (rather than an arbitrary
+                    # app source file that happens to share a recorded path) — no mount to
+                    # cross-check against since Phase 5, so the containment/suffix check below,
+                    # against the app's own tree, is what stands in its place.
                     asset = next((asset for asset in datasets.values()
                                   if asset.id == item.get("dataset_id")), None)
-                    if asset is None or not asset.mount_path:
-                        return None
-                    allowed_root = Path(asset.mount_path).resolve()
-                    if target != (allowed_root / str(item.get("file") or "")).resolve():
+                    if asset is None:
                         return None
                 if (not target.is_relative_to(allowed_root) or not target.is_file()
                         or target.suffix.lower() != ".csv"):
@@ -11332,7 +11304,7 @@ class Orchestrator:
             sample_rows=self._resources.sample_rows,
             run_statement=count_statement,
             list_files=list_files,
-            dataset_root=dataset_root,
+            dataset_file=dataset_file,
             upload_for=upload_for,
             record_data_use=record_data_use,
             analyze_text_batch=analyze_text_batch,
@@ -14236,15 +14208,9 @@ class Orchestrator:
                 asset = self._find_asset(entry.get("dataset_id"))
                 rel_path = entry.get("dataset_rel_path") or entry.get("file") or ""
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                if not asset.mount_path:
-                    # No mount to re-link to, which is not the dead end it used to be: the same
-                    # download that made this attachment can make it again.
-                    self._assets.download_file(asset, rel_path, dest)
-                else:
-                    src = _safe_join(Path(asset.mount_path), rel_path)
-                    if not src.is_file():
-                        continue
-                    dest.symlink_to(src)
+                # No mount, ever (Phase 5) — the same download that made this attachment can make
+                # it again.
+                self._assets.download_file(asset, rel_path, dest)
                 restored.append(entry["path"])
             except (ValueError, OSError, LookupError):
                 continue            # one unrestorable attachment must not strand the others
@@ -20694,8 +20660,7 @@ class Orchestrator:
         return found["ok"]
 
     def list_assets(self) -> list[dict]:
-        """Every Dataset this caller can read. `mount_path` says which are also on this disk —
-        useful for uploads, which need a writable mount, and no longer a condition of reading.
+        """Every Dataset this caller can read — API/SDK only, no mount, ever (Phase 5).
 
         `declared` is the sensitivity declaration, asked of the GATE rather than derived from the
         `tags` list beside it (ADR-0043) — that derivation read only the old datasetrw tag map,
@@ -20722,8 +20687,6 @@ class Orchestrator:
                 "name": a.name,
                 "tags": a.tags,
                 "project": a.project,
-                "writable": bool(a.mount_path and os.access(a.mount_path, os.W_OK)),
-                "mount_path": a.mount_path,
                 "declared": a.id in declared,
                 "project_owned": self._is_project_dataset(a),
             }
@@ -21275,7 +21238,7 @@ class Orchestrator:
         name = asset["name"] or dataset_id
         return self._record(
             Binding(KIND_DATASET, asset["id"], name, name),
-            {"project": asset.get("project"), "path": asset.get("mount_path")})
+            {"project": asset.get("project")})
 
     def bind_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",
@@ -22261,25 +22224,16 @@ class Orchestrator:
             # whole body of `attach_folder`'s 409, and a reader hunting why the act is withheld and
             # what to do instead reads past a clause about subtree completeness on the way (#189).
             return brand.text("Only part of this {dataset} could be listed. Attach files instead.")
-        if not asset.mount_path:
-            # Not "cannot measure it": since #153 the sizes are known here. What is still missing is
-            # a way to fetch a folder — every file comes down separately through
-            # `_download_attachment`, with nothing to report progress through (ADR-0029). That
-            # mechanism stays in this comment rather than in the sentence. Both surfaces this
-            # reaches are small and read once — a tooltip on the disabled button, and the whole body
-            # of `attach_folder`'s 409 — so it owes why the act is withheld and what to do instead,
-            # and a paragraph of mechanism is read past on the way to the second half (#181).
-            # "here" is load-bearing: the {dataset} is mounted somewhere, just not into this
-            # workspace.
-            return brand.text(
-                "This {dataset} isn't mounted here. Attach files instead."
-            )
+        # The file-count and byte caps are NOT checked here, on purpose, the same way the byte cap
+        # never was: both would need a second, per-folder listing to pre-flight (this reads the
+        # whole Dataset's listing, not one folder's), so both are enforced only inside the real act
+        # (`FolderTooManyFiles`, `AttachTooLarge`) and reported as the click's own refusal.
         return ""
 
     def list_asset_files(self, dataset_id: str) -> dict:
         """Files in a Dataset, each with its size and whether it's already attached. The size is
-        real on both paths — `stat()` on a mount, the platform's own on an unmounted Dataset since
-        #153 — and only a listing that came back sizeless reports a 0 nothing measured.
+        the platform's own, off the datasetrw API (#153) — and only a listing that came back
+        sizeless reports a 0 nothing measured.
 
         `measured` is `FileListing.measured`: whether this listing WEIGHED the files it named. An
         unweighed row loses its `size` key rather than reporting a zero indistinguishable from an
@@ -22288,15 +22242,13 @@ class Orchestrator:
         a total that quietly leaves out the rows it was never given is a second wrong number in
         place of the first. So the flag lets the tree say the total is not measured (#201).
 
-        Read off the listing and never off `asset.mount_path`: since #153 the platform weighs an
-        unmounted Dataset too, so keying on the mount would throw away sizes it did give.
-
         `truncated` says the listing stopped at the provider's cap, so what came back is part of
         the Dataset and no subtree in it can be proven whole (ADR-0029).
 
         `folder_act` is whether a folder row in this tree may offer **Attach folder**, and the
-        reason when it may not. Read off the same listing rather than asked for separately, because
-        the two things that withhold the act — no mount, a cut tail — are both facts about it.
+        reason when it may not — a cut tail, the one thing this cheap a check can know. The file
+        count and byte cap are real, but pre-flighting either needs a per-folder listing this
+        answer doesn't have; see `_folder_act_reason`.
 
         `attach_root` is where this Dataset's files are served from, `public/data/<slug>/`. Sent
         rather than rebuilt on the client, because rebuilding it means a second copy of `_slug` that
@@ -22328,7 +22280,7 @@ class Orchestrator:
 
     def _download_attachment(self, asset: Asset, file_path: str, dest: Path, total: int,
                              prune_root: Path) -> int:
-        """Fetch one file from a Dataset this container has no mount for. Returns its size.
+        """Fetch one file from a Dataset. Returns its size.
 
         The cap is enforced against the bytes that actually arrived, not the size the listing
         quoted: the download lands beside its destination and is moved into place once it fits, and
@@ -22360,10 +22312,8 @@ class Orchestrator:
         """Put one dataset file into the workspace under public/data/ so OpenCode can @mention it
         and the (static) preview/published app can fetch it.
 
-        A mounted Dataset is symlinked — no byte copy, and the link points at the live Domino mount.
-        A Dataset this container has no mount for is downloaded through the Domino data library,
-        which is how a Dataset shared from another project becomes attachable at all: mounts are
-        fixed when the execution starts, and waiting for a restart was the old answer.
+        Every Dataset is downloaded through the Domino data library — no mount, ever (Phase 5) —
+        which is also how a Dataset shared from another project becomes attachable at all.
         Enforces a configurable total-size cap across all attached files.
 
         `local_source` names bytes already fetched into this workspace — the scratch copy a Chat
@@ -22390,19 +22340,15 @@ class Orchestrator:
             if local_source is not None:
                 size = local_source.stat().st_size
                 _link_attachment(dest, local_source)
-            elif not asset.mount_path:
-                size = self._download_attachment(
-                    asset, file_path, dest, total,
-                    project.workspace.path / "public" / "data",
-                )
             else:
-                src = _safe_join(Path(asset.mount_path), file_path)
-                if not src.is_file():
-                    raise FileNotFoundError(file_path)
-                size = src.stat().st_size
-                if total + size > self._attach_max_bytes:
-                    raise AttachTooLarge(self._attach_max_bytes, total, size)
-                _link_attachment(dest, src)
+                # Pruned all the way back to the workspace root, not just to `public/data`: every
+                # attach is a download now (no mount, ever — Phase 5), so a rejected one has to
+                # leave NOTHING behind, including a `public/data/<slug>` this act alone created.
+                # `_prune_empty_dirs` only ever removes directories that are actually empty, so
+                # this cannot touch anything a prior attach or the app template put there.
+                size = self._download_attachment(
+                    asset, file_path, dest, total, project.workspace.path,
+                )
             project.attached.append(
                 _dataset_entry(dataset_id, asset.name, file_path, rel, size,
                                added_by=added_by, conversation_id=conversation_id,
@@ -22433,9 +22379,9 @@ class Orchestrator:
         once: one `_ensure_gitignored`, one `_write_agents_data_block`, one `write_attachments`, and
         the one `_rebaseline_turn` the block already makes.
 
-        Mounted Datasets only, and only while the listing is whole — see `_folder_act_reason`.
-        Already-attached files are passed over rather than counted twice, so the act is idempotent
-        and `attached` reports what it actually added.
+        Only while the listing is whole and the set is within both caps — see `_folder_act_reason`
+        and `FolderTooManyFiles`. Already-attached files are passed over rather than counted twice,
+        so the act is idempotent and `attached` reports what it actually added.
         """
         project = self.project()
         asset = self._find_asset(dataset_id)
@@ -22455,60 +22401,33 @@ class Orchestrator:
             # a running turn over either — the same no-op `attach_file` makes for one file.
             return {"attached": 0, "bytes": 0, "dataset": asset.name,
                     "folder": prefix.rstrip("/"), "status": project.status()}
+        if len(wanted) > self._folder_attach_max_files:
+            raise FolderTooManyFiles(self._folder_attach_max_files, len(wanted))
         total = sum(e["size"] for e in project.attached)
         incoming = sum(f.size for f in wanted)
         if total + incoming > self._attach_max_bytes:
             raise AttachTooLarge(self._attach_max_bytes, total, incoming)
-        data_root = project.workspace.path / "public" / "data"
-        # Not `or ""`: `_folder_act_reason` has already refused an unmounted Dataset, and a fallback
-        # here would resolve to the working directory and link against it rather than fail.
-        mount = Path(asset.mount_path)
-        # Nothing real is overwritten, and it is settled before the first link. A path holding a
-        # FILE rather than a symlink is something this act did not put there — and destroying it
-        # part way through an act that then refuses would be the partial state in its worst form,
-        # since the bytes are the one thing an unwind cannot give back.
-        needed: set[Path] = set()
-        for f in wanted:
-            rel = _attach_dest(asset.name, f.path)
-            standing = _safe_join(project.workspace.path, rel)
-            if standing.exists() and not standing.is_symlink():
-                # A directory trips this as readily as a file, and telling someone to move "a file"
-                # they will find is a folder describes neither what is there nor what to do.
-                raise AttachWouldClobber(rel)
-            needed.add(standing.parent)
-        # And the DIRECTORIES those links need. A real file standing at `public/data/<slug>/raw`
-        # is not any leaf path, so it slipped the check above and surfaced as a `NotADirectoryError`
-        # out of `mkdir` — a generic 500 in place of the refusal that names the path and says what
-        # to do about it. Walked per unique parent rather than per file, so a folder of 200 in one
-        # directory costs one walk.
-        # RESOLVED, on both sides. `_safe_join` builds on `root.resolve()`, so `standing` is
-        # resolved and `project.workspace.path` may not be — and where any component of it is a
-        # symlink the two never compare equal, the walk runs past the workspace to `/`, and the
-        # `relative_to` below raises `ValueError`, which the route answers with "invalid folder".
-        stop = project.workspace.path.resolve()
-        for parent in needed:
-            for ancestor in (parent, *parent.parents):
-                if ancestor == stop:
-                    break
-                if ancestor.exists() and not ancestor.is_dir():
-                    raise AttachWouldClobber(ancestor.relative_to(stop).as_posix())
+        # Pruned all the way back to the workspace root, not just to `public/data` — see the same
+        # comment in `attach_file`. A refused or unwound folder act must leave nothing behind,
+        # including a `public/data/<slug>` this act alone created.
+        data_root = project.workspace.path
         made: list[Path] = []
         entries: list[dict] = []
         described = False
-        # Read once, not per file: the folder act runs to two hundred of them (ADR-0029). The
-        # comparison itself is `_ledger_names`, the same one the single-file path uses.
+        # Read once, not per file: the folder act runs to `_folder_attach_max_files` of them
+        # (ADR-0029). The comparison itself is `_ledger_names`, the same one the single-file path
+        # uses.
         rows = _uploads_ledger(project.record.path)
+        running_total = total
         try:
             for f in wanted:
                 rel = _attach_dest(asset.name, f.path)
-                src = _safe_join(mount, f.path)
-                if not src.is_file():
-                    raise AttachSourceMissing(f.path)
                 dest = _safe_join(project.workspace.path, rel)
-                _link_attachment(dest, src)
+                size = self._download_attachment(asset, f.path, dest, running_total, data_root)
+                running_total += size
                 made.append(dest)
                 entries.append(_dataset_entry(
-                    dataset_id, asset.name, f.path, rel, f.size,
+                    dataset_id, asset.name, f.path, rel, size,
                     sage_upload=_ledger_names(rows, dataset_id, f.path)))
             # The record is inside the same try the links are. A write that failed after `extend`
             # used to leave the files in the preview and answer "Nothing was attached" — the lie
@@ -22552,9 +22471,9 @@ class Orchestrator:
         that route anyway, so asking what was in a file wrote it into the app's asset tree and into
         every later publish. This is the same fetch without either consequence.
 
-        Mounted stays the fast path — a symlink, no copy. A Dataset with no mount here is
-        downloaded, because `download_file` is the only content API a Dataset has: there is no
-        server-side read to push a question down to, the way a Data Source takes SQL.
+        Downloaded every time — no mount, ever (Phase 5) — because `download_file` is the only
+        content API a Dataset has: there is no server-side read to push a question down to, the way
+        a Data Source takes SQL.
 
         Idempotent: a chip re-added, or two chips naming the same file, fetch once.
         """
@@ -22565,16 +22484,8 @@ class Orchestrator:
         self._ensure_gitignored(project.record.path, _SCRATCH_PREFIX)
         if dest.is_symlink() or dest.is_file():
             return {"path": rel, "dataset": asset.name, "size": dest.stat().st_size}
-        if asset.mount_path:
-            src = _safe_join(Path(asset.mount_path), file_path)
-            if not src.is_file():
-                raise FileNotFoundError(file_path)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.symlink_to(src)
-            size = src.stat().st_size
-        else:
-            root = _safe_join(project.record.path, _CHAT_DATA_PREFIX.rstrip("/"))
-            size = self._download_attachment(asset, file_path, dest, _copied_bytes(root), root)
+        root = _safe_join(project.record.path, _CHAT_DATA_PREFIX.rstrip("/"))
+        size = self._download_attachment(asset, file_path, dest, _copied_bytes(root), root)
         return {"path": rel, "dataset": asset.name, "size": size}
 
     def detach_file(self, path: str) -> dict:
@@ -22832,93 +22743,21 @@ class Orchestrator:
                 "status": project.status()}
 
     def upload_file(self, filename: str, data: bytes, dataset_id: str | None = None) -> dict:
-        """Write an uploaded file into a writable dataset mount (persisted, and outside git), then
-        attach it under public/data/ like any dataset file.
+        """Always unavailable (Phase 5, ONE-APP-PLAN.md §3 decision #4): there is no writable
+        Dataset mount to write into any more, and no Dataset write API in use anywhere, so this
+        can never resolve a target — `_resolve_upload_target` always answers `None`.
 
-        - No `dataset_id` -> the shared default project dataset, under `uploads/`.
-        - A picked `dataset_id` -> that dataset, also under `uploads/`.
-
-        The committed manifest lets the published app rebuild public/data/ from the mount. Enforces
-        the same total-size cap as attach."""
-        project = self.project()
+        Uploads are becoming plain committed files under `uploaded_files/` at the project root
+        (and copied into `apps/<appId>/uploaded_files/` on attach) instead of a Dataset write —
+        that replacement is not yet built. Until it lands, an upload through this door is refused
+        rather than crashing on a mount that can no longer exist. `upload_scratch` (Chat-local,
+        gitignored `.sage/scratch/`) is unaffected — it never wrote to a Dataset."""
         if not filename or not filename.strip():
             raise ValueError("filename required")
-        name = _slug(filename)
         target = self._resolve_upload_target(dataset_id)
-        if target is None or not target.mount_path:
+        if target is None:
             raise UploadUnavailable()
-        size = len(data)
-        total = sum(e["size"] for e in project.attached)
-        if total + size > self._attach_max_bytes:
-            raise AttachTooLarge(self._attach_max_bytes, total, size)
-        rel_in_dataset = PurePosix("uploads", name).as_posix()
-        dest_bytes = _safe_join(Path(target.mount_path), rel_in_dataset)
-        rel = _attach_dest(target.name, rel_in_dataset)
-        link = _safe_join(project.workspace.path, rel)   # resolved BEFORE any write, so a rejected
-        dest_bytes.parent.mkdir(parents=True, exist_ok=True)  # path fails without stranding bytes
-        # The bytes land on the dataset mount, which is OUTSIDE git and outside the workspace, while
-        # everything that RECORDS them (symlink, manifest, AGENTS.md) is inside it. A failure in
-        # between therefore strands data on a shared mount with nothing pointing at it — invisible
-        # to detach/delete. So the write is undone on any failure. `created` guards the one case we
-        # must not undo: overwriting a same-named re-upload already destroyed the old bytes, and
-        # deleting the file would compound that.
-        created = not dest_bytes.exists()
-        dest_bytes.write_bytes(data)
-        try:
-            # The one moment Sage knows it wrote these bytes. Noted where it outlives the entry
-            # below, which detach deletes, so the file keeps its destroy door when it comes back as
-            # any other Dataset file (#274). Inside the try, and undone with the bytes.
-            #
-            # The entry is stamped from whether that landed, not from the fact that Sage wrote the
-            # file: the ledger is what the unlink will ask, so a stamp it does not back is a destroy
-            # door that detaches and says it deleted.
-            noted = _note_sage_upload(project.record.path, target.id, rel_in_dataset)
-            link.parent.mkdir(parents=True, exist_ok=True)
-            if link.is_symlink() or link.exists():
-                link.unlink()
-            link.symlink_to(dest_bytes)
-            project.attached[:] = [e for e in project.attached if e["path"] != rel]
-            project.attached.append(
-                {"dataset_id": target.id, "dataset": target.name, "file": rel_in_dataset, "path": rel,
-                 "size": size, "source": "upload", "sage_upload": noted,
-                 "dataset_rel_path": rel_in_dataset}
-            )
-            self._ensure_gitignored(project.workspace.path, "public/data/")
-            self._write_agents_data_block(project)
-            project.workspace.write_attachments(project.attached)
-        except Exception:
-            project.attached[:] = [e for e in project.attached if e["path"] != rel]
-            # One step, so the note goes only where the bytes went — `delete_file`'s rule, which
-            # this used to break by gating both on `created` alone: an unlink that failed (a mount
-            # gone read-only, EBUSY) left the bytes in the Dataset and still dropped the one record
-            # granting their door. A raise here is caught below and the forget never runs.
-            #
-            # `created is False` keeps the line on purpose, and the early return is where. Those
-            # bytes were OVERWRITTEN, so they are not given back and what stands at that path is
-            # Sage's however this act ends. A record of that is unearned by a rolled-back upload and
-            # still true, and dropping it would leave Sage's own bytes there with no door.
-            def _undo_bytes() -> None:
-                if not created:
-                    return
-                dest_bytes.unlink()
-                _forget_sage_upload(project.record.path, target.id, rel_in_dataset)
-
-            for undo in (lambda: link.unlink() if link.is_symlink() or link.exists() else None,
-                         lambda: _prune_empty_dirs(link.parent,
-                                                   project.workspace.path / "public" / "data"),
-                         _undo_bytes,
-                         lambda: project.workspace.write_attachments(project.attached)):
-                try:
-                    undo()
-                except OSError:
-                    pass  # best effort — rollback must never mask the failure that caused it
-            raise
-        # descriptor rides the response so the Data panel can flag an image the agent can't see
-        # immediately, instead of only after the next page load refetches the attachment list.
-        entry = next((e for e in project.attached if e["path"] == rel), {})
-        return {"uploaded": name, "dataset": target.name, "dataset_id": target.id, "path": rel,
-                "size": size,
-                "descriptor": entry.get("descriptor"), "status": project.status()}
+        raise AssertionError("unreachable: _resolve_upload_target never returns a target")
 
     def upload_scratch(self, filename: str, data: bytes) -> dict:
         """Write a Chat-local file into gitignored `.sage/scratch/`. No Dataset required."""
@@ -22960,17 +22799,12 @@ class Orchestrator:
         return result
 
     def _resolve_upload_target(self, dataset_id: str | None) -> Asset | None:
-        """The dataset an upload writes into: a picked one if it is mounted and writable, else the
-        shared default project dataset."""
-        if dataset_id:
-            try:
-                target = self._find_asset(dataset_id)
-            except LookupError:
-                return None
-            if not target.mount_path or not os.access(target.mount_path, os.W_OK):
-                return None
-            return target
-        return self._default_dataset()
+        """The dataset an upload writes into. Always `None` (Phase 5, ONE-APP-PLAN.md §3 decision
+        #4): there is no mount to write into and no Dataset write API in use anywhere, so a
+        Dataset can never be an upload's target any more — `upload_file` always reports
+        `UploadUnavailable`. Kept, rather than removed, as the one seam a committed
+        `uploaded_files/` replacement (still unbuilt) will need to replace, not bypass."""
+        return None
 
     def default_dataset_id(self) -> str | None:
         """Id of the dataset uploads land in when the user doesn't pick one — lets the UI label and
@@ -22979,23 +22813,12 @@ class Orchestrator:
         return target.id if target else None
 
     def _default_dataset(self) -> Asset | None:
-        """The shared default project dataset to write uploads into: a writable, mounted dataset,
-        preferring the project's own (named after / owned by the project, mounted under /mnt/data),
-        falling back to the first writable dataset (covers the local fake harness)."""
-        writable = [a for a in self._assets.list_datasets(self._domino_project_id)
-                    if a.mount_path and os.access(a.mount_path, os.W_OK)]
-        pname = self._domino_project_name
-        if pname:
-            for a in writable:
-                if a.name == pname and str(a.mount_path).startswith("/mnt/data"):
-                    return a
-            for a in writable:
-                if a.project == pname or a.name == pname:
-                    return a
-        return writable[0] if writable else None
+        """The shared default project dataset to write uploads into. Always `None` — see
+        `_resolve_upload_target`."""
+        return None
 
     def delete_file(self, path: str) -> dict:
-        """Delete an UPLOADED file: remove its workspace symlink AND its bytes from the dataset mount,
+        """Delete an UPLOADED file: remove its workspace symlink AND its bytes from the Dataset,
         then forget it. Bytes are deleted only for bytes Sage itself wrote, which `_is_sage_upload`
         answers off the record rather than off the folder the file sits in (#274). Any other
         Dataset file is detach-only here; its bytes are the person's data and never removed."""
@@ -23063,65 +22886,15 @@ class Orchestrator:
     def _delete_upload_bytes(self, entry: dict) -> bool:
         """Remove an uploaded file's bytes from its dataset mount. Answers whether they are gone.
 
-        What the guard here enforces is REACH: the unlink lands under a Sage upload folder
-        (`_SAGE_UPLOAD_PREFIXES`) resolved inside that mount, and nowhere else in the Dataset.
-        It does not establish STANDING, and used to be read as if it did — a person's own file
-        under their own `uploads/` folder passes it (#274). Standing is `_is_sage_upload`'s answer,
-        asked by the one caller before this runs.
-
-        Retire it if a Sage upload ever writes outside those folders, or fold it into the call above
-        if the two ever need to agree on one path; until then it is belt to that caller's braces.
-
-        False for every way this gives up — a Dataset that is not mounted here, a path it will not
-        resolve, a failed unlink — so the caller can tell a Dataset it emptied from one it never
-        reached. It is not a report to the person: the symlink goes either way, and this door's
-        promise is about the workspace. What it decides is whether the upload ledger may forget.
-
-        REACHABILITY IS ASKED OF THE PROVIDER, NEVER INFERRED FROM ABSENCE. `mount_path` is set only
-        where the provider found that directory (`_mount_path_for`), and `mount.is_dir()` re-asks
-        that same claim now rather than trusting a listing that may be cached. Everything below the
-        mount root describes the FILE and must not feed this answer — absence there is equally the
-        bytes being gone and the Dataset not being here, and a probe that reads one as the other
-        just moves the lie.
-
-        An earlier revision also required the file's own folder, to catch a mount point a container
-        pre-created and a mount that then failed. It was removed: Sage prunes an emptied
-        `uploads/` itself, so that probe reported REACHED AS UNREACHABLE for a path Sage had already
-        cleaned up — keeping a dead ledger line and telling the person their data was still in the
-        Dataset when it was not. What survives is the residue the other way: a mount point with no
-        Dataset behind it reads as a Dataset whose file is gone. That direction is the right one to
-        fail in, because its cost is a destroy door that disappears, and the other's is a destroy
-        door that appears over somebody's file."""
-        rel = entry.get("dataset_rel_path") or ""
-        if not rel.startswith(_SAGE_UPLOAD_PREFIXES):
-            return False
-        asset = next((a for a in self._assets.list_datasets(self._domino_project_id)
-                      if a.id == entry.get("dataset_id")), None)
-        if asset is None or not asset.mount_path:
-            return False
-        mount = Path(asset.mount_path)
-        if not mount.is_dir():
-            return False
-        try:
-            target = _safe_join(mount, rel)
-        except ValueError:
-            return False
-        removed = False
-        try:
-            if target.is_file():
-                target.unlink()
-                removed = True
-        except OSError:
-            log.exception("delete_upload_bytes: failed to remove %s", rel)
-            return False
-        # After the answer is settled, not inside it: sharing the unlink's `try` let a `resolve()`
-        # on a sick mount turn a file that IS gone into False, leaving the ledger naming a destroyed
-        # path. And only where this act did the emptying — a folder Sage neither created nor emptied
-        # is not Sage's to tidy away, even one inside `_SAGE_UPLOAD_PREFIXES`.
-        if removed:
-            with contextlib.suppress(OSError):
-                _prune_empty_dirs(target.parent, mount)
-        return True
+        Always `False` (Phase 5, ONE-APP-PLAN.md §3 decision #4): there is no mount, ever, so this
+        can never reach a Dataset's bytes to remove them — the same "gives up" contract this
+        already had for a Dataset that was not mounted HERE, now true of every Dataset. A `True`
+        stamped by a PRE-Phase-5 upload stays in an old project's ledger; this just can never
+        reach what it once could to earn a new one. Not a report to the person: the symlink goes
+        either way (`delete_file`), and this door's promise is about the workspace. What it decides
+        is whether the upload ledger may forget — and since it never reaches the bytes, it never
+        does."""
+        return False
 
     def delete_scratch(self, path: str) -> dict:
         """Delete an Upload's bytes from `.sage/scratch/`. No `DataReferenced` guard and no turn

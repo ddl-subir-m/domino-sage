@@ -20,28 +20,11 @@ from typing import Any, Protocol
 from ..orchestrator import brand
 from ..resources.provider import ResourceUnavailable
 
-# Where Domino mounts a project's datasets in the running container. DFS projects use
-# /domino/datasets/local; git-based projects use /mnt/data (local) and /mnt/imported/data (shared).
-# DOMINO_DATASET_MOUNT_PATH / DOMINO_MOUNT_PATHS override (os.pathsep- or comma-separated).
-DEFAULT_DATASET_MOUNT_ROOTS = ("/domino/datasets/local", "/mnt/data", "/mnt/imported/data")
 # How many files a listing returns, and how far it will stat to build one. It does NOT bound the
-# directory traversal: `walk_files` sorts the whole mount before taking a prefix, because the
-# prefix has to be the sorted one (ADR-0029) and nothing can know which names sort first without
-# seeing all of them. A pathological mount still costs one full traversal per listing.
+# server-side walk: the platform's own `files/recursive` sorts the whole tree before this takes a
+# prefix, because the prefix has to be the sorted one (ADR-0029) and nothing can know which names
+# sort first without seeing all of them. A pathological Dataset still costs one full listing.
 _MAX_FILES = 5000
-
-
-def resolve_mount_roots(env: dict[str, str] | None = None) -> list[str]:
-    """Dataset mount roots to probe, env overrides first, then the Domino defaults (deduped)."""
-    env = env if env is not None else dict(os.environ)
-    roots: list[str] = []
-    for key in ("DOMINO_DATASET_MOUNT_PATH", "DOMINO_MOUNT_PATHS"):
-        raw = env.get(key)
-        if raw:
-            roots += [p.strip() for p in raw.replace(os.pathsep, ",").split(",") if p.strip()]
-    roots += list(DEFAULT_DATASET_MOUNT_ROOTS)
-    seen: set[str] = set()
-    return [r for r in roots if not (r in seen or seen.add(r))]
 
 
 @dataclass(frozen=True)
@@ -50,7 +33,6 @@ class Asset:
     name: str
     tags: list[str] = field(default_factory=list)
     project: str | None = None  # owning project name
-    mount_path: str | None = None  # absolute in-container path where this dataset is mounted
     # {tagName: snapshotId} from the datasetrw v2 map. Tagging attaches to a snapshot, so this lets
     # us tag an already-tagged dataset without a snapshot fetch (an untagged one still needs one).
     tag_snapshots: dict[str, str] = field(default_factory=dict)
@@ -147,8 +129,11 @@ def is_sensitive(asset: Asset, tags: Collection[str] | None = None) -> bool:
     return any(t.lower() in want for t in asset.tags)
 
 
-def walk_files(root: Path) -> FileListing:
-    """List regular files under a dataset mount, relative + sized. Skips dotfiles and caps count."""
+def _walk_dir(root: Path) -> FileListing:
+    """List regular files under a directory, relative + sized. Skips dotfiles and caps count.
+
+    Used only by `FakeAssetProvider`, which keeps its seeded Datasets as real files on disk — real
+    Datasets are listed and read over the platform API (`DominoAssetProvider`), never off a mount."""
     out: list[DatasetFile] = []
     for p in sorted(root.rglob("*")):
         if not p.is_file() or any(part.startswith(".") for part in p.relative_to(root).parts):
@@ -220,7 +205,7 @@ _FAKE_SPEC = {
 @dataclass
 class FakeAssetProvider:
     """In-memory datasets for local testing/demo (no Domino). Seeds sample files under a temp
-    mount root so attaching (symlinking) real bytes into the workspace works off-Domino."""
+    directory so downloading real bytes into the workspace works end-to-end off-Domino."""
 
     root: Path | None = None
     assets: list[Asset] = field(default_factory=list)
@@ -228,6 +213,12 @@ class FakeAssetProvider:
     # beside `assets` rather than on the Asset, because that is where the real split lives: the
     # datasetrw listing that fills `Asset.tags` never carries these (ADR-0043).
     taxonomy: dict[str, list[str]] = field(default_factory=dict)
+    # Where each Dataset's fake files live, keyed by Asset id. Not a field on `Asset` itself: a
+    # real `Asset` never names a filesystem path (Phase 5 — Datasets are API/SDK-only, no mounts),
+    # so this bookkeeping stays on the fake rather than reintroducing the field it replaced. Public,
+    # not `assets`-derived: a caller that hands its own `Asset`s to `.assets` (a common test
+    # pattern, replacing the seeded demo set) registers their fake locations here too.
+    roots: dict[str, Path] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.root is None:
@@ -250,21 +241,35 @@ class FakeAssetProvider:
                 fp = d / fn
                 if not fp.exists():
                     fp.write_text(content)
-            seeded.append(Asset(f"ds_{name}", name, tags=tags, project=proj, mount_path=str(d)))
+            asset = Asset(f"ds_{name}", name, tags=tags, project=proj)
+            self.roots[asset.id] = d
+            seeded.append(asset)
         self.assets = seeded
 
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         return list(self.assets)
 
     def list_files(self, asset: Asset) -> FileListing:
-        return walk_files(Path(asset.mount_path)) if asset.mount_path else FileListing([])
+        root = self.roots.get(asset.id)
+        return _walk_dir(root) if root else FileListing([])
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
         import shutil
 
-        src = Path(asset.mount_path or "") / rel_path
+        root = self.roots.get(asset.id)
+        src = (root / rel_path) if root else Path(rel_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dest)
+        try:
+            shutil.copyfile(src, dest)
+        except OSError as e:
+            # Wrapped, matching `DominoAssetProvider`'s own contract: a caller mid-act (a folder
+            # attach downloading many files) tells a file that vanished apart from a folder that
+            # never existed only by the exception type, and a bare `FileNotFoundError` here would
+            # answer as the latter (`app.py`'s route catches it as "folder not found").
+            raise ResourceUnavailable(
+                brand.text("{platformName} did not send {path} from {dataset} {name} ({err}).",
+                          path=rel_path, name=asset.name, err=type(e).__name__)
+            ) from e
         return dest.stat().st_size
 
     def list_taxonomy_labels(self, dataset_id: str) -> list[str]:
@@ -306,12 +311,12 @@ def parse_tag_snapshots(raw: Any) -> dict[str, str]:
 class DominoAssetProvider:
     """Reads datasets via the Domino public datasetrw v2 API.
 
-    Needs DOMINO_API_HOST + a token. Every dataset this caller can read is listed, and every one of
-    them can be read: `mount_path` is set only when this container happens to have the files on
-    disk, and that is a fast path, not a gate. A mount covers one project and is fixed when the
-    execution starts, so most Datasets a person can read — including every Dataset shared with them
-    from another project — are never mounted here. Those are listed straight off the datasetrw API
-    and read a file at a time through `domino_data`.
+    Needs DOMINO_API_HOST + a token. API/SDK only, no mounts (ONE-APP-PLAN.md Phase 5): every
+    Dataset this caller can read is listed off the datasetrw API, and every one of them is read a
+    file at a time through `domino_data`, whether or not this project happens to have it mounted —
+    a mount covers one project and is fixed when the execution starts, so most Datasets a person can
+    read, including every Dataset shared with them from another project, were never on this
+    container's disk anyway.
     """
 
     _PAGE = 100
@@ -322,14 +327,12 @@ class DominoAssetProvider:
         api_host: str,
         token_provider: Callable[[], str],
         timeout_s: float = 20.0,
-        mount_roots: list[str] | None = None,
         dataset_client: Any | None = None,
         sdk_credential: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self._api_host = api_host.rstrip("/")
         self._token_provider = token_provider
         self._timeout_s = timeout_s
-        self._mount_roots = mount_roots if mount_roots is not None else resolve_mount_roots()
         self._dataset_client = dataset_client  # injected in tests; built per call otherwise
         # None (the default) keeps today's no-argument `DatasetClient()` — the sidecar-implicit
         # form below already relies on. Set only for an off-sidecar TokenSource (a laptop PAT):
@@ -337,7 +340,7 @@ class DominoAssetProvider:
         self._sdk_credential = sdk_credential
 
     def _sdk_dataset(self, asset: Asset) -> Any:
-        """A `domino_data` handle for one Dataset, whether or not it is mounted here.
+        """A `domino_data` handle for one Dataset.
 
         With no `sdk_credential` (the Domino App/workspace default), `DatasetClient()` is built
         with no arguments on purpose: it reads DOMINO_API_PROXY — the same localhost:8899 sidecar
@@ -360,13 +363,6 @@ class DominoAssetProvider:
             )) from e
         kwargs = self._sdk_credential() if self._sdk_credential is not None else {}
         return DatasetClient(**kwargs).get_dataset(dataset_unique_name(asset))
-
-    def _mount_path_for(self, name: str) -> str | None:
-        for root in self._mount_roots:
-            p = Path(root) / name
-            if p.is_dir():
-                return str(p)
-        return None
 
     def list_datasets(self, project_id: str | None) -> list[Asset]:
         import httpx
@@ -427,7 +423,6 @@ class DominoAssetProvider:
                         name=name,
                         tags=parse_tags(ds.get("tags")),
                         project=str(proj) if proj else None,
-                        mount_path=self._mount_path_for(name),
                         tag_snapshots=parse_tag_snapshots(ds.get("tags")),
                     )
                 )
@@ -565,17 +560,14 @@ class DominoAssetProvider:
         return str(max(active, key=lambda s: s.get("version") or 0).get("id") or "") or None
 
     def list_files(self, asset: Asset) -> FileListing:
-        """The files in a Dataset, sized: from the mount when this container has one, from the
-        datasetrw API when it does not.
+        """The files in a Dataset, sized, off the datasetrw API — no mount, ever (Phase 5).
 
-        The API path used to go through `domino_data`, whose listing endpoint returns names and
-        nothing else, so every file in an unmounted Dataset reported 0 bytes. `files/recursive`
-        carries the sizes the platform already knows, and it returns the whole tree in one response
-        — no `page_size`, no continuation token — so the cap is applied here and `truncated` is
-        measured against the real count instead of inferred from a full page.
+        This used to go through `domino_data`, whose listing endpoint returns names and nothing
+        else, so every file reported 0 bytes. `files/recursive` carries the sizes the platform
+        already knows, and it returns the whole tree in one response — no `page_size`, no
+        continuation token — so the cap is applied here and `truncated` is measured against the
+        real count instead of inferred from a full page.
         """
-        if asset.mount_path:
-            return walk_files(Path(asset.mount_path))
         snapshot_id = self._latest_snapshot_id(asset)
         if not snapshot_id:
             return FileListing([])
@@ -593,9 +585,9 @@ class DominoAssetProvider:
             # read as a 0-byte file — the very thing this listing is here to stop reporting.
             if name.get("isDirectory"):
                 continue
-            # `fileName` is the full path relative to the Dataset root and already POSIX, so it
-            # agrees with what `walk_files` produces for the same tree. `label` is only the
-            # basename, and reading it would collapse every nested file onto its siblings.
+            # `fileName` is the full path relative to the Dataset root and already POSIX. `label`
+            # is only the basename, and reading it would collapse every nested file onto its
+            # siblings.
             path = str(name.get("fileName") or name.get("label") or "")
             if not path:
                 continue
@@ -615,16 +607,60 @@ class DominoAssetProvider:
                            measured=all(w is not None for _, w in kept))
 
     def download_file(self, asset: Asset, rel_path: str, dest: Path) -> int:
-        """Copy one file out of a Dataset this container has no mount for. Returns bytes written."""
-        dataset = self._sdk_dataset(asset)
+        """Copy one Dataset file to `dest`. Returns bytes written.
+
+        `domino_data` is the primary path, on-sidecar or off (`_sdk_dataset`). A laptop's static
+        credential is the one shape that has never been live-verified against `DatasetClient(...)`
+        (ONE-APP-PLAN.md risk #1/#4) — if the SDK refuses it, this falls back to the plain REST
+        read the Built App relay already allow-lists for the same reason
+        (`template/fastapi-antd/sage_domino.py`'s `PLATFORM_READS`, the `/v4/datasetrw/snapshot/`
+        family's `file/raw?path=`). Sidecar-backed callers (an App/workspace) have no fallback: a
+        real SDK failure there is a real failure, not a credential-shape mismatch to route around.
+        """
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
-            dataset.download_file(rel_path, str(dest))
+            self._sdk_dataset(asset).download_file(rel_path, str(dest))
+            return dest.stat().st_size
         except Exception as e:
+            if self._sdk_credential is None:
+                raise ResourceUnavailable(
+                    brand.text(
+                        "{platformName} did not send {path} from {dataset} {name} ({err}).",
+                        path=rel_path, name=asset.name, err=type(e).__name__,
+                    )
+                ) from e
+        try:
+            return self._download_via_rest(asset, rel_path, dest)
+        except ResourceUnavailable:
+            raise
+        except Exception as e2:
             raise ResourceUnavailable(
                 brand.text(
                     "{platformName} did not send {path} from {dataset} {name} ({err}).",
-                    path=rel_path, name=asset.name, err=type(e).__name__,
+                    path=rel_path, name=asset.name, err=type(e2).__name__,
                 )
-            ) from e
+            ) from e2
+
+    def _download_via_rest(self, asset: Asset, rel_path: str, dest: Path) -> int:
+        """The REST fallback `download_file` reaches for once the SDK has already refused a static
+        credential. Same family the Built App relay allow-lists, `/v4/datasetrw/snapshot/{id}/
+        file/raw?path=`, read against the Dataset's own latest snapshot rather than a mount."""
+        import httpx
+
+        snapshot_id = self._latest_snapshot_id(asset)
+        if not snapshot_id:
+            raise ResourceUnavailable(brand.text(
+                "{dataset} {name} has no committed snapshot to read from.", name=asset.name,
+            ))
+        headers = {"Authorization": f"Bearer {self._token_provider()}"}
+        url = f"{self._api_host}/v4/datasetrw/snapshot/{snapshot_id}/file/raw"
+        with httpx.stream("GET", url, headers=headers, params={"path": rel_path},
+                          timeout=self._timeout_s) as r:
+            if r.status_code >= 400:
+                raise ResourceUnavailable(brand.text(
+                    "{platformName} answered {code} for {path} in {dataset} {name}.",
+                    path=rel_path, name=asset.name, code=r.status_code,
+                ))
+            with open(dest, "wb") as f:
+                f.writelines(r.iter_bytes())
         return dest.stat().st_size

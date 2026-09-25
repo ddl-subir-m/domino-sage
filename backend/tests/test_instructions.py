@@ -33,6 +33,16 @@ def _agents(ws: Path) -> str:
     return (ws / "AGENTS.md").read_text()
 
 
+def _attach_data(orch: Orchestrator, filename: str, data: bytes) -> dict:
+    """What these tests actually need: a real attached file, to trigger
+    `_write_agents_data_block`. `upload_file` always refuses now (Phase 5 decision #4 — no Dataset
+    write API in use anywhere), so this writes the bytes into the default seeded Dataset and
+    attaches them instead — the same `_write_agents_data_block` call, reached a different way."""
+    ds = next(a["id"] for a in orch.list_assets() if a["name"] == "sales_2026")
+    (orch._assets.roots[ds] / filename).write_bytes(data)
+    return orch.attach_file(ds, filename)
+
+
 def test_write_inserts_managed_block_after_template_body(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
@@ -49,7 +59,7 @@ def test_write_inserts_managed_block_after_template_body(tmp_path: Path):
 def test_block_sits_between_template_body_and_attached_data(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    orch.upload_file("d.csv", b"a,b\n1,2\n")   # writes attached-data block
+    _attach_data(orch, "d.csv", b"a,b\n1,2\n")   # writes attached-data block
     orch.write_instructions(proj, "Prefer bar charts.")
 
     text = _agents(proj.workspace.path)
@@ -74,7 +84,7 @@ def test_round_trip_returns_only_the_raw_body(tmp_path: Path):
 def test_writing_instructions_does_not_disturb_attached_data_block(tmp_path: Path):
     orch = _orch(tmp_path)
     proj = orch.project(start_preview=False)
-    orch.upload_file("d.csv", b"a,b\n1,2\n")
+    _attach_data(orch, "d.csv", b"a,b\n1,2\n")
     before = _agents(proj.workspace.path)
     data_region = before[before.index(orch._AGENTS_BEGIN):before.index(orch._AGENTS_END)]
 
@@ -90,7 +100,7 @@ def test_writing_attached_data_does_not_disturb_instructions_block(tmp_path: Pat
     proj = orch.project(start_preview=False)
     orch.write_instructions(proj, "Keep it minimal.")
 
-    orch.upload_file("d.csv", b"a,b\n1,2\n")   # calls _write_agents_data_block
+    _attach_data(orch, "d.csv", b"a,b\n1,2\n")   # calls _write_agents_data_block
 
     assert orch.read_instructions(proj) == "Keep it minimal."  # instructions survive intact
     assert orch._AGENTS_BEGIN in _agents(proj.workspace.path)

@@ -40,7 +40,7 @@ def _mount(root: Path, count: int) -> Path:
 
 def test_a_complete_walk_reports_every_file_and_no_truncation(tmp_path, monkeypatch):
     monkeypatch.setattr(assets, "_MAX_FILES", 4)
-    listing = assets.walk_files(_mount(tmp_path, 3))
+    listing = assets._walk_dir(_mount(tmp_path, 3))
 
     assert [f.path for f in listing.files] == ["early/f00000.csv", "late/f00001.csv",
                                                "late/f00002.csv"]
@@ -50,7 +50,7 @@ def test_a_complete_walk_reports_every_file_and_no_truncation(tmp_path, monkeypa
 def test_a_walk_that_exactly_fills_the_cap_is_not_truncated(tmp_path, monkeypatch):
     """The boundary the old `break` could not see: full is not the same as cut."""
     monkeypatch.setattr(assets, "_MAX_FILES", 4)
-    listing = assets.walk_files(_mount(tmp_path, 4))
+    listing = assets._walk_dir(_mount(tmp_path, 4))
 
     assert len(listing.files) == 4
     assert listing.truncated is False
@@ -58,7 +58,7 @@ def test_a_walk_that_exactly_fills_the_cap_is_not_truncated(tmp_path, monkeypatc
 
 def test_a_walk_that_stops_short_says_so_and_still_reports_the_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(assets, "_MAX_FILES", 4)
-    listing = assets.walk_files(_mount(tmp_path, 9))
+    listing = assets._walk_dir(_mount(tmp_path, 9))
 
     assert len(listing.files) == 4
     assert listing.truncated is True
@@ -77,7 +77,7 @@ def test_what_the_walk_would_have_skipped_anyway_does_not_read_as_truncation(tmp
     (root / "zzz_hidden" / ".secret").write_text("x")
     (root / ".dotfile").write_text("x")
 
-    assert assets.walk_files(root).truncated is False
+    assert assets._walk_dir(root).truncated is False
 
 
 # --- the provider --------------------------------------------------------------------------
@@ -100,7 +100,7 @@ def _api(monkeypatch, paths):
              "size": {"sizeInBytes": 1}, "lastModified": 1} for p in paths]})
 
     monkeypatch.setattr(httpx, "get", get)
-    return DominoAssetProvider("http://domino", lambda: "t", mount_roots=[])
+    return DominoAssetProvider("http://domino", lambda: "t")
 
 
 def test_an_unmounted_listing_that_overflows_the_cap_reports_the_sorted_prefix(monkeypatch):
@@ -159,22 +159,26 @@ def test_a_directory_row_does_not_count_toward_the_cut(monkeypatch):
         return httpx.Response(200, json={"rows": rows})
 
     monkeypatch.setattr(httpx, "get", get)
-    listing = DominoAssetProvider("http://domino", lambda: "t", mount_roots=[]).list_files(
+    listing = DominoAssetProvider("http://domino", lambda: "t").list_files(
         Asset(id="i1", name="ds"))
 
     assert [f.path for f in listing.files] == ["early/f0.csv", "early/f1.csv", "late/f2.csv"]
     assert listing.truncated is False
 
 
-def test_a_mounted_dataset_reports_the_walks_own_answer(tmp_path, monkeypatch):
+def test_a_fake_datasets_walk_reports_the_walks_own_answer(tmp_path, monkeypatch):
+    """`FakeAssetProvider` walks real files on disk, so it hits the same sorted-prefix cap a real
+    mount used to (`_walk_dir`, still the mechanism the local/laptop demo harness uses)."""
     monkeypatch.setattr(assets, "_MAX_FILES", 2)
-    asset = Asset(id="i1", name="ds", mount_path=str(_mount(tmp_path, 5)))
+    provider = FakeAssetProvider()
+    asset = Asset(id="i1", name="ds")
+    provider.assets = [asset]
+    provider.roots["i1"] = _mount(tmp_path, 5)
 
-    assert _api(monkeypatch, ["should-not-be-used"]).list_files(asset).truncated is True
-    assert FakeAssetProvider().list_files(asset).truncated is True
+    assert provider.list_files(asset).truncated is True
 
 
-def test_a_dataset_with_no_mount_at_all_lists_nothing_and_claims_nothing(tmp_path):
+def test_a_dataset_with_no_fake_files_registered_lists_nothing_and_claims_nothing():
     """`FakeAssetProvider` answers for an Asset it never seeded; empty is not truncated."""
     listing = FakeAssetProvider().list_files(Asset(id="i1", name="ds"))
 
