@@ -545,6 +545,16 @@ place comes. Cancelling one is a different act from stopping the turn that is ru
 _Kind_: name
 _Avoid_: queued job, scheduled turn, draft (a draft is text nobody has sent)
 
+**Attempt**:
+One send of a [[Turn]]'s request into a session: the `initial` Attempt, and at most one `recovery`
+Attempt per allowance when the first came back unusable. A Turn that recovered once and then
+succeeded is one Turn with two Attempts, and its `done` row counts the recovery
+([ADR-0069](docs/adr/0069-a-terminal-failure-names-its-cause-on-the-done-row.md)). The integer
+on a `build-recovery` row is a count of recoveries, not an Attempt.
+_Kind_: name
+_Avoid_: retry (that is what the person does by hand), try, iteration (that is a Build nudge
+inside one Attempt), request (that is one call to a gateway, of which an Attempt makes many)
+
 **Lead-in**:
 The Chat turns that led to one Built App: every turn after the previous confirmed handoff and before that
 app's first build turn. A Conversation that drove three apps has three Lead-ins, and they do not
