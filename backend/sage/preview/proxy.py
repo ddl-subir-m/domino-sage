@@ -216,7 +216,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                      get_llm: Callable[[], tuple[str, str] | None] | None = None,
                      approve_model: Callable[[str], str | None] | None = None,
                      get_platform: Callable[[], object | None] | None = None,
-                     get_mount_base: Callable[[], str] | None = None) -> FastAPI:
+                     get_mount_base: Callable[[], str] | None = None,
+                     get_status: Callable[[], dict] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
     Vite bakes `base = <base_prefix>/preview/` into the HTML/JS it serves, so it only responds at
@@ -249,17 +250,16 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
 
     app = FastAPI(title="sage preview proxy")
 
-    def _starting(detail: str) -> JSONResponse:
-        # 502, not 500: the upstream Vite dev server isn't ready — still booting on first launch, or
-        # restarting/re-optimizing after the agent installs a dependency. Transient; a refresh recovers.
+    def _unavailable(detail: str, snapshot: dict | None = None) -> JSONResponse:
+        status = dict(snapshot or (get_status() if get_status else {}))
+        if not status:
+            status = {"appId": None, "generation": None, "server": None, "attempt": 0,
+                      "state": "failed", "error": detail, "output": []}
+        elif status.get("state") == "ready":
+            status.update(state="failed", error=detail)
         return JSONResponse(
             status_code=502,
-            content={
-                "preview": "upstream Vite dev server not ready",
-                "error": detail,
-                "hint": "The preview server is still starting or reloading (first launch installs deps; "
-                "adding a dependency triggers a restart). Wait a moment, then refresh.",
-            },
+            content={"preview": status, "error": status.get("error") or detail},
         )
 
     @app.websocket("/{path:path}")
@@ -317,7 +317,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
         try:
             upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
         except Exception as e:
-            return _starting(f"{type(e).__name__}: {e}")
+            return _unavailable(f"{type(e).__name__}: {e}")
+        snapshot = get_status() if get_status else None
         url = f"{upstream}{mount_base()}/{path}"
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
         body = await request.body()
@@ -325,17 +326,9 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
         req = client.build_request(request.method, url, headers=headers, params=request.query_params, content=body)
         try:
             upstream = await client.send(req, stream=True)
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError, OSError) as e:
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError, OSError) as e:
             await client.aclose()
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "preview": "upstream Vite dev server not reachable",
-                    "error": f"{type(e).__name__}: {e}",
-                    "hint": "The preview server is still starting (first launch installs deps). "
-                    "Check the workspace logs for Vite's 'Local:' line, then refresh.",
-                },
-            )
+            return _unavailable(f"{type(e).__name__}: {e}", snapshot)
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP}
 
         async def body_iter():

@@ -276,7 +276,8 @@ def test_the_proxy_sends_queries_to_serve_py_and_everything_else_to_vite(tmp_pat
     # Vite is not up, so anything NOT intercepted reaches the "still starting" 502 — which is proof
     # it was forwarded rather than answered here.
     assert passed_through.status_code == 502
-    assert "vite" in passed_through.json()["preview"].lower()
+    assert passed_through.json()["preview"]["state"] == "failed"
+    assert "vite" in passed_through.json()["error"].lower()
 
 
 def test_the_proxy_falls_through_when_there_is_no_query_server(tmp_path: Path):
@@ -291,7 +292,8 @@ def test_the_proxy_falls_through_when_there_is_no_query_server(tmp_path: Path):
     r = client.post("/api/queries/usage", json={"params": {}})
 
     assert r.status_code == 502
-    assert "vite" in r.json()["preview"].lower()
+    assert r.json()["preview"]["state"] == "failed"
+    assert "vite" in r.json()["error"].lower()
 
 
 # ---- the platform relay rides the same proxy (#489) -------------------------------------------
@@ -350,7 +352,8 @@ def test_a_template_without_the_relay_falls_through_to_vite():
     r = client.get("/api/domino/api/users/v1/self")
 
     assert r.status_code == 502
-    assert "vite" in r.json()["preview"].lower()
+    assert r.json()["preview"]["state"] == "failed"
+    assert "vite" in r.json()["error"].lower()
 
 
 # ---- why a query failed has to reach somebody -------------------------------------------------

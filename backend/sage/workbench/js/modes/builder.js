@@ -1329,10 +1329,11 @@ window.SW = window.SW || {};
   SW.AppDependenciesModal = AppDependenciesModal;
 
   function PreviewPane({ resumed }) {
-    const { previewSrc, previewStatus, activeApp, costUrl, buildRunning } = SW.store.get();
+    const { previewSrc, previewStatus, previewDetail, activeApp, costUrl, buildRunning } = SW.store.get();
     const starting = previewStatus === 'starting';
     const failed = previewStatus === 'err';
     const stalled = previewStatus === 'stalled';
+    const empty = previewStatus === 'empty';
 
     // Every app action in one place, grouped by what it's about rather than left spread across a
     // kebab and three loose toolbar buttons (Rename and Delete on Reset's precedent, #38: text-
@@ -1401,7 +1402,7 @@ window.SW = window.SW || {};
         // A new tab, so the Build you published from is still behind it — Gallery's cards open the
         // same way for the same reason. Opened as given: nothing here builds the URL.
         if (key === 'open' && activeApp.url) window.open(activeApp.url, '_blank', 'noopener');
-        if (key === 'reload') SW.store.refreshPreview();
+        if (key === 'reload') SW.store.refreshPreview({ retry: true });
         if (key === 'rename') renameApp(activeApp);
         if (key === 'delete') deleteApp(activeApp);
         if (key === 'dependencies') SW.store.openAppDependencies();
@@ -1410,19 +1411,18 @@ window.SW = window.SW || {};
     };
 
     useEffect(() => {
-      if (previewStatus !== 'starting') return undefined;
-      const id = setInterval(() => SW.store.refreshPreview(), 1500);
-      // Giving up used to stop the polling and leave the status alone, so the overlay went on
-      // saying `Starting preview…` with nothing behind it checking (#90). It says so now.
-      const stop = setTimeout(() => {
-        clearInterval(id);
-        SW.store.previewGaveUp();
-      }, 90000);
-      return () => {
-        clearInterval(id);
-        clearTimeout(stop);
-      };
-    }, [previewStatus]);
+      if (!activeApp) return undefined;
+      // Read status even while the page is visible: Uvicorn may lose its child on the next edit.
+      // This route does not spawn or reset a failed attempt, and it never reloads a healthy page.
+      const id = setInterval(() => SW.store.refreshPreview({ statusOnly: true }), 1500);
+      return () => clearInterval(id);
+    }, [activeApp && activeApp.id]);
+
+    useEffect(() => {
+      if (!starting) return undefined;
+      const id = setTimeout(() => SW.store.previewGaveUp(), 90000);
+      return () => clearTimeout(id);
+    }, [starting]);
 
     return h(
       'div',
@@ -1469,31 +1469,31 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-builder-canvas is-live' },
-        (starting || failed) &&
+        (starting || failed || stalled || empty) &&
           h(
             'div',
-            { className: 'sw-preview-overlay' },
-            starting ? 'Starting preview…' : "Preview didn't start — click reload to retry."
-          ),
-        // The way out is a button here rather than the toolbar's Reload (#90). Reload is an
-        // icon-only control at the other end of the row, and the person this overlay is written
-        // for has just been told the thing they were waiting for is not coming — sending them
-        // hunting for the fix is the part that made it a dead end.
-        stalled &&
-          h(
-            'div',
-            { className: 'sw-preview-overlay is-stalled' },
+            { className: 'sw-preview-overlay is-stalled', role: failed ? 'alert' : 'status' },
             h('div', { className: 'sw-preview-overlay-text' },
-              SW.brand.text("Preview didn't start in 90 seconds. A first build can take longer.")),
-            h(
+              empty ? 'No app has been built yet.'
+                : starting ? `Starting ${previewDetail && previewDetail.server || 'preview'}…`
+                  : stalled ? "Preview didn't start in 90 seconds. Select Retry to check it."
+                  : `${previewDetail && previewDetail.server || 'Preview'} is unavailable.`),
+            previewDetail && previewDetail.error &&
+              h('div', { className: 'sw-preview-overlay-text', style: { marginTop: 8 } }, previewDetail.error),
+            previewDetail && previewDetail.output && previewDetail.output.length > 0 &&
+              h('details', { style: { maxWidth: '90%', marginTop: 12, textAlign: 'left' } },
+                h('summary', null, 'Server output'),
+                h('pre', { style: { maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap' } },
+                  previewDetail.output.join('\n'))),
+            !empty && !starting && h(
               Button,
               {
                 size: 'small',
                 type: 'primary',
                 style: { marginTop: 12 },
-                onClick: () => SW.store.refreshPreview(),
+                onClick: () => SW.store.refreshPreview({ retry: true }),
               },
-              'Check again'
+              'Retry'
             )
           ),
         h('iframe', {

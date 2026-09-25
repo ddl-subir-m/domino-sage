@@ -392,6 +392,7 @@ window.SW = window.SW || {};
     composerSeed: null,
     previewSrc: './preview/',
     previewStatus: 'idle',
+    previewDetail: null,
   };
 
   const listeners = new Set();
@@ -649,6 +650,9 @@ window.SW = window.SW || {};
           && (fields.activeApp && fields.activeApp.id)
              !== (state.activeApp && state.activeApp.id)) {
         appGen += 1;
+        state.previewDetail = null;
+        state.previewStatus = fields.activeApp ? 'starting' : 'idle';
+        state.previewSrc = 'about:blank';
         // The notice reports one act on one app's lists, so the selection moving is what makes it
         // another app's. Cleared here rather than by the paths that move the selection, because
         // three of those four never did: `refreshAppScope` cleared it by hand, and `loadAppList`'s
@@ -4356,20 +4360,62 @@ window.SW = window.SW || {};
     state.plans = plans || [];
   }
 
-  async function probePreview() {
+  let previewProbe = 0;
+  let previewStatusPending = false;
+  async function probePreview({ statusOnly = false, retry = false } = {}) {
+    if (statusOnly && previewStatusPending) return;
+    if (statusOnly) previewStatusPending = true;
+    const mine = ++previewProbe;
+    const scope = scopeLoad;
+    const app = state.activeApp && state.activeApp.id;
+    const generation = appGen;
+    const current = () => mine === previewProbe && scope === scopeLoad && generation === appGen
+      && app === (state.activeApp && state.activeApp.id);
     const url = `./preview/?t=${Date.now()}`;
     try {
+      if (statusOnly || retry) {
+        const statusRes = await fetch(`./api/preview/${retry ? 'retry' : 'status'}${
+          retry && app ? `?appId=${encodeURIComponent(app)}` : ''}`, {
+          method: retry ? 'POST' : 'GET', cache: 'no-store',
+        });
+        const detail = await statusRes.json();
+        if (!current() || (detail.appId && app && detail.appId !== app)) return;
+        if (!statusRes.ok) throw new Error(detail.error || 'Could not read preview status.');
+        if (detail.state !== 'ready') {
+          state.previewDetail = detail;
+          state.previewStatus = detail.state === 'failed' ? 'err' : detail.state;
+          notify();
+          return;
+        }
+        // A healthy status poll does not reload an already visible page. After a failure, also
+        // check the proxy before clearing the cause: its route can fail while the child lives.
+        if (statusOnly && state.previewStatus === 'ok') {
+          state.previewDetail = detail;
+          return;
+        }
+      }
       const res = await fetch(url, { cache: 'no-store' });
+      const detail = !res.ok ? await res.json().catch(() => ({})) : null;
+      if (!current()) return;
+      const snapshot = detail && typeof detail.preview === 'object' && detail.preview;
+      if (snapshot && snapshot.appId && app && snapshot.appId !== app) return;
       if (res.ok) {
         state.previewSrc = url;
         state.previewStatus = 'ok';
-      } else if (res.status === 502) {
-        state.previewStatus = 'starting';
+        state.previewDetail = null;
+      } else if (snapshot) {
+        state.previewDetail = snapshot;
+        state.previewStatus = snapshot.state === 'failed' ? 'err' : snapshot.state;
       } else {
         state.previewStatus = 'err';
+        state.previewDetail = { state: 'failed', error: detail.error || `Preview returned HTTP ${res.status}.`, output: [] };
       }
     } catch (err) {
-      state.previewStatus = 'starting';
+      if (!current()) return;
+      state.previewStatus = 'err';
+      state.previewDetail = { state: 'failed', error: err.message || 'Could not reach the preview.', output: [] };
+    } finally {
+      if (statusOnly) previewStatusPending = false;
     }
     notify();
   }
@@ -8464,10 +8510,8 @@ window.SW = window.SW || {};
       if (state.buildRunning) store._watchBuild();
     },
 
-    async refreshPreview() {
-      state.previewStatus = 'starting';
-      notify();
-      await probePreview();
+    async refreshPreview(options = {}) {
+      await probePreview(options);
     },
 
     // Nothing answered on the preview port for as long as Build was prepared to wait, so it stops

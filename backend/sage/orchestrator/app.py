@@ -4640,6 +4640,25 @@ def _preview_upstream() -> str:
     return project.supervisor.upstream()
 
 
+@control_app.get("/api/preview/status")
+def _preview_status() -> dict:
+    project = orchestrator.project(start_preview=False, seed_app=False)
+    return project.supervisor.status()
+
+
+@control_app.post("/api/preview/retry")
+def _preview_retry(appId: str | None = None) -> dict:
+    with orchestrator._app_lock:
+        project = orchestrator.project(start_preview=False, seed_app=False)
+        if appId is not None and appId != project.workspace.app_id:
+            return JSONResponse(status_code=409, content={
+                "error": "The selected app changed. Retry its preview again.",
+            })
+        project = orchestrator._ensure_seeded()
+        project.supervisor.retry_start(explicit=True)
+        return project.supervisor.status()
+
+
 # The previewed app's own named queries (#24). Answered by `serve.py` on loopback rather than 404'd
 # by Vite, which serves the app but has never served its data. Attaching is deliberately NOT forced
 # here — `_preview_upstream` above is what seeds the project, and a query arriving before the page
@@ -4652,7 +4671,8 @@ def _preview_queries():
 # so a page that reads the platform works before it is published. Loaded once per template; None
 # for a template that ships no relay, which the proxy reads as "let Vite 404 it".
 def _preview_platform():
-    return domino_module(orchestrator._wm.template)
+    template = orchestrator._wm.template
+    return domino_module(template) if template is not None else None
 
 
 # The previewed app's own model calls (#7). A published app calls the gateway straight from the
@@ -4726,7 +4746,8 @@ def _preview_mount_base() -> str:
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
                                                _preview_llm, _preview_approve_model,
                                                get_platform=_preview_platform,
-                                               get_mount_base=_preview_mount_base))
+                                               get_mount_base=_preview_mount_base,
+                                               get_status=_preview_status))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of
