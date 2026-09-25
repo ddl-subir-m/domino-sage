@@ -39,6 +39,10 @@ _PROGRAM_NAME = re.compile(r"[A-Za-z0-9._+-]{1,32}\Z")
 # `NAME=value` exactly: a leading environment assignment, which is a prefix and not the program.
 # Anchored on both ends so `--flag=x` and `a=b=c` are not mistaken for one.
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\s]*\Z")
+# `cd <target> &&` or `cd <target>;` at the front: a change of directory ahead of the program that
+# runs, which is a prefix and not the program (#556). The target is one token, quoted or bare, and
+# the match consumes it whole — it is a path, the thing this rule exists to keep out.
+_CD_PREFIX = re.compile(r"cd\s+(?:'[^']*'|\"[^\"]*\"|[^\s'\"]+)\s*(?:&&|;)\s*")
 MAX_PROGRAMS = 24
 
 
@@ -66,10 +70,19 @@ def program_name(command: object) -> str:
     `other` also covers everything else this deliberately cannot read: a pipeline starting in a
     subshell, `./script.sh` with an odd name, an empty command. Those are not worth a parser;
     knowing the call was a shell call whose program could not be named is enough.
+
+    A leading `cd <target> &&` (or `;`) is skipped and the program after it is named, because
+    `cd <app> && npm run build` runs npm, and eight of those read as `{"cd": 8}` to the progress
+    budget that exists to notice the eighth (#556). The target is consumed by the match and never
+    inspected: quoted or bare, with a space in it or not, nothing of it is recorded. A bare `cd`
+    with nothing after the target did run `cd`, and says so.
     """
     if not isinstance(command, str):
         return "other"
-    for token in command.strip().split():
+    command = command.strip()
+    if (prefix := _CD_PREFIX.match(command)) is not None:
+        command = command[prefix.end():]
+    for token in command.split():
         if _ASSIGNMENT.fullmatch(token):
             continue
         if "'" in token or '"' in token:

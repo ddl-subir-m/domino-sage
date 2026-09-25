@@ -293,7 +293,8 @@ def test_a_folder_partitioned_to_the_day_still_collapses(tmp_path: Path):
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text("a,b\n1,2\n")
 
-    orch.attach_folder(_dataset_id(orch), "raw")
+    ds = _dataset_id(orch)
+    orch.attach_folder(ds, "raw")
 
     block = [ln for ln in (ws / "AGENTS.md").read_text().splitlines() if ln.startswith("- ")]
     # `<subpath>`, never `<name>`: the roll-up put the line's folder a level ABOVE where the files
@@ -304,7 +305,7 @@ def test_a_folder_partitioned_to_the_day_still_collapses(tmp_path: Path):
     # (ADR-0047): a listing that stops at this folder finds directories and no data.
     assert block == [("- 24 files in `public/data/sales_2026/raw/2026` — CSV — 2 columns, 1 rows "
                      "— fetch `data/sales_2026/raw/2026/<subpath>` (relative to base) "
-                     "— from dataset **sales_2026**"
+                     f"— from dataset **sales_2026** (platform id `{ds}`)"
                      " — `<subpath>` is a placeholder, not a file name: list that folder to read "
                      "the real paths — the files sit BELOW it, so list it deeply. Grep will not "
                      "find them.")]
@@ -812,3 +813,46 @@ class _Unmounted:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("x")
         return 1
+
+
+# --- the line carries the Dataset's platform id (#556) -------------------------------------------
+
+
+def test_a_dataset_files_line_carries_its_platform_id(tmp_path: Path):
+    """The reads table takes a Dataset's id and the line gave only its name (#556): a turn that had
+    `ABC123_ADAE` and nothing else called `datasets-v2?datasetIds=ABC123_ADAE`, eight turns
+    running. A Data Source has printed its Binding id on this surface all along."""
+    orch, ds, ws = _ready(tmp_path)
+
+    orch.attach_folder(ds, "raw/2024")
+
+    agents = (ws / "AGENTS.md").read_text()
+    assert f"— from dataset **sales_2026** (platform id `{ds}`)" in agents
+
+
+def test_an_uploads_line_carries_no_platform_id(tmp_path: Path):
+    """An upload's bytes sit in a Dataset too, and its entry records that Dataset's id — but the
+    platform does not know the upload by any id the reads table takes, so the line says nothing an
+    agent could put in a call."""
+    orch, _ds, ws = _ready(tmp_path)
+
+    orch.upload_file("my data.csv", b"a,b\n1,2\n")
+
+    line = next(ln for ln in (ws / "AGENTS.md").read_text().splitlines()
+                if "uploads/my_data.csv" in ln)
+    assert "— from dataset **sales_2026**" in line
+    assert "platform id" not in line
+
+
+def test_the_folder_line_carries_the_platform_id_once(tmp_path: Path):
+    """One id per source, not one per file: the collapsed line stands for eight files that agree
+    on it, and eight copies would be the growth the collapse exists to stop."""
+    orch, ds, ws = _ready(tmp_path, per_year=8)
+
+    orch.attach_folder(ds, "raw")
+
+    lines = [ln for ln in (ws / "AGENTS.md").read_text().splitlines() if ln.startswith("- 8 files in")]
+    assert len(lines) == 2
+    for line in lines:
+        assert line.count("platform id") == 1
+        assert f"— from dataset **sales_2026** (platform id `{ds}`)" in line
