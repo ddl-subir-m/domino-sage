@@ -1129,6 +1129,10 @@ class _Snapshot:
 
 class _App:
     def __init__(self, root: Path):
+        # A bare directory is nobody's app since #503, and the packet's source map is the stack's
+        # to list — so the app the packet is built for names its stack.
+        (root / ".sage").mkdir(exist_ok=True)
+        (root / ".sage" / "settings.json").write_text('{"stack": "react-vite"}')
         self.path = root
 
 
