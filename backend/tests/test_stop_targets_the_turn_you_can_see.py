@@ -232,7 +232,7 @@ def test_stop_between_response_headers_and_body_cancels_before_model_work(monkey
     assert stopped == {"stopped": True, "turnId": turn_id}
     assert [json.loads(line.removeprefix("data: ")) for line in body.splitlines()
             if line.startswith("data: ")] == [
-                {"type": "done", "ok": False, "decision": "cancelled"},
+                {"type": "done", "ok": False, "decision": "cancelled", "turnId": turn_id},
             ]
     assert oc.prompts == []
     assert orch.stop_build(turn_id=turn_id) is False
@@ -265,7 +265,7 @@ def test_stop_before_a_decline_body_prevents_every_branch(
         return events
 
     assert asyncio.run(consume()) == [
-        {"type": "done", "ok": False, "decision": "cancelled"}]
+        {"type": "done", "ok": False, "decision": "cancelled", "turnId": turn_id}]  # ADR-0069 (#565): the cancelled turn's OWN id, not the running one's
     if known_thread:
         assert store.read_handoffs(tid) == before
 
@@ -549,6 +549,7 @@ def test_exact_stop_cancels_a_route_ticket_after_admission_but_before_pending_is
     events = [json.loads(line.removeprefix("data: ")) for line in body.splitlines()
               if line.startswith("data: ")]
     assert [event["type"] for event in events] == ["pending", "done"]
+    assert events[-1].pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
     assert events[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
     assert len(oc.prompts) == prompts_before_b
     list(build_a)
@@ -601,6 +602,7 @@ def test_three_pre_body_route_tickets_follow_server_admission_order(monkeypatch,
         return out
 
     events = asyncio.run(consume_all())
+    assert all(turn[-1].pop("turnId") for turn in events)  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
     assert all(turn[-1] == {"type": "done", "ok": False, "decision": "cancelled"}
                for turn in events)
     assert oc.prompts == []

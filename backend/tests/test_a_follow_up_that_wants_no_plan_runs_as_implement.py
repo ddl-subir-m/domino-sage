@@ -197,4 +197,5 @@ def test_ask_mode_still_refuses_a_change_request_before_any_inference(tmp_path: 
 
     assert gateway.calls == 0
     assert len(oc.prompts) == before, "Ask dispatched a turn it should have refused"
+    assert events[-1].pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
     assert events[-1] == {"type": "done", "ok": False, "decision": "ask mode (read-only)"}

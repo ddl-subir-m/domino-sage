@@ -1189,6 +1189,7 @@ def test_a_turn_whose_only_edit_was_refused_did_not_write(tmp_path: Path, monkey
     events = list(orch.build_stream("chart them"))
 
     done = next(e for e in events if e.get("type") == "done")
+    assert done.pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
     assert done == {"type": "done", "ok": False, "decision": "pre_edit_limit"}
     assert [event["type"] for event in events].count("build-recovery") == 1
     assert [event["type"] for event in events].count("build-pre-edit-limit") == 1
@@ -1204,6 +1205,7 @@ def test_a_completed_noop_edit_does_not_disarm_the_pre_edit_guard(tmp_path: Path
     events = list(orch.build_stream("chart them"))
 
     done = next(e for e in events if e.get("type") == "done")
+    assert done.pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
     assert done == {"type": "done", "ok": False, "decision": "pre_edit_limit"}
     assert [event["type"] for event in events].count("build-recovery") == 1
 

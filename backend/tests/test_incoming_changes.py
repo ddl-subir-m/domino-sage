@@ -227,7 +227,9 @@ def test_a_turn_stops_and_shows_the_changed_files(tmp_path: Path):
     # Named the way this app names its own files, not the way the Project's repo does.
     assert offer[0]["files"] == ["src/App.tsx"] and offer[0]["count"] == 1
     assert offer[0]["prompt"] == "add a chart"
-    assert _of(events, "done")[0] == {"type": "done", "ok": False, "decision": "incoming changes"}
+    done = dict(_of(events, "done")[0])
+    assert done.pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
+    assert done == {"type": "done", "ok": False, "decision": "incoming changes"}
     assert oc.prompts == []                       # stopped before any inference
     assert not (project.workspace.path / "src" / "chart.tsx").exists()
 

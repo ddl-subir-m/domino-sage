@@ -4868,6 +4868,111 @@ def _unparsed_tool_evidence(part: dict) -> str:
     return f"len={len(raw)} head={raw[:200]!r} tail={raw[-100:]!r}"
 
 
+# Tool names a correction may say back to the model (#565). The intended name inside an `invalid`
+# wrapper is whatever the model emitted, and a model that produced arguments the SDK could not
+# parse has no better claim on the name beside them — so a name outside this set is said as
+# "tool" and never repeated. OpenCode's own tools plus the three Live read tools as OpenCode
+# offers them (namespaced by the `mcp` key, see liveread/mcp.py).
+_CORRECTABLE_TOOLS = frozenset(WRITE_TOOLS | SHELL_TOOLS | {
+    "read", "grep", "glob", "list", "todowrite", "todoread", "webfetch", "websearch", "task",
+    "skill", "question", "sage-live-read_live_read_table", "sage-live-read_live_read_files",
+    "sage-live-read_live_read_query",
+})
+
+# The closed vocabulary a correction and a give-up draw their sentence from. Keyed by category,
+# never by the SDK's message, so nothing the model emitted can reach a person or the next prompt.
+_INVALID_CALL_SAID = {
+    "unparsed": "arrived with arguments that did not parse",
+    "invalid_arguments": "arrived with arguments that did not validate",
+    "unknown_tool": "named a tool that is not offered",
+}
+
+
+@dataclass(frozen=True)
+class InvalidToolCall:
+    """One tool call whose intended tool never ran, by tool and part identity (#565).
+
+    `tool` is the intended name as the model spelled it; `named` is what may be said about it.
+    `call_id` is OpenCode's `callID`, the part id when there is none, or "" — beside the session id
+    it is the identity a caller deduplicates on, so the same fault read off the transcript twice, or
+    off the transcript and the event stream, is one fault. `completed` separates the two shapes:
+    the wrapper has run to completion and the session goes on; the legacy string is still in
+    flight and the session is about to be dropped.
+    """
+
+    tool: str
+    call_id: str
+    category: str
+    completed: bool
+
+    @property
+    def named(self) -> str:
+        return self.tool if self.tool in _CORRECTABLE_TOOLS else "tool"
+
+
+def _invalid_call_category(error: str) -> str:
+    """Which closed category an AI SDK repair message falls in. A prefix read, not a search.
+
+    The SDK writes two messages into the wrapper's `error`: `Invalid input for tool <name>: ...`
+    for arguments that did not parse as JSON, and `Model tried to call unavailable tool
+    '<name>'. ...` for a name it does not offer. Everything after the prefix is the model's raw
+    arguments and is never read. Arguments that ARE JSON but fail the tool's schema never reach
+    the wrapper: OpenCode's own check fails the real tool's part instead (measured in
+    test_an_invalid_tool_call_never_ran_in_the_pinned_opencode.py), and that part is not
+    classified here.
+    """
+    if error.startswith("Model tried to call unavailable tool"):
+        return "unknown_tool"
+    return "invalid_arguments"
+
+
+def _invalid_tool_call(part: dict) -> InvalidToolCall | None:
+    """The one classifier for a tool call whose intended tool never executed (#565).
+
+    Two shapes, by tool and part identity and structured state — never by searching prose:
+
+    * The legacy raw-string shape (`_unparsed_tool_input`): a part still in flight whose input is
+      the unparsed arguments text. Measured 2026-09-05; OpenCode dropped the session after it.
+    * The completed `invalid` wrapper, which is what OpenCode 1.18.4 actually emits and what the
+      #557 trials recorded seventeen of: the AI SDK cannot parse or validate the call, OpenCode's
+      `experimental_repairToolCall` rewrites it to the built-in `invalid` tool with
+      `{tool, error}` as its input, that tool runs and COMPLETES, and the session goes on. The
+      intended tool did not run — the wrapper's execute is a string, and
+      test_an_invalid_tool_call_never_ran_in_the_pinned_opencode.py asks the binary rather than
+      trusting this sentence.
+
+    What is not one, and why each matters:
+
+    * An `invalid` part that is `pending` or `running` is the wrapper still executing. It will
+      read `completed` on a later poll; until then execution is uncertain and uncertain is not a
+      replay.
+    * A real tool that ended `error` (a 403, a SQL error, a command that ran and failed) executed.
+      Its arguments were fine; its answer was not. Sending the same turn again would run it twice.
+    * A part streaming a partial input dict (`{}` then the whole thing, per #497) is a call in
+      flight, and a dict with fewer keys is never a fault.
+    * Text quoting an error, in prose or in a tool's output, is prose. No field is scanned for
+      a phrase, so a model that WRITES "invalid tool" cannot trip this.
+    * A completed part under some other tool name whose input happens to carry `tool` and
+      `error` keys is that tool's business. Only `invalid` is the wrapper.
+    """
+    state = part.get("state")
+    if not isinstance(state, dict):
+        return None
+    call_id = str(part.get("callID") or part.get("id") or "")
+    if _unparsed_tool_input(part):
+        tool = str(part.get("tool") or part.get("name") or "")
+        return InvalidToolCall(tool, call_id, "unparsed", completed=False)
+    if (part.get("tool") or part.get("name")) != "invalid" or state.get("status") != "completed":
+        return None
+    inp = state.get("input")
+    if not isinstance(inp, dict):
+        return None
+    tool, error = inp.get("tool"), inp.get("error")
+    if not isinstance(tool, str) or not tool or not isinstance(error, str):
+        return None
+    return InvalidToolCall(tool, call_id, _invalid_call_category(error), completed=True)
+
+
 def _patch_detail(inp: dict, status: object) -> str:
     """The file a patch touched, or — when OpenCode refused it — the SHAPE of what it refused.
 
@@ -9062,7 +9167,8 @@ class Orchestrator:
                            {"type": "ask-blocked", "prompt": prompt,
                             "message": brand.text(recovery_message)},
                            {"type": "done", "ok": False,
-                            "decision": "recovery choice required"}):
+                            "decision": "recovery choice required",
+                            **self._turn_id_fields()}):
                     plan_app.append_history(ev, project.build_conversation)
                     if ev["type"] != "user":
                         yield ev
@@ -9319,7 +9425,8 @@ class Orchestrator:
             self._pin_turn_app(project)
             if project.app_for_turn().app_id != continuation.app_id:
                 yield {"type": "error", "message": "This continuation belongs to another app."}
-                yield {"type": "done", "ok": False, "decision": "invalid continuation"}
+                yield {"type": "done", "ok": False, "decision": "invalid continuation",
+                       **self._turn_id_fields()}
                 return
             timing.bind_context(
                 turn_ticket.id, app_id=continuation.app_id,
@@ -9378,7 +9485,8 @@ class Orchestrator:
                         "The approved phased plan for this continuation is unavailable."
                     )}
                     yield {"type": "done", "ok": False,
-                           "decision": "invalid phased continuation"}
+                           "decision": "invalid phased continuation",
+                           **self._turn_id_fields()}
                     return
                 disposition = yield from self._phased_approve(
                     project, plan_md, continuation.intent.answers,
@@ -15989,7 +16097,8 @@ class Orchestrator:
         message = ("Ask mode doesn't change files, so this didn't run. Switch to Auto to build it.")
         for ev in ({"type": "user", "text": prompt},
                    {"type": "ask-blocked", "prompt": prompt, "message": message},
-                   {"type": "done", "ok": False, "decision": "ask mode (read-only)"}):
+                   {"type": "done", "ok": False, "decision": "ask mode (read-only)",
+                    **self._turn_id_fields()}):
             project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":  # the composer already rendered the user's own bubble
                 yield ev
@@ -16015,7 +16124,8 @@ class Orchestrator:
                    # replay it intact — a reset that drops the @-mentions makes the user retype.
                    {"type": "reset-offer", "prompt": prompt, "message": message,
                     "mentions": mentions or [], "resources": resources or []},
-                   {"type": "done", "ok": False, "decision": "reset offered"}):
+                   {"type": "done", "ok": False, "decision": "reset offered",
+                    **self._turn_id_fields()}):
             project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":
                 yield ev
@@ -16039,7 +16149,8 @@ class Orchestrator:
                    # of it, so a merge of a thousand files is still a card and not a wall of paths.
                    {"type": "incoming-changes", "prompt": prompt, "message": message,
                     "files": shown, "count": len(files)},
-                   {"type": "done", "ok": False, "decision": "incoming changes"}):
+                   {"type": "done", "ok": False, "decision": "incoming changes",
+                    **self._turn_id_fields()}):
             project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":
                 yield ev
@@ -16174,7 +16285,8 @@ class Orchestrator:
                    "named": offer.named,
                    "sources": [{"id": s.get("id"), "name": s.get("name"),
                                 "connector": s.get("connector")} for s in offer.sources]},
-                  {"type": "done", "ok": False, "decision": "data source candidates"})
+                  {"type": "done", "ok": False, "decision": "data source candidates",
+                   **self._turn_id_fields()})
         for ev in events:
             project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":
@@ -16727,7 +16839,8 @@ class Orchestrator:
                    "groups": table_search.grouped(shortlist),
                    "allGroups": table_search.grouped(ranking.candidates),
                    "total": len(ranking.candidates), "matched": ranking.matched},
-                  {"type": "done", "ok": False, "decision": "table candidates"})
+                  {"type": "done", "ok": False, "decision": "table candidates",
+                   **self._turn_id_fields()})
         for ev in events:
             project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":
@@ -17252,7 +17365,8 @@ class Orchestrator:
                    "rows": card["rows"], "allRows": card["allRows"],
                    "total": card["total"], "listed": card["listed"],
                    "matched": card["matched"], "truncated": card["truncated"]},
-                  {"type": "done", "ok": False, "decision": "dataset files"})
+                  {"type": "done", "ok": False, "decision": "dataset files",
+                   **self._turn_id_fields()})
         for ev in events:
             project.workspace.append_history(ev, project.build_conversation)
             if ev["type"] != "user":
@@ -17589,7 +17703,9 @@ class Orchestrator:
                 ticket.snapshot = self._turn_snapshot(conversation, app=app)
         self._turns.claim(ticket)
         if ticket.outcome == "cancelled":
-            yield {"type": "done", "ok": False, "decision": "cancelled"}
+            # `turnId` from the ticket in hand (ADR-0069), not from `_turn_id_fields`: the running
+            # turn here is whoever holds the lock, which is not this one.
+            yield {"type": "done", "ok": False, "decision": "cancelled", "turnId": ticket.id}
             return
         if not ticket.queued:
             ticket.granted = True
@@ -17603,7 +17719,7 @@ class Orchestrator:
                    "message": turn_pending_message(self._turns.ahead_of(ticket))}
             outcome = ticket.outcome or self._turns.wait(ticket)
             if outcome == "cancelled":
-                yield {"type": "done", "ok": False, "decision": "cancelled"}
+                yield {"type": "done", "ok": False, "decision": "cancelled", "turnId": ticket.id}
                 return
             if outcome == "wedged":
                 yield from self._wedged_refusal()
@@ -17619,7 +17735,8 @@ class Orchestrator:
                 # to tell the difference.
                 yield {"type": "error", "contextChanged": True, "prompt": prompt,
                        "message": turn_context_changed_message()}
-                yield {"type": "done", "ok": False, "decision": "context changed"}
+                yield {"type": "done", "ok": False, "decision": "context changed",
+                       "turnId": ticket.id}
                 return
             # The grant, said out loud (#377). A queued turn handed its name back on the `pending`
             # row above, and nothing after it took the name again: Chat had its `user` frame, and
@@ -17720,6 +17837,33 @@ class Orchestrator:
                 log.error("wedged turn: no idle reading %.0fs after interrupt", grace_seconds)
                 return False
             time.sleep(1.0)
+
+    def _confirm_session_idle(self, client: OpenCodeClient, sid: str) -> bool:
+        """Whether the session a recovery would replace has stopped writing (#565).
+
+        A fresh session is only safe once the old one has let go of the working tree, and the poll
+        loop's own exit (`appeared and not running`) is one reading of one moment. Read it again
+        here; a session that still reads busy gets the same interrupt-and-wait a wedged one gets,
+        and the same answer if it will not confirm: NOT idle, which the callers turn into a kept
+        lock rather than a second writer.
+        """
+        try:
+            if not client.is_running(sid):
+                return True
+        except Exception as e:
+            log.warning("recovery: session state unreadable before replacing it: %s", e)
+        return self._stop_wedged_session(
+            client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
+
+    def _turn_id_fields(self) -> dict:
+        """`turnId` for a Build `done` row (ADR-0069): the running turn's ticket id, always.
+
+        Build stamped it only while a diagnostics capture was active, so a reader had to know the
+        capture's state to know whether to expect the field. Every writer of a Build `done` splices
+        this in, so the answer is the same with a capture and without one.
+        """
+        running = self._turns.running()
+        return {"turnId": running.id} if running is not None else {}
 
     def _mark_turn_wedged(self) -> None:
         """Keep ownership of the tree and release every queued caller with a refusal."""
@@ -17995,7 +18139,8 @@ class Orchestrator:
                        + ". Restore the source or remove and attach these files again.")
             for event in ({"type": "user", "text": user_text or prompt},
                           {"type": "mentions-unresolved", "message": message},
-                          {"type": "done", "ok": False, "decision": "attachments unavailable"}):
+                          {"type": "done", "ok": False, "decision": "attachments unavailable",
+                           **self._turn_id_fields()}):
                 if brief is None:
                     project.app_for_turn().append_history(event, project.build_conversation)
                 if event["type"] != "user":
@@ -18208,6 +18353,12 @@ class Orchestrator:
         # inside an error path, which is the worst place to find out.
         read_only = ""
         image_reference_operations: list[str] = []
+        # One automatic retry for a tool call whose intended tool never ran (`_invalid_tool_call`).
+        # Bounded to one so a model that emits broken calls systematically still ends, rather than
+        # spending a whole build on the same break. Declared HERE, beside `read_only` and for the
+        # reason given above it: `persist` reads it on every `done` to write `recoveries`
+        # (ADR-0069), and a `done` can be persisted before the send loop below is reached.
+        broken_retries = 0
 
         # Persist only the events the UI actually renders as a chat bubble/card/divider, so
         # replaying history reproduces the same transcript without ephemeral "active"/spinner noise.
@@ -18271,6 +18422,14 @@ class Orchestrator:
                 # key at all — `resolved_row` is where that decision is written down.
                 ev.update(project.resolved_row())
                 timing.decide(ev.get("ok"), str(ev.get("decision") or ""))
+                # ADR-0069, both fields where every terminal `done` passes. `turnId` always;
+                # `recoveries` whenever the allowance was spent, on a success too, so an "invalid
+                # then valid" turn can be told from a clean one. `cause` is NOT written here: it
+                # is the eligibility promise, and only the branch that has confirmed the old
+                # session idle may make it.
+                ev.update(self._turn_id_fields())
+                if broken_retries and "recoveries" not in ev:
+                    ev["recoveries"] = broken_retries
             if ev["type"] == "done" and read_only:
                 ev["readOnly"] = read_only
             # The Artifacts a Live read wrote during this turn, handed over on the way out (ADR-0041).
@@ -19011,19 +19170,20 @@ class Orchestrator:
         # is for. No size advice here at all: the evidence for it would be `_unparsed_tool_evidence`
         # reporting a `len=` near a model's output cap, and nothing has measured where that ceiling
         # is — the `len=` is in the log for a person to read.
+        # No cause is named (#565, #558 decision 9). The gateway cut of #207 is one way a call
+        # arrives unusable; the #557 trials were another, with the gateway silent and the
+        # arguments whole. Sage cannot tell them apart from here, and a note that names one is a
+        # note the agent will act on when the other happened. `{tool}` is an allowlisted name or
+        # "tool"; `{fault}` is one of `_INVALID_CALL_SAID`. Nothing the model emitted rides along.
         BROKEN_CALL_RETRY_NOTE = (
-            "Your last {tool} call arrived with arguments that did not parse, and that session was "
-            "dropped part-way through it. This is a fresh session. The app on disk is what the "
-            "broken turn left behind, so read it before you change it.\n\n"
-            "The cause was upstream of you: the model gateway stopped sending part-way through that "
-            "call. It is a limit on the gateway, not something your answer did wrong. The step "
-            "itself was fine — make the same change again."
+            "Your last {tool} call {fault}, so that call did not run and that session was "
+            "replaced. This is a fresh session. The app on disk is what the previous session "
+            "left behind, so read it before you change it.\n\n"
+            "Make the same change again. Send the call's arguments as one valid JSON object "
+            "with every required field. If you need a value you do not have, read the file "
+            "first; do not guess it."
         )
-        # One automatic retry for a tool call whose arguments never parsed (_unparsed_tool_input).
-        # Bounded to one so a model that emits broken JSON systematically still ends, rather than
-        # spending a whole build on the same break.
-        broken_retries = 0
-        # Set by that retry, cleared by the send that carries it, so it rides the retry only and no
+        # Set by the retry, cleared by the send that carries it, so it rides the retry only and no
         # later nudge in the same turn repeats it.
         broken_retry_note = ""
         # The fixed repair class survives after its one-send note is spent. A context decision is
@@ -19207,6 +19367,10 @@ class Orchestrator:
         # Pre-seed `seen` with every part that already exists before we send this turn's prompt, so
         # only parts produced by THIS turn are emitted. Within the turn `seen` also persists across the
         # nudge/fix iterations of the loop below, so we never re-emit our own earlier parts either.
+        # Invalid-call faults already charged, as (session id, call id) — the identity
+        # `_invalid_tool_call` hands back. Beside `seen` and outside the nudge loop for the same
+        # reason `seen` is: a fault is a fact about a call, and a nudge does not make it new.
+        invalid_seen: set[tuple[str, str]] = set()
         seen: set[tuple[str, object]] = self._seen_baseline(
             client, sid, limit=self._build_policy.poll_message_limit)
 
@@ -19657,9 +19821,17 @@ class Orchestrator:
             # or a `glob` starting — and a step starting IS a new OpenCode message, whatever the
             # transcript can show for it. Movement, for the quiet deadline; nothing renders from it.
             in_flight: set[tuple[str, object]] = set()
-            # Set when a tool call's arguments arrive unparsed, cleared by any part that lands
-            # after it. Only a turn that ENDS with this standing had its work cut off.
+            # Set when a tool call's intended tool did not run (`_invalid_tool_call`), retired only
+            # when THAT tool later completes in this session — a proven recovery — or by terminal
+            # handling. Text and a different tool's completion leave it standing (#565): the
+            # measured trials went on for seventeen wrappers with reads landing between them, and
+            # each one cleared the flag. Only a turn that ENDS with this standing had its work cut
+            # off. What may be said of the tool, not the raw name (see `InvalidToolCall.named`).
             broken_call: str | None = None
+            # The intended tool as the model spelled it, for the recovery match above only.
+            broken_intended = ""
+            # Which closed category the fault fell in; the correction's sentence comes from it.
+            broken_category = "unparsed"
             # Captured with it, reported only if the turn ends on it. Held rather than logged at
             # the detection site because that site runs on every poll while the part is in flight,
             # and the same broken call would print a dozen times.
@@ -19798,16 +19970,44 @@ class Orchestrator:
                             # next poll and emit once the completed state carries the full input.
                             status = (part.get("state") or {}).get("status")
                             tool = part.get("tool") or part.get("name") or pt
+                            fault = _invalid_tool_call(part)
+                            if fault is not None and fault.completed:
+                                # The completed `invalid` wrapper (#565). Marked seen, so it is
+                                # read once per poll walk; deduplicated by session and call
+                                # identity underneath, so a re-delivered part is one fault. No
+                                # card: its "detail" would be the SDK's message, which carries
+                                # the model's raw arguments. Not through the repeat brake either,
+                                # whose answer would quote the same text back at the person; it
+                                # does count against the progress budget (#544), because it is a
+                                # model call that changed nothing.
+                                seen.add(key)
+                                last_active = None
+                                if (sid, fault.call_id) not in invalid_seen:
+                                    invalid_seen.add((sid, fault.call_id))
+                                    broken_call = fault.named
+                                    broken_intended = fault.tool
+                                    broken_category = fault.category
+                                    broken_evidence = f"{fault.category} tool={fault.named}"
+                                    log.warning("build: a %s call was rewritten to OpenCode's "
+                                                "invalid tool (%s) — it did not run",
+                                                fault.named, fault.category)
+                                progress_calls += 1
+                                if progress_armed:
+                                    progress_max_calls = max(progress_max_calls, progress_calls)
+                                publish_progress()
+                                continue
                             if status in ("pending", "running", "in_progress"):
                                 in_flight.add(key)
                                 tool_open = True
                                 # Noted here, never reported here. OpenCode normally drops the
                                 # session immediately after this, but if it instead recovers and
-                                # the call completes, the `seen.add` below clears the flag and
-                                # nothing is said. That way the report cannot cry wolf on a turn
-                                # that went on to finish.
-                                if _unparsed_tool_input(part):
-                                    broken_call = tool
+                                # the call completes, the recovery match on the completed branch
+                                # below clears the flag and nothing is said. That way the report
+                                # cannot cry wolf on a turn that went on to finish.
+                                if fault is not None:
+                                    broken_call = fault.named
+                                    broken_intended = fault.tool
+                                    broken_category = fault.category
                                     broken_evidence = _unparsed_tool_evidence(part)
                                 # Live "active" hint so a long step names what it's doing instead of
                                 # dead air. Only for tools whose streaming input already carries a
@@ -19840,8 +20040,13 @@ class Orchestrator:
                                         yield {"type": "active", "tool": tool, "detail": detail}
                                 continue
                             seen.add(key)
-                            broken_call = None
-                            broken_evidence = ""
+                            # A proven recovery, and the one completion that retires the fault:
+                            # the tool the broken call meant to run has now run. Any other
+                            # tool finishing says nothing about it.
+                            if (broken_call is not None and status == "completed"
+                                    and tool == broken_intended):
+                                broken_call = None
+                                broken_evidence = ""
                             last_active = None  # completed: let the next running tool re-announce
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
                             args = (part.get("state") or {}).get("input") \
@@ -19962,8 +20167,6 @@ class Orchestrator:
                             yield persist(ev)
                         elif pt == "text" and part.get("text"):
                             seen.add(key)
-                            broken_call = None
-                            broken_evidence = ""
                             # Take the marker out before anything else looks at this text — the
                             # dedupe below, the plan card, the transcript. Stripped on EVERY turn,
                             # including gated ones: the claim is only honoured on a build turn (see
@@ -20483,10 +20686,19 @@ class Orchestrator:
 
             if broken_call is not None and broken_retries < 1:
                 # Send the same turn again rather than handing the person a build that stopped.
-                # OpenCode drops the session when a tool call's arguments do not parse, so whatever
-                # the model was part-way through writing never landed — but the fault is in one
-                # response, not in the request, and a re-send lands it. Retrying by hand is what
-                # the give-up below used to ask for, and it works; this is that, without the ask.
+                # The intended tool never ran — that is what `_invalid_tool_call` establishes —
+                # so nothing is replayed twice; the fault is in one response, not in the request,
+                # and a re-send lands it. Retrying by hand is what the give-up below used to ask
+                # for, and it works; this is that, without the ask.
+                #
+                # But only over a session that has let go of the tree. The poll loop's exit is one
+                # reading; a second one here, with the wedged exit's interrupt-and-wait behind it,
+                # is what makes the fresh session the ONLY writer. A session that will not confirm
+                # keeps the lock exactly as a wedged one does, and writes no `cause` (ADR-0069).
+                if not self._confirm_session_idle(client, sid):
+                    if owns_turn:
+                        self._turn_gave_up = True
+                    yield from refused_to_stop(in_tool=True, quiet_for=0.0)
                 #
                 # A FRESH session, not the one that broke. The broken call is in that session's
                 # history, and OpenCode replays history into every later request (keepalive's
@@ -20533,7 +20745,8 @@ class Orchestrator:
                 # string built before the attempt would hand the retry a map that is already wrong,
                 # in the one session that has nothing else to go on.
                 source_note = self._build_source_note(project.app_for_turn().path)
-                broken_retry_note = BROKEN_CALL_RETRY_NOTE.format(tool=broken_call)
+                broken_retry_note = BROKEN_CALL_RETRY_NOTE.format(
+                    tool=broken_call, fault=_INVALID_CALL_SAID[broken_category])
                 yield {"type": "iterate",
                        "reason": f"the model's {broken_call} call arrived broken — starting it again"}
                 continue
@@ -20555,10 +20768,18 @@ class Orchestrator:
                 # the files written before the break are usually orphans nothing imports yet, so the
                 # typecheck goes green and the person is handed a finished-looking build of an app
                 # that never changed.
+                #
+                # And only once the session is confirmed idle (ADR-0069): `cause` below promises
+                # #569 that a fresh attempt may start, and a session still writing is the one case
+                # that promise would be false. A refused stop keeps the lock and writes no cause.
+                if not self._confirm_session_idle(client, sid):
+                    if owns_turn:
+                        self._turn_gave_up = True
+                    yield from refused_to_stop(in_tool=True, quiet_for=0.0)
                 if owns_turn:
                     self._turn_gave_up = True
                 restore_mode()
-                log.warning("turn: a %s call arrived unparsed again (%s) — giving up",
+                log.warning("turn: a %s call did not run again (%s) — giving up",
                             broken_call, broken_evidence or "no arguments captured")
                 # This used to ask for a smaller piece, on the reading that one step had been too
                 # big to write in one go. The capture behind #207 disproves it: 22 characters of
@@ -20570,15 +20791,24 @@ class Orchestrator:
                 # thing that does help is a different model. It still does not promise a shorter ask
                 # will go through, because there is still no evidence that it would.
                 #
-                # The person is told what happened and what to do. The gateway belongs in the log
-                # and in the retry note the agent reads, not on this line.
-                message = ("This build stopped twice in the same step. The model stopped "
-                           "responding. Pick a different model and try again.")
+                # The person is told what happened and what to do, and no cause is guessed at
+                # (#565): the sentence names the tool and the closed category, never the
+                # arguments and never the gateway.
+                message = (f"This build stopped twice in the same step. The model's {broken_call} "
+                           f"call {_INVALID_CALL_SAID[broken_category]}, so nothing ran. Pick a "
+                           "different model and try again.")
                 if owns_turn and is_approval:
                     message += brand.text(
                         '\n\nThe plan is still here. Say "try again" to build it.')
                 yield persist({"type": "error", "message": message})
-                yield persist({"type": "done", "ok": False, "decision": "broken tool call"})
+                # ADR-0069: terminal, and the old session confirmed idle above, so `cause` may be
+                # written. `stage` is where #569 resumes from; a gated turn replays its plan
+                # request, an implementation turn resumes the approved plan. `recoveries` is what
+                # the allowance spent; persist() would add it, and this row says it outright.
+                yield persist({"type": "done", "ok": False, "decision": "broken tool call",
+                               "cause": "invalid_tool_call",
+                               "stage": "planning" if gate else "implementation",
+                               "recoveries": broken_retries})
                 return
 
             # Answer-only turn (Ask mode, or any question in Auto): it answered read-only and changed
@@ -21136,7 +21366,8 @@ class Orchestrator:
                 "This plan belongs to another {builtApp}. Open that {builtApp} to build it again."
                 if wrong_app else
                 "A later build already changed this {builtApp}. Open its current plan instead.")}
-                yield {"type": "done", "ok": False, "decision": "plan moved on"}
+                yield {"type": "done", "ok": False, "decision": "plan moved on",
+                       **self._turn_id_fields()}
                 return
         if plan_edits is not None:
             # With the document the edit came from, so a plan left live by a build that gave up can
@@ -21159,7 +21390,8 @@ class Orchestrator:
         if not plan_md.strip():
             yield {"type": "error", "message": brand.text(
                 "That plan was already built. Describe the next change.")}
-            yield {"type": "done", "ok": False, "decision": "no plan to approve"}
+            yield {"type": "done", "ok": False, "decision": "no plan to approve",
+                   **self._turn_id_fields()}
             return
         # What was approved reaches the document. Two things were going missing here. The text: an
         # edit made in the card is written to plan.md above and built, but the document it came from
@@ -21175,21 +21407,21 @@ class Orchestrator:
                 "This plan has unsupported or invalid reference metadata. "
                 "Create a new plan before you approve it.")}
             yield {"type": "done", "ok": False,
-                   "decision": "invalid plan reference metadata"}
+                   "decision": "invalid plan reference metadata", **self._turn_id_fields()}
             return
         if approved_doc and approved_doc.get("executionContractVersion") == -1:
             yield {"type": "error", "message": brand.text(
                 "This plan has an unsupported or invalid execution contract version. "
                 "Create a new plan before you approve it.")}
             yield {"type": "done", "ok": False,
-                   "decision": "invalid execution contract metadata"}
+                   "decision": "invalid execution contract metadata", **self._turn_id_fields()}
             return
         if approved_doc and approved_doc.get("sourceRequestMessagesVersion") == -1:
             yield {"type": "error", "message": brand.text(
                 "This plan has unsupported or invalid original-request metadata. "
                 "Create a new plan before you approve it.")}
             yield {"type": "done", "ok": False,
-                   "decision": "invalid source request metadata"}
+                   "decision": "invalid source request metadata", **self._turn_id_fields()}
             return
         # A version, not an overwrite, for the same reason a document edit makes one: the draft
         # people commented on has to survive the edit that built over it.
@@ -21213,7 +21445,7 @@ class Orchestrator:
                     _execution_contract_error(contract)
                     + " Edit the plan to restore those fields, then approve it again.")}
                 yield {"type": "done", "ok": False,
-                       "decision": "invalid edited execution plan"}
+                       "decision": "invalid edited execution plan", **self._turn_id_fields()}
                 return
         prior_mode = project.control.snapshot().mode
         # Approval means "build it now", so an approve turn RUNS as Implement whatever mode it was
@@ -21417,6 +21649,8 @@ class Orchestrator:
             if ev["type"] == "done" and table_before is not None:
                 withhold_table_rows(project.record.path, project.build_conversation,
                                     table_before, kept_rows=project.record.kept_rows())
+            if ev["type"] == "done":
+                ev.update(self._turn_id_fields())  # ADR-0069, as _build_stream's persist() does
             if ev["type"] in _PERSISTED_EVENTS:
                 project.app_for_turn().append_history(ev, project.build_conversation)
             return ev
@@ -25451,7 +25685,8 @@ class Orchestrator:
         if message is None:
             return []
         out = [{"type": "error", "message": message},
-               {"type": "done", "ok": False, "decision": "model unavailable"}]
+               {"type": "done", "ok": False, "decision": "model unavailable",
+                **self._turn_id_fields()}]
         # The user's own bubble goes to history but not to the stream: the composer already put it
         # on screen, and yielding it again would draw the prompt twice.
         for ev in ([{"type": "user", "text": user_text}] if user_text else []) + out:

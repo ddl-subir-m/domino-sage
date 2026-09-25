@@ -305,7 +305,9 @@ def test_a_turn_routed_at_an_alias_the_gateway_will_not_serve_never_opens_a_sess
 
     events = list(orch.build_stream("build me a consumption dashboard"))
 
-    assert _done(events) == {"type": "done", "ok": False, "decision": "model unavailable"}
+    done = dict(_done(events))
+    assert done.pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
+    assert done == {"type": "done", "ok": False, "decision": "model unavailable"}
     assert "GLM-5.2" in _error(events)
     assert oc.prompts == [], "the turn spent a prompt on a model that would 404"
     assert oc.sessions == [], "the turn opened a session it could never use"

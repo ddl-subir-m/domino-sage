@@ -685,8 +685,9 @@ def test_phased_continue_rechecks_plan_changed_during_execution_before_completio
     assert response.status_code == 200, response.text
     assert changed_markdown
     assert [event["type"] for event in events].count("done") == 1
-    assert next(event for event in events if event["type"] == "done") == {
-        "type": "done", "ok": False, "decision": "invalid phased continuation"}
+    done = dict(next(event for event in events if event["type"] == "done"))
+    assert done.pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
+    assert done == {"type": "done", "ok": False, "decision": "invalid phased continuation"}
     assert mark_calls == []
     assert save_calls == []
     assert project.workspace.read_plan() == changed_markdown[0]
@@ -831,8 +832,9 @@ def test_phased_continue_rejects_a_changed_or_retired_approved_plan(
     ]
     assert response.status_code == 200, response.text
     assert [event["type"] for event in events] == ["error", "done"]
-    assert events[-1] == {
-        "type": "done", "ok": False, "decision": "invalid phased continuation"}
+    done = dict(events[-1])
+    assert done.pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
+    assert done == {"type": "done", "ok": False, "decision": "invalid phased continuation"}
     assert len(oc.prompts) == prompts_before
     assert not (project.workspace.path / "src/Table.tsx").exists()
     assert not (project.workspace.path / "src/Filter.tsx").exists()

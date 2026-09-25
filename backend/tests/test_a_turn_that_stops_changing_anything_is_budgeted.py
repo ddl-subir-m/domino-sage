@@ -461,6 +461,7 @@ def test_the_progress_budget_checks_only_after_a_confirmed_stop(
         orch.release_stream_turn(queued[0])
         assert not orch._turn_lock.locked()
     else:
+        assert done[0].pop("turnId")  # ADR-0069 (#565): every Build `done` names its turn; the rest is unchanged
         assert done[0] == {"type": "done", "ok": False, "decision": "wedged"}
         assert checks == saves == releases == []
         assert not any(e["type"] in {"typecheck-start", "app-change", "saved"}
