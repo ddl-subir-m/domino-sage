@@ -911,30 +911,47 @@ def test_the_signature_summary_never_takes_the_turn_down_on_a_malformed_body():
         list(shim.handle({"model": "gemini-3.7-flash", "messages": messages}, project="p"))
 
 
-# --- A turn that keeps failing apply_patch loses apply_patch, not its model (#494) ---------------
+# --- A turn that keeps failing apply_patch keeps it anyway; the count is what survives (#494/#551)
 
 _REFUSED = ("apply_patch verification failed: Error: Invalid patch format: missing Begin/End "
             "markers")
-_TOOLS = [{"type": "function", "function": {"name": n}}
-          for n in ("apply_patch", "edit", "write", "read", "bash")]
+_LANDED = "Success. Updated the following files: M app.py"
+
+# The two tool sets OpenCode can actually put on a request, and they are DISJOINT (#539): the set
+# follows the model HANDLE. A `gpt-` handle is offered `apply_patch` and neither `edit` nor `write`;
+# every other handle is offered `edit`/`write` and no `apply_patch`.
+#
+# This file used to hold one fixture listing all five names at once, and that is what kept #494's
+# withdrawal looking alive for as long as it did: the withdrawal needed `edit` on the same request
+# as `apply_patch`, so it could only ever fire on a request nobody can send. The green came from
+# the fixture, not from the code. Keep these two apart.
+_PATCH_TOOLS = [{"type": "function", "function": {"name": n}}
+                for n in ("apply_patch", "read", "bash")]
+_EDIT_TOOLS = [{"type": "function", "function": {"name": n}}
+               for n in ("edit", "write", "read", "bash")]
 _ONE_MODEL = _replace(CATALOG, plan="one-vendor", implement="one-vendor")
 
 
-def _patch_messages(refusals: int) -> list:
+def _patch_messages(refusals: int, landed: int = 0) -> list:
+    """A GPT-shaped turn: every write is an `apply_patch`, because that is all it was offered."""
     msgs = [{"role": "user", "content": "build it"},
-            {"role": "assistant", "tool_calls": [{"id": "w1", "function": {"name": "write"}}]},
-            {"role": "tool", "tool_call_id": "w1", "content": "Wrote file successfully: app.py"}]
+            {"role": "assistant", "tool_calls": [{"id": "w1", "function": {"name": "apply_patch"}}]},
+            {"role": "tool", "tool_call_id": "w1", "content": _LANDED}]
     for i in range(refusals):
         msgs += [{"role": "assistant", "tool_calls": [{"id": f"p{i}", "function": {"name": "apply_patch"}}]},
                  {"role": "tool", "tool_call_id": f"p{i}", "content": _REFUSED}]
+    for i in range(landed):
+        msgs += [{"role": "assistant", "tool_calls": [{"id": f"l{i}", "function": {"name": "apply_patch"}}]},
+                 {"role": "tool", "tool_call_id": f"l{i}", "content": _LANDED}]
     return msgs
 
 
 def _handled_with(catalog: ModelCatalog, messages: list, caplog=None,
-                  mode: Mode = Mode.AUTO) -> tuple[dict, list[str]]:
+                  mode: Mode = Mode.AUTO, tools=None) -> tuple[dict, list[str]]:
     gw = FakeGatewayClient()
     shim = EnforcementShim(ModelControl(mode=mode), catalog, gw)
-    request = {"model": "cheap-vendor", "messages": messages, "tools": list(_TOOLS)}
+    request = {"model": "cheap-vendor", "messages": messages,
+               "tools": list(_EDIT_TOOLS if tools is None else tools)}
     if caplog is None:
         list(shim.handle(request, project="p1"))
         return gw.seen[-1][0], []
@@ -947,36 +964,53 @@ def _tool_names(sent: dict) -> list[str]:
     return [t["function"]["name"] for t in sent["tools"]]
 
 
-def test_two_refused_patches_withdraw_apply_patch_and_keep_edit_and_write():
-    sent, _ = _handled_with(CATALOG, _patch_messages(2))
-    assert "apply_patch" not in _tool_names(sent)
-    assert {"edit", "write", "read", "bash"} <= set(_tool_names(sent))
+def test_two_refused_patches_leave_the_turn_the_only_edit_tool_it_has():
+    """#494 withdrew `apply_patch` here so the model would fall back on `edit`. Retired in #551.
+
+    On the only requests that can refuse a patch there is no `edit` to fall back to — OpenCode gave
+    this handle `apply_patch` instead of `edit`/`write`, not beside it. Withdrawing it would leave
+    the turn no way to edit at all, which is the one outcome worse than a refused patch."""
+    sent, _ = _handled_with(CATALOG, _patch_messages(2), tools=_PATCH_TOOLS)
+    assert "apply_patch" in _tool_names(sent)
+    assert {"edit", "write"}.isdisjoint(_tool_names(sent))
 
 
-def test_one_refused_patch_leaves_apply_patch_on_offer():
-    # One refused patch is ordinary; the bar is the rescue's own corroboration, not the first miss.
-    sent, _ = _handled_with(CATALOG, _patch_messages(1))
+def test_one_refused_patch_also_leaves_apply_patch_on_offer():
+    sent, _ = _handled_with(CATALOG, _patch_messages(1), tools=_PATCH_TOOLS)
     assert "apply_patch" in _tool_names(sent)
 
 
-def test_the_withdrawal_ends_when_a_write_lands():
-    msgs = _patch_messages(2) + [
-        {"role": "assistant", "tool_calls": [{"id": "e1", "function": {"name": "edit"}}]},
-        {"role": "tool", "tool_call_id": "e1", "content": "Edited app.py"}]
-    sent, _ = _handled_with(CATALOG, msgs)
-    assert "apply_patch" in _tool_names(sent)
+def test_a_landed_patch_resets_the_refusal_count(caplog):
+    """The DETECTOR is the half that survived, so its window still has to work. A clean result from
+    a tool in `WRITE_TOOLS` — and `apply_patch` is one — ends the error episode and zeroes the
+    count, so a turn that recovers stops reporting refusals it already got past."""
+    _, lines = _handled_with(CATALOG, _patch_messages(2, landed=1), caplog, tools=_PATCH_TOOLS)
+    assert "patch_refusals=0" in next(m for m in lines if "rescue examined=" in m)
 
 
-def test_with_one_model_on_both_slots_the_note_names_edit_and_not_a_different_model(caplog):
-    sent, lines = _handled_with(_ONE_MODEL, _patch_messages(2), caplog)
-    note = sent["messages"][-1]
-    assert note["role"] == "system" and "[sage]" in note["content"]
-    assert "different model" not in note["content"]
-    assert "`edit`" in note["content"] and "NNNNN|" in note["content"]
-    # The line says what changed: nothing about the model, and the tool that was withdrawn.
+def test_the_refusal_count_is_still_measured_and_still_logged(caplog):
+    """What #551 kept. Nobody has seen a GPT model repeatedly refuse its own envelope, and acting
+    on the handle was refused as speculative — so this line is the evidence any future fix would be
+    built on. It must survive the deletion of the branch that used to sit beside it."""
+    _, lines = _handled_with(CATALOG, _patch_messages(2), caplog, tools=_PATCH_TOOLS)
     rescue = next(m for m in lines if "rescue examined=" in m)
-    assert "rescued=no-op (both slots are one-vendor)" in rescue
-    assert "patch_refusals=2 apply_patch=withdrawn" in rescue
+    assert "patch_refusals=2" in rescue
+    # Nothing withdraws it any more, so the field beside the count says so on every line.
+    assert "apply_patch=offered" in rescue
+    assert "apply_patch=withdrawn" not in rescue
+
+
+def test_a_refused_patch_turn_is_never_told_to_use_edit(caplog):
+    """The routing note had a third branch telling the model the patch tool was gone and to use
+    `edit`. It went with the withdrawal: on this request `edit` was never offered, so the sentence
+    would name a tool the model does not have — the very defect #541 and #551 are about."""
+    sent, _ = _handled_with(_ONE_MODEL, _patch_messages(2), caplog, tools=_PATCH_TOOLS)
+    note = sent["messages"][-1]
+    # The note still fires — two refused patches are still an error episode — it just no longer
+    # claims a tool was taken away or points at one this handle never had.
+    assert note["role"] == "system" and "[sage] Routing note:" in note["content"]
+    assert "withdrawn" not in note["content"]
+    assert "`edit`" not in note["content"] and "NNNNN|" not in note["content"]
 
 
 def test_with_two_models_a_shell_failure_rescue_still_names_the_other_model(caplog):
@@ -984,7 +1018,8 @@ def test_with_two_models_a_shell_failure_rescue_still_names_the_other_model(capl
     sent, lines = _handled_with(CATALOG, _RESCUE_MESSAGES, caplog)
     assert sent["model"] == "strong-vendor"
     assert "different model" in sent["messages"][-1]["content"]
-    assert "apply_patch" in _tool_names(sent)
+    # A non-GPT handle: `edit`/`write` and no `apply_patch` to speak of (#539).
+    assert {"edit", "write"} <= set(_tool_names(sent))
     rescue = next(m for m in lines if "rescue examined=" in m)
     assert "rescued=strong-vendor" in rescue
     assert "patch_refusals=0 apply_patch=offered" in rescue
@@ -1001,16 +1036,17 @@ def test_with_one_model_a_shell_failure_rescue_says_no_op_and_claims_no_other_mo
 # --- A pinned turn keeps what assess() pays for, and is told no fiction about it (#498) ----------
 
 
-def test_a_pinned_implement_turn_still_withdraws_apply_patch():
-    """assess() used to run in Auto alone, so pinning Implement silently dropped #494.
+def test_a_pinned_implement_turn_is_still_scored_and_still_keeps_its_patch_tool(caplog):
+    """assess() used to run in Auto alone, so pinning Implement silently dropped #494's scoring.
 
     #498 pins the approve turn to Implement, and the approve turn is the one that writes the whole
-    app — exactly the turn most likely to hit the patch-refusal loop #494 exists to end. Scoring
-    now happens on every non-Chat turn; only the PHASE stays Auto-only.
+    app. Scoring still happens on every non-Chat turn; only the PHASE stays Auto-only. What changed
+    in #551 is what the score is allowed to DO — it is measured and logged, and takes no tool away.
     """
-    sent, _ = _handled_with(CATALOG, _patch_messages(2), mode=Mode.IMPLEMENT)
-    assert "apply_patch" not in _tool_names(sent)
-    assert {"edit", "write", "read", "bash"} <= set(_tool_names(sent))
+    sent, lines = _handled_with(CATALOG, _patch_messages(2), caplog,
+                                mode=Mode.IMPLEMENT, tools=_PATCH_TOOLS)
+    assert "apply_patch" in _tool_names(sent)
+    assert "patch_refusals=2" in next(m for m in lines if "rescue examined=" in m)
 
 
 def test_a_pinned_turn_is_never_told_it_moved_to_a_different_model(caplog):

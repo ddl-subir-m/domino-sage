@@ -312,3 +312,97 @@ def test_stale_running_input_cannot_replace_completed_target_metadata(clock):
     assert rows[0]["targetFingerprint"] == rows[1]["targetFingerprint"]
     assert rows[0]["range"] == {"offset": 20, "limit": 10}
     assert rows[0]["status"] == "completed" and rows[0]["targetMetadataFinal"] is True
+
+
+# --- What a landed `apply_patch` records, and why widening `_EDITS` does not change it (#551) ----
+#
+# #551 site 1 proposed adding `apply_patch` to `tool_timing._EDITS`, on the reading that a
+# GPT-handle build "records 0 edits". Measured 2026-09-25, that fix is INERT, and this test is here
+# so the next reader does not re-derive it from the ticket and ship a no-op.
+#
+# `_EDITS` has exactly two uses and both hang off `targetFingerprint`: the gate that extracts a
+# path from the call's arguments, and the line that records a landed edit against that path. The
+# fingerprint comes from `args["filePath"]` or `args["path"]`, and `apply_patch` has NEITHER — its
+# argument is `patchText`, one string holding a `*** Begin Patch` envelope whose file names are
+# inside the text. So the fingerprint is None either way and neither line can fire.
+#
+# What DOES happen is honest as far as it goes: the call falls to the opaque-operation counter, so
+# a later read of any file reports `opaqueOperationSincePreviousRead`. What is lost against `edit`
+# is the per-file signal — `editSincePreviousRead` and `targetState == "observed_edit"`.
+#
+# A real fix has to derive the touched paths from the envelope, and `targetFingerprint` is SINGULAR
+# while one envelope legitimately carries several files. That is a record-shape decision, not a set
+# membership one, and it is open on #551.
+
+
+def _patch_part(cid, tool, status, inp):
+    return {"callID": cid, "id": cid, "tool": tool, "state": {"status": status, "input": inp}}
+
+
+def _read_edit_read(observer, tool, args):
+    """read app.py, change it with `tool`, read it again. Returns the three rows."""
+    observer.part("s", _patch_part("r1", "read", "completed", {"filePath": "app.py"}),
+                  directory="/w")
+    observer.part("s", _patch_part("e1", tool, "completed", args), directory="/w")
+    observer.part("s", _patch_part("r2", "read", "completed", {"filePath": "app.py"}),
+                  directory="/w")
+    return timing.as_dict(timing.current())["tools"]
+
+
+_ENVELOPE = {"patchText": "*** Begin Patch\n*** Update File: app.py\n@@\n-a\n+b\n*** End Patch\n"}
+
+
+def test_an_edit_is_recorded_against_the_file_it_touched(clock):
+    """The baseline the patch case is measured against."""
+    timing.start_turn("build")
+    rows = _read_edit_read(timing.tool_observer(), "edit",
+                           {"filePath": "app.py", "oldString": "a", "newString": "b"})
+
+    assert rows[1]["targetFingerprint"] is not None
+    assert rows[2]["editSincePreviousRead"] is True
+    assert rows[2]["targetState"] == "observed_edit"
+
+
+def test_a_landed_patch_is_recorded_as_an_opaque_operation_and_not_against_a_file(clock):
+    timing.start_turn("build")
+    rows = _read_edit_read(timing.tool_observer(), "apply_patch", _ENVELOPE)
+
+    # No path in the arguments, so nothing to fingerprint.
+    assert rows[1]["targetFingerprint"] is None
+    # The later read learns that SOMETHING happened, but not that this file was edited.
+    assert rows[2]["opaqueOperationSincePreviousRead"] is True
+    assert rows[2]["editSincePreviousRead"] is None
+    assert rows[2]["targetState"] == "unknown"
+
+
+def test_adding_the_patch_tool_to_the_edit_set_changes_nothing(clock, monkeypatch):
+    """The proposed one-line fix, run against the same input. Byte-identical records.
+
+    If this test ever goes red, somebody has made `apply_patch` carry a target — which is the real
+    fix, and the point at which this whole block should be rewritten rather than repaired."""
+    keys = ("tool", "status", "targetState", "editSincePreviousRead",
+            "opaqueOperationSincePreviousRead")
+
+    def _shape(rows):
+        # The fingerprint is HMAC'd under a per-observer random salt, so the VALUES differ between
+        # two runs by construction. What carries meaning is which rows share one and which have
+        # none, so number them in order of appearance.
+        seen: dict[str, int] = {}
+        out = []
+        for row in rows:
+            fp = row["targetFingerprint"]
+            if fp is not None and fp not in seen:
+                seen[fp] = len(seen) + 1
+            out.append({**{k: row[k] for k in keys},
+                        "target": None if fp is None else seen[fp]})
+        return out
+
+    timing.start_turn("build")
+    before = _shape(_read_edit_read(timing.tool_observer(), "apply_patch", _ENVELOPE))
+
+    monkeypatch.setattr(tool_timing, "_EDITS", {"edit", "write", "apply_patch"})
+    timing.start_turn("build")
+    after = _shape(_read_edit_read(timing.tool_observer(), "apply_patch", _ENVELOPE))
+
+    assert after == before
+

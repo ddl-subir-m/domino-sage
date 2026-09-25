@@ -2272,8 +2272,13 @@ def _tool_handle(project) -> dict:
 # Not the batching rule from the templates: `edit` takes one oldString per call, so "put every
 # change in one call" is true of a patch envelope and false of `edit`. The templates keep the
 # sequential rule, and this note carries the one that only holds here.
+# Says what the tool IS, never what is missing. Chat hands this block to a model whose prompt
+# forbids naming tools or limits to the person, and three observed turns reported a "constrained
+# turn" and tools being "unavailable" to someone who had asked for a chart. "You have no `edit`"
+# is exactly that sentence, one paraphrase away — so the note carries no absence clause and one
+# string serves both Build and Chat.
 _PATCH_ENVELOPE_NOTE = (
-    "Your edit tool for this turn is `apply_patch`, and you have no `edit` or `write`. "
+    "Your edit tool for this turn is `apply_patch`. "
     "Put every change to one file in one call, new files included: each hunk starts with a bare "
     "@@ line (no line numbers), and the envelope is `*** Begin Patch` and `*** End Patch` on "
     "their own lines. Each extra call is another round trip."
@@ -14223,8 +14228,19 @@ class Orchestrator:
                         "If you can't produce something, say so in one plain sentence and don't describe "
                         "how you work."
                     )
+            # Chat has the same shape Build had (#551): OpenCode gives a GPT handle `apply_patch`
+            # and no `edit`/`write`, and `sage-chat`'s prompt has never named it. Only a lane that
+            # can actually write — measured against the shim, `answer_only` and the artifact lane
+            # each keep `read`/`glob`/`grep` and Live read and lose every writer, so a note there
+            # would describe a tool the shim had already stripped. Held once for the whole turn:
+            # the table-repair send below is the same turn on the same handle.
+            chat_handle = _tool_handle(project)
+            chat_patch_note = ("" if answer_only or artifact_token is not None
+                               else _patch_envelope_note(chat_handle))
+            if chat_patch_note:
+                turn_prompt += "\n\n" + chat_patch_note
             with timing.span("setup.dispatch"):
-                client.send_prompt(sid, turn_prompt, model=_tool_handle(project), agent="sage-chat",
+                client.send_prompt(sid, turn_prompt, model=chat_handle, agent="sage-chat",
                                    attachments=mentioned, chat=True)
             if owed:
                 # Discharged by a turn REACHING the model on the new session, which is not the same
@@ -14892,7 +14908,11 @@ class Orchestrator:
                                     seen.add(_part_key(m, i, part))
                         try:
                             with timing.span("chat.table_repair"):
-                                client.send_prompt(sid, tables.repair_prompt(repairable), model=_tool_handle(project),
+                                client.send_prompt(sid,
+                                                   tables.repair_prompt(repairable)
+                                                   + (("\n\n" + chat_patch_note)
+                                                      if chat_patch_note else ""),
+                                                   model=chat_handle,
                                                    agent="sage-chat", chat=True)
                         except Exception:
                             log.warning("chat: table repair request failed")
