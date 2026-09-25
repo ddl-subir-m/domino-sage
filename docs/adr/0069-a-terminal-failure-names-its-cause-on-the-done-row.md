@@ -6,11 +6,12 @@ extends: ADR-0049 (an effort follows the model that runs), ADR-0066 (OpenCode ow
 
 # A terminal failure names its cause on the `done` row
 
-Settled 2026-09-25 for the children of #558, before any of them started. Five tickets touch the
-same records: #559 and #561 publish what a failed turn was and whether Sage already retried it,
-#563 reads that to offer **Continue with another model**, and #560 and #561 both add to the Build
-diagnostics record. Without one shape agreed first, each worker would have invented its own field
-and E would have had to read three.
+Settled 2026-09-25 for the children of #558, before any of them started. The letters below are
+#558's slices: A is #565 (Build) and #567 (Chat), B is #560, C is #561, E is #569 (backend) and
+#570 (Workbench), F is #564. Four slices touch the same records: A and C publish what a failed
+turn was and whether Sage already retried it, E reads that to offer **Continue with another
+model**, and B and C both add to the Build diagnostics record. Without one shape agreed first,
+each worker would have invented its own field and E would have had to read three.
 
 ## The records this extends
 
@@ -78,9 +79,10 @@ store is named for Build, is keyed by app, and a Chat turn has no app to store u
 
 ### Vocabulary shared across the tickets
 
-Keys are camelCase. Closed values are snake_case. `invalid_tool_call` and `model_no_action` are
-the same spellings the record already uses for `preEditGuard.trigger` and
-`planningRecovery.trigger`. `stage` reuses the record's `PHASES` and `errorStage` values.
+Keys are camelCase. Closed values are snake_case. `model_no_action` is the spelling the record
+already uses for `preEditGuard.trigger` and `planningRecovery.trigger`; `invalid_tool_call` is new
+(nothing on `main` writes it today) and is spelled to match them. `stage` reuses the record's
+`PHASES` and `errorStage` values.
 **Attempt** enters `CONTEXT.md`: one send of a turn's request into a session, `initial` or
 `recovery`; the integer on `build-recovery` is a count of recoveries, not an Attempt.
 
@@ -100,7 +102,7 @@ Rejected. It already exists per call in the diagnostics record, and a transcript
 timings is the generic recovery framework the parent forbids.
 
 **Reuse the process-local `ContextContinuation` registry as E's only action identity.**
-Rejected. It dies on restart, and #563 must show why an action is unavailable after one rather
+Rejected. It dies on restart, and #569 must show why an action is unavailable after one rather
 than pretend the token survived. E may still use a claim mechanism for duplicate and stale clicks;
 the durable identity is `turnId` plus conversation and app on the saved row.
 
