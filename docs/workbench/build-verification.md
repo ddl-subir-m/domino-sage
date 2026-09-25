@@ -1,7 +1,9 @@
 # Build verification
 
 A completed writer and a clean code check do not prove the app ran. Build pins the app, turn, and
-code tree, then starts a fresh preview generation. The supervisor must see a successful app-entry
+code tree, then starts a fresh preview generation. An explicit retry reserves that generation
+before returning; its scheduled child spawn consumes the same reservation. Later crashes, reloads,
+and retries still create new generations. The supervisor must see a successful app-entry
 response before Workbench receives `preview-validation`. The iframe reloads with that validation
 ID. Its reporter acknowledges the loaded document and uses the same ID for runtime errors.
 

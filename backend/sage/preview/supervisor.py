@@ -119,6 +119,7 @@ class ViteSupervisor:
         self._tail: collections.deque[str] = collections.deque(maxlen=40)  # recent Vite output
         self._retry_lock = threading.RLock()
         self._retry_thread: threading.Thread | None = None
+        self._retry_generation: int | None = None
 
     def status(self) -> dict:
         """A bounded snapshot independent of the URL. A reload parent can live without a child."""
@@ -221,11 +222,12 @@ class ViteSupervisor:
                 return False
             self._requested = True
             self._stopped = False
+            self._retry_generation = None
             if explicit:
                 # Retire the old serving generation before returning to the caller. A validation
                 # or Retry must not mistake the previous ready child for the new attempt.
                 self._kill()
-                self._begin_generation()
+                self._retry_generation = self._begin_generation()
                 self._last_error = None
                 self._tail.clear()
             # A new attempt, not a continuation of the last crash loop — otherwise an app that is
@@ -264,7 +266,7 @@ class ViteSupervisor:
     # --- internals ---
 
     def _spawn(self, *, previous: subprocess.Popen | None = None) -> None:
-        generation = self._begin_generation(previous)
+        generation = self._spawn_generation(previous)
         if generation is None:
             return
         port = preview_port()
@@ -310,6 +312,15 @@ class ViteSupervisor:
     # fastapi-antd app reported a SUCCESSFUL start and then 502'd every request. Vite prints its
     # URL only once it is serving, so it needs none and keeps the behaviour it had.
     _READY_LINE: str | None = None
+
+    def _spawn_generation(self, previous: subprocess.Popen | None) -> int | None:
+        """The scheduled retry's first child uses the generation it reserved synchronously."""
+        with self._state_lock:
+            if (previous is None and threading.current_thread() is self._retry_thread
+                    and self._retry_generation is not None):
+                generation, self._retry_generation = self._retry_generation, None
+                return generation if not self._stopped and generation == self._generation else None
+            return self._begin_generation(previous)
 
     def _begin_generation(self, previous: subprocess.Popen | None = None) -> int | None:
         with self._state_lock:
@@ -477,7 +488,7 @@ class UvicornSupervisor(ViteSupervisor):
         return ""
 
     def _spawn(self, *, previous: subprocess.Popen | None = None) -> None:
-        generation = self._begin_generation(previous)
+        generation = self._spawn_generation(previous)
         if generation is None:
             return
         port = _free_port() if not os.environ.get("SAGE_PREVIEW_PORT", "").strip() else preview_port()
