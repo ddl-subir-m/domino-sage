@@ -13,10 +13,17 @@ from sage.resources.provider import DataSource
 from .test_a_chat_turn_works_a_number_out_in_sql import FakeAnswer, turn_for
 
 
+def _source(connector="SnowflakeConfig"):
+    return DataSource("dwh", "DWH", connector, "Shared", connector_type=connector)
+
+
 @pytest.mark.parametrize("sql, columns, row", [
     (("SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
       "WHERE TABLE_NAME ILIKE '%CASE%' ORDER BY TABLE_NAME"),
      ["TABLE_SCHEMA", "TABLE_NAME"], ["MARTS", "SFDC__CASE"]),
+    (("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+      "WHERE LOWER(TABLE_NAME) LIKE '%case%' ORDER BY UPPER(TABLE_NAME)"),
+     ["TABLE_NAME"], ["SFDC__CASE"]),
     ("SELECT TABLE_SCHEMA, TABLE_NAME, ROW_COUNT FROM DWH.INFORMATION_SCHEMA.TABLES",
      ["TABLE_SCHEMA", "TABLE_NAME", "ROW_COUNT"], ["MARTS", "SFDC__CASE", 3]),
     ('SELECT t."TABLE_NAME" AS name FROM "DWH"."INFORMATION_SCHEMA"."TABLES" t',
@@ -38,8 +45,7 @@ def test_discovery_names_reach_the_tool_and_the_model_receipt(tmp_path, sql, col
     data, journal = DataUse(), []
     turn, _ = turn_for(
         tmp_path, answer=FakeAnswer(columns, [row]), keep_rows=True,
-        source_for=lambda _: DataSource("dwh", "DWH", "Snowflake", "Shared",
-                                         connector_type="SnowflakeConfig"),
+        source_for=lambda _: _source(),
         record_data_use=lambda event, reply: data.record(event, reply, journal.append, "turn"),
     )
     said = run.perform("live_read_query", {"source": "DWH", "sql": sql}, turn)
@@ -81,7 +87,7 @@ def test_discovery_names_reach_the_tool_and_the_model_receipt(tmp_path, sql, col
 ])
 def test_metadata_spelling_does_not_disclose_an_ordinary_value(tmp_path, sql):
     turn, recorded = turn_for(tmp_path, answer=FakeAnswer(["TABLE_NAME"], [["private-value"]]),
-                              keep_rows=True)
+                              keep_rows=True, source_for=lambda _: _source())
     said = run.perform("live_read_query", {"source": "DWH", "sql": sql}, turn)
     assert "private-value" not in said
     assert recorded[0][1]["selected"] == {}
@@ -90,7 +96,8 @@ def test_metadata_spelling_does_not_disclose_an_ordinary_value(tmp_path, sql):
 
 def test_catalog_names_keep_the_value_budget(tmp_path):
     row = ["table-" + "x" * 20_000]
-    turn, recorded = turn_for(tmp_path, answer=FakeAnswer(["TABLE_NAME"], [row]))
+    turn, recorded = turn_for(tmp_path, answer=FakeAnswer(["TABLE_NAME"], [row]),
+                              source_for=lambda _: _source())
     said = run.perform("live_read_query", {
         "source": "DWH", "sql": "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES"}, turn)
     assert "too large to read here" in said
@@ -115,7 +122,7 @@ def test_catalog_discovery_keeps_the_store_row_cap(tmp_path):
         limits.append(limit)
         return FakeAnswer(["TABLE_NAME"], [["SFDC__CASE"]], truncated=True)
 
-    turn, recorded = turn_for(tmp_path, run_statement=query)
+    turn, recorded = turn_for(tmp_path, run_statement=query, source_for=lambda _: _source())
     said = run.perform("live_read_query", {
         "source": "DWH", "sql": "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES"}, turn)
     assert limits == [500]
@@ -153,3 +160,24 @@ def test_quoted_catalog_lookalikes_do_not_gain_disclosure(tmp_path, connector, s
     said = run.perform("live_read_query", {"source": "DWH", "sql": sql}, turn)
     assert "private-value" not in said
     assert recorded[0][1]["selected"] == {}
+
+
+@pytest.mark.parametrize("connector", ["", "CustomSqlConfig", "PostgreSQLConfig"])
+def test_other_connectors_keep_the_existing_disclosure_policy(tmp_path, connector):
+    turn, recorded = turn_for(
+        tmp_path, answer=FakeAnswer(["TABLE_NAME"], [["private-value"]]),
+        source_for=lambda _: _source(connector),
+    )
+    said = run.perform("live_read_query", {
+        "source": "DWH", "sql": "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES"}, turn)
+    assert "private-value" not in said
+    assert recorded[0][1]["selected"] == {}
+
+    aggregate, records = turn_for(
+        tmp_path / "aggregate", answer=FakeAnswer(["N"], [[42]]),
+        source_for=lambda _: _source(connector),
+    )
+    said = run.perform("live_read_query", {
+        "source": "DWH", "sql": "SELECT COUNT(*) AS N FROM CUSTOMER_DATA"}, aggregate)
+    assert "42" in said
+    assert records[0][1]["selected"] == {"rows": [[42]]}
