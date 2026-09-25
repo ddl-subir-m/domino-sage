@@ -2277,6 +2277,17 @@ async def stop() -> JSONResponse:
     return JSONResponse(content=result)
 
 
+@control_app.post("/api/preview/data-error")
+async def preview_data_error(request: Request) -> Response:
+    try:
+        body = await request.json()
+        orchestrator.record_preview_data_error(str(body.get("validationId") or ""),
+                                               str(body.get("path") or ""))
+    except (ValueError, AttributeError):
+        pass
+    return Response(status_code=204)
+
+
 @control_app.post("/api/preview/ack")
 async def preview_ack(request: Request) -> Response:
     try:
@@ -4720,8 +4731,12 @@ def _preview_platform():
 # What the relay refused, told to the turn (#556). The page catches the failed fetch and logs it in
 # the browser, where the model cannot read it; the proxy sees every status, and this is the record
 # the build loop reads in the same window it reads a crash.
-def _preview_platform_read(status: int, path: str) -> None:
-    orchestrator.record_platform_read_failure(status, path)
+def _preview_read_context(validation_id: str, path: str, query: str, kind: str):
+    return orchestrator.capture_preview_read(validation_id, path, query, kind)
+
+
+def _preview_platform_read(status: int | None, path: str, *, context=None, body=None) -> None:
+    orchestrator.record_platform_read_failure(status, path, context=context, body=body)
 
 
 # The previewed app's own model calls (#7). A published app calls the gateway straight from the
@@ -4797,6 +4812,7 @@ control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _
                                                get_platform=_preview_platform,
                                                get_mount_base=_preview_mount_base,
                                                on_platform_read=_preview_platform_read,
+                                               get_read_context=_preview_read_context,
                                                get_status=_preview_status))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no

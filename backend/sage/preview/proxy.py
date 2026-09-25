@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from ..orchestrator import brand
+from .read_outcomes import read_request
 
 log = logging.getLogger(__name__)
 
@@ -49,10 +50,6 @@ _LLM_PREFIX = "api/llm/"
 
 # The page's read-only road to the platform API (#489): `sage_domino.RELAY_PREFIX`, minus the slash.
 _PLATFORM_PREFIX = "api/domino/"
-
-# How much of a refused read's path, query included, is handed on (#556). It rides into a prompt,
-# and the query string is the page's to write at any length.
-_PLATFORM_READ_PATH_MAX = 200
 
 # Headers the app sets that must survive the hop. The tag headers are how spend is attributed to the
 # app (see `tagHeaders` in appLlm.ts); dropping them would put preview traffic in "unknown".
@@ -196,8 +193,7 @@ async def _forward_llm(request: Request, path: str, get_llm, approve_model=None)
     return StreamingResponse(body(), status_code=upstream.status_code, headers=passthrough)
 
 
-async def _relay_platform(request: Request, path: str, module,
-                          on_platform_read: Callable[[int, str], None] | None = None) -> Response | None:
+async def _relay_platform(request: Request, path: str, module) -> Response | None:
     """One platform read for the previewed page, made by the app's own `sage_domino.py` (#489). None
     when the template has no such file.
 
@@ -207,11 +203,6 @@ async def _relay_platform(request: Request, path: str, module,
     the workspace's host and sidecar — the identity rule `preview/queries.py` states for queries,
     one route over. In a thread, because the module blocks on `urlopen` for up to its timeout.
 
-    `on_platform_read` hears every answer that is a refusal — status 400 and up — as the status and
-    the path the page asked for, query included, capped at `_PLATFORM_READ_PATH_MAX` (#556). The
-    page catches a failed `fetch` and logs it in the browser, where the model cannot read it; this
-    is the one place that sees every status, so it is where the turn gets told. A read that worked
-    is nobody's business, and the answer itself is untouched either way.
     """
     if module is None:
         return None
@@ -219,9 +210,6 @@ async def _relay_platform(request: Request, path: str, module,
         return JSONResponse(status_code=405, content={"error": "This endpoint takes GET."})
     relayed, query = path[len(_PLATFORM_PREFIX):], request.url.query
     status, headers, body = await run_in_threadpool(module.relay, relayed, query)
-    if on_platform_read is not None and status >= 400:
-        asked = "/" + relayed + (f"?{query}" if query else "")
-        on_platform_read(status, asked[:_PLATFORM_READ_PATH_MAX])
     return Response(content=body, status_code=status, headers=headers)
 
 
@@ -231,7 +219,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                      approve_model: Callable[[str], str | None] | None = None,
                      get_platform: Callable[[], object | None] | None = None,
                      get_mount_base: Callable[[], str] | None = None,
-                     on_platform_read: Callable[[int, str], None] | None = None,
+                     on_platform_read: Callable[..., None] | None = None,
+                     get_read_context: Callable[[str, str, str, str], dict | None] | None = None,
                      get_status: Callable[[], dict] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
@@ -256,8 +245,9 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
     "not published yet". `get_platform` is the app's `sage_domino.py` on the same terms (#489):
     absent, `/api/domino/*` goes to Vite and 404s.
 
-    `on_platform_read` is told of each platform read the relay refused, as `(status, path)` (#556).
-    Optional, and absent means nobody is told — the page still gets the relay's own answer.
+    #556's callback now receives every observed query/platform result, with the document context
+    captured before awaiting its response. Paths omit query strings; the body is inspected only to
+    distinguish explicit empty results and is never retained in diagnostics.
     """
     vite_base = f"{base_prefix}/preview"  # what the browser sees == what Vite serves at
 
@@ -309,6 +299,20 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
     async def http_proxy(request: Request, path: str) -> Response:
+        kind = ("query" if path.startswith(_QUERY_PREFIX) else
+                "platform" if path.startswith(_PLATFORM_PREFIX) else "")
+        read_path = ("/" + path[len(_PLATFORM_PREFIX):] if kind == "platform" else "/" + path)
+        context = (get_read_context(request.headers.get("X-Sage-Validation", ""),
+                                    read_path, request.url.query, kind)
+                   if kind and get_read_context is not None else None)
+        observer = on_platform_read if kind and (context is not None or get_read_context is None) else None
+
+        def observed(response):
+            if observer is not None:
+                observer(response.status_code, read_request(read_path, kind=kind)["path"],
+                         context=context, body=getattr(response, "body", None))
+            return response
+
         # The app's own named queries, before Vite gets a chance to 404 them (#24). Vite serves the
         # app; it has never served its data. Answered here rather than by a route on the control app
         # because this proxy is already the one thing standing between the previewed page and its
@@ -316,7 +320,7 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
         if path.startswith(_QUERY_PREFIX):
             answered = await _answer_query(request, path, get_queries and get_queries())
             if answered is not None:
-                return answered
+                return observed(answered)
             # Fall through when there is no query server: Vite 404s, and `appQuery.ts` already has
             # the right sentence for that — "only available once it is published". Which is true.
         if path.startswith(_LLM_PREFIX):
@@ -329,14 +333,18 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
         if path.startswith(_PLATFORM_PREFIX):
             # The page's platform reads (#489), by the app's own relay. Falls through to Vite's 404
             # when the template has no relay, which is what an app born before it would answer.
-            relayed = await _relay_platform(request, path, get_platform and get_platform(),
-                                            on_platform_read)
+            try:
+                relayed = await _relay_platform(request, path, get_platform and get_platform())
+            except (TimeoutError, httpx.TimeoutException):
+                relayed = JSONResponse(status_code=504, content={"error": "The platform read timed out."})
+            except (OSError, httpx.HTTPError):
+                relayed = JSONResponse(status_code=502, content={"error": "The platform read was unavailable."})
             if relayed is not None:
-                return relayed
+                return observed(relayed)
         try:
             upstream = get_upstream()  # raises RuntimeError while Vite is (re)starting
         except Exception as e:
-            return _unavailable(f"{type(e).__name__}: {e}")
+            return observed(_unavailable(f"{type(e).__name__}: {e}"))
         snapshot = get_status() if get_status else None
         url = f"{upstream}{mount_base()}/{path}"
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
@@ -347,13 +355,28 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
             upstream = await client.send(req, stream=True)
         except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError, OSError) as e:
             await client.aclose()
-            return _unavailable(f"{type(e).__name__}: {e}", snapshot)
+            return observed(_unavailable(f"{type(e).__name__}: {e}", snapshot))
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP}
 
         async def body_iter():
+            # Headers alone do not establish a data result: the body may still fail in flight.
+            # Retain at most the outcome helper's JSON inspection bound, never an unbounded body.
+            sampled = bytearray() if observer is not None else None
             try:
                 async for chunk in upstream.aiter_raw():
+                    if sampled is not None:
+                        if len(sampled) + len(chunk) <= 1024 * 1024:
+                            sampled.extend(chunk)
+                        else:
+                            sampled = None
                     yield chunk
+                if observer is not None:
+                    observer(upstream.status_code, read_request(read_path, kind=kind)["path"],
+                             context=context, body=bytes(sampled) if sampled is not None else None)
+            except (httpx.HTTPError, OSError):
+                if observer is not None:
+                    observer(None, read_request(read_path, kind=kind)["path"], context=context)
+                raise
             finally:
                 await upstream.aclose()
                 await client.aclose()

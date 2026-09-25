@@ -78,6 +78,7 @@ from ..pre_edit_guard import (
 )
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
+from ..preview.read_outcomes import read_request, read_result
 from ..preview.supervisor import UvicornSupervisor, ViteSupervisor
 from ..preview.validation import PageValidation
 from ..provision import naming
@@ -4553,6 +4554,7 @@ def _tidy_plan(plan_md: str) -> str:
 
 _PLAN_NAME_HEADING = re.compile(r"^#[ \t]+\S")
 _PLAN_SECTION_HEADING = re.compile(r"^##")
+_PLAN_FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 
 
 def _drop_plan_preamble(plan_md: str) -> str:
@@ -4569,9 +4571,21 @@ def _drop_plan_preamble(plan_md: str) -> str:
     line before it is dropped. No such heading, and the plan comes back exactly as written — so a
     `NO APP DESCRIBED` refusal and a plan that opens on `## Problem & outcome` reach the same
     checks they always did, and a `# ` heading BELOW a section is never read as the name.
+
+    A fenced block is skipped whole. The narration this drops is the model saying what it is about
+    to do, and a model that says it by showing the command opens a ```bash fence and writes a `#`
+    comment under it — which matches the heading pattern exactly, because a shell comment and a
+    Markdown `# ` heading are the same characters. Measured while landing this: without the skip,
+    `# install the deps` became the app's name and the real heading below it was never reached.
     """
     lines = plan_md.splitlines(keepends=True)
+    fenced = False
     for i, line in enumerate(lines):
+        if _PLAN_FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         if _PLAN_SECTION_HEADING.match(line):
             return plan_md
         if _PLAN_NAME_HEADING.match(line):
@@ -18960,8 +18974,10 @@ class Orchestrator:
         )
         PLATFORM_READ_NUDGE = (
             "The app's read of the platform API was refused while the preview ran it: {status} on "
-            "`{path}`. A 404 on a path the reads table names is a wrong id — use the platform id "
-            "from the attached-data block in AGENTS.md, never the name. Fix the call; do not hide "
+            "`{path}`. Evidence: {reason}. Requested Dataset IDs: {resource_ids}. "
+            "Compare these with the platform id from the attached-data block in AGENTS.md, never "
+            "the name. A 401/403 is an access failure. A 404 alone can mean a missing route, missing "
+            "resource, or hidden access; do not assume it proves a wrong id. Fix the call; do not hide "
             "the failure and do not substitute values for what the platform did not answer."
         )
         # What the retry below adds to the turn it re-sends. It is orientation, not instruction: the
@@ -20902,8 +20918,10 @@ class Orchestrator:
                         iterate_reason = (f"platform read refused — fixing ({refused['status']} "
                                           f"{refused['path'][:140]})")
                         yield {"type": "iterate", "reason": iterate_reason}
-                        current = PLATFORM_READ_NUDGE.format(status=refused["status"],
-                                                             path=refused["path"])
+                        current = PLATFORM_READ_NUDGE.format(
+                            status=refused["status"] or "network failure", path=refused["path"],
+                            reason=refused.get("reason", "http_error"),
+                            resource_ids=", ".join(refused.get("resourceIds", [])) or "none recorded")
                         continue
                 # The agent may have copied attached data into src/ — that leaks it into git
                 # (public/data/ is gitignored on purpose) and is why deleting the attachment leaves the
@@ -20960,7 +20978,7 @@ class Orchestrator:
                 # every number the model had written itself — typecheck clean, no query to fail, so
                 # nothing anywhere disagreed. Only on a turn that SUCCEEDED: a turn that already
                 # failed has its own sentence, and a second one below it reads as part of the fault.
-                if report.ok and owns_turn:
+                if report.ok and (owns_turn or validate_page):
                     notice = self._unasked_notice(project.app_for_turn())
                     if notice:
                         yield persist({"type": "data-source-unasked", "message": notice})
@@ -20972,10 +20990,9 @@ class Orchestrator:
                 #
                 # Only on a turn that SUCCEEDED, for the same reason the notice above is: a turn
                 # that already failed has its own sentence, and a second one below it reads as part
-                # of the fault. A switch mid-build (#77) needs nothing here — the preview is
-                # rebuilt for the app that was switched TO, so its answer is empty rather than the
-                # other app's.
-                failed = self._query_failures(project) if report.ok and owns_turn else {}
+                # of the fault. Query outcomes now come from this validation's issued reads, so a
+                # late response from another app cannot change the result (#557 P10).
+                failed = self._query_failures(project) if report.ok and (owns_turn or validate_page) else {}
                 if failed:
                     yield persist({"type": "data-source-failed",
                                    "message": self._failed_notice(failed)})
@@ -21638,7 +21655,9 @@ class Orchestrator:
                     return True
                 if outcome is not None:
                     reason = str(outcome.get("decision") or reason)
-                    if reason in {"pre_edit_limit", "context_limit"}:
+                    if reason in {"pre_edit_limit", "context_limit", "platform read failed", "queries failed"}:
+                        # Data validation already used its allowed repair. A phase retry must not
+                        # reset that budget or make another model call to probe an unavailable store.
                         return reason
         except TurnWedged:
             # A phase's `done` is swallowed above so one build ends once, not once per phase — but a
@@ -21662,6 +21681,9 @@ class Orchestrator:
         validation = PageValidation(new_id("validation"), project.id, app.app_id,
                                     rec.turn_id if rec is not None else "",
                                     project.snapshot.working_tree_hash(), code_kind)
+        bindings = parse_bindings(app.read_bindings())
+        validation.data_expected = any(b.kind in (KIND_DATASET, KIND_DATA_SOURCE) for b in bindings)
+        validation.dataset_ids = tuple(b.id for b in bindings if b.kind == KIND_DATASET)
         project.page_validation = validation
         timeout = self._build_policy.page_ack_wait_seconds
         supervisor = project.supervisor
@@ -21755,25 +21777,80 @@ class Orchestrator:
         self._project.runtime_error = {"message": message, "stack": stack, "ts": time.monotonic(),
                                        "app": self._project.workspace.app_id}
 
-    def record_platform_read_failure(self, status: int, path: str) -> None:
-        """Store a platform read the app's own relay refused in the preview (the proxy's
-        `on_platform_read`, #556), stamped exactly as `record_runtime_error` stamps a crash: the
-        time, so build_stream can tell this turn's refusal from a stale one, and the app, because
-        the preview serves whichever app is ON SCREEN (#77). Best-effort: no active project, dropped."""
-        import time
+    def capture_preview_read(self, validation_id: str, path: str, query: str = "",
+                             kind: str = "platform") -> dict | None:
+        """Capture the document and pending read before the proxy gives up control."""
+        validation = self._active_validation(validation_id)
+        if validation is None:
+            return None
+        if len(validation.data_reads) >= 20:
+            validation.reads_truncated = True
+            return None
+        read = {**read_request(path, query, kind=kind), "outcome": "pending", "status": None}
+        validation.data_reads.append(read)
+        return {"project": self._project, "validation": validation, "read": read,
+                "queries": self._project.queries if kind == "query" else None}
 
+    def record_platform_read_failure(self, status: int | None, path: str, *,
+                                     context: dict | None = None, body: bytes | None = None) -> None:
+        """Extend #556's callback with success, empty and failure evidence for its issued read.
+
+        The legacy two-argument call remains readable outside validation. It cannot establish any
+        fact about a new validation document; that requires the context captured at issuance.
+        """
         if self._project is None:
             return
-        self._project.platform_read_failure = {"status": int(status), "path": str(path),
-                                               "ts": time.monotonic(),
-                                               "app": self._project.workspace.app_id}
+        if context is None:
+            if status is not None and status >= 400:
+                self._project.platform_read_failure = {
+                    **read_result(read_request(path), status), "ts": time.monotonic(),
+                    "app": self._project.workspace.app_id}
+            return
+        validation = context["validation"]
+        read = context["read"]
+        result = read_result(read, status, body, bound_ids=validation.dataset_ids)
+        # Parsing may cross the validation deadline. Check again before publishing its result,
+        # and replace pending fields together so the build thread never sees an empty record.
+        if (context["project"] is not self._project
+                or self._active_validation(validation.id) is not validation):
+            return
+        read.update(result)
+        if result["outcome"] == "failed" and result["kind"] == "query":
+            # Preserve #203's existing readable query error, from the server captured when this
+            # matched request was issued. Keep it out of the bounded diagnostic read metadata.
+            name = result["path"].rsplit("/", 1)[-1]
+            try:
+                reason = (context["queries"].failures() or {}).get(name)
+                if isinstance(reason, str):
+                    validation.query_failures[name] = reason
+            except Exception:
+                log.debug("preview query failure detail unavailable", exc_info=True)
+        if result["outcome"] == "failed" and result["kind"] == "platform":
+            self._project.platform_read_failure = {
+                **result, "validationId": validation.id, "app": validation.app_id,
+                "ts": time.monotonic()}
+
+    def record_preview_data_error(self, validation_id: str, path: str) -> None:
+        """A caught fetch rejection is a failed read even when no proxy response arrived."""
+        path = path.rsplit("/preview/", 1)[-1]
+        path = "/" + path.lstrip("/")
+        kind = "query" if path.startswith("/api/queries/") else "platform"
+        if path.startswith("/api/domino/"):
+            path = path[len("/api/domino"):]
+        context = self.capture_preview_read(validation_id, path, kind=kind)
+        if context is not None:
+            self.record_platform_read_failure(None, path, context=context)
 
     def _fresh_platform_read_failure(self, project: Project, since: float) -> dict | None:
         """The refusal recorded after `since` (this turn's send time) for the app this turn is
         building, or None. The same two rules `_await_runtime_error` applies to a crash, and no
         wait of its own: that wait is the window, and this reads what landed in it."""
         refused = project.platform_read_failure
+        validation = project.page_validation
         app_id = project.app_for_turn().app_id
+        if validation is not None:
+            return (refused if (refused or {}).get("validationId") == validation.id
+                    and validation.app_id == app_id else None)
         if (refused is not None and refused.get("ts", 0.0) >= since
                 and refused.get("app", app_id) == app_id):
             return refused
@@ -26668,6 +26745,13 @@ class Orchestrator:
         Best-effort like everything else that runs at the end of a turn. A preview that has gone
         strange is not grounds to fail a build that worked.
         """
+        validation = project.page_validation
+        if validation is not None:
+            return {read["path"].rsplit("/", 1)[-1]: validation.query_failures.get(
+                read["path"].rsplit("/", 1)[-1],
+                f"Read failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')}).")
+                for read in validation.data_reads
+                if read["kind"] == "query" and read["outcome"] == "failed"}
         try:
             return project.queries.failures() or {}
         except Exception:
