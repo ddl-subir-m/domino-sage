@@ -7,6 +7,10 @@ and retries still create new generations. The supervisor must see a successful a
 response before Workbench receives `preview-validation`. The iframe reloads with that validation
 ID. Its reporter acknowledges the loaded document and uses the same ID for runtime errors.
 
+Before launching a replacement process, the background worker waits up to three seconds for the
+old listener to release the preview port. A busy port then produces an explicit startup failure.
+Status, Retry, and Stop remain nonblocking; Stop cancels the wait before a new process launches.
+
 Startup and page acknowledgment each have a finite `SAGE_BUILD_PAGE_ACK_WAIT_SECONDS` bound
 (default 10 seconds). The existing runtime observation window starts only after acknowledgment
 (default 4 seconds, `SAGE_BUILD_RUNTIME_ERROR_WAIT_SECONDS`). Stop cancels these checks and keeps
