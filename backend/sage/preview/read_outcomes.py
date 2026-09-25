@@ -49,7 +49,7 @@ def _empty(request: dict, body: bytes | None) -> bool:
     except (ValueError, UnicodeError):
         return False
     if value == []:
-        return True
+        return not (request["path"] == _DATASETS and request["resourceIds"])
     if request["kind"] == "query":
         return isinstance(value, dict) and value.get("rows") == [] and not value.get("error")
     if request["path"] != _DATASETS or not isinstance(value, list) or not value:
