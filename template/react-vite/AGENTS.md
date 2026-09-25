@@ -193,101 +193,6 @@ Build the user's app by editing `src/`. There is no install or build step to run
   quietly claim the same class name. Editing a token, a font or the reset there is still fine — that
   is what it's for.
 
-## Design system — build a polished product, not a prototype
-
-Every app must look intentional and consistent. These rules are what separate a crafted UI from a
-"vibe-coded" one. Follow them even when the user doesn't ask.
-
-### Use the tokens (defined in `src/index.css`)
-- **Color:** `var(--accent)` (the {platformName} accent `#543FDE`) for primary actions and links;
-  `var(--text)` / `var(--text-muted)` for copy; `var(--border)` for dividers and input borders;
-  `var(--bg)` / `var(--surface)` for backgrounds; `var(--ok)` / `var(--warn)` / `var(--danger)`
-  for status. **Never hardcode hex values** — use the variables so light and dark themes both work.
-- **Type:** Inter, served from this app's own origin. The `@font-face` at the top of
-  `src/index.css` and the file it points at are {assistantName}'s — leave both alone, or the app
-  quietly falls back to a system font. Scale — page title 28–32px/600, section heading 20px/600,
-  card title 16px/600, body 14–15px/400, caption 12px. One `<h1>` per screen. Left-align body text.
-- **Spacing:** 8px grid (4 / 8 / 12 / 16 / 24 / 32). Space **within** a group ≈ half the space
-  **between** groups. Be generous; don't crowd elements.
-- **Radius & shadow:** use `var(--radius)` and `var(--shadow)`; keep them consistent everywhere.
-
-### Layout & components
-- **One clear primary action** per screen — a filled `--accent` button. Everything else is
-  secondary (outline) or a link. Never place two filled primary buttons side by side.
-- Buttons and labels **start with a verb** and are specific ("Add ingredient", not "Submit").
-- **Cards:** consistent padding (16–24px), 1px `--border`, `--radius`, subtle `--shadow`. Use them
-  to group related content.
-- **Inputs:** label *above* the field (not placeholder-as-label); visible focus ring in `--accent`;
-  validate on blur, not on every keystroke.
-- Cap main content width (~64–72rem) and center it on large screens, but let it fill smaller ones.
-  Comfortable line length is 50–75 characters.
-
-### Charts
-- **Series color:** `var(--chart-1)` … `var(--chart-6)`, in order. Never `--ok` / `--warn` /
-  `--danger` for a data series — those mean status, so a green bar reads as "this is good" rather
-  than "this is revenue".
-- **Every series needs an explicit `name`.** Without it recharts renders `name="undefined"` into the
-  DOM and the tooltip and legend both say "undefined".
-- **`Tooltip`'s `formatter`: leave its parameters unannotated.** recharts types `value` as
-  `ValueType | undefined`, and `ValueType` is `number | string | ReadonlyArray<number | string>` —
-  so `(value: number)` fails `tsc`, and so does the obvious second guess,
-  `(value: number | string | undefined)`, which still misses the readonly array. Let both
-  parameters infer and convert inside the body:
-  `formatter={(value, name) => ["$" + Number(value).toFixed(2), name]}`. Same for `labelFormatter`.
-- **Label it:** axis labels with units, and a title unless the surrounding card already says it.
-  Bar-chart y-axes start at zero. Tooltips show the exact value.
-- An empty or still-loading chart gets the same treatment as any other collection — see below.
-
-### Controls
-A **Control** is an element that changes what the app shows without a rebuild: a select, a date
-range, a search box, a toggle. A screen showing a collection over two or more rows, where one column
-holds a handful of values — a category, a status, a date — gets one over that column.
-- **No package is needed for this.** `<select>`, `<input type="date">` and `<input type="search">`
-  are the whole toolkit. Hold the selection in `useState`, derive the filtered rows with `useMemo`,
-  and feed every view from those derived rows. Style them like any other input — label above the
-  field, visible focus ring — and give a `<select>` an option list, never a free-text box, when the
-  values are a fixed set.
-- **At least two views respond to it.** A Control that moves one chart is a chart option; one that
-  moves the chart *and* the table is a dashboard. Deriving both from the same rows is what keeps
-  them from disagreeing.
-- **State the current selection in words** — "March 2026 · EMEA · 412 rows" — where the viewer reads
-  it before the charts. This is not polish: without it a filtered view and an empty one look
-  identical, and a blank chart under an unstated filter reads as broken data rather than as a narrow
-  selection.
-- **A chart click writes the Control; it never filters beside it.** Clicking the EMEA bar sets the
-  select to EMEA, the select visibly moves, and every view re-reads from that one selection. So
-  there is no second piece of state, nothing extra to reset, and the keyboard path is the select
-  that was already on screen. A chart over a column that has no Control is **not clickable** — a
-  selection the viewer can neither see nor undo is worse than no selection at all.
-- **A selection that matches nothing is a state, not a blank.** Say which selection matched nothing
-  and offer the way back to a wider one, the same as any other empty collection below.
-- If this app reads a store, "The app's data" says how a Control filters there instead — in SQL,
-  through a declared parameter — and that path replaces the `useMemo` above rather than adding to it.
-
-### States — do not skip these (this is the #1 polish signal)
-Limit these to the screens/collections the current request actually touches — don't add them to
-components outside what was asked.
-- **Empty state:** for a list/collection you're building or editing that can be empty, add one that
-  says *what it is*, *why it's empty*, and *the action to fill it* — with a button. Never render a
-  blank area.
-- **Loading:** show a spinner or skeleton for async work; never a blank flash. If you drive the UI
-  with a `loading`/`ready`/`empty`/`error` state machine, **wire the initial load in a mount
-  `useEffect`** — a loader defined but only called from a retry button leaves the page stuck on the
-  spinner forever. Every non-terminal state must have a code path that reaches a terminal one.
-- **Error:** a human-readable message plus how to recover.
-- **A screen whose whole data source is unreachable is NOT an empty collection.** An empty list is
-  one region with nothing in it; this is every control on the screen going inert at once, and the
-  two need opposite treatments. Do not reach for the empty state above by analogy — if this app
-  reads a store, "The app's data" below says what to render instead.
-- **Interactive elements:** hover and focus styles; explain disabled states.
-
-### Accessibility & restraint
-- Meet AA color contrast; never rely on color alone to convey meaning.
-- Icon-only buttons need an `aria-label` (and a `title` for tooltip).
-- Respect `prefers-color-scheme` — the tokens already define dark values.
-- No gratuitous gradients, no clashing accent colors, no inconsistent corner radii. Restraint reads
-  as quality.
-
 ## What exists
 - `src/App.tsx` — entry component (currently a placeholder to replace).
 - `src/components/` — put reusable components here.
@@ -405,3 +310,99 @@ the design tokens in `src/index.css`, the way `src/examples/StatCard.tsx` does. 
 to need a package that isn't on this list, build the nearest thing you can from what is here and
 tell the user what you left out — do not try to install it.
 <!-- sage:build-profile:v1:implement:end -->
+<!-- sage:build-profile:v1:design:begin -->
+## Design system — build a polished product, not a prototype
+
+Every app must look intentional and consistent. These rules are what separate a crafted UI from a
+"vibe-coded" one. Follow them even when the user doesn't ask.
+
+### Use the tokens (defined in `src/index.css`)
+- **Color:** `var(--accent)` (the {platformName} accent `#543FDE`) for primary actions and links;
+  `var(--text)` / `var(--text-muted)` for copy; `var(--border)` for dividers and input borders;
+  `var(--bg)` / `var(--surface)` for backgrounds; `var(--ok)` / `var(--warn)` / `var(--danger)`
+  for status. **Never hardcode hex values** — use the variables so light and dark themes both work.
+- **Type:** Inter, served from this app's own origin. The `@font-face` at the top of
+  `src/index.css` and the file it points at are {assistantName}'s — leave both alone, or the app
+  quietly falls back to a system font. Scale — page title 28–32px/600, section heading 20px/600,
+  card title 16px/600, body 14–15px/400, caption 12px. One `<h1>` per screen. Left-align body text.
+- **Spacing:** 8px grid (4 / 8 / 12 / 16 / 24 / 32). Space **within** a group ≈ half the space
+  **between** groups. Be generous; don't crowd elements.
+- **Radius & shadow:** use `var(--radius)` and `var(--shadow)`; keep them consistent everywhere.
+
+### Layout & components
+- **One clear primary action** per screen — a filled `--accent` button. Everything else is
+  secondary (outline) or a link. Never place two filled primary buttons side by side.
+- Buttons and labels **start with a verb** and are specific ("Add ingredient", not "Submit").
+- **Cards:** consistent padding (16–24px), 1px `--border`, `--radius`, subtle `--shadow`. Use them
+  to group related content.
+- **Inputs:** label *above* the field (not placeholder-as-label); visible focus ring in `--accent`;
+  validate on blur, not on every keystroke.
+- Cap main content width (~64–72rem) and center it on large screens, but let it fill smaller ones.
+  Comfortable line length is 50–75 characters.
+
+### Charts
+- **Series color:** `var(--chart-1)` … `var(--chart-6)`, in order. Never `--ok` / `--warn` /
+  `--danger` for a data series — those mean status, so a green bar reads as "this is good" rather
+  than "this is revenue".
+- **Every series needs an explicit `name`.** Without it recharts renders `name="undefined"` into the
+  DOM and the tooltip and legend both say "undefined".
+- **`Tooltip`'s `formatter`: leave its parameters unannotated.** recharts types `value` as
+  `ValueType | undefined`, and `ValueType` is `number | string | ReadonlyArray<number | string>` —
+  so `(value: number)` fails `tsc`, and so does the obvious second guess,
+  `(value: number | string | undefined)`, which still misses the readonly array. Let both
+  parameters infer and convert inside the body:
+  `formatter={(value, name) => ["$" + Number(value).toFixed(2), name]}`. Same for `labelFormatter`.
+- **Label it:** axis labels with units, and a title unless the surrounding card already says it.
+  Bar-chart y-axes start at zero. Tooltips show the exact value.
+- An empty or still-loading chart gets the same treatment as any other collection — see below.
+
+### Controls
+A **Control** is an element that changes what the app shows without a rebuild: a select, a date
+range, a search box, a toggle. A screen showing a collection over two or more rows, where one column
+holds a handful of values — a category, a status, a date — gets one over that column.
+- **No package is needed for this.** `<select>`, `<input type="date">` and `<input type="search">`
+  are the whole toolkit. Hold the selection in `useState`, derive the filtered rows with `useMemo`,
+  and feed every view from those derived rows. Style them like any other input — label above the
+  field, visible focus ring — and give a `<select>` an option list, never a free-text box, when the
+  values are a fixed set.
+- **At least two views respond to it.** A Control that moves one chart is a chart option; one that
+  moves the chart *and* the table is a dashboard. Deriving both from the same rows is what keeps
+  them from disagreeing.
+- **State the current selection in words** — "March 2026 · EMEA · 412 rows" — where the viewer reads
+  it before the charts. This is not polish: without it a filtered view and an empty one look
+  identical, and a blank chart under an unstated filter reads as broken data rather than as a narrow
+  selection.
+- **A chart click writes the Control; it never filters beside it.** Clicking the EMEA bar sets the
+  select to EMEA, the select visibly moves, and every view re-reads from that one selection. So
+  there is no second piece of state, nothing extra to reset, and the keyboard path is the select
+  that was already on screen. A chart over a column that has no Control is **not clickable** — a
+  selection the viewer can neither see nor undo is worse than no selection at all.
+- **A selection that matches nothing is a state, not a blank.** Say which selection matched nothing
+  and offer the way back to a wider one, the same as any other empty collection below.
+- If this app reads a store, "The app's data" says how a Control filters there instead — in SQL,
+  through a declared parameter — and that path replaces the `useMemo` above rather than adding to it.
+
+### States — do not skip these (this is the #1 polish signal)
+Limit these to the screens/collections the current request actually touches — don't add them to
+components outside what was asked.
+- **Empty state:** for a list/collection you're building or editing that can be empty, add one that
+  says *what it is*, *why it's empty*, and *the action to fill it* — with a button. Never render a
+  blank area.
+- **Loading:** show a spinner or skeleton for async work; never a blank flash. If you drive the UI
+  with a `loading`/`ready`/`empty`/`error` state machine, **wire the initial load in a mount
+  `useEffect`** — a loader defined but only called from a retry button leaves the page stuck on the
+  spinner forever. Every non-terminal state must have a code path that reaches a terminal one.
+- **Error:** a human-readable message plus how to recover.
+- **A screen whose whole data source is unreachable is NOT an empty collection.** An empty list is
+  one region with nothing in it; this is every control on the screen going inert at once, and the
+  two need opposite treatments. Do not reach for the empty state above by analogy — if this app
+  reads a store, "The app's data" below says what to render instead.
+- **Interactive elements:** hover and focus styles; explain disabled states.
+
+### Accessibility & restraint
+- Meet AA color contrast; never rely on color alone to convey meaning.
+- Icon-only buttons need an `aria-label` (and a `title` for tooltip).
+- Respect `prefers-color-scheme` — the tokens already define dark values.
+- No gratuitous gradients, no clashing accent colors, no inconsistent corner radii. Restraint reads
+  as quality.
+<!-- sage:build-profile:v1:design:end -->

@@ -9,6 +9,7 @@ import pytest
 from sage import build_diagnostics, request_composition
 from sage.gateway.protocol import Protocol
 from sage.implementation_request import (
+    IMPLEMENT_SECTIONS,
     BuildInstructionProfileError,
     apply_instruction_profile,
 )
@@ -83,7 +84,12 @@ def test_profile_keeps_the_reasoning_setting_byte_for_byte(effort):
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=("react-vite", "fastapi-antd"))
 def test_implementation_profile_keeps_common_and_all_implementation_rules(template):
-    after, report = apply_instruction_profile(request_for(template), "implement")
+    # `sections` the way the shim passes it (#548): the optional `design`/`platform` blocks are
+    # withheld only when a turn did not ask for them, and nothing asks yet, so a real implement
+    # turn still carries every rule. The withholding itself is covered by
+    # `test_an_implement_turn_can_leave_a_section_behind.py`.
+    after, report = apply_instruction_profile(
+        request_for(template), "implement", sections=IMPLEMENT_SECTIONS)
     encoded = json.dumps(after, ensure_ascii=False)
 
     assert COMMON in encoded and IMPLEMENT in encoded

@@ -38,6 +38,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import build_diagnostics
+from ..implementation_request import carries_profile_markers
 from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import HelperNames, helpers_for
 from ..router.models import ASSIGNABLE_SLOTS
@@ -286,9 +287,12 @@ _PROJECT_IGNORE = (".sage/build-diagnostics.json", ".sage/.build-diagnostics-*",
                    #
                    # Unanchored on purpose, and checked with `git check-ignore` rather than
                    # reasoned about. `.sage/**/.*.tmp` was the first attempt and it is too narrow
-                   # by three: the helper also stages `.AGENTS.md.<hex>.tmp` at the volume ROOT
-                   # (`_voice_legacy_root_agents_md`) and at the APP root (`_seed_file`), neither
-                   # of which is under `.sage/`. The app's own `.sage/` is covered from here too —
+                   # by three: the helper also stages `.AGENTS.md.<hex>.tmp` at the APP root
+                   # (`_seed_file`), which is not under `.sage/`. It used to stage one at the
+                   # volume ROOT as well, until `_move_legacy_root_agents_md` (#548) replaced that
+                   # rewrite with a rename; the rule stays unanchored for the app-root case and
+                   # because a narrower one was already wrong three times.
+                   # The app's own `.sage/` is covered from here too —
                    # a root rule reaches the whole tree, so this does NOT need the same line added
                    # to `template/react-vite/.gitignore`. A record that is not staging, such as
                    # `.sage/settings.json`, still commits.
@@ -2271,7 +2275,7 @@ class WorkspaceManager:
         self._check_stack_name(stack)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._ensure_project_ignores()
-        self._voice_legacy_root_agents_md()
+        self._move_legacy_root_agents_md()
         app = self.app_path
         if seed_app:
             app.mkdir(parents=True, exist_ok=True)
@@ -2324,45 +2328,80 @@ class WorkspaceManager:
         except OSError:
             log.warning("workspace: could not write the Project's .gitignore")
 
-    def _voice_legacy_root_agents_md(self) -> None:
-        """Resolve pack tokens in an AGENTS.md a pre-`apps/` seed left at the volume root.
+    def _move_legacy_root_agents_md(self) -> None:
+        """Take an AGENTS.md left at the volume root out of the instructions OpenCode reads.
 
-        Until `36c8167` the template seeded straight onto the volume, so a Project made before it
-        still holds the build agent's AGENTS.md at the root — and seeding only began voicing that
-        file at `7d75bd9`, so the copy on disk still reads "Say **{dataSource}**". OpenCode loads
-        AGENTS.md from the session directory AND from every directory up to the project root, so on
-        those volumes it is a standing instruction to both halves: Chat's session is
-        `.sage/chat-work`, Build's is `apps/<appId>/`, and both walk up to this file. Measured live
-        2026-09-07, Chat answered "a Snowflake connection is called a {dataSource}" (#202).
+        OpenCode loads AGENTS.md from the session directory AND from every directory up to the
+        project root (`Instruction.systemPaths`, pinned 1.18.4), so a file here is a standing
+        instruction to both halves: Chat's session is `.sage/chat-work`, Build's is `apps/<appId>/`,
+        and both walk up to it. The stub `_chat_agents_md` writes into the Chat workdir was meant to
+        stop that walk-up and does not, which is why the repair is at the root.
 
-        The stub `_chat_agents_md` writes into the Chat workdir was meant to stop that walk-up. It
-        does not stop it, which is why this repair is at the root rather than beside the stub.
+        Measured 2026-09-24 (#548), real OpenCode against a fake model: with a root AGENTS.md the
+        system prompt went 38,458 -> 70,524 wire bytes. The duplicate is about 43% of an implement
+        turn and ~75% of a plan turn, because the stage profile strips the `implement` block from
+        the SESSION file and cannot touch this one.
 
-        Voiced, not deleted. The file sits in the person's own repo, `apply_voice` resolves only the
-        tokens nobody wanted to read, and being wrong about who owns a file is far cheaper as a
-        rewrite than as a delete. Nothing written when nothing resolves, so an AGENTS.md a person
-        wrote themselves is never touched and no Project gains a dirty file for nothing — the same
-        rule `_voice_agents_md` follows one directory down.
+        **Not keyed on the Project's age.** The rule used to be "only Projects made before
+        `36c8167`". Measured live 2026-09-24 in a Project its owner believed was new: the file was
+        there, 30,338 bytes, byte-for-byte the voiced `template/react-vite/AGENTS.md` of
+        `e1a52227` (2026-09-21). So the age rule does not predict it and this keys on the file
+        being there, nothing else.
+
+        MOVED, never deleted or rewritten. The file sits in the person's own repo and Sage cannot
+        prove nobody edited it, so the before-state is the file itself, still on disk, under a name
+        that says what it is. The new name is deliberately not one OpenCode looks for (it globs
+        `AGENTS.md`, `CLAUDE.md` and `CONTEXT.md` by exact name), so the copy is out of the walk-up
+        from both sessions while staying somewhere a person can find it.
+
+        **Only a file Sage seeded.** Presence at this path is NOT the test. A person may keep their
+        own AGENTS.md at the Project root, and moving that would silently disable their standing
+        instructions to every turn in their own Project — a much worse act than the one being
+        repaired. A Sage-seeded copy carries the Build instruction profile markers and a
+        hand-written one does not, so the markers are the discriminator. They are a durable test
+        rather than a template-hash list, because the v1 four-marker shape has to stay valid
+        forever anyway (`implementation_request._REQUIRED_BLOCKS`) — a hash list would need a new
+        entry per template revision and would fail silently the first time somebody forgot.
+
+        Reading is guarded on both sides. Bytes that are not UTF-8 raise `ValueError` and are left
+        alone, which keeps #303 closed — that defect was this method bricking the open by reading
+        this exact file. And `carries_profile_markers` is the parser's only entry point that does
+        not raise `BuildInstructionProfileError` (#552); a file that will not parse is not a file
+        this may move.
         """
         path = self._dir / "AGENTS.md"
+        if not path.is_file():
+            # Absent on every Project seeded since `36c8167`, and the second run of a Project this
+            # already moved.
+            return
         try:
             body = path.read_text()
         except (ValueError, OSError):
-            # Absent on every Project seeded since, and an unreadable one is not ours to fix. Takes
-            # `ValueError` as well because `ensure()` calls this unconditionally: a legacy root
-            # AGENTS.md whose bytes are not UTF-8 raised `UnicodeDecodeError` out of the FIRST step
-            # of opening a Project (#303). This file is exactly the old artefact most likely to be
-            # encoding-damaged, so shrugging at it is the whole point of the method.
+            log.warning("workspace: cannot read %s, so cannot tell whose it is; leaving it", path)
             return
-        voiced = apply_voice(body)
-        if voiced == body:
+        if not carries_profile_markers(body):
+            log.warning("workspace: %s carries no Build profile markers, so Sage did not seed it; "
+                        "leaving it where the person put it", path)
+            return
+        kept = self._dir / CHAT_WORK.parent / "legacy-root-AGENTS.md"
+        if kept.exists():
+            # Something put a second AGENTS.md at the root after a move. Overwriting would destroy
+            # the record of the first one, which is the only copy of those bytes, so the prompt
+            # keeps the duplicate rather than this method losing data.
+            log.warning("workspace: %s is back and %s already holds the one this moved; "
+                        "leaving it, so the Build prompt carries it again", path, kept)
             return
         try:
-            _write_atomic(path, voiced)
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            path.rename(kept)
         except OSError:
-            log.warning("workspace: could not voice the AGENTS.md at the Project root")
+            # A read-only volume or a permission this process does not hold. The cost of not moving
+            # it is a long prompt; the cost of raising is a Project that will not open at all.
+            log.warning("workspace: could not move the AGENTS.md at the Project root out of "
+                        "OpenCode's way; Build turns will carry it")
         else:
-            log.warning("workspace: voiced the pack tokens in %s, left by a pre-apps/ seed", path)
+            log.warning("workspace: moved %s to %s — it was a standing instruction to every Chat "
+                        "and Build turn in this Project", path, kept)
 
     def project_record(self, project_id: str) -> ProjectRecord:
         """The Project's own record over the volume, alongside the Built App `ensure` returns.

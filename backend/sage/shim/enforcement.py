@@ -20,7 +20,11 @@ from typing import Any
 from ..build_policy import BuildPolicy
 from ..gateway.capabilities import legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
-from ..implementation_request import apply_instruction_profile, assemble_for_route
+from ..implementation_request import (
+    IMPLEMENT_SECTIONS,
+    apply_instruction_profile,
+    assemble_for_route,
+)
 from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import (
@@ -1005,7 +1009,12 @@ class EnforcementShim:
         elif (state.chat_thread_id is None and not state.read_only_turn
               and (state.mode is Mode.IMPLEMENT
                    or state.mode is Mode.AUTO and state.phase is Phase.IMPLEMENT)):
-            request, build_profile = apply_instruction_profile(request, "implement")
+            # Every optional section, deliberately: the grammar can now withhold `design` and
+            # `platform`, but nothing has yet been chosen to decide WHICH turn needs them, and a
+            # default of "withhold" would delete that guidance from every implement turn rather
+            # than defer it. Today's prompt is therefore unchanged in content. See #548.
+            request, build_profile = apply_instruction_profile(
+                request, "implement", sections=IMPLEMENT_SECTIONS)
         if build_profile and rewrite_counts is not None:
             rewrite_counts["buildInstructionProfile"] = build_profile
         request, assembly = assemble_for_route(

@@ -20,12 +20,21 @@ _MARKER = re.compile(
     r"(?m)^<!-- sage:build-profile:v(?P<version>[0-9]+):"
     r"(?P<block>[a-z][a-z0-9_-]*):(?P<edge>begin|end) -->[ \t]*\n?"
 )
-_EXPECTED_MARKERS = (
-    (PROFILE_VERSION, "common", "begin"),
-    (PROFILE_VERSION, "common", "end"),
-    (PROFILE_VERSION, "implement", "begin"),
-    (PROFILE_VERSION, "implement", "end"),
-)
+# `common` and `implement` are REQUIRED and carry the v1 contract unchanged. The optional ids are
+# sections an implement turn only sometimes needs; a template that omits them is still valid, which
+# is what keeps every app built before this change working. Apps keep their own `AGENTS.md` and are
+# never re-seeded, so the four-marker v1 shape has to stay valid forever, not just for a release.
+#
+# The set is deliberately CLOSED and ordered. An id outside it still raises, so this widens the
+# grammar by exactly two names rather than making the validator permissive. A template can carry
+# 4 distinct shapes: the required pair alone (the v1 shape), plus either or both optional ids.
+_REQUIRED_BLOCKS = ("common", "implement")
+_OPTIONAL_BLOCKS = ("design", "platform")
+_BLOCK_ORDER = _REQUIRED_BLOCKS + _OPTIONAL_BLOCKS
+
+#: Every optional section. The shim passes this until a per-turn trigger is chosen, so that the
+#: grammar can withhold a section without any turn yet losing one.
+IMPLEMENT_SECTIONS = frozenset(_OPTIONAL_BLOCKS)
 
 
 class BuildInstructionProfileError(ValueError):
@@ -48,40 +57,94 @@ def _replace_content_text(block: object, text: str) -> object:
     return {**block, "text": text}
 
 
-def _profile_text(text: str, profile: str) -> tuple[str, dict[str, int]] | None:
+def _marked_blocks(text: str) -> tuple[list, list[tuple[str, str]]]:
+    """Return the marker matches and the ordered (id, body) pairs, or raise.
+
+    Rejects unknown ids/versions, duplicate groups, nesting, unpaired edges, out-of-order
+    groups, and any prefix the strict expression did not consume.
+    """
+    matches = list(_MARKER.finditer(text))
+    found = [(int(match.group("version")), match.group("block"), match.group("edge"))
+             for match in matches]
+    if len(found) % 2 or text.count(_PROFILE_PREFIX) != len(matches):
+        raise BuildInstructionProfileError("Invalid Build instruction profile markers")
+
+    blocks: list[tuple[str, str]] = []
+    for index in range(0, len(found), 2):
+        (begin_version, begin_id, begin_edge) = found[index]
+        (end_version, end_id, end_edge) = found[index + 1]
+        if (begin_version != PROFILE_VERSION or end_version != PROFILE_VERSION
+                or begin_edge != "begin" or end_edge != "end" or begin_id != end_id
+                or begin_id not in _BLOCK_ORDER
+                or any(begin_id == seen for seen, _ in blocks)):
+            raise BuildInstructionProfileError("Invalid Build instruction profile markers")
+        blocks.append((begin_id, text[matches[index].end():matches[index + 1].start()]))
+
+    ids = [block_id for block_id, _ in blocks]
+    if [block_id for block_id in _BLOCK_ORDER if block_id in ids] != ids:
+        raise BuildInstructionProfileError("Invalid Build instruction profile markers")
+    if any(required not in ids for required in _REQUIRED_BLOCKS):
+        raise BuildInstructionProfileError("Invalid Build instruction profile markers")
+    return matches, blocks
+
+
+def carries_profile_markers(text: str) -> bool:
+    """True when `text` is a complete, valid Build instruction profile — i.e. Sage seeded it.
+
+    This is the one entry point that answers the question WITHOUT raising. `apply_instruction_profile`
+    raises `BuildInstructionProfileError`, which nothing in `sage/` catches (#552), so a caller that
+    only wants to know whose file this is must not go through it.
+
+    A file that does not parse answers False. That is deliberate and it is the safe direction: the
+    caller uses this to decide whether a file is Sage's to move, and "I could not read it" is not
+    "it is mine".
+    """
+    if _PROFILE_PREFIX not in text:
+        return False
+    try:
+        _marked_blocks(text)
+    except BuildInstructionProfileError:
+        return False
+    return True
+
+
+def _profile_text(text: str, profile: str,
+                  sections: frozenset[str]) -> tuple[str, dict[str, int]] | None:
     """Apply one complete marked profile, or leave unrelated instruction text alone."""
     if _PROFILE_PREFIX not in text:
         return None
-    matches = list(_MARKER.finditer(text))
-    found = tuple((int(match.group("version")), match.group("block"), match.group("edge"))
-                  for match in matches)
-    # This also rejects unknown ids/versions, duplicate groups, nesting, and out-of-order markers.
-    # A prefix that the strict expression did not consume is an unknown or malformed marker.
-    if found != _EXPECTED_MARKERS or text.count(_PROFILE_PREFIX) != len(matches):
-        raise BuildInstructionProfileError("Invalid Build instruction profile markers")
-
-    common = text[matches[0].end():matches[1].start()]
-    implementation = text[matches[2].end():matches[3].start()]
-    if not common.strip():
+    matches, blocks = _marked_blocks(text)
+    bodies = dict(blocks)
+    if not bodies["common"].strip():
         raise BuildInstructionProfileError("The Build common instruction profile is empty")
 
-    outside_before = text[:matches[0].start()]
-    between = text[matches[1].end():matches[2].start()]
-    outside_after = text[matches[3].end():]
-    kept = outside_before + common + between
-    removed: dict[str, int] = {}
+    kept_ids = {"common"}
     if profile == "implement":
-        kept += implementation
-    elif profile == "plan":
-        removed["implement"] = _wire_bytes(implementation)
-    else:  # Callers use a fixed stage enum; keep this guard local for direct tests.
+        # An optional section rides the turn only when the turn asked for it. It stays in the
+        # workspace `AGENTS.md` either way, so dropping it withholds it from the prompt, not
+        # from the model.
+        kept_ids.add("implement")
+        kept_ids |= {block_id for block_id in _OPTIONAL_BLOCKS if block_id in sections}
+    elif profile != "plan":  # Callers use a fixed stage enum; keep this guard local for direct tests.
         raise BuildInstructionProfileError("Unknown Build instruction profile")
-    kept += outside_after
-    return kept, removed
+
+    parts: list[str] = []
+    removed: dict[str, int] = {}
+    cursor = 0
+    for index, (block_id, body) in enumerate(blocks):
+        parts.append(text[cursor:matches[2 * index].start()])
+        if block_id in kept_ids:
+            parts.append(body)
+        else:
+            removed[block_id] = _wire_bytes(body)
+        cursor = matches[2 * index + 1].end()
+    parts.append(text[cursor:])
+    return "".join(parts), removed
 
 
 def apply_instruction_profile(request: dict, profile: str, *,
-                              removed_tools: dict[str, int] | None = None) -> tuple[dict, dict]:
+                              removed_tools: dict[str, int] | None = None,
+                              sections: frozenset[str] = frozenset()) -> tuple[dict, dict]:
     """Select the marked Build instructions without retaining any instruction content."""
     before_bytes = after_bytes = 0
     profiled_blocks = 0
@@ -104,7 +167,7 @@ def apply_instruction_profile(request: dict, profile: str, *,
                     updated_blocks.append(block)
                     continue
                 before_bytes += _wire_bytes(text)
-                selected = _profile_text(text, profile)
+                selected = _profile_text(text, profile, sections)
                 if selected is None:
                     updated_blocks.append(block)
                     after_bytes += _wire_bytes(text)
