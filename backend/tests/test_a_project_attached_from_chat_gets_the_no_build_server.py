@@ -13,12 +13,11 @@ attach therefore ran `npm run dev` in a Python app directory — `ENOENT ... pac
 exactly the stack the blind pick falls back to, so the wrong pick was right by luck in every test
 ever written. Deleting that pin is what makes this file a test rather than a restatement.
 """
-from pathlib import Path
-
 import pytest
 
 import sage.orchestrator.service as svc
 from sage.orchestrator.service import Orchestrator
+
 from .test_switch_app import FakeQueries, FakeVite, _orch
 
 
