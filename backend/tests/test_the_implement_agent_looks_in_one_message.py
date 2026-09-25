@@ -71,11 +71,12 @@ def test_the_implement_prompt_steers_an_existing_file_edit_at_edit_and_not_at_ap
     refusals were hunks whose context no longer matched the file, after its own earlier patch
     moved the lines. So the prompt names `edit` for an existing file, `write` for a new one, the
     one thing a model gets wrong with `edit` (the read tool's `NNNNN|` prefix), and re-reading a
-    file before editing it twice. apply_patch stays described, not recommended."""
+    file before editing it twice. apply_patch was left described but not recommended; #541 took the
+    description out too, because OpenCode never offers apply_patch to a model that reads this
+    prompt under a non-GPT handle, and a GPT turn is told about it with the turn instead."""
     prompt = _implement_prompt()
     assert "use `edit`" in prompt
     assert "NNNNN|" in prompt
     assert "use `write`" in prompt
     assert "read it again before editing it a second time" in prompt
-    assert "For apply_patch updates" not in prompt
-    assert "If you use `apply_patch`" in prompt
+    assert "apply_patch" not in prompt

@@ -3108,3 +3108,59 @@ def test_a_restart_after_a_clear_does_not_carry_what_the_clear_took(tmp_path: Pa
     # And it stopped at the clear.
     assert "41,002 events" not in sent
     assert "how many mixpanel events in the last 30 days?" not in sent
+
+
+# --- A GPT Chat turn is told how to use the only edit tool it has (#551) -------------------------
+#
+# Chat had the shape #541 fixed for Build. `sage-chat` is `edit: allow`, its sends go through
+# `_tool_handle`, and OpenCode gives a `gpt-` handle `apply_patch` in place of `edit`/`write` — so a
+# GPT-routed Chat turn that writes a file had no guidance at all, before #541 or after it.
+#
+# Measured against the shim, 2026-09-25: a plain armed Chat turn keeps `apply_patch`, `edit` and
+# `write`, while `arm_read_only("question")` and the artifact lane each keep only `read`/`glob`/
+# `grep` and Live read. So the note is gated on the lane, not just on the handle.
+
+_WRITES = "save a note to scratch.md listing the three options we discussed"
+_ANSWERS = "Explain compound interest."
+
+
+def _chat_prompt_text(tmp: Path, pick: str, prompt: str) -> str:
+    orch, oc = _orch(tmp, [Turn(text="ok")])
+    orch.project(start_preview=False).control.pick_chat(pick)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, prompt))
+    return oc.prompts[0]["text"]
+
+
+def test_a_gpt_chat_turn_that_writes_is_told_the_patch_envelope(tmp_path: Path):
+    text = _chat_prompt_text(tmp_path, "gpt-5.4", _WRITES)
+    assert "`apply_patch`" in text
+    assert "*** Begin Patch" in text and "*** End Patch" in text
+
+
+def test_a_non_gpt_chat_turn_is_never_told_about_apply_patch(tmp_path: Path):
+    """GLM and Claude Chat turns are offered `edit`/`write`; naming a tool they do not have is
+    what #551 was filed about."""
+    # A fresh tree each: `_orch` seeds its template with a bare `mkdir(parents=True)`.
+    assert "apply_patch" not in _chat_prompt_text(tmp_path / "glm", "GLM 5.3 OR", _WRITES)
+    assert "apply_patch" not in _chat_prompt_text(tmp_path / "sonnet", "sonnet", _WRITES)
+
+
+def test_a_read_only_chat_answer_is_never_told_about_an_edit_tool(tmp_path: Path):
+    """The plain-answer lane is armed `arm_read_only("question")` and the shim strips every writer,
+    so a note here would describe a tool the turn had already been refused — on a GPT handle,
+    where the note is otherwise correct."""
+    assert "apply_patch" not in _chat_prompt_text(tmp_path, "gpt-5.4", _ANSWERS)
+
+
+def test_the_patch_note_never_tells_the_model_what_it_is_missing(tmp_path: Path):
+    """Chat's prompt forbids naming tools or limits to the person, and three observed turns handed
+    back "constrained turn" and tools being "unavailable" to someone who had asked for a chart.
+    An absence clause in this note is that sentence one paraphrase away, so the note states only
+    what the tool IS — which is also why one string can serve both Build and Chat."""
+    from sage.orchestrator.service import _PATCH_ENVELOPE_NOTE
+
+    lowered = _PATCH_ENVELOPE_NOTE.lower()
+    for missing in ("you have no", "you do not have", "unavailable", "not available",
+                    "cannot use", "no `edit`", "without `edit`"):
+        assert missing not in lowered, f"the note names an absence: {missing!r}"

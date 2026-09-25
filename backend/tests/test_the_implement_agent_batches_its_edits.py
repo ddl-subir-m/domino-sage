@@ -40,27 +40,29 @@ def test_the_read_back_is_one_message_for_every_changed_file():
     assert "Read the changed lines after editing" in prompt
 
 
-def test_one_apply_patch_carries_every_change_to_a_file():
+def test_the_one_call_per_file_rule_left_the_text_every_model_reads():
+    """The rule above is true of a patch envelope and false of `edit`, which takes one `oldString`
+    per call. OpenCode offers `apply_patch` to a GPT handle alone (#539), so the rule moved to the
+    turn prompt of a GPT turn (#541) — `test_a_gpt_implement_turn_is_told_the_patch_envelope` holds
+    it there. What is held here is the other half: the shared text no longer tells a model to batch
+    changes it has no tool to batch, and no longer names a tool it was never offered."""
     prompt = _implement_prompt()
-    assert "put every change to one file in one call" in prompt
+    assert "apply_patch" not in prompt
     for stack in ("fastapi-antd", "react-vite"):
         bullet = _bullet(stack)
         # Still forbids parallel edits to one file: that race is real and measured.
         assert "comes back rejected" in bullet
-        assert "all of that file's hunks, each opening with a bare `@@`, in ONE call" in bullet
+        assert "apply_patch" not in bullet
         assert "Write a new file whole the first time" in bullet
 
 
-def test_the_prompt_says_what_to_do_when_apply_patch_is_the_only_edit_tool():
-    """Production offers `apply_patch` and no `edit`/`write` (#534).
-
-    Real OpenCode 1.18.4, 2026-09-24: the tool set follows the model HANDLE, not the route. Handle
-    `gpt-5.4`, which Sage's config uses, gets `apply_patch` and neither `edit` nor `write`; the TFL
-    Build's recorded tool schemas agree. The prompt steered at `edit` (#494, measured on Gemini when
-    `edit` WAS offered) and gave the tool the model actually had one conditional sentence. Both
-    halves stay: `edit` when offered, and plain rules for the only-`apply_patch` case.
-    """
+def test_the_prompt_describes_only_the_tools_a_model_reading_it_was_offered():
+    """The tool set follows the model HANDLE, not the route (real OpenCode 1.18.4, 2026-09-24).
+    #539 made Sage name the handle per prompt, so this one static string is read by GPT turns
+    offered `apply_patch` AND by GLM, Claude, Gemini and Qwen turns offered `edit`/`write`. It
+    cannot describe both, and it cannot know which — so it describes the pair every non-GPT model
+    has, and the patch envelope is delivered with the turn instead (#541)."""
     prompt = _implement_prompt()
-    choose = prompt.index("Use the edit tool you have.")
-    assert choose < prompt.index("Editing an existing file: use `edit`")
-    assert "If you have only `apply_patch`" in prompt
+    assert "apply_patch" not in prompt
+    assert "Editing an existing file: use `edit`" in prompt
+    assert "A new file: use `write`." in prompt

@@ -79,8 +79,12 @@ window.SW = window.SW || {};
       if (!levels.length) return 'Reasoning effort cannot be set for this model through the current gateway.';
       if ((alias.reasoning_efforts || []).some((level) => !levels.includes(level))) {
         const choices = levels.map((level) => level.charAt(0).toUpperCase() + level.slice(1)).join(', ');
-        return `With tools, this gateway supports only these effort settings: ${choices}. `
-          + 'Model default leaves effort unset.';
+        // One note, four surfaces — the Build menu, the catalogue row, the Chat chip and the
+        // assignments drawer — so it can only say what is true on all of them. It used to close
+        // with "Model default leaves effort unset", which since #545 is true in Chat and false on
+        // a Build plan or implement row, where no level means the stage's level. What the no-level
+        // row does is now said by the row itself, on the surface that knows which one it is.
+        return `With tools, this gateway supports only these effort settings: ${choices}.`;
       }
       return '';
     },
