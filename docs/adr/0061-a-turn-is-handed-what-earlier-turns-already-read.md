@@ -143,3 +143,16 @@ what it had already read and it repeated anyway, which is a different and rarer 
 that was measured.
 
 #378 — building the investigation feature — is untouched by this.
+
+## A completed Chat turn must produce a result (#557, 2026-09-25)
+
+An answer is nonempty final text or a validated, visible answer artifact. Tool activity and
+artifacts marked `working` do not suffice. A terminal provider error takes precedence over
+partial text. The existing session may make one recovery attempt, within the original deadline
+and permissions. This allowance is shared with table repair, not added to it.
+
+If recovery still leaves no result, Chat records `ok: false`, `decision: "empty answer"`, and
+`advanced: false`, plus a clear error in the live stream and saved history. The Workbench treats
+this as a failed answer, not a gateway fault. Successful conversational answers retain the
+existing `advanced` rule. This does not detect repeated numerical findings or prove factual
+correctness; those are separate from whether the turn produced a result.

@@ -2596,7 +2596,7 @@ window.SW = window.SW || {};
   // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
   // failure. Below GATE_DECISIONS rather than beside `endedBadly`, because it spreads that object
   // and a `const` cannot be read before the line that makes it.
-  const ASKED_FOR = { stopped: true, cancelled: true, 'context changed': true,
+  const ASKED_FOR = { stopped: true, cancelled: true, 'context changed': true, 'stale question': true,
                       'plan moved on': true, ...GATE_DECISIONS };
 
   // Endings after which a plan card still waiting for approval keeps its Approve and Cancel. Every
@@ -2637,7 +2637,8 @@ window.SW = window.SW || {};
   // This withdraws the PLATFORM flag and nothing else. The `error` frame still goes up, the
   // person still reads which table failed, and `done.ok` is untouched.
   const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true,
-                              'table generation failed': true, timeout: true,
+                              'table generation failed': true, 'empty answer': true,
+                              'stale question': true, timeout: true,
                               pre_edit_limit: true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
