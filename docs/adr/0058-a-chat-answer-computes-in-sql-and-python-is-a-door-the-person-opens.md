@@ -244,13 +244,15 @@ table names and column facts. The query ran, but the number-only disclosure rule
 Haiku then guessed table names and could not answer; Xiaomi encountered the same refusal. Adding
 a grouped count let the control model see the same names. Models must not need that workaround.
 
-Direct catalog fields now have a narrow exception. One plain SELECT may read allowlisted fields
-from `INFORMATION_SCHEMA.TABLES`, `COLUMNS`, or `SCHEMATA`. On a verified Snowflake connector it
-may also read `SNOWFLAKE.ACCOUNT_USAGE.TABLES` or `COLUMNS`. The fields are catalog/schema/table/
+Direct catalog fields now have a narrow exception on a verified Snowflake connector. One plain
+SELECT may read allowlisted fields from `INFORMATION_SCHEMA.TABLES`, `COLUMNS`, or `SCHEMATA`,
+or from `SNOWFLAKE.ACCOUNT_USAGE.TABLES` or `COLUMNS`. The fields are catalog/schema/table/
 column names, data type, ordinal position, nullability, and table row count. The source identity is
-parsed from SQL; an ordinary table with a metadata-like name or alias does not qualify. Wildcards,
-comments, defaults, functions, joins, CTEs and nested queries do not get this exception. Existing
-derived-number rules still apply independently.
+parsed from SQL; an ordinary table with a metadata-like name or alias does not qualify. Returned
+wildcards, comments, defaults and computed expressions do not get this exception, nor do joins,
+CTEs or nested queries. A predicate or ordering may use LOWER/UPPER while the returned fields stay
+direct schema facts. Other connectors keep their existing disclosure policy. Existing derived-number
+rules still apply independently.
 
 Quoted identifiers keep their case. Only the known uppercase Snowflake catalog spellings qualify
 when quoted; ambiguous quoted spellings on other connectors are refused. A SQL Server database
