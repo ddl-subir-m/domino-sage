@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import timing
 from .request_composition import diagnostic_tool_name
-from .tool_timing import argument_keys_for_tool
+from .tool_timing import MAX_PROGRAMS, argument_keys_for_tool, program_name
 from .workspace.stack import STACKS
 
 log = logging.getLogger("sage.diagnostics")
@@ -338,6 +338,36 @@ def _planning_recovery(value) -> dict | None:
     }
 
 
+def _progress_budget(value) -> dict | None:
+    """Copy only the exact content-free progress budget schema (#544).
+
+    Re-checks each program name against the same rule that produced it, rather than copying what
+    it is handed. This reader is the boundary a record crosses on its way to being saved and sent,
+    and a name that does not survive `program_name` is by definition not a name.
+    """
+    if not isinstance(value, dict):
+        return None
+    calls = value.get("maxCallsSinceChange")
+    if not isinstance(calls, int) or isinstance(calls, bool) or calls < 0:
+        return None
+    if value.get("limitFired") not in {"none", "notice", "stop"}:
+        return None
+    raw = value.get("programs")
+    if not isinstance(raw, dict):
+        return None
+    programs: dict[str, int] = {}
+    for name, count in sorted(raw.items())[:MAX_PROGRAMS]:
+        if (not isinstance(name, str) or program_name(name) != name
+                or not isinstance(count, int) or isinstance(count, bool) or count < 0):
+            return None
+        programs[name] = count
+    return {
+        "maxCallsSinceChange": calls,
+        "limitFired": value["limitFired"],
+        "programs": programs,
+    }
+
+
 def _pre_edit_guard(value) -> dict | None:
     """Copy only the exact content-free pre-edit guard schema."""
     if (not isinstance(value, dict) or value.get("policyVersion") != 1
@@ -480,6 +510,9 @@ def snapshot(rec: timing.TurnRecord | None, identity: dict, *, outcome="error",
     pre_edit_guard = _pre_edit_guard(raw.get("preEditGuard"))
     if pre_edit_guard is not None:
         record["preEditGuard"] = pre_edit_guard
+    progress_budget = _progress_budget(raw.get("progressBudget"))
+    if progress_budget is not None:
+        record["progressBudget"] = progress_budget
     context_rollover = _context_rollover(raw.get("contextRollover"))
     if context_rollover is not None:
         record["contextRollover"] = context_rollover

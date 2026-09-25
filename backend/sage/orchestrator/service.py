@@ -73,6 +73,7 @@ from ..pre_edit_guard import (
     PreEditAction,
     PreEditDecision,
     PreEditGuard,
+    PreEditState,
 )
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
@@ -189,6 +190,7 @@ from ..router.models import (
 )
 from ..router.phase_classifier import SHELL_TOOLS, WRITE_TOOLS
 from ..shim.enforcement import EnforcementShim
+from ..tool_timing import MAX_PROGRAMS, program_name
 from ..workspace import plan_doc
 from ..workspace.manager import (
     ProjectRecord,
@@ -242,6 +244,14 @@ _CHAT_POLL_FAILURE_LIMIT = 4
 _CHAT_LIVE_READ_LIMIT = 25
 _CHAT_EXACT_REPEAT_LIMIT = 3
 _CHAT_STOP_GRACE_SECONDS = 30.0
+
+# The progress budget's time half never fires below this many completed calls since the last
+# landed change (#544). One legitimately long command — `npm install` on a cold cache, a Vite
+# production build — is one call, and without this floor the clock would reach the stop limit
+# during the pause after it and stop a turn that was doing exactly the right thing. Not a
+# BuildPolicy setting: it is the shape of "one slow command is not a loop", not a number anyone
+# would tune, and the two limits that ARE tunable are the ones the person is meant to reach for.
+_PROGRESS_TIME_MIN_CALLS = 2
 
 # What ends a Chat turn that will not end itself. Quiet time, not wall clock: a hung
 # `DataSourceClient.query` (Arrow Flight from a published App) never goes idle, the UI stays on its
@@ -3677,6 +3687,23 @@ def _repeat_fingerprint(tool: str, inp: object) -> str:
         if command is not None:
             return _call_fingerprint(name, {"command": command})
     return _call_fingerprint(tool, inp)
+
+
+def _progress_armed(project) -> bool:
+    """Has THIS BUILD landed a change yet? — the progress budget's arming question (#544).
+
+    Asked of the pre-edit guard rather than of the turn, because the guard is the thing that owns
+    a build until its first edit and the budget is the thing that owns it afterwards; reading the
+    guard's own state is what makes those two exactly abut, with no turn falling between them.
+    `DISARMED` is reached only through the authoritative tree witness and is terminal, so it means
+    "a change landed in this build" and cannot go back to meaning anything else.
+
+    A build with no guard at all is a gated, answering or architect turn. Those are armed
+    read-only — the shim strips every write and shell tool from the request — so there is no loop
+    of shell calls for this to end, and no budget is armed for them.
+    """
+    guard = getattr(project, "pre_edit_guard", None)
+    return guard is not None and guard.state is PreEditState.DISARMED
 
 
 class _RepeatBrake:
@@ -19022,6 +19049,32 @@ class Orchestrator:
             failed_writes = 0
             landed_writes = 0
             write_capped = False
+            # The progress budget (#544). The three caps above all end a turn that never got to a
+            # write; this one ends the turn that has ALREADY written and then keeps going without
+            # changing anything — the shape the person had to press Stop on, twice, on two models.
+            #
+            # ARMED PER BUILD, COUNTED PER TURN, and the split is the whole of why it catches both
+            # measured traces. Arming asks the pre-edit guard, which is built once per build and
+            # whose DISARMED state is terminal: "this build has landed a change" is exactly what
+            # that state means, and it is the same boundary the guard itself hands off at. Turn
+            # scope would have missed the GLM trace outright — that was a typecheck-repair turn
+            # (`agent-turn.3`) which made no edit of its own, so a budget that armed on THIS turn's
+            # first write would never have armed at all, and the issue's own "a repair turn is
+            # covered" could not hold.
+            progress_armed = _progress_armed(project)
+            progress_calls = 0
+            progress_at = time.monotonic()
+            progress_noticed = False
+            progress_capped = False
+            # The tree as of this window's last threshold read, or "" before the first one. Only
+            # ever set where a hash is already being paid for.
+            progress_tree = ""
+            # Diagnostics only (#544): the high-water mark, which limit fired, and a tally of bash
+            # PROGRAM names. Never a command — see `program_name` for why a name that does not
+            # reduce cleanly becomes "other" rather than being truncated into the record.
+            progress_max_calls = 0
+            progress_limit = "none"
+            progress_programs: dict[str, int] = {}
             looped = ""
             poll_failures = 0
             while True:
@@ -19217,6 +19270,31 @@ class Orchestrator:
                             # tool.
                             if tool in ("edit", "write") and status == "completed":
                                 made_edits = True
+                            # The progress budget's counters (#544), keyed on the WIDER write set
+                            # the ratio cap above already uses, and deliberately not on the
+                            # ("edit", "write") pair one line up. OpenCode offers `apply_patch` IN
+                            # PLACE OF `edit`/`write` to a model whose handle starts `gpt-`
+                            # (#539), so that pair names no tool at all on a GPT build: keyed on
+                            # it, the counter would never reset on a build that is landing every
+                            # change it makes, and this budget would stop working code at the
+                            # eighth call. `made_edits` survives that only because `agent_wrote()`
+                            # has the tree hash behind it, and this counter needs to be right
+                            # between hashes rather than at one.
+                            if tool in WRITE_TOOLS and status == "completed":
+                                progress_armed = True
+                                progress_calls = 0
+                                progress_at = time.monotonic()
+                                progress_noticed = False
+                                progress_tree = ""
+                            else:
+                                progress_calls += 1
+                                progress_max_calls = max(progress_max_calls, progress_calls)
+                                if tool == "bash":
+                                    name = program_name(
+                                        args.get("command") if isinstance(args, dict) else None)
+                                    if name in progress_programs or len(
+                                            progress_programs) < MAX_PROGRAMS:
+                                        progress_programs[name] = progress_programs.get(name, 0) + 1
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
                             ms = _tool_duration_ms(part)
@@ -19348,6 +19426,77 @@ class Orchestrator:
                                              decision="looped" if (shell_capped or write_capped)
                                              else "repeat_brake")
                     return
+                # The progress budget (#544). Here rather than inside the walk above so that one
+                # poll that delivers several calls is judged once, on the totals it leaves behind;
+                # both tests are `>=` for the same reason, because a window can be crossed rather
+                # than landed on.
+                if progress_armed and not progress_capped:
+                    policy = self._build_policy
+                    # Calls OR time, whichever comes first, and both halves are load-bearing. The
+                    # two measured turns were stopped by different ones: Haiku ran ~8.9s a call and
+                    # made 8 after its last landed change, so the CALL half reaches it at ~71s;
+                    # GLM ran ~45s a call and would not reach 8 calls until ~360s, so the TIME half
+                    # reaches it first, at 180s inside a 268s turn.
+                    #
+                    # The time half is asked only with nothing open, and only past a floor of
+                    # completed calls. Both guard the same case from opposite sides: a single long
+                    # legitimate command must never be stopped by a clock, and `open_tool_quiet_
+                    # timeout_seconds` already says this repo expects one call to run for minutes.
+                    over_time = (not tool_open
+                                 and progress_calls >= _PROGRESS_TIME_MIN_CALLS
+                                 and time.monotonic() - progress_at >= policy.progress_stop_seconds)
+                    notice_time = (not tool_open
+                                   and progress_calls >= _PROGRESS_TIME_MIN_CALLS
+                                   and time.monotonic() - progress_at
+                                   >= policy.progress_notice_seconds)
+                    hit_stop = progress_calls >= policy.progress_stop_call_limit or over_time
+                    hit_notice = progress_calls >= policy.progress_notice_call_limit or notice_time
+                    if hit_stop or (hit_notice and not progress_noticed):
+                        # ONE working-tree read per threshold, not per call — `working_tree_hash`
+                        # is `git add -A` plus `git write-tree`, and the shell cap above pays for
+                        # it exactly once for the same reason. This is what makes a tight call
+                        # limit safe against a turn that writes by heredoc and so announces no
+                        # write tool at all: its tree moves, the window resets, and it is never
+                        # stopped. Such a turn can still draw one advisory note per window, because
+                        # the first read of a window happens AT the notice and so has nothing
+                        # earlier to be compared with. A note costs a sentence; a wrong stop costs
+                        # the turn.
+                        tree = project.snapshot.working_tree_hash()
+                        if tree and progress_tree and tree != progress_tree:
+                            progress_calls = 0
+                            progress_at = time.monotonic()
+                            progress_noticed = False
+                            progress_tree = tree
+                        elif hit_stop:
+                            progress_tree = tree
+                            progress_capped = True
+                            progress_limit = "stop"
+                            log.warning(
+                                "build: %d tool calls and %.0fs since the last change to the app "
+                                "— stopping the session and checking it (session=%s)",
+                                progress_calls, time.monotonic() - progress_at, sid)
+                            self._stop_wedged_session(
+                                client, sid,
+                                grace_seconds=self._build_policy.stop_grace_seconds)
+                            # A `break`, NOT the `return` every cap above takes, and not
+                            # `_turn_gave_up`. Code WAS written this turn or an earlier one, so the
+                            # app is worth checking: the three existing breaks all land on the tap
+                            # close below and fall through to `typecheck-start` and
+                            # `breaker.record`, which is Sage's own after-turn check and its repair
+                            # loop. Ending here with `stalled_offer` would hand the person an
+                            # offer to resume a build Sage had not looked at.
+                            #
+                            # `broken_call` goes with it. A deliberate stop can leave a call whose
+                            # arguments never finished arriving, and the branch that reads that
+                            # flag below reports a cut stream — which this is not.
+                            broken_call = None
+                            broken_evidence = ""
+                            break
+                        else:
+                            progress_tree = tree
+                            progress_noticed = True
+                            progress_limit = "notice"
+                            project.shim.note_no_progress(progress_calls)
                 if not appeared and time.monotonic() - start > 12:
                     break
                 # Last of the exits, and only once the turn has appeared. A turn that never
@@ -19423,7 +19572,7 @@ class Orchestrator:
                 tool_observer.interval("poll.sleep", _sleep_t0)
 
             # The tap is closed on every exit from the poll loop above: the three `return`s close it
-            # where they stand, the wedged `raise` closes it below, and the three `break`s land
+            # where they stand, the wedged `raise` closes it below, and the four `break`s land
             # here. `__del__` is the net under an abandoned turn, not the plan. A nudge re-enters
             # the outer loop and opens a fresh tap, so this is also what stops one turn from
             # finishing with four readers parked on the same socket.
@@ -19432,6 +19581,11 @@ class Orchestrator:
                 log.warning("build: the event stream carried nothing for %s — the turn polled "
                             "blind. Check the session directory.", sid)
             tap.close()
+            # Recorded for every agent turn, not only the ones a limit fired on: "how close did
+            # this get" is the number that says whether 4 and 8 are the right pair, and a record
+            # written only when they fire can never answer that.
+            timing.progress_budget(max_calls_since_change=progress_max_calls,
+                                   limit_fired=progress_limit, programs=progress_programs)
 
             guard = project.pre_edit_guard
             pending_pre_edit = guard.consume_pending() if guard is not None else None
