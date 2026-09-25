@@ -221,6 +221,7 @@ window.SW = window.SW || {};
     // other (ADR-0008).
     apps: [],
     activeApp: null,
+    selectingAppId: null,
     activePlanId: null,
     activePlan: null,
     // plan.md, for the app the preview is showing. Not the plan document above. The panel reads
@@ -1286,6 +1287,7 @@ window.SW = window.SW || {};
   // and the second request would be refused by the turn lock the first one is holding, which
   // reaches the person as a warning about a build that is not running.
   let selecting = null;
+  let selectionSequence = 0;
 
   // Whether a New app is in flight. The turn lock is released before `create_app` returns, so
   // nothing downstream refuses a second click — it mints a SECOND app, and the person is left
@@ -7446,7 +7448,10 @@ window.SW = window.SW || {};
         return state.activeApp;
       }
       selecting = id;
+      const selection = ++selectionSequence;
+      state.selectingAppId = id;
       buildReadGeneration += 1;
+      notify();
       try {
         await SW.api.selectApp(id);
         // Reloads the app list with it: the transcript, the Bindings, the plan pin and the preview
@@ -7464,7 +7469,11 @@ window.SW = window.SW || {};
         );
         return state.activeApp;
       } finally {
-        selecting = null;
+        if (selection === selectionSequence) {
+          selecting = null;
+          state.selectingAppId = null;
+          notify();
+        }
       }
     },
 
