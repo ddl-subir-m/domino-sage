@@ -324,12 +324,17 @@ class LoopingOpenCode(FakeOpenCode):
 
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
-    import time
-    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    """Sleep and monotonic move together. The stop grace is one scripted second; erasing sleep
+    alone would still wait that second out on the wall clock."""
+    from .scripted_clock import script_the_clock
+
+    restore = script_the_clock()
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
-    # The helper injects one second of stop grace. `time.sleep` is a no-op above, so the stop's wait
-    # for an idle reading spins on the real clock. The rule under test is whether a stop that never
-    # confirms releases the tree, and that is the same rule at either scale.
+    yield
+    restore()
+    # The helper injects one second of stop grace. The clock above spends it as turn-time, so the
+    # wait for an idle reading does not spin on the wall clock. The rule under test is whether a
+    # stop that never confirms releases the tree, and that is the same rule at either scale.
 
 
 def test_a_build_turn_that_repeats_one_call_is_stopped_and_told_what_repeated(tmp_path: Path):
@@ -974,8 +979,11 @@ def test_the_stream_taking_over_does_not_inherit_the_transcripts_count(tmp_path:
                 read_once.set()
             return FakeOpenCode.messages(self, session_id, limit=limit)
 
-    monkeypatch.setattr(svc, "_CHAT_QUIET_TIMEOUT_S", 30.0)
-    monkeypatch.setattr(svc, "_CHAT_TOOL_QUIET_TIMEOUT_S", 30.0)
+    # The handover is the first poll. The cap only has to outlast it; a silent stream still
+    # spends this on the wall clock, one second per poll, because the wait is the event and
+    # not `time.sleep`.
+    monkeypatch.setattr(svc, "_CHAT_QUIET_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(svc, "_CHAT_TOOL_QUIET_TIMEOUT_S", 1.0)
     oc = LateStreamOpenCode(tmp_path / "mnt" / "code", [Turn(text="looking")])
     orch = _orch(tmp_path, oc, "CHAT")
     tid = orch.create_thread()["id"]

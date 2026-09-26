@@ -56,6 +56,21 @@ from .test_chat_turn import _orch as _chat_orch
 
 __all__ = ["_no_waiting"]  # the host's autouse fixture, so a poll never really sleeps here
 
+
+@pytest.fixture(autouse=True)
+def _scripted_polls(_no_waiting):
+    """After the host's fixture erases sleep, move the clock with it.
+
+    The host's patch is what this file asked for. It leaves monotonic on the wall clock, and a
+    poll with no event stream then waits that clock out. This one runs second and puts the two
+    back together.
+    """
+    from .scripted_clock import script_the_clock
+
+    restore = script_the_clock()
+    yield
+    restore()
+
 _ASK = "Build a table of lab samples with a late flag."
 _MODEL = "gpt-5.4"      # a fake alias that accepts exactly one effort beside tools: `none`
 _EFFORT = "none"
@@ -75,7 +90,18 @@ def _done(rows: list[dict]) -> dict:
 
 def _settled(orch: Orchestrator) -> None:
     """Wait out the Chat save that follows every Chat turn. It holds the raw turn lock with no
-    turn in it, and a ticket admitted meanwhile queues behind it (#79) rather than running."""
+    turn in it, and a ticket admitted meanwhile queues behind it (#79) rather than running.
+
+    A turn that did not write an Artifact arms that save on the 30s idle timer. The timer is a
+    thread, so a scripted `time.sleep` never reaches it, and joining it waits out the debounce.
+    The lock the next turn can queue behind is the flush, not the wait, so the pending save runs
+    now.
+    """
+    orch._chat_save_idle_s = 0.0
+    if orch._chat_save_timer is not None and orch._chat_save_timer.is_alive():
+        reason = orch._chat_save_reason
+        orch._cancel_chat_idle_save()
+        orch._arm_chat_idle_save(reason, delay=0)
     for _ in range(500):
         timer = orch._chat_save_timer
         if timer is not None and timer.is_alive():

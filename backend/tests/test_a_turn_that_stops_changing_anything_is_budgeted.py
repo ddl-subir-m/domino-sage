@@ -253,9 +253,13 @@ def _orch(tmp: Path, oc: FakeOpenCode, policy: BuildPolicy) -> Orchestrator:
 
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
-    import time
-    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    """Sleep and monotonic move together, so the progress budget's clock costs the suite nothing."""
+    from .scripted_clock import script_the_clock
+
+    restore = script_the_clock()
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    yield
+    restore()
 
 
 def _notes(orch: Orchestrator) -> list[str]:

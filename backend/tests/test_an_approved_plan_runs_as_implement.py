@@ -85,11 +85,16 @@ class ScriptedGateway:
 
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
-    """The same two waits test_turn_path strips: a scripted turn can only spend them."""
-    import time
+    """The same two waits test_turn_path strips: a scripted turn can only spend them.
 
-    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    Sleep and monotonic move together, so a poll costs the turn a second and the suite nothing.
+    """
+    from .scripted_clock import script_the_clock
+
+    restore = script_the_clock()
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    yield
+    restore()
 
 
 def _build(tmp: Path, turns: list[Turn], *, build_policy: BuildPolicy | None = None):

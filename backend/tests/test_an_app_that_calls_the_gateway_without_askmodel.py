@@ -228,11 +228,17 @@ class ScriptedGateway:
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
     """The two waits a scripted turn can only spend, never use — the poll sleep, and the four-second
-    wait for a preview that `start_preview=False` never started."""
-    import time
+    wait for a preview that `start_preview=False` never started.
 
-    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    Sleep and monotonic move together. Erasing sleep alone leaves the poll on the wall clock, so
+    a turn that polls once a second costs the suite that second.
+    """
+    from .scripted_clock import script_the_clock
+
+    restore = script_the_clock()
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    yield
+    restore()
 
 
 def _template(tmp: Path) -> Path:

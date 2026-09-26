@@ -206,6 +206,24 @@ def test_a_client_that_cannot_stream_waits_out_the_timeout():
     assert elapsed >= 0.3
 
 
+def test_a_scripted_clock_does_not_wait_out_a_streamless_poll(monkeypatch):
+    """The suite's slow tail. A fake has no stream, so the poll used to sit on the wall clock
+    for the whole interval no matter what the test had done to `time.sleep`."""
+    import time
+
+    real = time.monotonic
+    offset = {"s": 0.0}
+    monkeypatch.setattr(time, "sleep", lambda s=0.0, *_a, **_k: offset.__setitem__("s", offset["s"] + (s or 0.0)))
+    monkeypatch.setattr(time, "monotonic", lambda: real() + offset["s"])
+    tap = _EventTap(object(), "s1")
+    t0 = time.perf_counter()
+    woke = tap.wait(30.0)
+    assert woke is False
+    assert time.perf_counter() - t0 < 0.5
+    assert tap.wait_any(30.0) is False
+    assert time.perf_counter() - t0 < 0.5
+
+
 # --- the build turn ------------------------------------------------------------------------------
 
 
