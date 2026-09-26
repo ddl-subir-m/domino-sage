@@ -130,13 +130,13 @@ def test_every_block_type_the_dispatcher_draws_has_a_row():
     # The count is not the claim — the two emptinesses above are — but it pins the order of
     # magnitude, so a switch that collapsed to three cases could not pass by matching a table that
     # collapsed with it.
-    assert len(result["rows"]) == 37
+    assert len(result["rows"]) == 38
     # Every `case` keyword in the dispatcher yielded a label this scanner could read. The labels are
     # matched with a pattern, and a pattern bounds the population it can see: a narrow one hid
     # `case 'chartV2':` from the comparison entirely, so the type was neither counted against the
     # table nor reported missing from it. Counting the keyword needs no pattern, so a label shape
     # the scanner cannot parse reds here rather than passing as a clean sheet.
-    assert result["keywords"] == len(result["cases"]) == 37
+    assert result["keywords"] == len(result["cases"]) == 38
 
 
 @needs_node

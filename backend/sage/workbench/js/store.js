@@ -1994,6 +1994,8 @@ window.SW = window.SW || {};
   const shown = () => false;
   const HIDDEN_BY_DATA_ACCESS = {
     text: shown,
+    // The thought. It is not a disclosure of what was read, so the preference leaves it up.
+    reasoning: shown,
     data_used: (block) => !readFellShort(block.events),
     code: shown,
     sandbox_run: shown,
