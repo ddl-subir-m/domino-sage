@@ -30,6 +30,7 @@ from sage.orchestrator.service import _CONTINUE_CLICK_TEXT, _CONTINUE_REFUSALS
 from sage.workspace.stack import STACKS
 
 from .fake_opencode import Turn
+from .scripted_clock import script_the_clock
 from .test_a_shape_only_table_artifact_renders_as_a_receipt import _node, needs_node
 from .test_continue_with_another_model_resumes_a_failed_turn import (
     _EFFORT,
@@ -44,6 +45,15 @@ from .test_continue_with_another_model_resumes_a_failed_turn import (
 
 HARNESS = "continue_model_card_harness.mjs"
 QUESTION = "summarize the file"
+
+
+@pytest.fixture(autouse=True)
+def _scripted_polls():
+    """The route tests drive a real turn. A fake has no event stream, so each poll would
+    otherwise sit on the wall clock."""
+    restore = script_the_clock()
+    yield
+    restore()
 FAILED = "This turn ended after two tool calls that could not be read."
 
 A_FAILED_CHAT_TURN = [

@@ -22,6 +22,7 @@ from .test_chat_turn import OkFeedback
 REPO = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
 def test_real_opencode_first_build_request_contains_typed_mixed_carriers_only(tmp_path: Path):
     calls: list[dict] = []

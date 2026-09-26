@@ -308,6 +308,7 @@ def test_chat_live_result_keeps_text_analysis_data_used_detail(tmp_path):
     assert details[0]["events"][0]["coverage"]["processed"] == 12
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
 def test_real_opencode_analyzes_complaints_without_sending_email_column(tmp_path):
     orch, _ = _orch(tmp_path, Warehouse())

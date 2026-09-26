@@ -50,11 +50,13 @@ class ScriptedGateway:
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
     """The two waits a scripted turn can never spend usefully: the poll sleep and the runtime-error
-    poll."""
-    import time
+    poll. Sleep and monotonic move together, so the poll costs the suite nothing."""
+    from .scripted_clock import script_the_clock
 
-    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    restore = script_the_clock()
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    yield
+    restore()
 
 
 def _orch(tmp: Path):

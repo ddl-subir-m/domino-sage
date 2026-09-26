@@ -54,6 +54,7 @@ def _isolated(tmp_path: Path) -> tuple[Path, dict]:
     return runtime, env
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
 def test_a_created_session_is_titled_where_opencode_will_read_it(tmp_path):
     runtime, env = _isolated(tmp_path)

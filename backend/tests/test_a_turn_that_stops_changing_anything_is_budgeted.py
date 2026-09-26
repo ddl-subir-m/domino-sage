@@ -254,6 +254,8 @@ def _orch(tmp: Path, oc: FakeOpenCode, policy: BuildPolicy) -> Orchestrator:
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
     import time
+    # Not a scripted clock. This budget decides on `time.monotonic`, and moving that clock with
+    # `time.sleep` makes a 3600s "do not fire" cap fire as soon as a poll sleeps.
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
 

@@ -62,6 +62,7 @@ def _sse(delta: dict, finish: str) -> bytes:
     return (first + "data: " + json.dumps(frame) + "\n\ndata: [DONE]\n\n").encode()
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
 def test_a_call_opencode_cannot_use_lands_as_a_completed_invalid_part_and_runs_nothing(tmp_path):
     calls: list[dict] = []

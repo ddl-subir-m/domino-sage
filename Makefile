@@ -1,4 +1,4 @@
-.PHONY: setup test lint shim opencode lock clean reasoning-evidence
+.PHONY: setup test test-opencode lint shim opencode lock clean reasoning-evidence
 
 # One-command reproducible setup (lockfile-driven).
 #
@@ -24,6 +24,12 @@ setup:
 # anything that swallows the exit code, that failure reads as a pass (#166).
 test:
 	cd backend && uv run --extra dev pytest -q -n auto
+
+# Tests that boot the pinned OpenCode server. Off `make test`: each one starts its own
+# server, and a machine-wide lock holds that server until it exits, so they run one after
+# another. `make test-opencode` runs that set and nothing else.
+test-opencode:
+	cd backend && uv run --extra dev pytest -q --opencode -m opencode
 
 # Lint. Ruff is pinned exactly — `required-version` in BOTH backend/pyproject.toml and the root
 # ruff.toml — so this and CI cannot disagree about what counts as clean.

@@ -3238,6 +3238,31 @@ def _part_key(m: dict, i: int, part: dict) -> tuple[str, object]:
     return (m["id"], part.get("id") or i)
 
 
+# Captured before a test can patch `time.sleep`. A scripted clock moves sleep and monotonic
+# together; a patch that only erases sleep must not turn this pause into a busy spin.
+_WALL_SLEEP = time.sleep
+
+
+def _pause_without_a_stream(seconds: float) -> None:
+    """The poll interval when nothing will ever arrive to end it early.
+
+    `time.sleep`, not a wait on the event queue. A fake agent has no event stream, so that queue
+    stays empty and the wait sits on the wall clock — a test can script `time.sleep` and
+    `time.monotonic` together and never reach it, and a turn that polls thirty times costs the
+    suite thirty seconds. A patch that erases sleep without moving the clock falls back to the
+    wall clock, so the deadline still passes and the loop does not spin. A nanosecond of movement
+    during the erased sleep is not that movement: the deadline has to advance by the interval,
+    or a loop that counts polls reaches its cap first.
+    """
+    if seconds <= 0:
+        return
+    before = time.monotonic()
+    time.sleep(seconds)
+    missed = seconds - (time.monotonic() - before)
+    if missed > 0:
+        _WALL_SLEEP(missed)
+
+
 # The `seen` key for a message's OWN error, which belongs to the message and not to any part of it.
 # A part's key ends in its id (a string) or its index (an int), so this cannot collide with one.
 _MESSAGE_ERROR = "#error"
@@ -3326,10 +3351,14 @@ class _EventTap:
         queued and returns at once, so the cost of the floor is latency inside a burst and nothing
         else, and the reader that lands after it renders every card the burst produced.
 
-        A tap with no stream, or one whose stream has died, has an empty queue forever — so this is
-        exactly the blind sleep it replaced, and the fallback needs no branch to be taken."""
+        A tap with no stream sleeps through `time.sleep`, so a test that scripts the clock pays
+        the interval in turn-time only. A stream that has died still has an empty queue, and that
+        wait is the same blind timeout the queue already was."""
         import time
 
+        if self._stream is None:
+            _pause_without_a_stream(timeout)
+            return False
         started = time.monotonic()
         deadline = started + timeout
         while True:
@@ -3365,11 +3394,15 @@ class _EventTap:
         `is_running` calls to buy back Sage's latency. Held frames are not lost, only batched — the
         drain after this call takes everything that landed during the floor.
 
-        A tap with no stream, or one whose stream has died, is never rung: this becomes exactly the
-        blind sleep it replaced, with no branch for the caller to take.
+        A tap with no stream is never rung. It sleeps through `time.sleep` for the same reason
+        `wait` does: a scripted clock has to be able to pay this second. A stream that has died
+        still waits on the event, which is the blind timeout.
         """
         import time
 
+        if self._stream is None:
+            _pause_without_a_stream(timeout)
+            return False
         started = time.monotonic()
         if not self.arrived.wait(timeout):
             return False

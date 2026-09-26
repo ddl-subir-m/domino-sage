@@ -23,6 +23,7 @@ from .test_csv_calculation_data_used import SALES, args
 REPO = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
 @pytest.mark.parametrize("mode", ["chat", "build"])
 def test_real_opencode_calculates_sales_without_sending_the_email_column(tmp_path, mode):
@@ -163,6 +164,7 @@ def test_real_opencode_calculates_sales_without_sending_the_email_column(tmp_pat
             project.control.disarm_chat(control_token)
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
 def test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests(tmp_path):
     orch, _ = _orch(tmp_path, Warehouse())
@@ -304,6 +306,7 @@ def test_real_opencode_direct_read_and_python_output_stay_local_on_next_requests
         project.control.disarm_chat(control_token)
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="Install the pinned OpenCode package for the real flow")
 def test_real_opencode_task_result_stays_local_on_parent_continuation(tmp_path):
     orch, _ = _orch(tmp_path, Warehouse())

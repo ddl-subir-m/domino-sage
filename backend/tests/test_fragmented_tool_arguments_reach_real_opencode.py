@@ -342,6 +342,7 @@ def _lanes(record: dict, n: int) -> list[dict]:
     return next((row["lanes"] for row in calls if row["n"] == n), [])
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
 def test_real_opencode_runs_two_interleaved_fragmented_calls_exactly_once_each(rig: Rig):
     """Acceptance (a): both interleaved calls execute exactly once with the exact synthetic
@@ -436,6 +437,7 @@ def _fallback(rig: Rig, response_id: str) -> None:
     rig.gateway.expect(lambda request: text_reply(request, response_id=response_id, text="Noted."))
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
 def test_a_delta_done_disagreement_is_recorded_and_the_completion_is_what_runs(rig: Rig):
     """Acceptance (c): the deltas spell one payload and both completions spell another. The codec
@@ -462,6 +464,7 @@ def test_a_delta_done_disagreement_is_recorded_and_the_completion_is_what_runs(r
         assert "line one" not in dumped and "第" not in dumped
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
 @pytest.mark.parametrize("shape,done_text,validity", [
     ("incomplete", '{"label": "a", "text": "unfin', "invalid"),
@@ -493,6 +496,7 @@ def test_incomplete_or_malformed_arguments_never_execute(rig: Rig, shape, done_t
     assert rig.gateway.protocols[0] is Protocol.RESPONSES
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
 @pytest.mark.parametrize("ending,message_prefix", [
     ("no_terminal", "Gateway stream ended before its terminal event"),
@@ -535,6 +539,7 @@ def test_a_stream_that_ends_early_runs_nothing_and_reports_the_provider_failure(
         assert "line one" not in json.dumps(rig.records[-1])
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
 def test_a_cancelled_call_runs_nothing_and_keeps_the_lane_open(rig: Rig, monkeypatch):
     """Acceptance (b): OpenCode aborts mid-arguments. Sage's cancel reaches the gateway, the lane
