@@ -80,6 +80,12 @@ const OPENING = {
   droppedBuild: [TOOL],
   droppedApprove: [TOOL],
   droppedReadFailure: [TOOL],
+  droppedChat: [USER.chat, { type: 'delta', text: 'Looking…' }],
+  // A socket that dies without a reset: the next read never settles and never throws. The store's
+  // quiet budget is shortened for this mode so the rejoin does not wait out the real 45s.
+  stalledChat: [USER.chat, { type: 'delta', text: 'Looking…' }],
+  // The same hang, ended because the network came back rather than because the quiet budget ran out.
+  networkBackChat: [USER.chat, { type: 'delta', text: 'Looking…' }],
   droppedStateFailure: [TOOL],
   stopStateFailure: [TOOL],
   legacyNoIdentity: [TOOL],
@@ -117,6 +123,9 @@ const REST = {
   droppedBuild: [],
   droppedApprove: [],
   droppedReadFailure: [],
+  droppedChat: [],
+  stalledChat: [],
+  networkBackChat: [],
   droppedStateFailure: [],
   stopStateFailure: [],
   legacyNoIdentity: BUILT,
@@ -183,6 +192,8 @@ const gate = new Promise((resolve) => { letGo = resolve; });
 //
 // Every stream this mode opens has to be at that pause before the screen is read, which for the
 // two-send modes is both of them.
+let rejectHang = () => {};
+const hungRead = new Promise((_, reject) => { rejectHang = reject; });
 let pausesLeft = THIRD ? 3 : (SECOND ? 2 : 1);
 let reachedPause = () => {};
 const atPause = new Promise((resolve) => {
@@ -192,11 +203,13 @@ const atPause = new Promise((resolve) => {
 // Answered by every `/build/state` read. Deliberately empty of a running turn: this harness is
 // about what the tab can say for itself, and a poll that supplied the answer would hide the bug.
 const dropped = ['droppedBuild', 'droppedApprove', 'droppedReadFailure',
-  'droppedStateFailure', 'stopStateFailure'].includes(mode);
+  'droppedStateFailure', 'stopStateFailure', 'droppedChat',
+  'stalledChat', 'networkBackChat'].includes(mode);
 let backendRunning = dropped || mode === 'legacyStateReconstruction';
 let backendTurnId = mode === 'legacyStateReconstruction' ? 'turn_b' : 'turn_abc';
 let backendEpoch = EPOCH;
-let backendKind = 'build';
+let backendKind = ['droppedChat', 'stalledChat', 'networkBackChat'].includes(mode)
+  ? 'chat' : 'build';
 const buildState = () => ({ running: backendRunning, wedged: false, pending: 0,
   turn_epoch: mode === 'legacyStateReconstruction' ? undefined : backendEpoch,
   running_turn: backendRunning
@@ -309,6 +322,7 @@ const sandbox = {
             sent = 2;
             reachedPause();
             pauseAnswers[index]();
+            if (mode === 'stalledChat' || mode === 'networkBackChat') return hungRead;
             await gate;
             if (dropped) {
               throw new TypeError('network error');
@@ -316,6 +330,9 @@ const sandbox = {
             return { done: false, value: join(rest) };
           }
           return { done: true };
+        },
+        cancel: () => {
+          rejectHang(Object.assign(new TypeError('network error'), { transport: true }));
         },
       }) } };
     }
@@ -364,6 +381,17 @@ const sandbox = {
         backendEpoch = 'boot_new';
       }
     }
+    if (['droppedChat', 'stalledChat', 'networkBackChat'].includes(mode)
+        && href.includes('/threads/t1') && !href.includes('/chat/stream')) {
+      return { ok: true, status: 200, headers: { get: () => 'application/json' },
+               json: async () => ({
+                 id: 't1',
+                 history: [
+                   { type: 'user', text: 'how many rows?' },
+                   { type: 'agent', kind: 'text', text: 'Twelve customers asked for ARM.' },
+                 ],
+               }), text: async () => '' };
+    }
     const json = href.includes('/build/state') ? buildState()
       : (href.includes('/history') || href.includes('/apps') ? [] : {});
     return { ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -378,6 +406,7 @@ for (const f of ['util.js', 'prefs.js', 'api.js', 'store.js']) {
 }
 
 const SW = sandbox.SW;
+if (mode === 'stalledChat') SW.streamQuietMs = 40;
 SW.store.set({
   thread: { id: 't1', artifacts: [] },
   messages: [],
@@ -432,7 +461,8 @@ const SEND = {
   opening: 'chat', openingBuild: 'build', openingApprove: 'approve', requeued: 'chat',
   requeuedBuild: 'build', requeuedApprove: 'approve',
   droppedBuild: 'build', droppedApprove: 'approve',
-  droppedReadFailure: 'build',
+  droppedReadFailure: 'build', droppedChat: 'chat',
+  stalledChat: 'chat', networkBackChat: 'chat',
   droppedStateFailure: 'build', stopStateFailure: 'build',
   legacyNoIdentity: 'build', restartEpochRace: 'chat',
   localBeatsState: 'chat', stoppedLocalBeatsState: 'build',
@@ -493,6 +523,32 @@ await Promise.race([atPause, new Promise((_, reject) => {
   bail = setTimeout(() => reject(new Error('the stream never paused: no POST was made')), 10000);
 })]);
 clearTimeout(bail);
+
+if (mode === 'stalledChat' || mode === 'networkBackChat') {
+  if (mode === 'networkBackChat') SW.store.noteNetworkBack();
+  else await new Promise((r) => setTimeout(r, 120));
+  await turn;
+  const assistant = SW.store.get().messages.find((m) => m.role === 'assistant');
+  const text = assistant ? assistant.blocks.map((b) => b.value || '').join('\n') : '';
+  const afterDrop = {
+    running: SW.store.get().chatRunning,
+    stopOffered: SW.store.runningTurnHere('chat', 't1'),
+    typing: SW.store.get().typing,
+    watcher: intervalCallbacks.length > 0,
+    paintedError: text.includes('network error'),
+  };
+  backendRunning = false;
+  await intervalCallbacks[intervalCallbacks.length - 1]();
+  const resumed = SW.store.get().messages.find((m) => m.role === 'assistant');
+  const answer = resumed ? resumed.blocks.map((b) => b.value || '').join('\n') : '';
+  const afterRelease = {
+    running: SW.store.get().chatRunning,
+    stopOffered: SW.store.runningTurnHere('chat', 't1'),
+    answer,
+  };
+  console.log(JSON.stringify({ afterDrop, afterRelease }));
+  process.exit(0);
+}
 
 // Read out inside the pause. `store.get()` hands back the live state object, so anything held
 // across the `await` below would report the end of the turn rather than the middle of it.
@@ -640,6 +696,29 @@ if (mode === 'successorHeaderRace') {
 
 letGo();
 await Promise.all(second ? [turn, second] : [turn]);
+
+if (mode === 'droppedChat') {
+  const assistant = SW.store.get().messages.find((m) => m.role === 'assistant');
+  const text = assistant ? assistant.blocks.map((b) => b.value || '').join('\n') : '';
+  const afterDrop = {
+    running: SW.store.get().chatRunning,
+    stopOffered: SW.store.runningTurnHere('chat', 't1'),
+    typing: SW.store.get().typing,
+    watcher: intervalCallbacks.length > 0,
+    paintedError: text.includes('network error'),
+  };
+  backendRunning = false;
+  await intervalCallbacks[intervalCallbacks.length - 1]();
+  const resumed = SW.store.get().messages.find((m) => m.role === 'assistant');
+  const answer = resumed ? resumed.blocks.map((b) => b.value || '').join('\n') : '';
+  const afterRelease = {
+    running: SW.store.get().chatRunning,
+    stopOffered: SW.store.runningTurnHere('chat', 't1'),
+    answer,
+  };
+  console.log(JSON.stringify({ afterDrop, afterRelease }));
+  process.exit(0);
+}
 
 if (dropped) {
   const afterDrop = {

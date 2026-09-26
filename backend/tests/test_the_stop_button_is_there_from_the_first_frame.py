@@ -98,6 +98,53 @@ def test_the_bar_comes_down_when_the_turn_ends(mode: str):
     assert out["runningAfter"] is False
 
 
+def test_a_dropped_chat_stream_stays_with_the_turn_until_the_answer_is_saved():
+    """The browser lost the Chat stream and wrote "network error" under the half-answer.
+
+    The turn on the server had not stopped. Build already stays with that turn and reads it
+    back when the lock frees. Chat used to paint the browser's error as the answer and let go.
+    """
+    out = _run("droppedChat")
+
+    assert out["afterDrop"] == {
+        "running": True,
+        "stopOffered": True,
+        "typing": "Connection lost — chat is still running.",
+        "watcher": True,
+        "paintedError": False,
+    }
+    assert out["afterRelease"]["running"] is False
+    assert out["afterRelease"]["stopOffered"] is False
+    assert out["afterRelease"]["answer"] == "Twelve customers asked for ARM."
+    assert "network error" not in out["afterRelease"]["answer"]
+
+
+@pytest.mark.parametrize("mode", ["stalledChat", "networkBackChat"])
+def test_a_quiet_socket_rejoins_the_turn_when_the_network_can_answer(mode: str):
+    """A socket that dies without a reset never throws. The read sits there, the turn keeps
+    running on the server, and the page stops showing anything new — including after the network
+    is back, because the dead socket does not start delivering again.
+
+    `stalledChat` is that silence: the store gives up on the read and stays with the turn.
+    `networkBackChat` is the browser noticing the network returned and dropping the same socket
+    immediately. Either way the saved answer is what shows once the lock is free, and the
+    browser's failure is not a line of it.
+    """
+    out = _run(mode)
+
+    assert out["afterDrop"] == {
+        "running": True,
+        "stopOffered": True,
+        "typing": "Connection lost — chat is still running.",
+        "watcher": True,
+        "paintedError": False,
+    }
+    assert out["afterRelease"]["running"] is False
+    assert out["afterRelease"]["stopOffered"] is False
+    assert out["afterRelease"]["answer"] == "Twelve customers asked for ARM."
+    assert "network error" not in out["afterRelease"]["answer"]
+
+
 @pytest.mark.parametrize("mode", ["droppedBuild", "droppedApprove", "droppedReadFailure"])
 def test_a_dropped_stream_keeps_stop_refreshes_and_then_leaves_building_after_cancel(mode: str):
     """The live failure from #512: the browser lost SSE while the backend kept running."""

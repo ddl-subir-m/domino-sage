@@ -2530,13 +2530,94 @@ window.SW = window.SW || {};
     }]);
   }
 
+  // Readers whose socket has gone quiet. A network that comes back cancels these so the send
+  // unwinds into the same rejoin a thrown "network error" already takes, instead of staying
+  // parked on a read that will never resolve.
+  const liveReaders = new Set();
+
+  // The server writes an SSE comment every 15s through a silent think (`KEEPALIVE_INTERVAL_S`).
+  // Three of those with no bytes is a socket that died without a TCP reset — the shape a proxy
+  // reports as a failed socket, and that `reader.read()` otherwise waits on forever. A harness
+  // may shorten it; production leaves the override unset.
+  const STREAM_QUIET_MS = 45000;
+
+  function streamQuietMs() {
+    const override = window.SW && window.SW.streamQuietMs;
+    return typeof override === 'number' && override > 0 ? override : STREAM_QUIET_MS;
+  }
+
+  // A transport failure, as opposed to Sage answering. An HTTP status means the server spoke.
+  // `transport` is the quiet-socket timeout. The rest are the browser's own words for a fetch
+  // whose socket died: Chrome's "network error" / "Failed to fetch", Firefox's "NetworkError",
+  // Safari's "Load failed", and a socket the platform already named.
+  function cancelReader(reader) {
+    if (!reader || typeof reader.cancel !== 'function') return;
+    try {
+      const pending = reader.cancel();
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+    } catch (_err) {
+      // The socket is already gone. Cancelling it is how we stop waiting, not a second failure.
+    }
+  }
+
+  function lostConnection(err) {
+    if (!err || err.status) return false;
+    if (err.transport) return true;
+    const name = err.name || '';
+    if (name !== 'TypeError' && name !== 'NetworkError') return false;
+    const msg = String(err.message || err).toLowerCase();
+    return msg.includes('network') || msg.includes('fetch') || msg.includes('socket')
+      || msg.includes('connection') || msg.includes('load failed') || msg.includes('aborted');
+  }
+
+  async function readNext(reader) {
+    let timedOut = false;
+    let timer;
+    let settleQuiet = () => {};
+    const quiet = new Promise((resolve, reject) => {
+      settleQuiet = resolve;
+      timer = setTimeout(() => {
+        timedOut = true;
+        const err = new TypeError('network error');
+        err.transport = true;
+        cancelReader(reader);
+        reject(err);
+      }, streamQuietMs());
+    });
+    // A cancel after the timeout rejects this read too. Swallow that one: the timeout is already
+    // the error the send will see, and an unhandled rejection here is a second, louder failure.
+    const read = reader.read().then(
+      (chunk) => chunk,
+      (err) => {
+        if (timedOut) return { done: true };
+        throw err;
+      },
+    );
+    try {
+      const chunk = await Promise.race([read, quiet]);
+      // Cancel can settle the read as a clean end in the same turn the timeout fires. That is
+      // still a dead socket: the send has to rejoin, not treat the stream as finished.
+      if (timedOut) {
+        const err = new TypeError('network error');
+        err.transport = true;
+        throw err;
+      }
+      return chunk;
+    } finally {
+      clearTimeout(timer);
+      settleQuiet();
+    }
+  }
+
   async function readSSE(res, onEvent) {
     const reader = res.body.getReader();
+    liveReaders.add(reader);
     const dec = new TextDecoder();
     let buf = '';
     let failed = false;
+    try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readNext(reader);
       if (done) break;
       buf += dec.decode(value, { stream: true });
       const parts = buf.split('\n\n');
@@ -2565,6 +2646,9 @@ window.SW = window.SW || {};
     // frames pass through and a deployment fault does not care which mode asked. Once per stream,
     // after it closes: a turn that failed on ten tool calls is one failed turn.
     if (failed) store.refreshProblems();
+    } finally {
+      liveReaders.delete(reader);
+    }
   }
 
   // Whether this frame says the turn went wrong, as opposed to stopping the way it was asked to.
@@ -7910,7 +7994,11 @@ window.SW = window.SW || {};
         if (!streamAccepted && onRefused && onRefused(err)) {
           unran = true;
         } else {
-          applyBuildEvent({ type: 'error', message: String(err.message || err) });
+          // A dropped socket is not a line in the transcript. The turn is still the turn; painting
+          // "network error" here is what made the build look finished.
+          if (!(streamAccepted && lostConnection(err))) {
+            applyBuildEvent({ type: 'error', message: String(err.message || err) });
+          }
           // EOF after an accepted response is a lost viewer, not proof that the backend turn
           // ended. Ask the lock. If that read also fails, keep Stop available until the watcher
           // gets a definite terminal answer; a network failure must not strand a live build
@@ -8026,8 +8114,16 @@ window.SW = window.SW || {};
         }
         return { status: 'started' };
       } catch (err) {
-        applyBuildEvent({ type: 'error', message: String(err.message || err) });
-        throw err;
+        // Same rejoin as a build stream. A socket that died is not a sentence to toast, and the
+        // button that started this turn must not stay busy on account of it.
+        if (lostConnection(err)) {
+          const running = await readAuthoritativeTurnState();
+          detached = !running || !!running.running;
+          if (running) applyTurnState(running);
+        } else {
+          applyBuildEvent({ type: 'error', message: String(err.message || err) });
+          throw err;
+        }
       } finally {
         liveBuildTurns -= 1;
         dropQueuedTurn(ticket);
@@ -8035,6 +8131,7 @@ window.SW = window.SW || {};
         state.buildTyping = detached ? 'Connection lost — build is still running.'
           : (state.buildRunning ? state.buildTyping : null);
         if (!detached) releaseRunningTurn(claim);
+        if (detached) store._watchBuild();
         await store.loadBuild({ keepPreview: true });
         notify();
       }
@@ -8551,7 +8648,9 @@ window.SW = window.SW || {};
         }
         if (stopped) await store.loadBuild({ keepPreview: true });
       } catch (err) {
-        applyBuildEvent({ type: 'error', message: String(err.message || err) });
+        if (!(streamAccepted && lostConnection(err))) {
+          applyBuildEvent({ type: 'error', message: String(err.message || err) });
+        }
         if (streamAccepted) {
           streamLost = true;
           const running = await readAuthoritativeTurnState();
@@ -8883,6 +8982,7 @@ window.SW = window.SW || {};
           state.buildTyping = null;
           clearInterval(store._watchTimer);
           store._watchTimer = null;
+          store._buildWatchTick = null;
           await Promise.all([
             probePreview(), refreshBindings(),
             state.buildHistoryOpen ? loadAppHistory() : Promise.resolve(),
@@ -8890,6 +8990,7 @@ window.SW = window.SW || {};
         }
         notify();
       };
+      store._buildWatchTick = tick;
       store._watchTimer = setInterval(tick, 2000);
     },
 
@@ -8970,6 +9071,12 @@ window.SW = window.SW || {};
       // refused POST from a stream that failed later, which is a turn that may well have run.
       let refusalMessage = '';
       let streamAccepted = false;
+      // A dropped connection is not the end of the turn. The server keeps running, and the
+      // browser rejoins by the lock — the same split Build already makes. `terminalSeen` is the
+      // `done` or `stopped` that says the turn itself ended; without one, the lock decides.
+      let terminalSeen = false;
+      let detached = false;
+      let streamLost = false;
       // And this tab's own name for the turn, so Chat's Stop bar has something to match while this
       // send holds the only stream there is. See claimRunningTurn.
       let claim = null;
@@ -9092,6 +9199,7 @@ window.SW = window.SW || {};
         if (onAccepted) onAccepted();
         await readSSE(res, async (ev) => {
           if (!ev) return;
+          if (ev.type === 'done' || ev.type === 'stopped') terminalSeen = true;
           if (ev.type === 'done') {
             if (turnEnded) return;
             finishTurn();
@@ -9413,12 +9521,27 @@ window.SW = window.SW || {};
             notify();
           }
         });
+        // The reader returned without a `done`. A proxy can close a live turn that way, and it
+        // is the same question as a thrown "network error": is the turn still going?
+        if (streamAccepted && !terminalSeen) {
+          streamLost = true;
+          const running = await readAuthoritativeTurnState();
+          detached = !running || !!running.running;
+          if (running) applyTurnState(running);
+        }
       } catch (err) {
         // A refused click is drawn on its card, not under the bubble; the bubble comes off with
         // the re-read below, because the server recorded nothing (#570).
         if (!streamAccepted && onRefused && onRefused(err)) {
           unran = true;
-        } else {
+        } else if (streamAccepted && !terminalSeen) {
+          // The browser lost the stream. The words of that failure are not the answer, and the
+          // turn on the server has not been asked to stop. Stay with it, the way Build does.
+          streamLost = true;
+          const running = await readAuthoritativeTurnState();
+          detached = !running || !!running.running;
+          if (running) applyTurnState(running);
+        } else if (!terminalSeen) {
           if (mine()) {
             ensurePushed();
             assistant.blocks = [...assistant.blocks, { type: 'text', value: String(err.message || err) }];
@@ -9430,7 +9553,21 @@ window.SW = window.SW || {};
           store.refreshProblems();
         }
       } finally {
-        finishTurn();
+        if (detached) {
+          // `liveChatTurns` has to come down now. The watcher believes a lock that says idle
+          // only once this tab has no stream of its own still counted as alive.
+          if (!turnEnded) {
+            turnEnded = true;
+            liveChatTurns -= 1;
+            dropQueuedTurn(ticket);
+          }
+          state.chatRunning = true;
+          if (mine()) state.typing = 'Connection lost — chat is still running.';
+          notify();
+          store._watchTurn();
+        } else {
+          finishTurn();
+        }
       }
       // Back on the conversation this turn ran in, but the stream stopped writing to the view when
       // it was left. Re-read it, so the answer is there rather than in a Thread nobody reloaded.
@@ -9438,6 +9575,10 @@ window.SW = window.SW || {};
       // has to go, because the server recorded nothing to replace it with and the text is back in
       // the composer instead.
       if ((left || unran) && state.thread && state.thread.id === turnThread) {
+        await store.openThread(turnThread).catch(() => {});
+      } else if (streamLost && !detached && state.thread && state.thread.id === turnThread) {
+        // The turn had already finished when the stream died. The half-answer on screen is
+        // behind the transcript, and the connection error is not a sentence to keep.
         await store.openThread(turnThread).catch(() => {});
       }
       await loadThreadList();
@@ -9511,14 +9652,30 @@ window.SW = window.SW || {};
     // with a free lock. Errs towards running, so a poll that fails never claims a project is idle.
     _watchTurn() {
       if (store._turnWatchTimer) return;
-      store._turnWatchTimer = setInterval(async () => {
+      const tick = async () => {
         const turn = await readAuthoritativeTurnState();
         if (!turn) return;
         if (applyTurnState(turn)) return;
         clearInterval(store._turnWatchTimer);
         store._turnWatchTimer = null;
+        store._turnWatchTick = null;
         await store.refreshTurnState();
-      }, 2000);
+      };
+      store._turnWatchTick = tick;
+      store._turnWatchTimer = setInterval(tick, 2000);
+    },
+
+    // The browser's network came back, or a socket the platform already called dead. A read still
+    // parked on that socket will not start delivering again; cancel it so the send rejoins by the
+    // lock. A watcher already polling is asked now, rather than on its next two-second tick, so
+    // the transcript catches up as soon as the network can answer.
+    noteNetworkBack() {
+      const readers = [...liveReaders];
+      for (const reader of readers) cancelReader(reader);
+      if (readers.length) return;
+      const ticks = [store._turnWatchTick, store._buildWatchTick].filter(Boolean);
+      for (const tick of ticks) tick().catch(() => {});
+      if (!ticks.length) store.refreshTurnState().catch(() => {});
     },
 
     async chooseOption(option) {
@@ -10000,6 +10157,12 @@ window.SW = window.SW || {};
   };
 
   SW.store = store;
+
+  // `online` is the browser noticing the network returned. Domino's own socket toast is the other
+  // witness of the same drop; this is what makes the Workbench start reading again without a reload.
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('online', () => store.noteNetworkBack());
+  }
 
   // The Build log cut into runs — a user row and the agent rows that followed it — for anything
   // that LISTS builds rather than replaying them (#88). The same grouping Chat's merged view folds
