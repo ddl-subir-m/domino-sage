@@ -159,7 +159,9 @@ def test_compact_error_does_not_fail_the_turn(tmp_path: Path):
     oc.compact_error = RuntimeError("summarize 500")
     tid = orch.create_thread()["id"]
     events = list(orch.chat_stream(tid, "hi"))
-    assert next(e for e in events if e["type"] == "done") == {
+    done = next(e for e in events if e["type"] == "done")
+    done.pop("turnId")
+    assert done == {
         "type": "done", "ok": True, "decision": "answered",
         # Stamped on every terminal row, never only when the condition fires (ADR-0061). This turn
         # wrote no result Artifact, so it advanced by the guard: an empty set is a subset of
