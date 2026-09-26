@@ -526,6 +526,8 @@ class ProjectRecord:
                         source_request_messages_version: int | None = None,
                         source_request_messages: tuple[str, ...] = ()) -> dict:
         """Store a plan's markdown as version 1 of a new document, and return the whole document."""
+        from sage.orchestrator.plan_steps import repair_execution_summary
+        markdown = repair_execution_summary(markdown)
         self.plan_docs_dir.mkdir(parents=True, exist_ok=True)
         n = len([p for p in self.plan_docs_dir.iterdir() if p.is_dir()]) + 1
         plan_id = f"{n:03d}"
@@ -668,6 +670,8 @@ class ProjectRecord:
             return None
         if meta is None:
             return None
+        from sage.orchestrator.plan_steps import repair_execution_summary
+        markdown = repair_execution_summary(markdown)
         versions = self._plan_doc_versions(plan_id)
         n = (int(versions[-1].stem[1:]) if versions else 0) + 1
         _write_atomic(self._plan_doc_dir(plan_id) / f"v{n:03d}.md", markdown)
@@ -1251,6 +1255,8 @@ class Workspace:
         sheet is drafted and only becomes this app's live plan when the handoff is confirmed,
         which can be long after a Build conversation wrote a newer one into the same app. A caller
         with no document behind it — the CLI, the tests — records none and readers fall back."""
+        from sage.orchestrator.plan_steps import repair_execution_summary
+        text = repair_execution_summary(text)
         _write_atomic(self.plan_path, text)
         self._set_live_plan_doc_id(plan_id)
         # A new plan.md is a new plan, whatever the last one was owed (see read_plan_retry_step).
