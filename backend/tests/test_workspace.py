@@ -163,6 +163,24 @@ def test_link_warm_deps_installs_when_the_template_has_no_node_modules(
     assert (ws.path / "node_modules" / "dep").read_text() == "x"
 
 
+def test_link_warm_deps_does_not_npm_ci_a_template_with_no_lockfile(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Chat and Build tests seed a package.json and no lockfile. `npm ci` cannot run there,
+    # and raising from `ensure` stops the project opening at all.
+    t = tmp_path / "template"
+    (t / "src").mkdir(parents=True)
+    (t / "src" / "App.tsx").write_text("placeholder")
+    (t / "package.json").write_text("{}")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=t)
+
+    def fail(*_a, **_k):
+        raise AssertionError("npm ci must not run without a lockfile")
+
+    monkeypatch.setattr("sage.workspace.manager.subprocess.run", fail)
+    ws = mgr.ensure("p")
+    assert not (ws.path / "node_modules").exists()
+
+
 def test_has_built_latches_on_and_persists(tmp_path: Path):
     # Drives the first-BUILD plan gate: starts false, latches true on the first build, survives a
     # fresh manager (restart) via settings, and mark_built is idempotent.

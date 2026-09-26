@@ -2470,13 +2470,19 @@ class WorkspaceManager:
         this rather than leave the app with no `.bin/vite`.
         """
         tmpl = self.stack.template_dir
-        if not (tmpl / "package.json").is_file():
+        # `npm ci` refuses a tree with no lockfile. A test template, and any stub that only
+        # has package.json, is not a bake we can restore — calling npm there raises out of
+        # `ensure` and no project opens.
+        if not (tmpl / "package-lock.json").is_file():
             return
         log.warning("workspace: template node_modules missing — running npm ci in %s", tmpl)
-        subprocess.run(
-            ["npm", "ci", "--include=optional", "--no-fund", "--no-audit"],
-            cwd=tmpl, check=True,
-        )
+        try:
+            subprocess.run(
+                ["npm", "ci", "--include=optional", "--no-fund", "--no-audit"],
+                cwd=tmpl, check=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            log.warning("workspace: template npm ci failed in %s", tmpl)
 
     def link_warm_deps(self) -> bool:
         """Point node_modules at the baked template copy, repairing a wrecked one. True if changed.
