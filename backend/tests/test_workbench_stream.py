@@ -6,6 +6,7 @@ duplicated paragraph rather than an exception — which reading catches badly an
 immediately.
 """
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,9 +19,12 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not on PATH (it is in the Sage image)")
 
 
-def _turn(frames: list[dict]) -> dict:
+def _turn(frames: list[dict], replay: list[dict] | None = None) -> dict:
+    env = os.environ.copy()
+    if replay is not None:
+        env["SAGE_REPLAY"] = json.dumps(replay)
     out = subprocess.run(["node", str(_HARNESS)], input=json.dumps(frames), check=False,
-                         capture_output=True, text=True, timeout=60)
+                         capture_output=True, text=True, timeout=60, env=env)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -146,3 +150,32 @@ def test_a_transcript_fallback_still_says_running_python():
                  {"type": "agent", "kind": "text", "text": "Done."},
                  {"type": "done", "ok": True, "decision": "answered"}])
     assert "Running Python…" in out["typings"]
+
+
+def test_the_thinking_fold_survives_the_answer_that_replaces_the_stream():
+    """The recorded answer deletes every block this stream painted. The thought is not one of
+    those: it stays, collapsed, and the answer replaces only the answer."""
+    thought = "I'll total the weekly sales."
+    frames = [
+        {"type": "user", "text": "q"},
+        {"type": "reasoning", "text": thought},
+        {"type": "delta", "text": "Rev"},
+        {"type": "delta", "text": "enue rose."},
+        {"type": "delta", "text": "Revenue rose.", "final": True},
+        {"type": "agent", "kind": "text", "text": "Revenue rose."},
+        {"type": "done", "ok": True, "decision": "answered"},
+    ]
+    out = _turn(frames, replay=[
+        {"type": "user", "text": "q"},
+        {"type": "reasoning", "text": thought},
+        {"type": "agent", "kind": "text", "text": "Revenue rose."},
+    ])
+    assert out["final"] == [
+        {"type": "reasoning", "value": thought, "streaming": False},
+        {"type": "text", "value": "Revenue rose."},
+    ]
+    assert out["steps"][-1] == f"={thought} | =Revenue rose."
+    assert out["replay"] == [
+        {"type": "reasoning", "value": thought},
+        {"type": "text", "value": "Revenue rose."},
+    ]

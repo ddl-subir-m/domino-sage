@@ -98,7 +98,8 @@ def _with_listing(text: str, attachments: list[dict] | None, *, chat: bool = Fal
 # sessions' turns, so filtering on properties.sessionID is not optional.
 # The current v1 prompt flow instead emits message.updated / message.part.updated /
 # message.part.delta. SessionEvents also maps that flow, using the message role and part type
-# declarations so a text delta cannot expose reasoning or echo the user prompt (#417).
+# declarations so a text delta cannot echo the user prompt or turn reasoning into the answer
+# (#417). Reasoning is its own event: the prose, and not the part's signature or metadata.
 _TOOL_STATUS = {
     "session.next.tool.called": "called",
     "session.next.tool.success": "success",
@@ -213,10 +214,16 @@ class SessionEvents:
             return None
         if kind == "message.part.delta":
             key = (str(props.get("messageID") or ""), str(props.get("partID") or ""))
-            if (self._roles.get(key[0]) == "assistant" and self._parts.get(key) == "text"
-                    and props.get("field") == "text"):
+            if (self._roles.get(key[0]) == "assistant" and props.get("field") == "text"
+                    and self._parts.get(key) == "text"):
                 return AgentEvent(kind="message", payload={
                     "delta": str(props.get("delta") or ""), "final": False})
+            # The thought, as its own event. A text delta of this part would paint the tool call
+            # the model is about to make into the answer. The signature stays on the part.
+            if (self._roles.get(key[0]) == "assistant" and props.get("field") == "text"
+                    and self._parts.get(key) == "reasoning"):
+                return AgentEvent(kind="reasoning", payload={
+                    "delta": str(props.get("delta") or ""), "part": key[1], "final": False})
             return None
         if kind != "message.part.updated":
             return None
@@ -231,6 +238,13 @@ class SessionEvents:
                 self._emitted.add(marker)
                 return AgentEvent(kind="message", payload={
                     "text": str(part.get("text") or ""), "final": True})
+        if part.get("type") == "reasoning" and (part.get("time") or {}).get("end") is not None:
+            marker = (*key, "reasoning-ended")
+            if marker not in self._emitted:
+                self._emitted.add(marker)
+                # `text` only. `metadata` carries the signature ADR-0066 keeps with the harness.
+                return AgentEvent(kind="reasoning", payload={
+                    "text": str(part.get("text") or ""), "part": key[1], "final": True})
         if part.get("type") == "tool":
             state = part.get("state") or {}
             status = {"running": "called", "completed": "success", "error": "failed"}.get(

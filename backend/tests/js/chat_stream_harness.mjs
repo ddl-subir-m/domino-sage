@@ -88,5 +88,12 @@ for (const snap of seen) {
   if (typing && typing !== typings[typings.length - 1]) typings.push(typing);
 }
 const assistant = SW.store.get().messages.find((m) => m.role === 'assistant');
-console.log(JSON.stringify({ steps, typings, healthCalls,
-                             final: (assistant ? assistant.blocks : []) }));
+const reported = { steps, typings, healthCalls, final: (assistant ? assistant.blocks : []) };
+if (process.env.SAGE_REPLAY) {
+  const messages = await SW.store.conversationMessages({
+    id: 't1', history: JSON.parse(process.env.SAGE_REPLAY),
+  });
+  const replayed = messages.find((m) => m.role === 'assistant');
+  reported.replay = replayed ? replayed.blocks : [];
+}
+console.log(JSON.stringify(reported));

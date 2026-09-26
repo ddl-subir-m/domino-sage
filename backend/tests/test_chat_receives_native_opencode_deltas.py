@@ -61,12 +61,27 @@ def test_the_first_fragment_arrives_before_the_completed_part(monkeypatch):
     assert list(events) == []
 
 
-@pytest.mark.parametrize("role,kind", [("user", "text"), ("assistant", "reasoning"),
-                                       ("assistant", "tool")])
+@pytest.mark.parametrize("role,kind", [("user", "text"), ("assistant", "tool")])
 def test_only_assistant_text_is_visible(monkeypatch, role, kind):
     events = stream(monkeypatch, [message(role), part(kind, text="private"), delta("private"),
                                  part(kind, text="private", time={"start": 1, "end": 2})])
     assert list(events) == []
+
+
+def test_reasoning_is_its_own_event_and_the_signature_stays_off_it(monkeypatch):
+    secret = "sig-SECRET-should-not-leak"
+    events = list(stream(monkeypatch, [
+        message(),
+        part("reasoning", text="", metadata={"anthropic": {"signature": secret}}),
+        delta("I'll total "),
+        part("reasoning", text="I'll total the sales.",
+             metadata={"anthropic": {"signature": secret}},
+             time={"start": 1, "end": 2}),
+    ]))
+    assert [e.kind for e in events] == ["reasoning", "reasoning"]
+    assert events[0].payload == {"delta": "I'll total ", "part": "p1", "final": False}
+    assert events[1].payload == {"text": "I'll total the sales.", "part": "p1", "final": True}
+    assert secret not in json.dumps([e.payload for e in events])
 
 
 @pytest.mark.parametrize("bad", [

@@ -295,6 +295,9 @@
 }
 
 .sw-msg-text { font-size: var(--fs-15); line-height: 1.65; }
+.sw-reasoning { font-size: var(--fs-13); color: var(--gray-600); }
+.sw-reasoning summary { cursor: pointer; font-weight: 600; }
+.sw-reasoning-body { white-space: pre-wrap; margin-top: 6px; line-height: 1.55; }
 .sw-msg-text.is-streaming > :last-child::after {
   content: '';
   display: inline-block;

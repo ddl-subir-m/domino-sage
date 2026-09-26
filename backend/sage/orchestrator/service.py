@@ -480,6 +480,9 @@ _PERSISTED_EVENTS = frozenset({
     # only on the write. It is also what `recall.offer` counts (ADR-0022): a ladder over a
     # transcript that keeps no refusals can never reach its second rung.
     "error",
+    # The thought, after the tool call has been taken out of it. Chat's store keeps every row;
+    # Build drops whatever is not listed here, so a fold that streamed would vanish on reload.
+    "reasoning",
     # The ladder's own two rows, so an offer and a clear survive a reload the way Chat's do.
     recall.SUGGEST, recall.CLEARED,
     # And the three rungs below it (ADR-0022, `withhold.py`). Chat's store takes anything; Build
@@ -4078,6 +4081,173 @@ def _refused_writes_message(n: int, one_model: str) -> str:
             " Both model slots are set to {model}, so there was no second model to hand the failing"
             " edits to. Assign a different model to one of the slots and ask again.", model=one_model)
     return said + " Ask again, or assign a different model to the build slot."
+
+
+# A tool call the model wrote into its reasoning. The name and the arguments have to be present
+# together: a JSON object somebody asked for, or a bare arguments blob with no tool name, is not
+# this shape and stays.
+_TOOL_NAME_KEYS = frozenset({"name", "tool", "tool_name"})
+_TOOL_ARG_KEYS = frozenset({"arguments", "parameters", "input"})
+_TOOL_TAG = re.compile(
+    r"<(?:tool_calls?|function_calls?)\b[^>]*>.*?</(?:tool_calls?|function_calls?)>",
+    re.IGNORECASE | re.DOTALL)
+_TOOL_TAG_OPEN = re.compile(r"<(?:tool_calls?|function_calls?)\b", re.IGNORECASE)
+_TOOL_TAG_CLOSE = re.compile(r"</(?:tool_calls?|function_calls?)>", re.IGNORECASE)
+_FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+
+
+def _tool_shaped(value: object) -> bool:
+    if isinstance(value, list):
+        return bool(value) and all(_tool_shaped(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    keys = {str(k) for k in value}
+    if keys & {"tool_calls", "tool_call"}:
+        return True
+    if (keys & _TOOL_NAME_KEYS) and (keys & _TOOL_ARG_KEYS):
+        return True
+    function = value.get("function")
+    return isinstance(function, dict) and "name" in function and (
+        ({str(k) for k in function} & _TOOL_ARG_KEYS) or (keys & _TOOL_ARG_KEYS))
+
+
+def _is_tool_payload(text: str) -> bool:
+    body = text.strip()
+    if body.startswith("```"):
+        rest = body.split("\n", 1)
+        body = rest[1] if len(rest) > 1 else ""
+        if body.rstrip().endswith("```"):
+            body = body.rstrip()[:-3]
+        body = body.strip()
+    if not body or body[0] not in "{[":
+        return False
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    return _tool_shaped(parsed)
+
+
+def _strip_tool_json(text: str) -> str:
+    decoder = json.JSONDecoder()
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] in "{[":
+            try:
+                parsed, end = decoder.raw_decode(text, i)
+            except json.JSONDecodeError:
+                out.append(text[i])
+                i += 1
+                continue
+            if not _tool_shaped(parsed):
+                out.append(text[i:end])
+            i = end
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def visible_reasoning(text: str) -> str:
+    """The thought, with the tool call taken out of it.
+
+    A fenced block, a `<tool_call>` wrapper, or a JSON object whose keys are the call. The
+    sentences around it stay. A chunk that is only the call comes back empty — nothing is said
+    in its place, and the tool is not named. Other JSON stays: this is not the answer path.
+    """
+    if not text:
+        return ""
+    cleaned = _TOOL_TAG.sub("", text)
+
+    def fence_sub(match: re.Match[str]) -> str:
+        return "" if _is_tool_payload(match.group(1)) else match.group(0)
+
+    cleaned = _FENCE.sub(fence_sub, cleaned)
+    cleaned = _strip_tool_json(cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _hold_incomplete(text: str) -> str:
+    """Hide a tool call that has not finished arriving, so the page does not flash a `{`."""
+    if text.count("```") % 2 == 1:
+        text = text[:text.rfind("```")]
+    opens = list(_TOOL_TAG_OPEN.finditer(text))
+    if opens:
+        last = opens[-1]
+        if _TOOL_TAG_CLOSE.search(text[last.end():]) is None:
+            text = text[:last.start()]
+    decoder = json.JSONDecoder()
+    i = 0
+    cut: int | None = None
+    while i < len(text):
+        if text[i] in "{[":
+            try:
+                _, end = decoder.raw_decode(text, i)
+            except json.JSONDecodeError:
+                cut = i
+                break
+            i = end
+            continue
+        i += 1
+    if cut is not None:
+        text = text[:cut]
+    return text
+
+
+class ReasoningFold:
+    """One turn's reasoning parts, in order, sanitized before anything is shown or saved.
+
+    The stream sends a delta; the transcript later sends the whole part. Both land in the same
+    slot, keyed by the part id, so the transcript replaces the buffer instead of appending a
+    second copy. An open part holds back an unfinished call. A closed part is the final prose.
+    """
+
+    def __init__(self) -> None:
+        self._order: list[str] = []
+        self._text: dict[str, str] = {}
+        self._open: set[str] = set()
+        self._shown = ""
+
+    def push(self, part_id: str, delta: str) -> str | None:
+        key = part_id or "part"
+        if key not in self._text:
+            self._order.append(key)
+            self._text[key] = ""
+        self._text[key] += delta
+        self._open.add(key)
+        return self._publish()
+
+    def replace(self, part_id: str, text: str, *, closed: bool) -> str | None:
+        key = part_id or "part"
+        if key not in self._text:
+            self._order.append(key)
+        self._text[key] = text
+        if closed:
+            self._open.discard(key)
+        else:
+            self._open.add(key)
+        return self._publish()
+
+    def prose(self) -> str:
+        chunks: list[str] = []
+        for key in self._order:
+            raw = self._text[key]
+            if key in self._open:
+                raw = _hold_incomplete(raw)
+            shown = visible_reasoning(raw)
+            if shown:
+                chunks.append(shown)
+        return "\n\n".join(chunks)
+
+    def _publish(self) -> str | None:
+        shown = self.prose()
+        if shown == self._shown:
+            return None
+        self._shown = shown
+        return shown
 
 
 def _chat_live_event(ev) -> dict | None:
@@ -14556,6 +14726,20 @@ class Orchestrator:
         # other state because `finish` below writes `recoveries` off it (ADR-0069), and a `done`
         # can pass through `finish` before the loop is reached.
         recovery_used = False
+        # The thought, kept apart from the answer. None until the turn reaches the model loop:
+        # an ending before that has nothing to fold.
+        reasoner: ReasoningFold | None = None
+        reasoning_saved = False
+
+        def save_reasoning() -> None:
+            nonlocal reasoning_saved
+            if reasoner is None or reasoning_saved:
+                return
+            prose = reasoner.prose()
+            if not prose:
+                return
+            store.append_history(thread_id, {"type": "reasoning", "text": prose})
+            reasoning_saved = True
 
         def finish(done: dict) -> dict:
             """The Chat turn's terminal row, on its way to the Thread.
@@ -14623,6 +14807,7 @@ class Orchestrator:
                         "support tools on this route; its declared capabilities cannot answer, "
                         "and this is what it actually did.",
                         resolved.model, streak, done.get("decision", "-"))
+            save_reasoning()
             store.append_history(thread_id, done)
             return done
 
@@ -15118,6 +15303,9 @@ class Orchestrator:
         def publish_chat_artifacts(outcome: str):
             """Every active Chat exit validates bytes before retention, text and artifacts."""
             nonlocal artifacts, immediate, artifacts_finished, asked_for_the_other_lane
+            # Before the answer row, so a reload shows the thought above the answer. `finish`
+            # saves again only when this exit never ran.
+            save_reasoning()
             if tables is None or artifacts_finished:
                 return {}
             body = primary_body if tables.repair_ran else last_text or streamed_body
@@ -15271,6 +15459,7 @@ class Orchestrator:
             project.last_gateway_error = None
             with timing.span("setup.baseline"):
                 seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
+            reasoner = ReasoningFold()
             # Invalid-call faults already charged, as (session id, call id) — the identity
             # `_invalid_tool_call` hands back (#567). The stream and the transcript both see a
             # completed `invalid` wrapper, and a re-delivered part is the same call, so this is
@@ -15856,6 +16045,19 @@ class Orchestrator:
                                     told=self._last_live_read_refusal(thread_id))
                             running_tools.pop(call, None)
                             running_paths.pop(call, None)
+                    if ev.kind == "reasoning" and reasoner is not None:
+                        # Not an answer, and not a delta: the page folds this, and `answered`
+                        # stays about the text the person asked for.
+                        payload = ev.payload or {}
+                        part_id = str(payload.get("part") or "")
+                        if payload.get("final"):
+                            updated = reasoner.replace(
+                                part_id, str(payload.get("text") or ""), closed=True)
+                        else:
+                            updated = reasoner.push(part_id, str(payload.get("delta") or ""))
+                        if updated is not None:
+                            yield {"type": "reasoning", "text": updated}
+                        continue
                     live = _chat_live_event(ev)
                     if live is not None:
                         answered = answered or bool(live.get("text"))
@@ -15965,6 +16167,16 @@ class Orchestrator:
                             if key in seen:
                                 continue
                             pending_text = part["text"]
+                            continue
+                        if pt == "reasoning":
+                            text = part.get("text")
+                            if text and reasoner is not None:
+                                closed = (finished or (part.get("time") or {}).get("end")
+                                          is not None)
+                                updated = reasoner.replace(
+                                    str(part.get("id") or key), str(text), closed=closed)
+                                if updated is not None:
+                                    yield {"type": "reasoning", "text": updated}
                             continue
                         if key in seen:
                             continue
@@ -20888,6 +21100,19 @@ class Orchestrator:
                                 plan_text_parts.append(body)
                             else:
                                 yield persist({"type": "agent", "kind": "text", "text": body})
+                        elif pt == "reasoning":
+                            # Not the answer, and not the plan. A gate turn keeps its prose for
+                            # the plan card; this part never joins that card or an agent text row.
+                            if key in seen:
+                                continue
+                            closed = ((part.get("time") or {}).get("end") is not None
+                                      or (appeared and not running))
+                            if not closed:
+                                continue
+                            seen.add(key)
+                            prose = visible_reasoning(str(part.get("text") or ""))
+                            if prose:
+                                yield persist({"type": "reasoning", "text": prose})
                 active_call = project.active_model_snapshot()
                 model_active = bool(
                     active_call is not None
