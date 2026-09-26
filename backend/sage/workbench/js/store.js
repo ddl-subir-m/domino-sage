@@ -4299,12 +4299,19 @@ window.SW = window.SW || {};
     return true;
   }
 
-  // Whether a state read says the turn is still going. A failed read is not an idle project.
-  // `/build/state` always carries `running` as a boolean, so a body that does not say `false`
-  // is not a finished turn either — a harness, or a proxy, answering `{}` is that body. Reading
-  // it as idle reloads the transcript over a live answer that was never saved.
+  // Whether a state read says the turn is still going. A failed read is not an idle project:
+  // the network being down is why the stream died, and it must not be read as the turn ending.
+  // `/build/state` always carries `running` as a boolean. A body that omits it — a route the
+  // caller does not implement, answering `{}` — is not "still going" and not "finished" either.
+  // Only an explicit `false` is a finished turn, which is the one case the live answer is behind
+  // the transcript and should be re-read. Anything else keeps what is already on screen.
   function turnStillGoing(payload) {
-    return !payload || payload.running !== false;
+    if (!payload) return true;
+    return payload.running === true;
+  }
+
+  function turnFinished(payload) {
+    return !!(payload && payload.running === false);
   }
 
   async function readAuthoritativeTurnState() {
@@ -7852,6 +7859,7 @@ window.SW = window.SW || {};
       let ticket = '';
       let unran = false;
       let detached = false;
+      let finished = false;
       let streamAccepted = false;
       let streamLost = false;
       let refusalMessage = '';
@@ -7993,6 +8001,7 @@ window.SW = window.SW || {};
           streamLost = true;
           const running = await readAuthoritativeTurnState();
           detached = turnStillGoing(running);
+          finished = turnFinished(running);
           if (running) applyTurnState(running);
         }
         if (stopped) await store.loadBuild({ keepPreview: true });
@@ -8015,6 +8024,7 @@ window.SW = window.SW || {};
             streamLost = true;
             const running = await readAuthoritativeTurnState();
             detached = turnStillGoing(running);
+            finished = turnFinished(running);
             if (running) applyTurnState(running);
           }
           // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame
@@ -8034,7 +8044,7 @@ window.SW = window.SW || {};
         if (!detached) releaseRunningTurn(claim);
         notify();
         if (detached) store._watchBuild();
-        if (streamLost && !detached) await store.loadBuild({ keepPreview: true });
+        if (streamLost && finished) await store.loadBuild({ keepPreview: true });
         // Reload rather than keep a half-turn on screen: the transcript showing now is the other
         // app's, and it was deliberately never given this turn's events. A turn that never ran gets
         // the same treatment for the opposite reason — the send optimistically drew a bubble for a
@@ -8538,6 +8548,7 @@ window.SW = window.SW || {};
       let ticket = '';
       let unran = false;
       let detached = false;
+      let finished = false;
       let streamAccepted = false;
       let streamLost = false;
       // This tab's own name for the turn, so the Stop bar has something to match (#126). Held so
@@ -8652,6 +8663,7 @@ window.SW = window.SW || {};
           streamLost = true;
           const running = await readAuthoritativeTurnState();
           detached = turnStillGoing(running);
+          finished = turnFinished(running);
           if (running) applyTurnState(running);
         }
         if (stopped) await store.loadBuild({ keepPreview: true });
@@ -8663,6 +8675,7 @@ window.SW = window.SW || {};
           streamLost = true;
           const running = await readAuthoritativeTurnState();
           detached = turnStillGoing(running);
+          finished = turnFinished(running);
           if (running) applyTurnState(running);
         }
         // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame to
@@ -8678,7 +8691,7 @@ window.SW = window.SW || {};
         if (!detached) releaseRunningTurn(claim);
         notify();
         if (detached) store._watchBuild();
-        if (streamLost && !detached) await store.loadBuild({ keepPreview: true });
+        if (streamLost && finished) await store.loadBuild({ keepPreview: true });
         // `unran` reloads for the same reason `movedOn` does: an approve that never ran left an
         // "Approved the plan." bubble the server has no record of, and the plan is still waiting.
         if (movedOn() || unran) await store.loadBuild({ keepPreview: true });
@@ -9084,6 +9097,7 @@ window.SW = window.SW || {};
       // `done` or `stopped` that says the turn itself ended; without one, the lock decides.
       let terminalSeen = false;
       let detached = false;
+      let finished = false;
       let streamLost = false;
       // And this tab's own name for the turn, so Chat's Stop bar has something to match while this
       // send holds the only stream there is. See claimRunningTurn.
@@ -9535,6 +9549,7 @@ window.SW = window.SW || {};
           streamLost = true;
           const running = await readAuthoritativeTurnState();
           detached = turnStillGoing(running);
+          finished = turnFinished(running);
           if (running) applyTurnState(running);
         }
       } catch (err) {
@@ -9548,6 +9563,7 @@ window.SW = window.SW || {};
           streamLost = true;
           const running = await readAuthoritativeTurnState();
           detached = turnStillGoing(running);
+          finished = turnFinished(running);
           if (running) applyTurnState(running);
         } else if (!terminalSeen) {
           if (mine()) {
@@ -9584,7 +9600,7 @@ window.SW = window.SW || {};
       // the composer instead.
       if ((left || unran) && state.thread && state.thread.id === turnThread) {
         await store.openThread(turnThread).catch(() => {});
-      } else if (streamLost && !detached && state.thread && state.thread.id === turnThread) {
+      } else if (streamLost && finished && state.thread && state.thread.id === turnThread) {
         // The turn had already finished when the stream died. The half-answer on screen is
         // behind the transcript, and the connection error is not a sentence to keep.
         await store.openThread(turnThread).catch(() => {});
