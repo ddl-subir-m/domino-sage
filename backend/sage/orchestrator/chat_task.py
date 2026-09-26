@@ -83,6 +83,20 @@ def await_input(store: ThreadStore, thread_id: str, question: str, awaiting: str
     return store.update_context(thread_id, apply)["pendingTask"]
 
 
+def awaiting_source(store: ThreadStore, thread_id: str, question: str) -> bool:
+    """True when `question` is the pending task and it still waits for a source (#566).
+
+    Read off the Thread's own record, which `resolve` wrote at the top of this turn, and never off
+    model prose. The third condition is the one `started` applies: a source that arrived while the
+    turn was setting up ends the wait, so a turn that reads True here is one that has nothing to
+    query and knows it.
+    """
+    ctx = store.read_context(thread_id)
+    task = ctx.get("pendingTask") or {}
+    return (task.get("question") == question and task.get("awaiting") == "source"
+            and not _sources(ctx))
+
+
 def started(store: ThreadStore, thread_id: str, question: str) -> None:
     def apply(ctx):
         task = ctx.get("pendingTask") or {}
