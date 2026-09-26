@@ -280,8 +280,10 @@ def test_model_active_status_uses_one_clamped_thirty_second_bucket():
         60, "The model is working but has not returned text or a tool yet — 60 s")
 
 
-def test_native_reasoning_stream_times_out_with_safe_protocol_error(
+def test_native_reasoning_stream_resets_the_no_action_clock(
         running, monkeypatch, caplog):  # noqa: F811
+    """Reasoning deltas are stream activity. Wall-clock past 120 s is fine if the last chunk
+    was recent; a 120 s gap after the last reasoning chunk still times out."""
     from sage.gateway.client import FakeGatewayClient
     from sage.orchestrator import native_routes
 
@@ -291,13 +293,15 @@ def test_native_reasoning_stream_times_out_with_safe_protocol_error(
     orch._build_policy = replace(
         orch._build_policy, model_no_action_notice_seconds=30,
         model_no_action_timeout_seconds=120)
-    ticks = iter((0.0, 1.0, 31.0, 31.0, 121.0, 121.0, 122.0, 123.0, 124.0))
+    # begin; chunk1 last_stream+observe; chunk2 (still inside 120 s of chunk1); chunk3 after
+    # a 120 s idle gap from chunk2 → timeout.
+    ticks = iter((0.0, 1.0, 31.0, 50.0, 100.0, 220.0, 220.0, 221.0, 222.0, 223.0))
     monkeypatch.setattr(
-        native_routes, "time", SimpleNamespace(monotonic=lambda: next(ticks, 124.0)))
+        native_routes, "time", SimpleNamespace(monotonic=lambda: next(ticks, 223.0)))
 
     class ReasoningGateway(FakeGatewayClient):
         def route(self, request, labels, *, protocol, cancel):
-            for text in ("PRIVATE_ONE", "PRIVATE_TWO"):
+            for text in ("PRIVATE_ONE", "PRIVATE_TWO", "PRIVATE_THREE"):
                 yield _sse({"choices": [{"delta": {"reasoning_content": text}}]})
 
     orch._project.shim._gateway = ReasoningGateway()
@@ -318,6 +322,47 @@ def test_native_reasoning_stream_times_out_with_safe_protocol_error(
     notices = [item.getMessage() for item in caplog.records
                if item.getMessage().startswith("model no-action notice:")]
     assert len(notices) == 1 and "PRIVATE" not in notices[0]
+
+
+def test_reasoning_activity_past_wall_clock_timeout_still_completes(
+        running, monkeypatch):  # noqa: F811
+    """A model that keeps reasoning past 120 s wall-clock is not killed while chunks arrive."""
+    from sage.gateway.client import FakeGatewayClient
+    from sage.orchestrator import native_routes
+
+    client, orch, _ = running
+    assert client.post(
+        "/api/project/model", json={"mode": "plan", "pick": "GLM 5.3 OR"}).status_code == 200
+    orch._build_policy = replace(
+        orch._build_policy, model_no_action_notice_seconds=30,
+        model_no_action_timeout_seconds=120)
+    # begin; reasoning at 31; reasoning at 100; text+stop well after 120 s wall-clock but
+    # each gap under the idle timeout.
+    ticks = iter((0.0, 1.0, 31.0, 50.0, 100.0, 130.0, 131.0, 132.0, 133.0, 134.0))
+    monkeypatch.setattr(
+        native_routes, "time", SimpleNamespace(monotonic=lambda: next(ticks, 134.0)))
+
+    class MixedGateway(FakeGatewayClient):
+        def route(self, request, labels, *, protocol, cancel):
+            yield _sse({"choices": [{"delta": {"reasoning_content": "PRIVATE_ONE"}}]})
+            yield _sse({"choices": [{"delta": {"reasoning_content": "PRIVATE_TWO"}}]})
+            yield _sse({"choices": [{"delta": {"content": "# Plan"}, "finish_reason": "stop"}]})
+
+    orch._project.shim._gateway = MixedGateway()
+    timing.start_turn("build", turn_id="turn")
+    try:
+        with active(orch) as headers:
+            response = dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR")
+        record = timing.finish_turn()
+    finally:
+        if timing.current() is not None:
+            timing.finish_turn()
+
+    assert response.status_code == 200
+    assert "sage_gateway_error" not in response.text
+    assert orch._project.last_gateway_error is None
+    assert timing.as_dict(record)["calls"][0]["outcome"] == "success"
+    assert timing.as_dict(record)["calls"][0]["firstActionKind"] == "text"
 
 
 def test_provider_output_limit_at_timeout_threshold_keeps_precedence(

@@ -9,6 +9,7 @@ import pytest
 from sage.orchestrator.plan_steps import (
     is_phasable,
     parse_steps,
+    repair_execution_summary,
     step_index,
     validate_execution_contract,
 )
@@ -221,13 +222,35 @@ def test_execution_contract_requires_every_product_section():
     assert check.missing_sections == ("screens",)
 
 
-def test_execution_contract_requires_one_summary_sentence():
-    check = validate_execution_contract(EXECUTION_PLAN.replace(
+def test_a_two_sentence_summary_is_repaired_to_the_first_sentence():
+    """Haiku drift: every section valid except a two-sentence lead. Repair, do not refuse."""
+    two = EXECUTION_PLAN.replace(
         "A dashboard for exploring trade data.",
         "A dashboard for exploring trade data. It also exports reports.",
-    ))
+    )
+    check = validate_execution_contract(two)
+    assert check.valid
+    repaired = repair_execution_summary(two)
+    assert "It also exports reports." not in repaired
+    assert "A dashboard for exploring trade data." in repaired
+    assert validate_execution_contract(repaired).valid
+
+
+def test_summary_repair_does_not_rescue_any_other_contract_fault():
+    broken = EXECUTION_PLAN.replace(
+        "A dashboard for exploring trade data.",
+        "A dashboard for exploring trade data. It also exports reports.",
+    ).replace("## Screens\n- **Trade table** — Shows the active book.\n\n", "")
+    assert not validate_execution_contract(broken).valid
+    assert repair_execution_summary(broken) == broken
+
+
+def test_an_empty_summary_is_still_rejected():
+    no_summary = EXECUTION_PLAN.replace("A dashboard for exploring trade data.\n\n", "")
+    check = validate_execution_contract(no_summary)
     assert not check.valid
     assert "summary" in check.missing_sections
+    assert repair_execution_summary(no_summary) == no_summary
 
 
 @pytest.mark.parametrize("field", ["Files", "Do", "Done when"])

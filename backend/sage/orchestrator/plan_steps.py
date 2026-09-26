@@ -180,6 +180,48 @@ def _one_sentence(value: str) -> bool:
     return re.search(r"[.!?][\"')\]]*[ \t]+[A-Z0-9]", text) is None
 
 
+def _first_sentence(value: str) -> str:
+    """The lead sentence of a summary, using the same boundary `_one_sentence` rejects on."""
+    text = " ".join((value or "").split())
+    if not text:
+        return ""
+    match = re.search(r"[.!?][\"')\]]*[ \t]+[A-Z0-9]", text)
+    if match is None:
+        return text
+    return text[: match.start() + 1].rstrip()
+
+
+def _only_multi_sentence_summary_fault(check: PlanContractCheck) -> bool:
+    """True when every contract field is fine except the summary having a second sentence."""
+    return (
+        not check.valid
+        and check.missing_sections == ("summary",)
+        and check.malformed_steps == 0
+        and check.invalid_file_fields == 0
+        and check.contradictory_file_fields == 0
+        and check.step_count > 0
+    )
+
+
+def repair_execution_summary(markdown: str) -> str:
+    """If the only contract fault is a multi-sentence summary, keep its first sentence.
+
+    Missing summaries, missing sections, bad steps, and any other fault leave the markdown
+    untouched. Step briefs are not relaxed — this repairs the lead only.
+    """
+    check = _validate_execution_contract(markdown)
+    if not _only_multi_sentence_summary_fault(check):
+        return markdown
+    parsed = plan_doc.parse_sections(markdown)
+    first = _first_sentence(parsed["summary"])
+    if not first or first == parsed["summary"] or not _one_sentence(first):
+        return markdown
+    repaired = plan_doc.render(first, parsed["sections"], parsed["title"])
+    if not _validate_execution_contract(repaired).valid:
+        return markdown
+    return repaired
+
+
 def _valid_workspace_path(value: str) -> bool:
     path = value.strip()
     if not path or path.startswith("/") or "\\" in path:
@@ -188,13 +230,8 @@ def _valid_workspace_path(value: str) -> bool:
     return not parsed.is_absolute() and ".." not in parsed.parts
 
 
-def validate_execution_contract(markdown: str) -> PlanContractCheck:
-    """Check the durable plan shape without reading files or calling a model.
-
-    `parse_steps` stays backward compatible. This stricter door compares every numbered candidate
-    with the steps that survived that parser, then checks the fields that a cold implementation
-    session needs.
-    """
+def _validate_execution_contract(markdown: str) -> PlanContractCheck:
+    """Strict check with no summary repair. Used by the public validator and the repair path."""
     parsed = plan_doc.parse_sections(markdown)
     sections = parsed["sections"]
     missing = []
@@ -245,6 +282,27 @@ def validate_execution_contract(markdown: str) -> PlanContractCheck:
         invalid_file_fields=invalid_files,
         contradictory_file_fields=contradictory,
     )
+
+
+def validate_execution_contract(markdown: str) -> PlanContractCheck:
+    """Check the durable plan shape without reading files or calling a model.
+
+    `parse_steps` stays backward compatible. This stricter door compares every numbered candidate
+    with the steps that survived that parser, then checks the fields that a cold implementation
+    session needs.
+
+    A multi-sentence summary alone is not a refusal: weaker models (Haiku) pad the lead while
+    every other section is fine. When that is the only fault, accept the plan as if the summary
+    were its first sentence. Callers that store the markdown should also run
+    `repair_execution_summary` so the durable copy matches what was accepted.
+    """
+    check = _validate_execution_contract(markdown)
+    if check.valid or not _only_multi_sentence_summary_fault(check):
+        return check
+    repaired = repair_execution_summary(markdown)
+    if repaired == markdown:
+        return check
+    return _validate_execution_contract(repaired)
 
 
 def is_phasable(plan_md: str, min_steps: int = MIN_STEPS) -> bool:

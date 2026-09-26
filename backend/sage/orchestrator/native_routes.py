@@ -420,8 +420,14 @@ def install(app, get_orchestrator):
                     project.last_stream_chunk_at = time.monotonic()
                     active = None
                     if build_watchdog:
+                        # Idle since the previous chunk (reasoning, text, or tool), else since the
+                        # call began. `elapsedSeconds` is wall-clock from start and must not kill a
+                        # model that is still streaming thinking; ActiveModelCall.last_chunk_at
+                        # lives in service.py and is only read here.
+                        now = time.monotonic()
+                        prior = project.active_model_snapshot(now)
                         active = project.observe_active_model_call(
-                            call_id, time.monotonic(),
+                            call_id, now,
                             first_action_kind=events.first_action_kind,
                             reasoning_only_chunks=events.reasoning_only_chunks)
                     # Provider terminal failures, including output limits, own the frame on which
@@ -432,16 +438,19 @@ def install(app, get_orchestrator):
                         if active is not None and active["firstActionKind"] is not None:
                             log_no_action_terminal(active, active["firstActionKind"])
                         elif active is not None:
-                            elapsed = active["elapsedSeconds"]
-                            if (elapsed >= policy.model_no_action_notice_seconds
+                            if prior is not None and prior["lastChunkAt"] is not None:
+                                idle = now - prior["lastChunkAt"]
+                            else:
+                                idle = active["elapsedSeconds"]
+                            if (idle >= policy.model_no_action_notice_seconds
                                     and project.mark_active_model_notice(call_id)):
                                 call.no_action_notice()
                                 log.warning(
                                     "model no-action notice: turn_id=%s call_id=%s "
                                     "elapsed_seconds=%.1f chunks=%d action=pending",
-                                    running_ticket.id, call_id, elapsed,
+                                    running_ticket.id, call_id, idle,
                                     active["chunkCount"])
-                            if elapsed >= policy.model_no_action_timeout_seconds:
+                            if idle >= policy.model_no_action_timeout_seconds:
                                 project.mark_active_model_timeout(call_id)
                                 call.no_action_timeout()
                                 raise _ModelNoActionTimeout(active)

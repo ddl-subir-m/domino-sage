@@ -396,14 +396,14 @@ _STOP = {"choices": [{"delta": {}, "finish_reason": "stop"}]}
 
 
 @pytest.mark.parametrize(("frames", "ticks", "timed_out"), [
-    # begin, started, then two reads per chunk: reasoning at 31 s, text at 113 s, end at 128 s.
+    # begin, started-race, then two reads per chunk: reasoning at 31 s, text at 113 s.
     ([_REASONING, _TEXT, _STOP],
      (0.0, 1.0, 31.0, 31.0, 113.0, 113.0, 128.0, 128.0, 129.0), False),
-    # Reasoning at 31 s and again at 120 s, and nothing else: the no-action path, exactly at 120.
+    # Reasoning, then another chunk after ≥120 s idle from lastChunkAt (race consumes one tick).
     ([_REASONING, _REASONING],
-     (0.0, 1.0, 31.0, 31.0, 120.0, 120.0, 121.0, 122.0, 123.0), True),
-], ids=["text_at_113_completes_at_128", "reasoning_only_at_120"])
-def test_first_action_at_113_s_completes_while_reasoning_only_at_120_s_times_out(
+     (0.0, 1.0, 31.0, 50.0, 170.0, 170.0, 171.0, 172.0, 173.0), True),
+], ids=["text_at_113_completes_at_128", "reasoning_idle_gap_at_120"])
+def test_first_action_at_113_s_completes_while_reasoning_idle_gap_times_out(
         running, monkeypatch, frames, ticks, timed_out):  # noqa: F811
     from sage.gateway.client import FakeGatewayClient
     from sage.orchestrator import native_routes
