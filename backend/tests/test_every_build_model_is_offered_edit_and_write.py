@@ -73,6 +73,7 @@ def _tools_for(url: str, directory: str, handle: str) -> set[str]:
     return {str(t.get("id") or t.get("name")) for t in response.json()}
 
 
+@pytest.mark.opencode
 @pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
 def test_the_pinned_opencode_offers_edit_to_the_default_handle_and_patch_to_gpt(tmp_path):
     """Asked of the binary itself, so an OpenCode upgrade that moves the rule reds here."""

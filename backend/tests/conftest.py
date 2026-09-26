@@ -95,7 +95,21 @@ _SPREAD_FIRST = (
 )
 
 
-def pytest_collection_modifyitems(items):
+def pytest_addoption(parser):
+    parser.addoption(
+        "--opencode",
+        action="store_true",
+        default=False,
+        help="Run tests that boot the pinned OpenCode server.",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--opencode"):
+        skip = pytest.mark.skip(reason="real OpenCode is off the default run; pass --opencode")
+        for item in items:
+            if item.get_closest_marker("opencode") is not None:
+                item.add_marker(skip)
     slow = sorted((i for i in items if i.path.name in _SPREAD_FIRST),
                   key=lambda i: _SPREAD_FIRST.index(i.path.name))
     if not slow:
@@ -292,3 +306,20 @@ def _opencode_server_is_stopped(request):
         pytest.fail(f"{request.node.nodeid} left {len(left)} OpenCode server(s) running. A test "
                     f"that starts one calls `stop()` (or `Orchestrator.shutdown()`), or injects "
                     f"`opencode_client=` so no real server starts.")
+
+
+# Captured at import, before any test assigns `time.sleep` or `time.monotonic`. A scripted clock
+# installs its wrappers by assignment. `monkeypatch` can put those wrappers back after the test
+# that made them has restored the originals, and the next test on this worker then runs on a clock
+# that test did not set up.
+_WALL_SLEEP = time.sleep
+_WALL_MONOTONIC = time.monotonic
+
+
+@pytest.fixture(autouse=True)
+def _the_wall_clock_starts_each_test():
+    """Put the real clock back after a test, including after `monkeypatch` undoes one."""
+    yield
+    time.sleep = _WALL_SLEEP
+    time.monotonic = _WALL_MONOTONIC
+

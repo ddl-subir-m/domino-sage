@@ -62,6 +62,9 @@ testpaths = ["tests"]
 # look at the machine before the code: the same suite took 13 minutes while 1.66M leaked temp
 # directories sat in the macOS temp dir (see FakeAssetProvider).
 addopts = "-n auto"
+markers = [
+    "opencode: boots the pinned OpenCode server; skipped unless --opencode is set",
+]
 
 [tool.ruff]
 line-length = 110

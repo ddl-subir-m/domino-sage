@@ -206,6 +206,27 @@ def test_a_client_that_cannot_stream_waits_out_the_timeout():
     assert elapsed >= 0.3
 
 
+def test_a_noop_sleep_that_lets_the_clock_tick_still_waits_out_the_poll(monkeypatch):
+    """A no-op sleep returns before the interval has passed.
+
+    The wall clock can still tick a few nanoseconds while that return happens. That tick is not
+    the pause. A loop that counts polls would otherwise reach its cap before the deadline the
+    pause is standing in for."""
+    import time
+
+    real = time.monotonic
+
+    def monotonic() -> float:
+        return real() + 1e-9
+
+    monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(time, "monotonic", monotonic)
+    tap = _EventTap(object(), "s1")
+    t0 = time.perf_counter()
+    assert tap.wait(0.3) is False
+    assert time.perf_counter() - t0 >= 0.3
+
+
 def test_a_scripted_clock_does_not_wait_out_a_streamless_poll(monkeypatch):
     """The suite's slow tail. A fake has no stream, so the poll used to sit on the wall clock
     for the whole interval no matter what the test had done to `time.sleep`."""

@@ -3250,14 +3250,17 @@ def _pause_without_a_stream(seconds: float) -> None:
     stays empty and the wait sits on the wall clock — a test can script `time.sleep` and
     `time.monotonic` together and never reach it, and a turn that polls thirty times costs the
     suite thirty seconds. A patch that erases sleep without moving the clock falls back to the
-    wall clock, so the deadline still passes and the loop does not spin.
+    wall clock, so the deadline still passes and the loop does not spin. A nanosecond of movement
+    during the erased sleep is not that movement: the deadline has to advance by the interval,
+    or a loop that counts polls reaches its cap first.
     """
     if seconds <= 0:
         return
     before = time.monotonic()
     time.sleep(seconds)
-    if time.monotonic() <= before:
-        _WALL_SLEEP(seconds)
+    missed = seconds - (time.monotonic() - before)
+    if missed > 0:
+        _WALL_SLEEP(missed)
 
 
 # The `seen` key for a message's OWN error, which belongs to the message and not to any part of it.
