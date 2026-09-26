@@ -4124,8 +4124,14 @@ _TOOL_ARG_KEYS = frozenset({"arguments", "parameters", "input"})
 _TOOL_TAG = re.compile(
     r"<(?:tool_calls?|function_calls?)\b[^>]*>.*?</(?:tool_calls?|function_calls?)>",
     re.IGNORECASE | re.DOTALL)
-_TOOL_TAG_OPEN = re.compile(r"<(?:tool_calls?|function_calls?)\b", re.IGNORECASE)
-_TOOL_TAG_CLOSE = re.compile(r"</(?:tool_calls?|function_calls?)>", re.IGNORECASE)
+# The dialect a model writes when it fails to call the tool: `<function=name>` with
+# `<parameter=key>` children, sometimes wrapped in `<tool_call>` and sometimes not.
+_FUNCTION_EQ_TAG = re.compile(
+    r"<function=[^>]*>.*?</function>",
+    re.IGNORECASE | re.DOTALL)
+# Longer first. `<function` is a prefix of both `<function=` and `<function_call`, and the
+# cut below treats a short tail as "maybe an opener" only while the call is still arriving.
+_TOOL_OPENERS = ("<function_calls", "<function_call", "<tool_calls", "<tool_call", "<function=")
 _FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 
 
@@ -4183,6 +4189,60 @@ def _strip_tool_json(text: str) -> str:
     return "".join(out)
 
 
+def _opener_closer(opener: str) -> str:
+    if opener == "<function=":
+        return "</function>"
+    return f"</{opener[1:]}>"
+
+
+def _tool_markup_cut(text: str, *, partial: bool) -> str:
+    """Drop from an unclosed tool-call opener to the end.
+
+    A call that has already closed stays, so the prose after it can be shown while the next
+    call is still arriving. `partial` also holds a tail that is only the start of an opener
+    (`<tool_ca`), so a stream does not paint the tag one token at a time. A finished `<` that
+    is not that opener stays.
+    """
+    max_len = max(len(op) for op in _TOOL_OPENERS)
+    low = text.lower()
+    i = 0
+    while True:
+        idx = low.find("<", i)
+        if idx < 0:
+            return text
+        tail = low[idx:]
+        opener = next((op for op in _TOOL_OPENERS if tail.startswith(op)), None)
+        if opener is not None:
+            closer = _opener_closer(opener)
+            end = tail.find(closer)
+            if end < 0:
+                return text[:idx]
+            i = idx + end + len(closer)
+            continue
+        if partial and len(tail) <= max_len and any(op.startswith(tail) for op in _TOOL_OPENERS):
+            return text[:idx]
+        i = idx + 1
+
+
+def strip_written_tool_call(text: str, *, hold: bool = False) -> str:
+    """Take a tool call the model wrote as markup out of text.
+
+    Closed `<tool_call>` / `<function=…>` blocks go. An opener that never closes goes too,
+    and while `hold` is set a half-arrived opener is held back rather than shown. The prose
+    around the call stays. This does not look at JSON: an answer the person asked for as JSON
+    is not this shape.
+    """
+    if not text:
+        return ""
+    cleaned = _TOOL_TAG.sub("", text)
+    cleaned = _FUNCTION_EQ_TAG.sub("", cleaned)
+    cleaned = _tool_markup_cut(cleaned, partial=hold)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    if hold:
+        return cleaned
+    return cleaned.strip()
+
+
 def visible_reasoning(text: str) -> str:
     """The thought, with the tool call taken out of it.
 
@@ -4192,7 +4252,7 @@ def visible_reasoning(text: str) -> str:
     """
     if not text:
         return ""
-    cleaned = _TOOL_TAG.sub("", text)
+    cleaned = strip_written_tool_call(text)
 
     def fence_sub(match: re.Match[str]) -> str:
         return "" if _is_tool_payload(match.group(1)) else match.group(0)
@@ -4207,11 +4267,7 @@ def _hold_incomplete(text: str) -> str:
     """Hide a tool call that has not finished arriving, so the page does not flash a `{`."""
     if text.count("```") % 2 == 1:
         text = text[:text.rfind("```")]
-    opens = list(_TOOL_TAG_OPEN.finditer(text))
-    if opens:
-        last = opens[-1]
-        if _TOOL_TAG_CLOSE.search(text[last.end():]) is None:
-            text = text[:last.start()]
+    text = _tool_markup_cut(text, partial=True)
     decoder = json.JSONDecoder()
     i = 0
     cut: int | None = None
@@ -4281,6 +4337,35 @@ class ReasoningFold:
             return None
         self._shown = shown
         return shown
+
+
+class _AnswerMarkup:
+    """The answer as it streams, with a tool call the model wrote as markup taken out.
+
+    Deltas append. The page appends too, so only the newly safe suffix is returned. A tag
+    that has not closed is held, and the closing frame replaces the live copy with the
+    prose that remains.
+    """
+
+    def __init__(self) -> None:
+        self._raw = ""
+        self.shown = ""
+
+    def reset(self) -> None:
+        self._raw = ""
+        self.shown = ""
+
+    def push(self, delta: str) -> str:
+        self._raw += delta
+        safe = strip_written_tool_call(self._raw, hold=True)
+        extra = safe.removeprefix(self.shown)
+        self.shown = safe
+        return extra
+
+    def finish(self, text: str) -> str:
+        self._raw = text
+        self.shown = strip_written_tool_call(text)
+        return self.shown
 
 
 def _chat_live_event(ev) -> dict | None:
@@ -15313,6 +15398,7 @@ class Orchestrator:
         last_text = ""
         streamed_body = ""
         completed_stream_body = ""
+        answer_markup = _AnswerMarkup()
         artifacts_finished = False
         # #418. Read at the turn's end to decide whether the workspace is worth re-reading: a turn
         # that ran no tool cannot have written a file, so there is nothing for the revert scan to
@@ -15343,6 +15429,9 @@ class Orchestrator:
                 return {}
             body = primary_body if tables.repair_ran else last_text or streamed_body
             body = _take_no_build_marker(body)[0]
+            # A model that failed to call the tool writes `<tool_call><function=…>` into the
+            # answer. The stream already held it; the transcript is the copy a reload reads.
+            body = strip_written_tool_call(body)
             # Stripped on EVERY exit, claimed on all of them too, because the card is drawn on one.
             # A turn that stopped or timed out still had its prose cleaned: the marker is Sage's
             # signal either way, and leaving it painted on a stopped turn would show the person a
@@ -16093,21 +16182,31 @@ class Orchestrator:
                         continue
                     live = _chat_live_event(ev)
                     if live is not None:
-                        answered = answered or bool(live.get("text"))
                         if live.get("type") == "delta":
-                            if live.get("final") and live.get("text", "").strip():
-                                unanswered_stream_error = False
                             if tables.repair_ran:
                                 continue
-                            streamed_body = (live.get("text", "") if live.get("final")
-                                             else streamed_body + live.get("text", ""))
+                            # Hold a `<tool_call>` the model is writing into the answer. The page
+                            # appends each delta, so the raw fragment must not leave here.
                             if live.get("final"):
-                                completed_stream_body = streamed_body
+                                safe = answer_markup.finish(str(live.get("text") or ""))
+                                streamed_body = safe
+                                completed_stream_body = safe
+                                live = {**live, "text": safe}
+                            else:
+                                extra = answer_markup.push(str(live.get("text") or ""))
+                                streamed_body = answer_markup.shown
+                                if not extra:
+                                    tables.check(streamed_body)
+                                    continue
+                                live = {**live, "text": extra}
+                            if live.get("final") and live.get("text", "").strip():
+                                unanswered_stream_error = False
                             tables.check(streamed_body)
                             # A table answer is held until its files have been checked. Ordinary
                             # Chat still streams. Repair prose never replaces the useful answer.
                             if tables.candidates:
                                 continue
+                        answered = answered or bool(live.get("text"))
                         yield live
                 # The Delegated model calls served since the last pass (ADR-0057). Drained here
                 # rather than read off a tool event, because the count in the line has to be the
@@ -16315,6 +16414,7 @@ class Orchestrator:
                     # A final stream message is an answer even if the transcript copy is late.
                     # Partial narration and words before a failed step do not meet that test.
                     body = _take_no_build_marker(pending_text or completed_stream_body)[0]
+                    body = strip_written_tool_call(body)
                     if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                         continue
                     invalid = tables.check(primary_body if tables.repair_ran else body)
@@ -16428,6 +16528,7 @@ class Orchestrator:
                         last_text = ""
                         streamed_body = ""
                         completed_stream_body = ""
+                        answer_markup.reset()
                         last_activity = time.monotonic()
                         running_tools.clear()
                         running_paths.clear()
