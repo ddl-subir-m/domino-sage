@@ -870,6 +870,14 @@ SW.api = {
   // this drops one that is still waiting in line, and leaves the running one alone. The ticket
   // comes from the `pending` event that queued turn's own stream yielded.
   cancelTurn: (ticket) => post('/project/turn/cancel', { ticket }),
+  // Whether a failed turn's Continue with another model action is still available, and why not
+  // (#569, #570). Keyed by the saved `done` row's identity — its turn id, its Conversation and,
+  // for Build, the app whose log holds it — so a reload and a restart answer the same. The click
+  // itself goes through the turn senders, because it streams the new Attempt like any turn.
+  continueAvailability: (turnId, conversation, app) => request(
+    `/project/turn/continue?turnId=${encodeURIComponent(turnId)}`
+    + `&conversation=${encodeURIComponent(conversation || '')}`
+    + `&app=${encodeURIComponent(app || '')}`),
   // Puts the SELECTED app's code back to the starter template (#36, narrowed to one Built App in
   // #75). Attachments, Resources, the transcript and every other app survive it — see
   // Orchestrator.reset_app.

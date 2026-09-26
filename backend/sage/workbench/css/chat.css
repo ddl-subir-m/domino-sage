@@ -576,6 +576,11 @@
 }
 .sw-nudge-main { flex: 1; min-width: 0; }
 .sw-nudge strong { color: var(--dark-700); }
+/* The failure card's Continue with another model action (#570). Rides the .sw-nudge shape. */
+.sw-continue-picker { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }
+.sw-continue-runs { margin-top: var(--s1); color: var(--gray-500); font-size: var(--fs-12); }
+.sw-continue-actions { display: flex; gap: var(--s2); }
+.sw-continue-error { color: var(--error); }
 
 /* The files the incoming changes touched, on an incoming-changes offer (#78). Monospace and scrollable: these
    are paths, they are read by matching them against what you were about to touch, and a long merge
