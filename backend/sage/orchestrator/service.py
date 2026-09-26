@@ -4084,6 +4084,19 @@ def _chat_live_event(ev) -> dict | None:
 _CHAT_SHOWN_TOOLS = frozenset()
 _CHAT_AT = re.compile(r"@([^\s@]+)")
 
+# The one correction a Chat turn sends for a tool call whose intended tool never ran (#567). The
+# same rule as Build's BROKEN_CALL_RETRY_NOTE: `{tool}` is an allowlisted name or "tool", `{fault}`
+# is one of `_INVALID_CALL_SAID`, no cause is named and no argument value is guessed. Unlike
+# Build's it goes into the SAME session: the call that broke is a fact the model can read back,
+# and a Chat session is the Thread's memory, which a fresh one would drop.
+_CHAT_INVALID_CALL_NOTE = (
+    "Your last {tool} call {fault}, so that call did not run. Send it again as one valid JSON "
+    "object with every required field, then answer the user's question with the result. If you "
+    "need a value you do not have, read it first; do not guess it. This is the only recovery "
+    "attempt. Keep the current source permissions. Do not invent findings or claim an artifact "
+    "was saved."
+)
+
 
 def _at_token_hits(token: str, name: str, path: str) -> bool:
     """True when an @token from the user message names this context file."""
@@ -14166,8 +14179,9 @@ class Orchestrator:
             # folder #332 had to guard the Threads list against, and persisting here would make one.
             #
             # It carries no `resolved` either (#316). That is the honest answer rather than a gap: no
-            # model ran.
-            yield {"type": "done", "ok": False, "decision": "unknown thread"}
+            # model ran. It does carry `turnId` (ADR-0069): the ticket was granted, so the turn is.
+            yield {"type": "done", "ok": False, "decision": "unknown thread",
+                   **self._turn_id_fields()}
             return
         # What this turn wrote, and which of those paths already existed when it started.
         # Filled in place by `publish_chat_artifacts` from the list it builds anyway: `finish` is
@@ -14180,6 +14194,11 @@ class Orchestrator:
         # read as a rewrite, and that is the honest direction for the error to fall.
         turn_writes: list[str] = []
         turn_rewrites: set[str] = set()
+        # Chat's one shared recovery allowance: a missing answer, an invalid artifact, or a tool
+        # call whose intended tool never ran (#567). Declared here rather than beside the loop's
+        # other state because `finish` below writes `recoveries` off it (ADR-0069), and a `done`
+        # can pass through `finish` before the loop is reached.
+        recovery_used = False
 
         def finish(done: dict) -> dict:
             """The Chat turn's terminal row, on its way to the Thread.
@@ -14210,6 +14229,13 @@ class Orchestrator:
             # at least one" every ordinary conversational turn would report `advanced: false`.
             done["advanced"] = (done.get("decision") != "empty answer"
                                 and not (turn_writes and set(turn_writes) <= turn_rewrites))
+            # ADR-0069, on every Chat `done`: `turnId` always, and `recoveries` whenever the
+            # shared allowance above was spent, on a success too, so an "invalid then valid" turn
+            # can be told from a clean one. `cause` is NOT written here: it is the eligibility
+            # promise, and only the ending that has confirmed the session idle may make it.
+            done.update(self._turn_id_fields())
+            if recovery_used and "recoveries" not in done:
+                done["recoveries"] = 1
             # What this turn's model did with the tools Chat handed it (#469). Counted here and
             # judged by `_tool_use`, which is the whole of the decision: ONE TURN CANNOT TELL
             # "this model cannot call a tool" from "this turn did not need one", so a per-turn
@@ -14687,7 +14713,6 @@ class Orchestrator:
         from ..workspace.chat_tables import ChatTables, failed_table_name, validate_table_bytes
 
         tables: ChatTables | None = None
-        recovery_used = False
         primary_body = ""
         last_text = ""
         streamed_body = ""
@@ -14868,6 +14893,19 @@ class Orchestrator:
             project.last_gateway_error = None
             with timing.span("setup.baseline"):
                 seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
+            # Invalid-call faults already charged, as (session id, call id) — the identity
+            # `_invalid_tool_call` hands back (#567). The stream and the transcript both see a
+            # completed `invalid` wrapper, and a re-delivered part is the same call, so this is
+            # what makes the two witnesses one fault.
+            invalid_seen: set[tuple[str, str]] = set()
+            # The one unresolved fault: what may be said of the tool (`InvalidToolCall.named`),
+            # the model's own spelling of it — a later completion under that name is the model's
+            # retry landing, which retires the fault — and the closed category. Retired only by
+            # that, by the correction that answers it, or by the ending; never by unrelated text
+            # or a different tool completing.
+            broken_call: str | None = None
+            broken_intended = ""
+            broken_category = ""
             # Resolved against the chat workdir, which is where the agent stands and the only place
             # every path in the prompt resolves: `examples/` and `.sage/scratch/` are the Project's
             # and `public/data/` is the app's, and all three are linked in there.
@@ -15388,6 +15426,37 @@ class Orchestrator:
                             # before its third answer has no third answer to read back — which lost
                             # the half of the sentence that says what the step kept replying.
                             pending = pending_calls.pop(call, ("", None, ""))
+                            # The completed `invalid` wrapper, read off the stream (#567). The
+                            # frame is handed to the one classifier in the transcript's own shape:
+                            # the v1 stream names the tool on every frame and the legacy family
+                            # only on `called`, so the name and the arguments fall back to what
+                            # the open remembered. Not through the brake, whose answer would
+                            # quote the SDK's message — the model's raw arguments — at the person.
+                            status = str(ev.payload.get("status") or "")
+                            closed_tool = str(ev.payload.get("tool") or pending[2])
+                            closed_input = ev.payload.get("input")
+                            fault = _invalid_tool_call({
+                                "tool": closed_tool, "callID": call,
+                                "state": {"status": {"success": "completed",
+                                                     "failed": "error"}.get(status, status),
+                                          "input": (closed_input if isinstance(closed_input, dict)
+                                                    else pending[1])}})
+                            if fault is not None and fault.completed:
+                                running_tools.pop(call, None)
+                                running_paths.pop(call, None)
+                                if (sid, fault.call_id) not in invalid_seen:
+                                    invalid_seen.add((sid, fault.call_id))
+                                    broken_call = fault.named
+                                    broken_intended = fault.tool
+                                    broken_category = fault.category
+                                    log.warning("chat: a %s call was rewritten to OpenCode's "
+                                                "invalid tool (%s) — it did not run",
+                                                fault.named, fault.category)
+                                continue
+                            if (broken_call is not None and status == "success"
+                                    and closed_tool == broken_intended):
+                                # A proven recovery: the model retried its own call and it ran.
+                                broken_call = None
                             if not looped and brake.saw(pending[0], running_tools.get(call, ""),
                                                         session_id=sid, call_id=call,
                                                         tool=pending[2], arguments=pending[1]):
@@ -15533,6 +15602,25 @@ class Orchestrator:
                             # turn's end is a tool that ran, and it is the one most likely to have
                             # left a half-written file behind.
                             any_tool_ran = True
+                            fault = _invalid_tool_call(part)
+                            if fault is not None and fault.completed:
+                                # The completed `invalid` wrapper (#567), as Build reads it. Marked
+                                # seen, so it is read once per poll walk; deduplicated by session
+                                # and call identity underneath, so a re-delivered part is one
+                                # fault. No card: its "detail" would be the SDK's message, which
+                                # carries the model's raw arguments. Not through the repeat brake
+                                # either, whose answer would quote the same text at the person.
+                                seen.add(key)
+                                last_activity = time.monotonic()
+                                if (sid, fault.call_id) not in invalid_seen:
+                                    invalid_seen.add((sid, fault.call_id))
+                                    broken_call = fault.named
+                                    broken_intended = fault.tool
+                                    broken_category = fault.category
+                                    log.warning("chat: a %s call was rewritten to OpenCode's "
+                                                "invalid tool (%s) — it did not run",
+                                                fault.named, fault.category)
+                                continue
                             status = (part.get("state") or {}).get("status")
                             if status in ("pending", "running", "in_progress"):
                                 polled_running = True
@@ -15540,6 +15628,11 @@ class Orchestrator:
                             seen.add(key)
                             last_activity = time.monotonic()
                             tool = part.get("tool") or part.get("name") or pt
+                            if (broken_call is not None and status == "completed"
+                                    and tool == broken_intended):
+                                # A proven recovery, and the one completion that retires the
+                                # fault: the model retried its own call and it ran.
+                                broken_call = None
                             if not stream_owned and not looped and brake.saw(
                                     _repeat_fingerprint(str(tool),
                                                         (part.get("state") or {}).get("input")),
@@ -15602,22 +15695,76 @@ class Orchestrator:
                                 and not turn_failed and not unanswered_stream_error
                                 and project.last_gateway_error is None)
                     repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
-                    if ((repairable or (not invalid and not answered))
+                    if (broken_call is not None and recovery_used and not turn_failed
+                            and not step_error and project.last_gateway_error is None):
+                        # The one correction was spent, and the response after it carried another
+                        # call whose intended tool never ran (#567). Said out loud, as Build's
+                        # give-up is: what happened and what to do, with no cause guessed at —
+                        # the tool is an allowlisted name or "tool", the fault is one of
+                        # `_INVALID_CALL_SAID`, and nothing the model emitted rides along. A
+                        # provider that ended the turn, above, keeps its own ending.
+                        #
+                        # `cause` only once the session is confirmed idle (ADR-0069): it promises
+                        # #569 that a fresh attempt may start, and a session still writing is the
+                        # one case that promise would be false. A refused stop writes no cause.
+                        idle = self._confirm_session_idle(client, sid)
+                        if not idle:
+                            log.error("chat: the session would not confirm it stopped after a %s "
+                                      "call did not run; the ending carries no cause", broken_call)
+                        yield from publish_chat_artifacts("broken tool call")
+                        err = {"type": "error", "message": (
+                            f"This turn stopped twice in the same step. The model's {broken_call} "
+                            f"call {_INVALID_CALL_SAID[broken_category]}, so nothing ran. Pick a "
+                            "different model and try again.")}
+                        store.append_history(thread_id, err)
+                        yield err
+                        # `stage` is where #569 resumes from: the original request, off this
+                        # turn's saved user row. `recoveries` is what the allowance spent;
+                        # `finish` would add it, and this row says it outright.
+                        done = {"type": "done", "ok": False, "decision": "broken tool call",
+                                "recoveries": 1}
+                        if idle:
+                            done.update(cause="invalid_tool_call", stage="chat")
+                        if artifacts:
+                            done["artifacts"] = artifacts
+                        finish(done)
+                        yield done
+                        return
+                    if ((repairable or broken_call is not None or (not invalid and not answered))
                             and not recovery_used and not turn_failed and not step_error
                             and project.last_gateway_error is None):
                         if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                             continue
+                        if broken_call is not None and not self._confirm_session_idle(client, sid):
+                            # Uncertain execution stops automatic recovery (#567). A correction
+                            # into a session that may still be writing would be two prompts on
+                            # one session; the turn ends the ordinary way below, with no cause.
+                            log.error("chat: the session would not confirm it stopped after a %s "
+                                      "call did not run; no correction is sent", broken_call)
+                            break
                         recovery_used = True
                         table_repair = bool(repairable)
+                        # Chat's ONE allowance, shared three ways (#567). The table repair has the
+                        # file on disk as its evidence and keeps first claim; a call whose intended
+                        # tool never ran is next; the bare empty answer is last. Whichever is sent,
+                        # it is the first response that is being corrected, so its fault is retired
+                        # here, and a wrapper in the NEXT response is a new one that the spent
+                        # allowance cannot answer.
+                        call_repair = broken_call is not None and not table_repair
                         if table_repair:
                             primary_body = body
                             tables.repair_ran = True
-                        correction = (tables.repair_prompt(repairable) if table_repair else
+                        correction = (tables.repair_prompt(repairable) if table_repair
+                                      else _CHAT_INVALID_CALL_NOTE.format(
+                                          tool=broken_call,
+                                          fault=_INVALID_CALL_SAID[broken_category])
+                                      if call_repair else
                                       "Your turn ended without an answer or an answer artifact. "
                                       "Answer the user's question using the work already done. "
                                       "This is the only recovery attempt. Keep the current source "
                                       "permissions. If you cannot answer, say what prevented it. "
                                       "Do not invent findings or claim an artifact was saved.")
+                        broken_call = None
                         # Ignore the first request's transcript on the next poll, while keeping
                         # the same session, Chat enforcement pin and original turn deadline.
                         for m in msgs:
@@ -15625,7 +15772,9 @@ class Orchestrator:
                                 if isinstance(part, dict):
                                     seen.add(_part_key(m, i, part))
                         try:
-                            with timing.span("chat.table_repair" if table_repair else "chat.answer_repair"):
+                            with timing.span("chat.table_repair" if table_repair
+                                             else "chat.call_repair" if call_repair
+                                             else "chat.answer_repair"):
                                 client.send_prompt(sid,
                                                    correction
                                                    + (("\n\n" + chat_patch_note)
@@ -17076,7 +17225,8 @@ class Orchestrator:
                    "groups": table_search.grouped(shortlist),
                    "allGroups": table_search.grouped(ranking.candidates),
                    "total": len(ranking.candidates), "matched": ranking.matched},
-                  {"type": "done", "ok": False, "decision": "table candidates"})
+                  {"type": "done", "ok": False, "decision": "table candidates",
+                   **self._turn_id_fields()})
         for ev in events:
             store.append_history(thread_id, ev)
             yield ev
@@ -17212,7 +17362,8 @@ class Orchestrator:
                    # What tells the click which conversation to record the decision on, the way the
                    # table card carries the same for the same reason.
                    "threadId": thread_id, "taskId": task["id"]},
-                  {"type": "done", "ok": False, "decision": "investigation offer"})
+                  {"type": "done", "ok": False, "decision": "investigation offer",
+                   **self._turn_id_fields()})
         for ev in events:
             store.append_history(thread_id, ev)
             yield ev
@@ -17502,7 +17653,8 @@ class Orchestrator:
                    "rows": card["rows"], "allRows": card["allRows"],
                    "total": card["total"], "listed": card["listed"],
                    "matched": card["matched"], "truncated": card["truncated"]},
-                  {"type": "done", "ok": False, "decision": "dataset files"})
+                  {"type": "done", "ok": False, "decision": "dataset files",
+                   **self._turn_id_fields()})
         for ev in events:
             store.append_history(thread_id, ev)
             yield ev
