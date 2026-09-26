@@ -136,6 +136,33 @@ def test_link_warm_deps_relinks_a_dangling_symlink(tmp_path: Path):
     assert (nm / "dep").read_text() == "x"
 
 
+def test_link_warm_deps_installs_when_the_template_has_no_node_modules(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # The laptop checkout before `make setup`, or a self-update that left the bake behind:
+    # template has package.json, no node_modules. Returning False here used to leave the app
+    # with no `.bin/vite`, and ViteSupervisor still spawned `npm run dev` (exit 127).
+    t = tmp_path / "template"
+    (t / "src").mkdir(parents=True)
+    (t / "src" / "App.tsx").write_text("placeholder")
+    (t / "package.json").write_text("{}")
+    mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=t)
+    installs: list[int] = []
+
+    def fake_install(self: WorkspaceManager) -> None:
+        installs.append(1)
+        nm = self.stack.template_dir / "node_modules"
+        (nm / ".bin").mkdir(parents=True)
+        (nm / ".bin" / "vite").write_text("#!/bin/sh")
+        (nm / "dep").write_text("x")
+
+    monkeypatch.setattr(WorkspaceManager, "install_template_deps", fake_install)
+    ws = mgr.ensure("p")
+
+    assert installs == [1]
+    assert (ws.path / "node_modules" / ".bin" / "vite").exists()
+    assert (ws.path / "node_modules" / "dep").read_text() == "x"
+
+
 def test_has_built_latches_on_and_persists(tmp_path: Path):
     # Drives the first-BUILD plan gate: starts false, latches true on the first build, survives a
     # fresh manager (restart) via settings, and mark_built is idempotent.
