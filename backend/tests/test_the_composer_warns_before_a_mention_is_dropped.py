@@ -156,12 +156,13 @@ def test_the_busy_helper_is_shared_rather_than_copied_a_fourth_time():
     card's accept action as well as this helper, so only its one server-side button is counted.
     Continue, the way back into a turn the pre-edit ceiling stopped (#454), is the tenth. The
     context-limit continuation is the eleventh and uses the same helper for the same one-button
-    lifecycle."""
+    lifecycle. Continue with another model, the one new Attempt a failed turn's card offers (#570),
+    is the twelfth."""
     assert "useBusyAct() {" in UTIL
     assert "const [busy, run] = SW.util.useBusyAct();" in UI
     blocks = (WB / "js" / "components" / "message-blocks.js").read_text()
     assert "function useBusyAct() {" not in blocks
-    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 11
+    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 12
     # And the first caller outside a card: the bar that closes an investigation (#386). It is here
     # because it is the one that nearly did write its own — a hand-rolled `busy` flag with no
     # `catch`, on the control whose whole job is taking a capability back.
