@@ -16,15 +16,25 @@ def script_the_clock():
 
     saved_sleep = time.sleep
     saved_monotonic = time.monotonic
-    offset = {"s": 0.0}
+    state = {"on": True, "s": 0.0}
 
-    def sleep(seconds: float = 0.0, *_args, **_kwargs) -> None:
-        offset["s"] += seconds or 0.0
+    def sleep(seconds: float = 0.0, *args, **kwargs) -> None:
+        if not state["on"]:
+            return saved_sleep(seconds, *args, **kwargs)
+        state["s"] += seconds or 0.0
+
+    def monotonic() -> float:
+        if not state["on"]:
+            return saved_monotonic()
+        return saved_monotonic() + state["s"]
 
     time.sleep = sleep
-    time.monotonic = lambda: saved_monotonic() + offset["s"]
+    time.monotonic = monotonic
 
     def restore() -> None:
+        # Off before the names go back. A later undo can put these two functions back in place,
+        # and a wrapper that kept counting would move the next test's clock.
+        state["on"] = False
         time.sleep = saved_sleep
         time.monotonic = saved_monotonic
 
