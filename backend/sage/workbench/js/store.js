@@ -4299,6 +4299,14 @@ window.SW = window.SW || {};
     return true;
   }
 
+  // Whether a state read says the turn is still going. A failed read is not an idle project.
+  // `/build/state` always carries `running` as a boolean, so a body that does not say `false`
+  // is not a finished turn either — a harness, or a proxy, answering `{}` is that body. Reading
+  // it as idle reloads the transcript over a live answer that was never saved.
+  function turnStillGoing(payload) {
+    return !payload || payload.running !== false;
+  }
+
   async function readAuthoritativeTurnState() {
     const mine = ++turnStatePolled;
     const localGeneration = localTurnOwnershipGeneration;
@@ -7984,7 +7992,7 @@ window.SW = window.SW || {};
         if (!terminalSeen) {
           streamLost = true;
           const running = await readAuthoritativeTurnState();
-          detached = !running || !!running.running;
+          detached = turnStillGoing(running);
           if (running) applyTurnState(running);
         }
         if (stopped) await store.loadBuild({ keepPreview: true });
@@ -8006,7 +8014,7 @@ window.SW = window.SW || {};
           if (streamAccepted) {
             streamLost = true;
             const running = await readAuthoritativeTurnState();
-            detached = !running || !!running.running;
+            detached = turnStillGoing(running);
             if (running) applyTurnState(running);
           }
           // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame
@@ -8109,7 +8117,7 @@ window.SW = window.SW || {};
         });
         if (!terminalSeen) {
           const running = await readAuthoritativeTurnState();
-          detached = !running || !!running.running;
+          detached = turnStillGoing(running);
           if (running) applyTurnState(running);
         }
         return { status: 'started' };
@@ -8118,7 +8126,7 @@ window.SW = window.SW || {};
         // button that started this turn must not stay busy on account of it.
         if (lostConnection(err)) {
           const running = await readAuthoritativeTurnState();
-          detached = !running || !!running.running;
+          detached = turnStillGoing(running);
           if (running) applyTurnState(running);
         } else {
           applyBuildEvent({ type: 'error', message: String(err.message || err) });
@@ -8643,7 +8651,7 @@ window.SW = window.SW || {};
         if (!terminalSeen) {
           streamLost = true;
           const running = await readAuthoritativeTurnState();
-          detached = !running || !!running.running;
+          detached = turnStillGoing(running);
           if (running) applyTurnState(running);
         }
         if (stopped) await store.loadBuild({ keepPreview: true });
@@ -8654,7 +8662,7 @@ window.SW = window.SW || {};
         if (streamAccepted) {
           streamLost = true;
           const running = await readAuthoritativeTurnState();
-          detached = !running || !!running.running;
+          detached = turnStillGoing(running);
           if (running) applyTurnState(running);
         }
         // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame to
@@ -9526,7 +9534,7 @@ window.SW = window.SW || {};
         if (streamAccepted && !terminalSeen) {
           streamLost = true;
           const running = await readAuthoritativeTurnState();
-          detached = !running || !!running.running;
+          detached = turnStillGoing(running);
           if (running) applyTurnState(running);
         }
       } catch (err) {
@@ -9539,7 +9547,7 @@ window.SW = window.SW || {};
           // turn on the server has not been asked to stop. Stay with it, the way Build does.
           streamLost = true;
           const running = await readAuthoritativeTurnState();
-          detached = !running || !!running.running;
+          detached = turnStillGoing(running);
           if (running) applyTurnState(running);
         } else if (!terminalSeen) {
           if (mine()) {
