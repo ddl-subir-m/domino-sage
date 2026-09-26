@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect, useRef } = React;
-  const { Button, Table, Tooltip, Tag, Space, Input, Spin } = antd;
+  const { Button, Table, Tooltip, Tag, Space, Input, Spin, Select } = antd;
   const {
     CopyOutlined, RightOutlined, DownOutlined, PushpinOutlined, ReloadOutlined,
     ExportOutlined, DownloadOutlined, ThunderboltOutlined,
@@ -1484,6 +1484,133 @@ window.SW = window.SW || {};
     );
   }
 
+  // What a failed turn's `cause` says, in words that name what happened to the turn and not whose
+  // fault it was (ADR-0069, #570). The `error` row above the card carries the detailed failure;
+  // this is the way back in.
+  const CONTINUE_CAUSE_TEXT = {
+    invalid_tool_call: 'This turn ended on tool calls that could not be read.',
+    model_no_action: 'This turn ended without an action on the request.',
+  };
+  // Where the new Attempt starts, by the row's `stage` — the resume path #569 takes.
+  const CONTINUE_STAGE_TEXT = {
+    chat: 'Another model can pick the question up from here.',
+    planning: 'Another model can plan this request again. The plan still needs your approval.',
+    implementation: 'Another model can carry on building the approved plan from where this build '
+      + 'stopped.',
+  };
+  // The scope of the pick, said before the click: the route sets it through the same standing
+  // pick the pickers set (`set_chat_pick` on Chat, `control.pick` on Build), so it is not a
+  // one-off for this Attempt and the card must not let it read as one.
+  const CONTINUE_SCOPE_TEXT = {
+    chat: 'The pick becomes the Chat model for later turns too, until you change it.',
+    build: 'The pick becomes the Build model override for later turns too, until you change it.',
+  };
+  const CONTINUE_EFFORT_LABEL = (value) => (!value ? 'Model default'
+    : value === 'xhigh' ? 'Extra high' : value.charAt(0).toUpperCase() + value.slice(1));
+
+  // The way back into a failed turn that names its cause (ADR-0069, #570). Drawn under the block
+  // that says what happened, like the ceiling's card above it, and beside it rather than instead
+  // of it: the detailed failure stays, this adds the one action worth pressing.
+  //
+  // The card is drawn from the ROW — `cause` present is the eligibility promise — and the action
+  // from the ROUTE's answer, kept in `continueOffers` by turn id: available, or one of #569's
+  // refusals as its own sentence, or a request that did not go through. An older cause row is a
+  // record: the transcript already shows the newer turn that supersedes it.
+  //
+  // The picker reads the same capability source the Chat picker and the assignments drawer read
+  // (`resourceGroups.model_llm`, chat-capable rows, the sensitivity lock, the measured
+  // `reasoning_efforts_with_tools`), and draws the row the same way: a barred or stopped model is
+  // offered and closed, never hidden. It names what will run from the pick, because there is no
+  // hidden fallback: the route refuses a model this person cannot run rather than substituting.
+  function ContinueWithAnotherModel({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+    const { continueOffers, continuePicker, resourceGroups, sensitivity } = SW.store.get();
+    const entry = (continueOffers || {})[block.turnId] || null;
+    const picker = continuePicker && continuePicker.turnId === block.turnId ? continuePicker : null;
+    const scope = block.app ? 'build' : 'chat';
+    const aliases = SW.util.chatCapable((resourceGroups || {}).model_llm);
+    const locked = SW.util.isLocked(sensitivity);
+    const chosen = picker && aliases.find((a) => a.alias === picker.model);
+    const efforts = (chosen && chosen.reasoning_efforts_with_tools) || [];
+    const modelOptions = aliases.map((a) => {
+      const barred = locked && !SW.util.isApproved(sensitivity, a.alias);
+      return {
+        value: a.alias,
+        disabled: barred || a.serving === false,
+        title: barred ? ((sensitivity && sensitivity.refusal) || SW.util.lockReason(sensitivity, a.alias))
+          : (a.capability_note || undefined),
+        label: barred ? `${a.alias} — not allowed`
+          : a.serving === false ? `${a.alias} — not serving`
+          : (a.name && a.name !== a.alias ? `${a.name} — ${a.alias}` : a.alias),
+      };
+    });
+
+    const body = [];
+    if (block.record) {
+      // Superseded by the turn after it; nothing to ask and nothing to press.
+    } else if (!entry || entry.pending) {
+      body.push(h('div', { className: 'sw-continue-note' },
+                  'Checking whether this turn can continue…'));
+    } else if (entry.available === false) {
+      body.push(h('div', { className: 'sw-continue-reason', 'data-reason': entry.reason },
+                  entry.message));
+    } else {
+      body.push(h('div', null, CONTINUE_STAGE_TEXT[block.stage] || ''));
+      if (entry.error) body.push(h('div', { className: 'sw-continue-error' }, entry.error));
+      if (entry.available === true && !picker) {
+        body.push(h('div', { style: { marginTop: 8 } }, h(Button, {
+          type: 'primary', size: 'small',
+          onClick: () => SW.store.openContinuePicker(block.turnId),
+        }, 'Continue with another model')));
+      } else if (entry.available === true) {
+        body.push(
+          h('div', { className: 'sw-continue-picker' },
+            h(Select, {
+              'aria-label': 'Model', size: 'small', placeholder: 'Pick a model',
+              style: { minWidth: 220 }, value: picker.model || undefined, options: modelOptions,
+              onChange: (value) => SW.store.pickContinueModel(
+                value, undefined,
+                ((aliases.find((a) => a.alias === value) || {}).reasoning_efforts_with_tools) || []),
+            }),
+            efforts.length
+              ? h(Select, {
+                  'aria-label': 'Reasoning effort', size: 'small', style: { minWidth: 160 },
+                  value: picker.effort || 'default',
+                  options: [{ value: 'default', label: CONTINUE_EFFORT_LABEL(null) },
+                            ...efforts.map((value) => ({ value, label: CONTINUE_EFFORT_LABEL(value) }))],
+                  onChange: (value) => SW.store.pickContinueModel(
+                    undefined, value === 'default' ? null : value),
+                })
+              : null),
+          h('div', { className: 'sw-continue-runs' },
+            chosen
+              ? `Will run ${chosen.alias} with reasoning effort `
+                + `${CONTINUE_EFFORT_LABEL(picker.effort).toLowerCase()}.`
+              : 'Pick a model to continue with.'),
+          h('div', { className: 'sw-continue-runs' }, CONTINUE_SCOPE_TEXT[scope]),
+          h('div', { style: { marginTop: 8 }, className: 'sw-continue-actions' },
+            h(Button, {
+              type: 'primary', size: 'small',
+              loading: busy === 'continue', disabled: !!busy || !chosen,
+              onClick: run('continue', () => SW.store.continueWithModel(
+                block, picker.model, picker.effort)),
+            }, 'Continue'),
+            h(Button, {
+              size: 'small', disabled: !!busy,
+              onClick: () => SW.store.openContinuePicker(null),
+            }, 'Cancel')));
+      }
+    }
+    return h(
+      'div',
+      { className: 'sw-nudge sw-continue-model' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h('div', { className: 'sw-nudge-main' },
+        h('div', null, CONTINUE_CAUSE_TEXT[block.cause] || 'This turn ended before it was done.'),
+        ...body)
+    );
+  }
+
   function BuildContextLimit({ block }) {
     const [busy, run] = SW.util.useBusyAct();
     return h(
@@ -2423,6 +2550,8 @@ window.SW = window.SW || {};
         return h(OtherLaneOffer, { block });
       case 'continue_offer':
         return h(ContinueAfterTheCeiling, { block });
+      case 'continue_model':
+        return h(ContinueWithAnotherModel, { block });
       case 'build_context_limit':
         return h(BuildContextLimit, { block });
       case 'build_stalled':

@@ -293,6 +293,18 @@ window.SW = window.SW || {};
     // chosen cannot express a change.
     assignmentsError: '',
 
+    // The failure card's Continue with another model action (#570). Keyed by the failed turn's
+    // id, because Build re-derives its blocks from the log on every frame and a state patched
+    // onto a block would be lost at the next read. `{pending}` while the route is being asked,
+    // then `{available, reason, message}` in the route's own vocabulary, plus `error` when the
+    // request itself did not go through. Written by the live `done` that carries `cause`, by the
+    // availability read on a reload, and by the click's refusal.
+    continueOffers: {},
+    // The one picker open on such a card: `{turnId, model, effort}`, or null. Store state rather
+    // than component state, so the card survives a re-render and the same pair rule the pickers
+    // keep (ADR-0049) is kept in one place: an effort belongs to the model it was chosen under.
+    continuePicker: null,
+
     // The sensitivity lock (ADR-0043): `{ enabled, locked, group, approved, datasets, refusal, model }`.
     // Null until the first read lands, and that is not the same as `enabled: false` — a picker that
     // greyed rows out on a read it never got would refuse models on a lock that may not exist. Every
@@ -2008,6 +2020,8 @@ window.SW = window.SW || {};
     investigation_offer: shown,
     other_lane_offer: shown,
     continue_offer: shown,
+    // The way back into a failed turn (#570) is an act, not a disclosure of what was read.
+    continue_model: shown,
     build_context_limit: shown,
     build_stalled: shown,
     plan_suggestion: shown,
@@ -2165,9 +2179,13 @@ window.SW = window.SW || {};
     }
   }
 
-  async function historyToMessages(history, handoff) {
+  async function historyToMessages(history, handoff, conversation = '') {
     const messages = [];
     let assistant = null;
+    // The one failed row whose Continue with another model action can still be taken (#570).
+    // Older cause rows are drawn as records. Passed the Conversation's id rather than reading
+    // `state.thread`, because `openThread` reads the transcript before it installs the Thread.
+    const newestCause = newestCauseIndex(history);
     // Where in the read this message started. Only the merged conversation view uses it — it
     // interleaves these with the Build half's runs, and both are produced by walking their own
     // rows, so the position in the merged read is the only thing that can put them back in order.
@@ -2457,6 +2475,14 @@ window.SW = window.SW || {};
           blocks: [{ type: 'plan_suggestion', reason: ev.reason }],
         });
       }
+      // Beside the chain rather than in it: a failed `done` that names its cause draws the card
+      // under whatever the row above it said (ADR-0069, #570). The `error` row before it already
+      // drew the detailed failure; this is the way back in, not a second account of it.
+      if (ev.type === 'done' && ev.cause) {
+        const card = continueCardBlock(ev, conversation, '', i !== newestCause);
+        ensureAssistant().blocks.push(card);
+        ensureContinueChecked(card);
+      }
     }
     if (hiddenTables.size) {
       for (const message of messages.filter((m) => m.role === 'assistant')) {
@@ -2600,6 +2626,11 @@ window.SW = window.SW || {};
     // The server already wrote one precise local-policy card. Keep an approved plan actionable and
     // suppress the generic duplicate terminal chip from the following `done` row.
     pre_edit_limit: true,
+    // A Continue with another model click refused again under the lock (#569, #570). Live only,
+    // never saved: the `error` frame beside it carries the route's sentence and the card takes the
+    // reason, so a "Stopped — continue unavailable" line would say it worse, twice. Nothing ran,
+    // so a plan card left waiting keeps its Approve.
+    'continue unavailable': true,
   };
 
   // Every ending that was ASKED FOR, which is every ending `endedBadly` above must not treat as a
@@ -2645,10 +2676,13 @@ window.SW = window.SW || {};
   //
   // This withdraws the PLATFORM flag and nothing else. The `error` frame still goes up, the
   // person still reads which table failed, and `done.ok` is untouched.
+  //
+  // `continue unavailable` is here because the refusal is about the record — a newer turn, a
+  // moved plan, a model this person may not run — and nothing was asked of the gateway.
   const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true,
                               'table generation failed': true, 'empty answer': true,
                               'stale question': true, timeout: true,
-                              pre_edit_limit: true };
+                              pre_edit_limit: true, 'continue unavailable': true };
 
   // What each tool is called in the user's words. `bash` has read "Ran a command" since the first
   // build card; every other tool rendered its raw OpenCode name — "Ran glob", "Ran skill" — which
@@ -2828,6 +2862,61 @@ window.SW = window.SW || {};
     liveCards.clear();
   }
 
+  // ---- Continue with another model (#570, ADR-0069) -------------------------------------------
+  //
+  // The click's bubble, as the server writes it (`_CONTINUE_CLICK_TEXT`). Echoed in the same words
+  // so live and reloaded read the same.
+  const CONTINUE_CLICK_TEXT = 'Continue with another model.';
+
+  // The card a failed turn that names its cause gets. `cause` present on the `done` row is the
+  // whole of the eligibility promise (ADR-0069), so the row alone decides whether a card is drawn.
+  // Whether the ACTION is drawn is the route's answer, kept in `state.continueOffers` by turn id.
+  // `record` is an older cause row: superseded by the route's own rule (a later `user` or `done`
+  // row in the log), so it keeps its cause text and is never asked about.
+  function continueCardBlock(ev, conversation, app, record) {
+    return { type: 'continue_model', turnId: ev.turnId || '', conversation: conversation || '',
+             app: app || '', stage: ev.stage || '', cause: ev.cause, record: !!record };
+  }
+
+  // Which row of a log the action can still name: the newest `user` or `done` row, when it is a
+  // `done` that carries `cause`. -1 when the newest turn ended some other way or is still open.
+  function newestCauseIndex(history) {
+    for (let i = (history || []).length - 1; i >= 0; i -= 1) {
+      const row = history[i];
+      if (!row || (row.type !== 'done' && row.type !== 'user')) continue;
+      return row.type === 'done' && row.cause ? i : -1;
+    }
+    return -1;
+  }
+
+  function noteContinueOffer(turnId, entry) {
+    if (!turnId) return;
+    state.continueOffers = { ...state.continueOffers, [turnId]: entry };
+    notify();
+  }
+
+  function continueOfferFrom(answer) {
+    return answer && answer.available
+      ? { available: true, reason: '', message: '' }
+      : { available: false, reason: (answer && answer.reason) || '',
+          message: (answer && answer.message) || '' };
+  }
+
+  // Asked once per turn id, on the read that rebuilt the card — a reload or a navigation — and
+  // never on a poll: the route reads the whole history of the Conversation (#569). The live `done`
+  // writes the entry itself, so a card that arrived over SSE never asks. A click's refusal
+  // overwrites the entry, so the same turn is not asked again on the re-read that follows it.
+  function ensureContinueChecked(block) {
+    if (!block.turnId || block.record || state.continueOffers[block.turnId]) return;
+    state.continueOffers = { ...state.continueOffers, [block.turnId]: { pending: true } };
+    SW.api.continueAvailability(block.turnId, block.conversation, block.app).then(
+      (answer) => noteContinueOffer(block.turnId, continueOfferFrom(answer)),
+      (err) => noteContinueOffer(block.turnId, {
+        available: null,
+        error: `Whether this turn can continue could not be checked. ${String(err.message || err)}`,
+      }));
+  }
+
   // The one sentence for a push git refused (#347). Two acts end in a push — taking the incoming
   // changes, and undoing the merge that took them — and the middle of it is the same fact under
   // both: the work is committed here and is not on the remote. That part is written once.
@@ -2964,6 +3053,7 @@ window.SW = window.SW || {};
     // Conversation is on.
     const liveRecall = recallOfferIndex(history, 'build');
     const withheld = withheldKeys(history);
+    const newestCause = newestCauseIndex(history);
     const ensureAssistant = () => {
       if (!assistant) {
         assistant = { id: `ba_${messages.length}`, role: 'assistant', at: new Date().toISOString(),
@@ -3127,6 +3217,16 @@ window.SW = window.SW || {};
               ? 'Answered'
               : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),
           });
+        }
+        // The way back into a failed build that names its cause (ADR-0069, #570), under the line
+        // that says it stopped. Build rows carry their Conversation and app; the newest cause
+        // row is the one the action can name, and older ones are records.
+        if (ev.cause) {
+          const card = continueCardBlock(
+            ev, ev.conversation || (state.thread && state.thread.id),
+            ev.app || (state.activeApp && state.activeApp.id), i !== newestCause);
+          ensureAssistant().blocks.push(card);
+          ensureContinueChecked(card);
         }
       } else if (ev.type === 'error' && ev.message) {
         // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
@@ -3694,11 +3794,12 @@ window.SW = window.SW || {};
     return { chat, build, hidden: folds };
   }
 
-  async function mergedHistoryToMessages(history, handoff) {
+  async function mergedHistoryToMessages(history, handoff, conversation = '') {
     const { chat, build } = splitConversationHalves(history);
     // Each half is walked by the reader that already knows how to read it — a build turn's tool
     // cards and plan cards are not chat blocks — and `order` is what puts the two back together.
-    const messages = (await historyToMessages(chat, handoff)).concat(buildRunMessages(build));
+    const messages = (await historyToMessages(chat, handoff, conversation))
+      .concat(buildRunMessages(build));
     // A plan is long, and here it lands in a transcript that already carries both halves — so the
     // card that reviews it pushed the turns either side of it off the screen. Folded it reads as a
     // row: what it is, its pitch, and the way in. Stamped here rather than read in the card,
@@ -3841,7 +3942,7 @@ window.SW = window.SW || {};
     let chat = [], history = read.history || [], sequence = null;
     if (read.merged) {
       const halves = splitConversationHalves(read.merged, ticket.app);
-      chat = (await historyToMessages(halves.chat, ticket.handoff))
+      chat = (await historyToMessages(halves.chat, ticket.handoff, ticket.conversation))
         .filter(m => !isHandoffOffer(m));
       if (!buildReadCurrent(ticket)) return false;
       chat = chat.concat(await leadInFoldMessages(halves.hidden, ticket.handoff, ticket.app));
@@ -7189,7 +7290,7 @@ window.SW = window.SW || {};
     // loads it; Chat had no reason to until now.
     async conversationMessages(thread) {
       const chatOnly = () =>
-        historyToMessages(thread.history || thread.messages || [], thread.handoff);
+        historyToMessages(thread.history || thread.messages || [], thread.handoff, thread.id);
       if (SW.prefs.get('conversationView') !== 'unified') return chatOnly();
       // A merged read that failed must not read as a Conversation that never happened. The Chat
       // half is already in hand — it came with the thread — so the fallback is the split view,
@@ -7198,7 +7299,8 @@ window.SW = window.SW || {};
         SW.api.conversation(thread.id).catch(() => null),
         loadAppList().catch(() => {}),
       ]);
-      return history === null ? chatOnly() : mergedHistoryToMessages(history, thread.handoff);
+      return history === null ? chatOnly()
+        : mergedHistoryToMessages(history, thread.handoff, thread.id);
     },
 
     // Which Built App a `#/build/<id>` link means when it names none: the one this Conversation
@@ -7600,11 +7702,15 @@ window.SW = window.SW || {};
     // A second send no longer bounces off `state.buildRunning` (#79). The server takes the turn and
     // holds it in line on this request's own connection, so this promise stays alive for as long as
     // the wait plus the turn — and a tab can have several of them at once.
+    // `url`, `body`, `onAccepted` and `onRefused` are the Continue with another model click's
+    // (#570), on the same terms `sendMessage` states for its own: the body is handed in whole,
+    // and a refusal is drawn by the caller rather than as an error row in the transcript.
     async sendBuildPrompt(text, { skipResetGate = false, skipIncomingGate = false,
                                   skipTableGate = false, skipSourceGate = false,
                                   chosenSource = '', sourceName = '', tableName = '',
                                   skipDatasetGate = false, datasetDismissed = '',
-                                  datasetPick = '' } = {}) {
+                                  datasetPick = '', url = '', body = null,
+                                  onAccepted = null, onRefused = null } = {}) {
       if (!text.trim()) return null;
       if (!state.thread) await store.newThread();
       state.buildTurnMode = state.buildMode;
@@ -7644,6 +7750,7 @@ window.SW = window.SW || {};
       let detached = false;
       let streamAccepted = false;
       let streamLost = false;
+      let refusalMessage = '';
       // This tab's own name for the turn. Held so the `finally` can take back exactly what it put
       // there and nothing else.
       let claim = null;
@@ -7670,10 +7777,10 @@ window.SW = window.SW || {};
         // The whole turn, not just the sentence: an @mention names something the server has to be
         // handed as a path or an identity, because the word alone reaches the agent as a word.
         const refs = collectTurnRefs(text);
-        const res = await fetch('./api/project/build/stream', {
+        const res = await fetch(url || './api/project/build/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+          body: JSON.stringify(body || {
             prompt: text, conversation: state.thread.id,
             skipResetGate, skipIncomingGate, skipTableGate, skipSourceGate, chosenSource,
             skipDatasetGate, datasetDismissed, datasetPick,
@@ -7682,7 +7789,10 @@ window.SW = window.SW || {};
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
-          throw new Error(payload.error || payload.message || res.statusText);
+          const refused = new Error(payload.error || payload.message || res.statusText);
+          refused.status = res.status;
+          refused.payload = payload;
+          throw refused;
         }
         exactTurnId = responseTurnId(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-Id'));
@@ -7711,12 +7821,22 @@ window.SW = window.SW || {};
           notify();
         }
         streamAccepted = true;
+        if (onAccepted) onAccepted();
         let stopped = false;
         let terminalSeen = false;
         await readSSE(res, (ev) => {
           if (!ev) return;
           if (ev.type === 'stopped') stopped = true;
           if (ev.type === 'stopped' || ev.type === 'done') terminalSeen = true;
+          // The click refused again under the lock (#569): nothing ran and nothing was saved, so
+          // the transcript reloads the way it does for a cancelled turn, and the card says why.
+          if (ev.type === 'error' && ev.reason) refusalMessage = ev.message || '';
+          if (ev.type === 'done' && ev.decision === 'continue unavailable') {
+            unran = true;
+            if (onRefused) onRefused({ status: 409, payload: { reason: ev.reason,
+                                                               message: refusalMessage } });
+            return;
+          }
           // The queue's own two rows, which belong to this send rather than to the app on screen —
           // so they are read before the rail check below, not after it.
           if (ev.type === 'pending') {
@@ -7773,20 +7893,27 @@ window.SW = window.SW || {};
         }
         if (stopped) await store.loadBuild({ keepPreview: true });
       } catch (err) {
-        applyBuildEvent({ type: 'error', message: String(err.message || err) });
-        // EOF after an accepted response is a lost viewer, not proof that the backend turn ended.
-        // Ask the lock. If that read also fails, keep Stop available until the watcher gets a
-        // definite terminal answer; a network failure must not strand a live build without it.
-        if (streamAccepted) {
-          streamLost = true;
-          const running = await readAuthoritativeTurnState();
-          detached = !running || !!running.running;
-          if (running) applyTurnState(running);
+        // A refused click is drawn on its card rather than as an error row (#570); the reload
+        // below takes the bubble off, because the server recorded nothing.
+        if (!streamAccepted && onRefused && onRefused(err)) {
+          unran = true;
+        } else {
+          applyBuildEvent({ type: 'error', message: String(err.message || err) });
+          // EOF after an accepted response is a lost viewer, not proof that the backend turn
+          // ended. Ask the lock. If that read also fails, keep Stop available until the watcher
+          // gets a definite terminal answer; a network failure must not strand a live build
+          // without it.
+          if (streamAccepted) {
+            streamLost = true;
+            const running = await readAuthoritativeTurnState();
+            detached = !running || !!running.running;
+            if (running) applyTurnState(running);
+          }
+          // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame
+          // to notice it by. This is where a refused POST lands — including `_turn_slot_refusal`,
+          // which refuses on exactly the dead model slot the chip is about (ADR-0027).
+          store.refreshProblems();
         }
-        // A turn that never opened a stream is still a failed turn, and `readSSE` saw no frame to
-        // notice it by. This is where a refused POST lands — including `_turn_slot_refusal`, which
-        // refuses on exactly the dead model slot the chip is about (ADR-0027).
-        store.refreshProblems();
       } finally {
         liveBuildTurns -= 1;
         dropQueuedTurn(ticket);
@@ -8117,6 +8244,71 @@ window.SW = window.SW || {};
       const opened = await store.openThread(threadId);
       if (!opened || !state.thread || state.thread.id !== threadId) return null;
       return store.sendMessage(prompt, { echo: false, alreadyAsked: true });
+    },
+
+    // The failure card's picker (#570). Open with the failed turn's id, filled by
+    // `pickContinueModel`, closed with null. A cancelled picker sends nothing.
+    openContinuePicker(turnId) {
+      state.continuePicker = turnId ? { turnId, model: '', effort: null } : null;
+      notify();
+    },
+
+    // An effort belongs to the model it was chosen under (ADR-0049): a model change keeps the
+    // level only when the new model accepts it beside tools, the rule the Chat picker applies.
+    pickContinueModel(model, effort, accepted) {
+      const open = state.continuePicker;
+      if (!open) return;
+      const keep = effort === undefined
+        ? ((accepted || []).includes(open.effort) ? open.effort : null)
+        : (effort || null);
+      state.continuePicker = { ...open, model: model === undefined ? open.model : (model || ''),
+                               effort: keep };
+      notify();
+    },
+
+    // The click. #569's server-owned reference and the pick, and nothing else — the task is read
+    // off the failed turn's own record, never sent from here. It goes through the same sender the
+    // mode's own turns use, so the new Attempt streams, claims and re-reads like any turn. The
+    // standing pick moves with an accepted click, the way the pickers move it, because the route
+    // set it through `set_chat_pick` / `control.pick` before it streamed; a refused click moves
+    // nothing, and the card says why in the route's words.
+    async continueWithModel(block, model, effort) {
+      const turnId = block.turnId;
+      const body = { turnId, conversation: block.conversation, app: block.app || '',
+                     model: model || '', effort: effort || null };
+      state.continuePicker = null;
+      notify();
+      const onRefused = (err) => {
+        const payload = (err && err.payload) || {};
+        noteContinueOffer(turnId, payload.reason
+          ? { available: false, reason: payload.reason, message: payload.message || '' }
+          : { available: true, reason: '', message: '',
+              error: `The request did not go through. ${String((err && err.message) || err)}` });
+        return true;
+      };
+      if (!state.thread || state.thread.id !== block.conversation) {
+        const opened = await store.openThread(block.conversation,
+                                              block.app ? { appId: block.app } : {});
+        if (!opened || !state.thread || state.thread.id !== block.conversation) return null;
+      }
+      if (block.app) {
+        return store.sendBuildPrompt(CONTINUE_CLICK_TEXT, {
+          url: './api/project/turn/continue', body, onRefused,
+          onAccepted: () => {
+            state.buildModel = model || '';
+            state.buildEffort = effort || null;
+            buildConfirmed = { model: state.buildModel, effort: state.buildEffort };
+          },
+        });
+      }
+      return store.sendMessage(CONTINUE_CLICK_TEXT, {
+        url: './api/project/turn/continue', body, onRefused,
+        onAccepted: () => {
+          state.model = model || '';
+          state.reasoningEffort = effort || null;
+          chatConfirmed = { model: state.model, effort: state.reasoningEffort };
+        },
+      });
     },
 
     // The bar's Close. No replay: nothing was asked, and nothing is owed an answer. Closing takes
@@ -8702,10 +8894,16 @@ window.SW = window.SW || {};
     // the conversation's record by the time this runs, so the turn neither re-asks nor re-writes
     // the sentence. It is the echo it suppresses — the server declines to offer again off the
     // record itself, on both answers.
-    async sendMessage(text, { echo = true, url = '', attachments: attachmentsOverride,
+    // `body`, `onAccepted` and `onRefused` are the Continue with another model click's (#570): the
+    // route takes the server-owned reference and the pick and nothing else, so the body is handed
+    // in whole; `onAccepted` runs once the stream is open, and `onRefused(err)` is given every way
+    // the POST did not open one — a 409 with the route's reason, a request error, or the refusal
+    // streamed again under the lock — and answers true when it has drawn the state itself.
+    async sendMessage(text, { echo = true, url = '', body = null, attachments: attachmentsOverride,
                               skipTableGate = false, skipDatasetGate = false,
                               datasetDismissed = '', investigationAnswered = false, taskId = '',
-                              otherLaneGrant = '', alreadyAsked = false } = {}) {
+                              otherLaneGrant = '', alreadyAsked = false,
+                              onAccepted = null, onRefused = null } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
       // and said so in the transcript — which read as Sage answering a question about data with a
@@ -8755,6 +8953,11 @@ window.SW = window.SW || {};
       // back off the screen, because the server recorded nothing to replace it with.
       let ticket = '';
       let unran = false;
+      // The route's sentence for a click refused again under the lock: the `error` frame carries
+      // it, the `done` after it carries only the reason word. `streamAccepted` is what tells a
+      // refused POST from a stream that failed later, which is a turn that may well have run.
+      let refusalMessage = '';
+      let streamAccepted = false;
       // And this tab's own name for the turn, so Chat's Stop bar has something to match while this
       // send holds the only stream there is. See claimRunningTurn.
       let claim = null;
@@ -8836,13 +9039,16 @@ window.SW = window.SW || {};
           headers: { 'Content-Type': 'application/json' },
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
-          body: JSON.stringify({ prompt: text, skipTableGate, skipDatasetGate, datasetDismissed,
-                               investigationAnswered, otherLaneGrant, alreadyAsked,
-                               ...(taskId ? { taskId } : {}) }),
+          body: JSON.stringify(body || { prompt: text, skipTableGate, skipDatasetGate,
+                                         datasetDismissed, investigationAnswered, otherLaneGrant,
+                                         alreadyAsked, ...(taskId ? { taskId } : {}) }),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
-          throw new Error(payload.error || payload.message || res.statusText);
+          const refused = new Error(payload.error || payload.message || res.statusText);
+          refused.status = res.status;
+          refused.payload = payload;
+          throw refused;
         }
         exactTurnId = responseTurnId(res.headers && res.headers.get
           && res.headers.get('X-Sage-Turn-Id'));
@@ -8870,11 +9076,22 @@ window.SW = window.SW || {};
             exactTurnEpoch, requestOrder);
           notify();
         }
+        streamAccepted = true;
+        if (onAccepted) onAccepted();
         await readSSE(res, async (ev) => {
           if (!ev) return;
           if (ev.type === 'done') {
             if (turnEnded) return;
             finishTurn();
+          }
+          // The click refused again under the lock (#569): nothing ran and nothing was saved, so
+          // the bubble comes back off the way a cancelled turn's does, and the card says why.
+          if (ev.type === 'error' && ev.reason) refusalMessage = ev.message || '';
+          if (ev.type === 'done' && ev.decision === 'continue unavailable') {
+            unran = true;
+            if (onRefused) onRefused({ status: 409, payload: { reason: ev.reason,
+                                                               message: refusalMessage } });
+            return;
           }
           if (ev.type === 'user') {
             // The server's first frame, and the one that paints the person's own question. It is
@@ -9053,6 +9270,16 @@ window.SW = window.SW || {};
                                 { type: 'status', ok: true, value: ev.message }];
             notify();
           } else if (ev.type === 'done') {
+            // A failed turn that names its cause is one another model can pick up (ADR-0069,
+            // #570). The row that arrived is the promise itself, so the card is drawn available
+            // without asking the route; the GET is for a reload.
+            if (ev.cause && ev.turnId) {
+              ensurePushed();
+              assistant.blocks = [...assistant.blocks,
+                                  continueCardBlock(ev, turnThread, '', false)];
+              state.continueOffers = { ...state.continueOffers,
+                                       [ev.turnId]: { available: true, reason: '', message: '' } };
+            }
             notify();
           } else if (ev.type === 'handoff-suggest') {
             pushMessage({
@@ -9152,14 +9379,21 @@ window.SW = window.SW || {};
           }
         });
       } catch (err) {
-        if (mine()) {
-          ensurePushed();
-          assistant.blocks = [...assistant.blocks, { type: 'text', value: String(err.message || err) }];
+        // A refused click is drawn on its card, not under the bubble; the bubble comes off with
+        // the re-read below, because the server recorded nothing (#570).
+        if (!streamAccepted && onRefused && onRefused(err)) {
+          unran = true;
+        } else {
+          if (mine()) {
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks, { type: 'text', value: String(err.message || err) }];
+          }
+          notify();
+          // Same reason as the two build paths: a turn refused before its stream opened is a
+          // failed turn that `readSSE` never saw a frame of, and it is refused most often by the
+          // slot check.
+          store.refreshProblems();
         }
-        notify();
-        // Same reason as the two build paths: a turn refused before its stream opened is a failed
-        // turn that `readSSE` never saw a frame of, and it is refused most often by the slot check.
-        store.refreshProblems();
       } finally {
         finishTurn();
       }
