@@ -293,12 +293,6 @@ class ViteSupervisor:
         generation = self._spawn_generation(previous)
         if generation is None:
             return
-        # `npm run dev` is the bare command `vite`. Without this binary on PATH (via
-        # node_modules/.bin) the shell exits 127 and the restart loop reports that code — never
-        # that the deps were never linked. Fail here with the path, before any spawn.
-        vite = self._workspace / "node_modules" / ".bin" / "vite"
-        if not vite.exists():
-            raise OSError(errno.ENOENT, f"missing {vite}")
         port = preview_port()
         # start_new_session -> own process group so we can kill Vite + any children (esbuild).
         # SAGE_BASE_PREFIX tells vite.config.ts the Domino proxy prefix to bake into `base`/HMR.
@@ -319,6 +313,14 @@ class ViteSupervisor:
         with self._state_lock:
             if self._stopped or generation != self._generation:
                 return
+        # `npm run dev` is the bare command `vite`. Without `.bin/vite` the shell exits 127
+        # and the restart loop reports that code — never that the deps were never linked.
+        # After the port wait, so Stop during that wait still cancels, and before Popen.
+        # Uvicorn subclasses this launcher and does not run vite.
+        if self._NAME == "Vite dev server":
+            vite = self._workspace / "node_modules" / ".bin" / "vite"
+            if not vite.exists():
+                raise OSError(errno.ENOENT, f"missing {vite}")
         proc = subprocess.Popen(
             command,
             cwd=self._workspace,

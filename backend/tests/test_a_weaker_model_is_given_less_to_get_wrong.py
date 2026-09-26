@@ -142,7 +142,9 @@ def test_a_stalled_call_says_what_effort_it_ran_on(running, monkeypatch):  # noq
     client.post("/api/project/model", json={"mode": "plan", "pick": "GLM 5.3 OR"})
     orch._build_policy = replace(orch._build_policy, model_no_action_notice_seconds=30,
                                  model_no_action_timeout_seconds=120)
-    ticks = iter((0.0, 1.0, 31.0, 31.0, 121.0, 121.0, 122.0, 123.0, 124.0))
+    # Two monotonic reads per reasoning chunk. The second chunk is ≥120 s after the first
+    # chunk's lastChunkAt: idle since the last chunk is the clock, not wall time from the start.
+    ticks = iter((0.0, 1.0, 31.0, 50.0, 170.0, 170.0, 171.0, 172.0, 173.0))
     monkeypatch.setattr(native_routes, "time",
                         SimpleNamespace(monotonic=lambda: next(ticks, 124.0)))
 

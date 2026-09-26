@@ -236,6 +236,16 @@ def test_a_two_sentence_summary_is_repaired_to_the_first_sentence():
     assert validate_execution_contract(repaired).valid
 
 
+def test_a_second_summary_paragraph_is_not_repaired():
+    """Narration above the lead is its own paragraph. That stays invalid so the plan retries."""
+    narrated = EXECUTION_PLAN.replace(
+        "A dashboard for exploring trade data.",
+        "I'll read the files first.\n\nA dashboard for exploring trade data.",
+    )
+    assert not validate_execution_contract(narrated).valid
+    assert repair_execution_summary(narrated) == narrated
+
+
 def test_summary_repair_does_not_rescue_any_other_contract_fault():
     broken = EXECUTION_PLAN.replace(
         "A dashboard for exploring trade data.",

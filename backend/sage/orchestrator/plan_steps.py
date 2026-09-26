@@ -204,16 +204,22 @@ def _only_multi_sentence_summary_fault(check: PlanContractCheck) -> bool:
 
 
 def repair_execution_summary(markdown: str) -> str:
-    """If the only contract fault is a multi-sentence summary, keep its first sentence.
+    """If the only contract fault is a second sentence on the lead line, keep the first.
 
-    Missing summaries, missing sections, bad steps, and any other fault leave the markdown
-    untouched. Step briefs are not relaxed — this repairs the lead only.
+    A summary that continues on a later line is left untouched: that line is narration, and
+    the plan should retry. Missing sections, bad steps, and any other fault also stay as written.
     """
     check = _validate_execution_contract(markdown)
     if not _only_multi_sentence_summary_fault(check):
         return markdown
     parsed = plan_doc.parse_sections(markdown)
-    first = _first_sentence(parsed["summary"])
+    summary = parsed["summary"] or ""
+    # The pad is a second sentence on the lead line. A later line is narration the heading
+    # drop could not see — there is no `# ` yet — and trimming to the first sentence would
+    # keep that narration and throw away the plan. Leave it invalid so the plan retries.
+    if "\n" in summary.strip():
+        return markdown
+    first = _first_sentence(summary)
     if not first or first == parsed["summary"] or not _one_sentence(first):
         return markdown
     repaired = plan_doc.render(first, parsed["sections"], parsed["title"])
