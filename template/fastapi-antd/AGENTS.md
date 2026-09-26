@@ -383,7 +383,7 @@ GET only, and only these families; anything else answers 403 or 405:
 
 | Read | Path after `/api/domino` |
 |---|---|
-| every {dataset} this app can see | `/api/datasetrw/v2/datasets?offset=0&limit=200` — paged, and the default page is 10: keep adding `offset` until a page comes back shorter than `limit`; `datasets[].dataset.id` and `.dataset.name`; to find one by name, match `.dataset.name` across every page — the one you want can sit past the first; no `taxonomyTags` here (the taxonomy row carries them), and its `tags` field is a different tagging system, and empty |
+| every {dataset} this app can see | `/api/datasetrw/v2/datasets?offset=0&limit=200` — paged, and the default page is 10: keep adding `offset` until a page comes back shorter than `limit`; `datasets[].datasetRwDto.id` and `.datasetRwDto.name`; to find one by name, match `.datasetRwDto.name` across every page — the one you want can sit past the first; no `taxonomyTags` here (the taxonomy row carries them), and its `tags` field is a different tagging system, and empty |
 | every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus`; a {dataset} nobody has snapshotted holds only its head, so expect zero committed |
 | the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
 | one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
