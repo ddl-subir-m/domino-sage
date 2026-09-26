@@ -2472,8 +2472,26 @@ window.SW = window.SW || {};
       }));
   }
 
+  function ReasoningFold({ block }) {
+    const [open, setOpen] = useState(!!block.streaming);
+    const wasStreaming = useRef(!!block.streaming);
+    useEffect(() => {
+      if (wasStreaming.current && !block.streaming) setOpen(false);
+      wasStreaming.current = !!block.streaming;
+    }, [block.streaming]);
+    return h('details', {
+      className: 'sw-reasoning',
+      open,
+      onToggle: (e) => setOpen(e.currentTarget.open),
+    },
+    h('summary', null, 'Thinking'),
+    h('div', { className: 'sw-reasoning-body' }, block.value));
+  }
+
   SW.MessageBlock = function MessageBlock({ block, onSave }) {
     switch (block.type) {
+      case 'reasoning':
+        return h(ReasoningFold, { block });
       case 'text':
         // A caret while the text is still arriving. Without it a model that pauses mid-sentence
         // looks like a model that finished a short answer, and the reader gives up on it.
@@ -2582,7 +2600,7 @@ window.SW = window.SW || {};
   function copyTextFor(message) {
     return message.blocks
       .map((b) => {
-        if (b.type === 'text') return b.value;
+        if (b.type === 'text' || b.type === 'reasoning') return b.value;
         if (b.type === 'code') return `\`\`\`${b.language || ''}\n${b.value}\n\`\`\``;
         if (b.type === 'table') {
           const cell = (v) => String(v ?? '').replace(/\|/g, '\\|');

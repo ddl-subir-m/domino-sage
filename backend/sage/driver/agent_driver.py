@@ -23,7 +23,7 @@ class AgentConfig:
 
 @dataclass
 class AgentEvent:
-    kind: Literal["message", "file_edit", "tool_run", "phase", "error"]
+    kind: Literal["message", "file_edit", "tool_run", "phase", "error", "reasoning"]
     payload: dict
 
 

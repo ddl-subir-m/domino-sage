@@ -58,6 +58,9 @@ class Turn:
     those two against each other. `tools` is for calls with no file effect (read, grep, bash)."""
 
     text: str = ""
+    # The model's reasoning part. Empty on every existing turn. The signature rides the part so a
+    # test can assert it never reaches the person; the text is what the sanitizer is handed.
+    reasoning: str = ""
     prelude: str = ""
     writes: dict[str, str] = field(default_factory=dict)
     tools: list[str] = field(default_factory=list)
@@ -272,6 +275,10 @@ class FakeOpenCode:
             key = "command" if tool == "bash" else "pattern" if tool == "grep" else "filePath"
             parts.append({"id": f"m{n}-s{j}", "type": "tool", "tool": tool,
                           "state": {"status": "running", "input": {key: subject}}})
+        if turn.reasoning:
+            parts.append({"id": f"m{n}-r", "type": "reasoning", "text": turn.reasoning,
+                          "time": {"start": 1, "end": 2},
+                          "metadata": {"anthropic": {"signature": "should-not-leak"}}})
         if turn.prelude:
             parts.append({"id": f"m{n}-p", "type": "text", "text": turn.prelude})
         if turn.text:

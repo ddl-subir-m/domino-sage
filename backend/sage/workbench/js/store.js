@@ -2251,6 +2251,11 @@ window.SW = window.SW || {};
         });
       } else if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
         ensureAssistant().blocks.push({ type: 'text', value: ev.text });
+      } else if (ev.type === 'reasoning' && ev.text) {
+        const blocks = ensureAssistant().blocks;
+        const last = blocks[blocks.length - 1];
+        if (last && last.type === 'reasoning') last.value = `${last.value}\n\n${ev.text}`;
+        else blocks.push({ type: 'reasoning', value: ev.text });
       } else if (ev.type === 'agent' && ev.kind === 'tool') {
         continue;
       } else if (ev.type === 'artifacts' || (ev.type === 'done' && ev.artifacts && ev.artifacts.length)) {
@@ -3076,6 +3081,11 @@ window.SW = window.SW || {};
         });
       } else if (ev.type === 'agent' && ev.kind === 'text' && ev.text) {
         ensureAssistant().blocks.push({ type: 'text', value: ev.text });
+      } else if (ev.type === 'reasoning' && ev.text) {
+        const blocks = ensureAssistant().blocks;
+        const last = blocks[blocks.length - 1];
+        if (last && last.type === 'reasoning') last.value = `${last.value}\n\n${ev.text}`;
+        else blocks.push({ type: 'reasoning', value: ev.text });
       } else if (ev.type === 'agent' && ev.kind === 'tool') {
         ensureAssistant().blocks.push({
           type: 'sandbox_run',
@@ -9152,7 +9162,23 @@ window.SW = window.SW || {};
             putDataUsed(state.messages, () => assistant, ev.dataUsed);
             notify();
           }
-          if (ev.type === 'delta') {
+          if (ev.type === 'reasoning') {
+            // The whole thought so far, not a fragment to append. The server already took the
+            // tool call out. This block is not `fromStream`: the recorded answer replaces only
+            // the answer, and the fold has to still be there afterwards.
+            state.typing = null;
+            ensurePushed();
+            const prose = String(ev.text || '');
+            const kept = assistant.blocks.filter((b) => b.type !== 'reasoning');
+            if (prose.trim()) {
+              const streamAt = kept.findIndex((b) => b.type === 'text' && b.fromStream);
+              const at = streamAt >= 0 ? streamAt : kept.length;
+              kept.splice(at, 0, { type: 'reasoning', value: prose, streaming: true });
+            }
+            assistant.blocks = kept;
+            liveIndex = kept.findIndex((b) => b.fromStream && b.streaming);
+            notify();
+          } else if (ev.type === 'delta') {
             state.typing = null;
             ensurePushed();
             if (liveIndex < 0) {
@@ -9180,8 +9206,11 @@ window.SW = window.SW || {};
             // the transcript and so is not in the Thread either way. A queued repaint is harmless
             // once liveIndex is -1.
             liveIndex = -1;
-            assistant.blocks = [...assistant.blocks.filter((b) => !b.fromStream),
-                                ...(ev.text ? [{ type: 'text', value: ev.text }] : [])];
+            assistant.blocks = [
+              ...assistant.blocks.filter((b) => !b.fromStream).map((b) => (
+                b.type === 'reasoning' ? { ...b, streaming: false } : b)),
+              ...(ev.text ? [{ type: 'text', value: ev.text }] : []),
+            ];
             notify();
           } else if (ev.type === 'agent' && ev.kind === 'tool') {
             state.typing = SW.util.activityLabel(ev);
@@ -9270,6 +9299,10 @@ window.SW = window.SW || {};
                                 { type: 'status', ok: true, value: ev.message }];
             notify();
           } else if (ev.type === 'done') {
+            if (assistant) {
+              assistant.blocks = assistant.blocks.map((b) => (
+                b.type === 'reasoning' ? { ...b, streaming: false } : b));
+            }
             // A failed turn that names its cause is one another model can pick up (ADR-0069,
             // #570). The row that arrived is the promise itself, so the card is drawn available
             // without asking the route; the GET is for a reload.
