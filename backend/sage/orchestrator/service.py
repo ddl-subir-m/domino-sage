@@ -2974,7 +2974,9 @@ def _failed_plan_request(history: list[dict], prompt: str) -> str | None:
         start = next((i for i in range(done - 1, -1, -1) if rows[i].get("type") == "done"), -1) + 1
         window = rows[start:done]
         decision = rows[done].get("decision")
-        planned = decision in _FAILED_PLAN_DECISIONS or (
+        # `stage` (ADR-0069) says outright what the guess below infers from a decision plus the
+        # planning error beside it. The guess stays for rows written before the field existed.
+        planned = rows[done].get("stage") == "planning" or decision in _FAILED_PLAN_DECISIONS or (
             decision == "model_no_action_timeout"
             and any(row.get("type") == "error"
                     and str(row.get("message") or "").startswith(_PLANNING_STOPPED)
@@ -2982,9 +2984,59 @@ def _failed_plan_request(history: list[dict], prompt: str) -> str | None:
         if not planned:
             return None
         asked = next((str(row.get("text") or "") for row in window if row.get("type") == "user"), "")
-        if asked and not _looks_like_recovery_retry(asked):
+        if asked and not _looks_like_recovery_retry(asked) and asked != _CONTINUE_CLICK_TEXT:
             return asked
         end = start
+
+
+# What a Continue-with-another-model click writes as the person's bubble (#569). One fixed
+# sentence, not the model's name: the `resolved` field on the new Attempt's `done` row records the
+# model that actually ran (#316), and a bubble naming the pick would disagree with it whenever the
+# router moved the request. Fixed so the readers below can skip it by equality rather than by
+# matching prose.
+_CONTINUE_CLICK_TEXT = "Continue with another model."
+# The `done` fields that make a failed turn eligible for that click (ADR-0069). `cause` present is
+# the whole of the promise; `stage` picks the resume path. Anything else on a failed row is not
+# eligible: a permission refusal, a wedge, a user Stop, a preview error never wrote `cause`.
+_CONTINUE_CAUSES = frozenset({"invalid_tool_call", "model_no_action"})
+_CONTINUE_STAGES = frozenset({"chat", "planning", "implementation"})
+# Why the click is unavailable, as one closed word each (the way `PlanArchiveRefused` names its
+# reasons), so the Workbench (#570) writes its copy off a vocabulary rather than off a sentence.
+_CONTINUE_REFUSALS = {
+    "not_found": "This turn is not in this conversation's record.",
+    "active": "This turn is still running. Stop it first, or wait for it to end.",
+    "not_eligible": "This turn did not end in a way another model can pick up.",
+    "superseded": "A newer turn ran in this conversation after this one.",
+    "wedged": "The workspace is waiting on a stop that was never confirmed. Restart Sage Builder.",
+    "busy": "Another turn is running. Wait for it to end, or stop it first.",
+    "app_changed": "This turn belongs to another app. Select that app to continue it.",
+    "plan_changed": "The approved plan changed or was archived after this build. Approve a plan "
+                    "again to build it.",
+    "request_missing": "The original request for this turn is not on the record.",
+    "model_required": "Pick a model to continue with.",
+    "model_unavailable": "That model is not one you can run right now.",
+    "effort_unavailable": "That model does not accept that reasoning effort beside tools.",
+}
+
+
+def _failed_turn_request(rows: list[dict], done: int) -> str:
+    """The request the failed turn at `rows[done]` was about, or "" when none is on the record.
+
+    Walks back the way `_failed_plan_request` does, but from a NAMED `done` row rather than the
+    last one, because a click names its turn (#569). A window whose user row is itself a bare
+    retry, a bare continue or an earlier Continue click is a replay of the window before it, so
+    the walk goes on until it finds the person's own words."""
+    end = done
+    while end >= 0:
+        start = next((i for i in range(end - 1, -1, -1) if rows[i].get("type") == "done"), -1) + 1
+        asked = next((str(row.get("text") or "") for row in rows[start:end]
+                      if row.get("type") == "user"), "")
+        if asked and not _looks_like_recovery_retry(asked) and asked != _CONTINUE_CLICK_TEXT:
+            return asked
+        if not asked:
+            return ""
+        end = start - 1
+    return ""
 
 
 def _pending_refusal_recovery_message(history: list[dict], prompt: str) -> str:
@@ -9116,8 +9168,17 @@ class Orchestrator:
                      skip_table_gate: bool = False, skip_source_gate: bool = False,
                      chosen_source: str = "", skip_dataset_gate: bool = False,
                      dismissed_dataset: str = "", dataset_pick: str = "",
-                     *, turn_id: str | None = None, turn_ticket: _TurnTicket | None = None):
+                     *, turn_id: str | None = None, turn_ticket: _TurnTicket | None = None,
+                     mode: Mode | None = None, user_text: str | None = None,
+                     _already_granted: bool = False):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
+
+        `mode`, `user_text` and `_already_granted` are the Continue-with-another-model click's
+        (#569), which replays a failed plan turn's own request through this door: `mode` pins the
+        replay to Plan so it gates again whatever the standing picker says, `user_text` is the
+        click's bubble in place of the replayed request, and `_already_granted` says the click
+        took the turn lock itself before it checked the record under it (as `chat_stream` says it
+        for a decline). None of the three changes an ordinary turn.
 
         One turn at a time still. If a turn is already streaming, this one WAITS in line rather than
         running concurrently (see _TurnQueue) — overlapping turns corrupt the shared read-only gate
@@ -9162,8 +9223,11 @@ class Orchestrator:
         # pending one is a context change like any other (see _turn_snapshot).
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing_started = (time.time(), time.monotonic())
-        yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
-                                      prompt=prompt, app=True)
+        if _already_granted:
+            self._begin_model_record()
+        else:
+            yield from self._acquire_turn(ticket, kind="build", conversation=conversation,
+                                          prompt=prompt, app=True)
         if not ticket.granted:
             return
         acquired_at = time.monotonic()
@@ -9251,7 +9315,7 @@ class Orchestrator:
             # A bare "continue" after a PLAN turn that produced nothing re-plans the request that
             # turn was about (#537). Sent as itself it is planned as a new request, and a planner
             # rightly finds no app in the word "continue". The bubble keeps what they typed.
-            typed = None
+            typed = user_text
             if not live_plan:
                 replayed = _failed_plan_request(
                     plan_app.read_history(project.build_conversation), prompt)
@@ -9406,7 +9470,7 @@ class Orchestrator:
             # echoing the same sentence twice. Whether they reset first is already on the record
             # above it as an `app-reset` marker.
             yield from self._build_stream(
-                prompt, mentions, resources,
+                prompt, mentions, resources, mode=mode,
                 # The pick wins over the three skip flags, which it can arrive carrying: a turn
                 # started by choosing a Data Source says which one, whatever gate the turn before
                 # it had also answered.
@@ -9460,6 +9524,177 @@ class Orchestrator:
     ) -> bool:
         project = self.project()
         return project.context_continuations.release_refused(continuation_id, claim_token)
+
+    def continue_availability(self, turn_id: str, conversation: str, app_id: str, *,
+                              model: str | None = None, effort: str | None = None) -> dict:
+        """Whether a failed turn can be continued with another model, and if not, why (#569).
+
+        The identity is the saved row's: `turnId` plus the Conversation and, for Build, the app
+        whose log holds it (ADR-0069). Nothing process-local is consulted, so the same answer
+        comes back after a restart, and a reference this process never saw answers `not_found`
+        rather than pretending a claim survived. `model` and `effort`, when given, are the click's
+        pick and are checked against what this person can run right now; the availability read
+        leaves them out.
+
+        `reason` is one of `_CONTINUE_REFUSALS`' words and `message` its sentence; both are empty
+        when `available` is true. `stage` and `cause` are the row's, filled as soon as the row is
+        found and eligible, so a refusal still says what kind of turn it was refusing for.
+        """
+        return self._continue_check(turn_id, conversation, app_id, model=model, effort=effort)[0]
+
+    def _continue_check(self, turn_id: str, conversation: str, app_id: str, *,
+                        model: str | None, effort: str | None,
+                        holding: bool = False) -> tuple[dict, str]:
+        """`continue_availability`, plus the request the click would resend (see the caller).
+
+        `holding` is the click itself, which reads this under the turn lock it already took; the
+        busy check would otherwise refuse the click for its own lock. Everything else is checked
+        again there, because the read that drew the card and the click that answers it are two
+        instants, and a newer turn, a moved rail or an edited plan can land between them.
+        """
+        answer = {"available": False, "turnId": turn_id, "conversation": conversation,
+                  "app": app_id, "stage": "", "cause": "", "reason": "", "message": ""}
+
+        def refused(reason: str) -> tuple[dict, str]:
+            answer.update(reason=reason, message=_CONTINUE_REFUSALS[reason])
+            return answer, ""
+
+        if not turn_id:
+            return refused("not_found")
+        project = self.project(start_preview=False, seed_app=False)
+        workspace = None
+        if app_id:
+            workspace = self._wm.app_workspace(self._project_id, app_id)
+            if not workspace.path.is_dir():
+                return refused("not_found")
+            rows = workspace.read_history(conversation or None)
+        else:
+            store = ThreadStore(project.record.path)
+            if not conversation or store.get(conversation) is None:
+                return refused("not_found")
+            rows = store.read_history(conversation)
+        rows = [row for row in rows if isinstance(row, dict)]
+        done = next((i for i in range(len(rows) - 1, -1, -1)
+                     if rows[i].get("type") == "done" and rows[i].get("turnId") == turn_id), -1)
+        if done < 0:
+            running = self._turns.running()
+            return refused("active" if running is not None and running.id == turn_id
+                           else "not_found")
+        row = rows[done]
+        cause, stage = row.get("cause"), row.get("stage")
+        if (row.get("ok") is not False or cause not in _CONTINUE_CAUSES
+                or stage not in _CONTINUE_STAGES or (stage == "chat") == bool(app_id)):
+            return refused("not_eligible")
+        answer.update(stage=stage, cause=cause)
+        # A later turn in this log — its bubble or its ending — is the newer state the resume
+        # would have to ignore. Recovery clicks and gate cards write other rows and do not count.
+        if any(later.get("type") in ("user", "done") for later in rows[done + 1:]):
+            return refused("superseded")
+        if self._turn_wedged:
+            return refused("wedged")
+        # A ticketed turn, not the raw lock: the Chat save that follows every Chat turn holds the
+        # lock for a moment with no turn in it, and a click that arrives then queues behind it the
+        # way any turn does (#79) rather than being refused for a save it cannot see.
+        if not holding and self._turns.running() is not None:
+            return refused("busy")
+        request = ""
+        if app_id:
+            if project.workspace.app_id != app_id:
+                return refused("app_changed")
+            if stage == "implementation" and (
+                    not (workspace.read_plan() or "").strip()
+                    or workspace.read_plan_retry_step() == 0):
+                # A plan still owing a build is live with a resume point above zero; an edit in
+                # the card resets the point (`write_plan`) and an archive takes the plan away.
+                return refused("plan_changed")
+        if stage != "implementation":
+            request = _failed_turn_request(rows, done)
+            if not request:
+                return refused("request_missing")
+        if model is not None:
+            if not model:
+                return refused("model_required")
+            try:
+                allowed = {alias["name"] for alias in self.list_llm_aliases()}
+            except ResourceUnavailable:
+                return refused("model_unavailable")
+            if model not in allowed:
+                return refused("model_unavailable")
+            if effort not in (None, "", "default"):
+                try:
+                    accepted = self.route_capability(model).efforts_with_tools
+                except ValueError:
+                    return refused("effort_unavailable")
+                if effort not in accepted:
+                    return refused("effort_unavailable")
+        answer["available"] = True
+        return answer, request
+
+    def continue_turn_stream(self, turn_id: str, conversation: str, app_id: str, model: str,
+                             effort: str | None, *, turn_ticket: _TurnTicket | None = None):
+        """Continue a failed turn with another model: one new Attempt through the existing door
+        for its `stage` (#569, ADR-0069).
+
+        `chat` resends the failed turn's own request — its saved user row, or the `pendingTask`
+        question that row was answering — through `chat_stream` with the question already on the
+        record. `planning` replays the request through `build_stream` pinned to Plan, so it gates
+        again and still needs approval. `implementation` re-approves the plan the failed build
+        left live, through `approve_stream`, which is #498's path and never re-plans. The model
+        and effort are set through the same standing picks the pickers set (`set_chat_pick`,
+        `control.pick`), so the chip and the row agree on what ran, and #487's pairing holds.
+
+        Nothing the failed turn wrote is replayed: its answer, artifacts, findings and files stay
+        as their own paths left them, and the new Attempt starts under the normal budgets. The
+        record is read again under the lock; a refusal here ends the turn without a saved row,
+        since nothing ran, and the availability read says why on the next reload.
+        """
+        ticket = turn_ticket or _TurnTicket(new_id("turn"))
+        kind = "build" if app_id else "chat"
+        yield from self._acquire_turn(ticket, kind=kind, conversation=conversation,
+                                      prompt=_CONTINUE_CLICK_TEXT, app=bool(app_id))
+        if not ticket.granted:
+            return
+        try:
+            answer, request = self._continue_check(
+                turn_id, conversation, app_id, model=model, effort=effort, holding=True)
+            if not answer["available"]:
+                yield {"type": "error", "message": answer["message"], "reason": answer["reason"]}
+                yield {"type": "done", "ok": False, "decision": "continue unavailable",
+                       "reason": answer["reason"], "turnId": ticket.id}
+                return
+            effort = None if effort in ("", "default") else effort
+            if answer["stage"] == "chat":
+                self.set_chat_pick(model, effort)
+                store = ThreadStore(self._chat_project().record.path)
+                ctx = store.read_context(conversation)
+                # A source clarification keeps the question on the Thread rather than in the
+                # bubble that answered it (#566); that question is the request, not the reply.
+                task = ctx.get("pendingTask") or {}
+                request = str(task.get("question") or "") or request
+                items = [i for i in (ctx.get("items") or []) if i.get("id")]
+                user_row = {"type": "user", "text": _CONTINUE_CLICK_TEXT,
+                            "contextIds": [i["id"] for i in items],
+                            "context": [{"id": i["id"], "name": i.get("name"),
+                                         "kind": i.get("kind")} for i in items]}
+                store.append_history(conversation, user_row)
+                yield user_row
+                yield from self.chat_stream(conversation, request, already_asked=True,
+                                            turn_ticket=ticket, _already_granted=True)
+                return
+            self.project().control.pick(model, effort)
+            if answer["stage"] == "planning":
+                yield from self.build_stream(
+                    request, None, None, conversation or None, turn_ticket=ticket,
+                    mode=Mode.PLAN, user_text=_CONTINUE_CLICK_TEXT, _already_granted=True)
+                return
+            yield from self.approve_stream(
+                conversation=conversation or None, turn_ticket=ticket,
+                user_text=_CONTINUE_CLICK_TEXT, _already_granted=True)
+        finally:
+            # The door this handed the turn to releases the lock at its own end; this covers the
+            # refusal above and a failure before the handoff. A wedge keeps the lock (#39).
+            if not self._turn_wedged and self._turns.running() is ticket:
+                self._release_turn()
 
     def continue_build_stream(
         self, continuation: ContextContinuation, claim_token: str,
@@ -21621,7 +21856,8 @@ class Orchestrator:
     def approve_stream(self, answers: str = "", plan_edits: str | None = None,
                        conversation: str | None = None, plan_id: str = "",
                        build_again: bool = False, *, turn_id: str | None = None,
-                       turn_ticket: _TurnTicket | None = None):
+                       turn_ticket: _TurnTicket | None = None, user_text: str | None = None,
+                       _already_granted: bool = False):
         """Approve a gated plan and build it (SPEC P6). Feeds the approved plan into a normal
         build turn as context, then archives the plan so no live .sage/plan.md is left for a later
         turn to misread. Approval means "build it now", so if the user is in Plan or Ask mode we run
@@ -21643,8 +21879,14 @@ class Orchestrator:
         # people would have to learn instead of guess.
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing_started = (time.time(), time.monotonic())
-        yield from self._acquire_turn(
-            ticket, kind="build", conversation=conversation, prompt="", app=True)
+        # `_already_granted` and `user_text` are the Continue-with-another-model click's (#569),
+        # which resumes a failed approved build through this door after taking the lock and
+        # checking the record itself; see `build_stream` for the same pair.
+        if _already_granted:
+            self._begin_model_record()
+        else:
+            yield from self._acquire_turn(
+                ticket, kind="build", conversation=conversation, prompt="", app=True)
         if not ticket.granted:
             return
         acquired_at = time.monotonic()
@@ -21671,7 +21913,8 @@ class Orchestrator:
                 # The transcript replays what the person did, and this is a different act from
                 # approving a plan for the first time (story 10): a build that came from an edited
                 # plan has to be tellable apart from one somebody typed a sentence for.
-                user_text=_BUILD_AGAIN_TEXT if build_again else None)
+                user_text=user_text if user_text is not None
+                else (_BUILD_AGAIN_TEXT if build_again else None))
         except TurnWedged:
             # Swallowed, not re-reported: the turn already said what happened in its own stream, and
             # a traceback on top of it would only be a second, worse version of the same sentence.

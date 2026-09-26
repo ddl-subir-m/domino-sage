@@ -99,6 +99,7 @@ from .brand import text as brand_text
 from .describe import human_bytes
 from .service import (
     _CHAT_TOOL_QUIET_TIMEOUT_S,
+    _CONTINUE_REFUSALS,
     AttachSourceMissing,
     AttachTooLarge,
     AttachWouldClobber,
@@ -4378,6 +4379,80 @@ def cancel_turn(body: dict) -> JSONResponse:
     finished, between the click and this call, and neither is a mistake anybody made."""
     ticket = str((body or {}).get("ticket") or "")
     return JSONResponse(content={"cancelled": orchestrator.cancel_pending_turn(ticket)})
+
+
+def _continue_scope(turn_id: str, conversation: str, app_id: str) -> JSONResponse | None:
+    """400 for a scope that is not one path segment each; None when the scope reads."""
+    try:
+        if conversation:
+            safe_id(conversation, "conversation id")
+        if app_id:
+            safe_id(app_id, "app id")
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "invalid continue scope"})
+    if not turn_id:
+        return JSONResponse(status_code=400, content={"error": "turnId required"})
+    return None
+
+
+@control_app.get("/api/project/turn/continue")
+def continue_turn_availability(turnId: str = "", conversation: str = "",
+                               app: str = "") -> JSONResponse:
+    """Whether a failed turn's Continue-with-another-model action is available, and why not (#569).
+
+    Keyed by the saved `done` row's identity — `turnId`, its Conversation and, for Build, the app
+    whose log holds it — so a reload answers from disk and a restart answers the same. `app` is
+    empty for a Chat turn. The body is `Orchestrator.continue_availability`'s."""
+    refused = _continue_scope(turnId, conversation, app)
+    if refused is not None:
+        return refused
+    return JSONResponse(content=orchestrator.continue_availability(turnId, conversation, app))
+
+
+@control_app.post("/api/project/turn/continue")
+def continue_turn(body: dict):
+    """Continue a failed turn with the model and effort the person picked (#569).
+
+    Body: `{turnId, conversation, app, model, effort?}` and nothing else — the task is the
+    server's, read off the failed turn's own record, never sent from the browser. Answers 409 with
+    the availability body when the click cannot start, so the Workbench draws the reason from the
+    same vocabulary the GET uses; otherwise streams the new Attempt as every other turn streams."""
+    sent = body or {}
+    keys = set(sent) if isinstance(sent, dict) else set()
+    if not {"turnId", "conversation", "app", "model"} <= keys or not keys <= {
+            "turnId", "conversation", "app", "model", "effort"}:
+        return JSONResponse(status_code=400, content={"error": "invalid continue request"})
+    turn_id = str(sent.get("turnId") or "")
+    conversation = str(sent.get("conversation") or "")
+    app_id = str(sent.get("app") or "")
+    model = str(sent.get("model") or "")
+    effort = sent.get("effort")
+    effort = None if effort in (None, "", "default") else str(effort)
+    refused = _continue_scope(turn_id, conversation, app_id)
+    if refused is not None:
+        return refused
+    answer = orchestrator.continue_availability(
+        turn_id, conversation, app_id, model=model, effort=effort)
+    if not answer["available"]:
+        return JSONResponse(status_code=409, content=answer)
+    new_turn_id = new_id("turn")
+    turn_ticket, turn_state = orchestrator.prepare_stream_turn(
+        new_turn_id, kind="build" if app_id else "chat", conversation=conversation,
+        app=bool(app_id))
+    if turn_state == "refused":
+        orchestrator.release_stream_turn(turn_ticket)
+        return JSONResponse(status_code=409, content={
+            **answer, "available": False, "reason": "wedged",
+            "message": _CONTINUE_REFUSALS["wedged"]})
+    events = orchestrator.continue_turn_stream(
+        turn_id, conversation, app_id, model, effort, turn_ticket=turn_ticket)
+    return StreamingResponse(
+        _turn_sse(events, "continue_turn_stream"),
+        media_type="text/event-stream",
+        headers={"X-Sage-Turn-Id": new_turn_id, "X-Sage-Turn-State": turn_state,
+                 "X-Sage-Turn-Sequence": str(turn_ticket.sequence),
+                 "X-Sage-Turn-Epoch": turn_ticket.epoch},
+        background=BackgroundTask(orchestrator.release_stream_turn, turn_ticket))
 
 
 @control_app.post("/api/project/build")
