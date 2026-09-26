@@ -4371,13 +4371,15 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             # tables before you answer" was an instruction to run Python on a turn that has none.
             return brand.text(
                 "- {dataSource} {name}{extra}. No {scope} is chosen on it, so which tables it holds is "
-                "not recorded here. To work a number out of it, call `live_read_query` with this "
-                "turn's token, source {quoted}, and one SELECT naming the table in full as "
-                "database.schema.table. To see a few rows, call `live_read_table` with the same "
-                "token and source. If those tools are not in your tool list this turn and you have "
-                "a shell, `from domino_data.data_sources import DataSourceClient` then "
-                "`DataSourceClient().get_datasource({quoted})`. Do not guess a table name — if the "
-                "person has not named one and you cannot find it, say so. Do not search files, env, "
+                "not recorded here. Discover them before you answer: call `live_read_query` with this "
+                "turn's token, source {quoted}, and one SELECT of at most 50 rows from "
+                "INFORMATION_SCHEMA.TABLES (or the catalog this source uses). Then query the table "
+                "the question needs, named in full as database.schema.table. Do not ask the person "
+                "to name a table until that lookup has failed. To see a few rows, call "
+                "`live_read_table` with the same token and source. If those tools are not in your "
+                "tool list this turn and you have a shell, "
+                "`from domino_data.data_sources import DataSourceClient` then "
+                "`DataSourceClient().get_datasource({quoted})`. Do not search files, env, "
                 "or /opt/sage for credentials. Do not invent rows. If the query errors, tell the "
                 "person.",
                 name=name, extra=extra, quoted=repr(store),
@@ -5254,6 +5256,22 @@ def _app_display_name(workspace: Workspace) -> str:
     return _app_written_name(workspace) or _app_placeholder_name(workspace)
 
 
+def _unused_label(wanted: str, taken: set[str]) -> str:
+    """`wanted`, or `wanted 2`, `wanted 3`, … when that label is already taken.
+
+    A blank plan and a planner that copies a heading both land on a name the project already
+    shows. Numbering is the whole fix: the first one keeps the words, and the next one is
+    distinguishable in the same list.
+    """
+    name = (wanted or "").strip()
+    if not name or name not in taken:
+        return name
+    n = 2
+    while f"{name} {n}" in taken:
+        n += 1
+    return f"{name} {n}"
+
+
 def _plan_doc_captioned(doc: dict | None) -> dict | None:
     """A plan document with something to draw on its face: the title somebody wrote, else its first
     line, cleaned.
@@ -5917,8 +5935,13 @@ _PLAN_OPENER = ("Format it exactly like this, in Markdown, and write nothing out
                 "has one — 'Support Ticket Explorer', not 'An app for looking through support "
                 "tickets'. No leading 'A' or 'The', no trailing full stop, and never a sentence: it "
                 "is shown as a title, in a list beside other apps, and in a header that "
-                "capitalises it.\n"
-                "- Then one short sentence saying what the app is.\n")
+                "capitalises it. It must not be the name of an app or a plan already in this "
+                "project.\n"
+                # One full stop, then the next heading. `_one_sentence` rejects a second sentence,
+                # and a weaker model that writes two loses the whole plan. Say the rule in the
+                # words the check uses.
+                "- Then exactly one sentence saying what the app is. End it with one full stop and "
+                "start the next heading on the following line. A second sentence is rejected.\n")
 # The sections a colleague reads to decide whether the app is worth building, and the
 # durable half of the plan document. Kept short on purpose: the plan still has to be
 # skimmable in the approval card, so each section is a line or a few bullets, not an essay.
@@ -7176,13 +7199,29 @@ class Orchestrator:
     def read_plan_doc_markdown(self, plan_id: str) -> dict | None:
         return self._plan_docs_record().read_plan_doc_markdown(plan_id)
 
+    def _fresh_label(self, wanted: str, *, except_app: str = "", except_title: str = "") -> str:
+        """A plan or app name that is not already on another plan or app in this project."""
+        taken: set[str] = set()
+        for doc in self._plan_docs_record().list_plan_docs():
+            title = str(doc.get("title") or "").strip()
+            if title and title != except_title:
+                taken.add(title)
+        for app_id in self._wm.app_ids():
+            if app_id == except_app:
+                continue
+            name = self._wm.app_workspace(self._project_id, app_id).display_name().strip()
+            if name:
+                taken.add(name)
+        return _unused_label(wanted, taken)
+
     def create_plan_doc(self, body: dict | None = None) -> dict:
         """An empty document somebody fills in by hand. The planner's own documents are created in
         the gate, where there is a plan to put in them."""
         body = body or {}
+        raw = str(body.get("title") or "").strip()
         return self._plan_docs_record().create_plan_doc(
             "",
-            title=str(body.get("title") or "Untitled plan"),
+            title=self._fresh_label(raw or "Untitled plan"),
             author=_viewer_id(),
             origin_thread_id=str(body.get("threadId") or ""),
         )
@@ -8333,13 +8372,36 @@ class Orchestrator:
         self._switch_conversation(project, conversation)
         app_id = project.app_for_turn().app_id
         if project.session_id is None:
-            project.session_id = self._recover_session(project.record, client, conversation, app_id)
-        if project.session_id is None:
-            # No session-level model: use opencode.json's default; the shim's router enforces the
-            # real model per request. (An explicit ModelRef at creation stalled turns.)
-            project.session_id = client.create_session(directory=str(project.app_for_turn().path))
-            project.record.write_session_id(project.session_id, conversation, app_id)
+            prior = project.record.read_build_session(conversation, app_id)
+            project.session_id = self._recover_session(
+                project.record, client, conversation, app_id)
+            if project.session_id is None:
+                # No session-level model: use opencode.json's default; the shim's router enforces
+                # the real model per request. (An explicit ModelRef at creation stalled turns.)
+                # A stored id that OpenCode no longer knows is a lost session, not a first one:
+                # the next prompt owes the transcript (`_build_reseed`). A deliberate fresh
+                # session goes through `_replace_build_session` and does not set the flag.
+                lost = bool(prior.get("session_id"))
+                owed = bool(prior.get("rebuild_pending"))
+                project.session_id = client.create_session(
+                    directory=str(project.app_for_turn().path))
+                project.record.write_session_id(
+                    project.session_id, conversation, app_id,
+                    rebuild_pending=lost or owed)
         return project.session_id
+
+    def _build_reseed(self, project: Project) -> tuple[bool, str]:
+        """Whether this Build session still owes its transcript, and the summary to send.
+
+        The flag is set when `_ensure_session` replaces a session OpenCode no longer has. A
+        phase and an approved-plan session are minted clean on purpose and never set it.
+        """
+        app_id = project.app_for_turn().app_id
+        rec = project.record.read_build_session(project.build_conversation, app_id)
+        if not rec.get("rebuild_pending"):
+            return False, ""
+        history = project.app_for_turn().read_history(project.build_conversation)
+        return True, recall.reseed(list(history))
 
     def _replace_build_session(
         self,
@@ -11426,7 +11488,7 @@ class Orchestrator:
             # edit to this document renders it back as the plan's `# ` heading, which `plan.md`
             # then takes a copy of. Seeded from the first line, both of those turn the sentence
             # somebody typed into the name of a deployment — the long way round to what #216 shut.
-            title=chat_handoff.plan_heading(plan_md),
+            title=self._fresh_label(chat_handoff.plan_heading(plan_md)),
             author=_viewer_id(),
             origin_thread_id=thread_id,
             execution_contract_version=1,
@@ -11914,9 +11976,12 @@ class Orchestrator:
                 return self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
         opened = self._bind_app(project, self._wm.create_app(self._project_id))
         # The name starts as the plan's title, and is the person's to change from there.
-        title = str((doc or {}).get("title") or "")
+        title = str((doc or {}).get("title") or "").strip()
         if title:
-            opened.workspace.set_display_name(title)
+            # `except_title` keeps this document's own title from counting as a collision.
+            # Another app that already wears it still does.
+            opened.workspace.set_display_name(
+                self._fresh_label(title, except_title=title))
         return opened
 
     def _cross_context_items(self, context: list[dict], thread_id: str, *,
@@ -14168,6 +14233,32 @@ class Orchestrator:
                 log.warning("chat: the findings slice ran out before the write came back")
         return rel
 
+    def _record_chat_findings(self, root: Path, thread_id: str, history) -> None:
+        """Write this turn's data-read receipt into `findings.md`.
+
+        The ceiling flush asks the model to do this, and only a turn that is still going at
+        ten minutes reaches it. A turn that finishes normally leaves the file empty, so the
+        next question is told to read findings that were never written. The receipt is the
+        safe ledger line — source, columns, coverage — and not the rows.
+        """
+        rows = [r for r in list(history or []) if isinstance(r, dict)]
+        start = 0
+        for i in range(len(rows) - 1, -1, -1):
+            if rows[i].get("type") == "user":
+                start = i
+                break
+        lines = chat_handoff.data_use_summaries(rows[start:])
+        if not lines:
+            return
+        block = "\n".join(f"- {line}" for line in lines)
+        path = findings_file(root, thread_id)
+        existing = path.read_text() if path.is_file() else ""
+        if block in existing:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).isoformat(timespec="seconds")
+        path.write_text(existing + f"\n\n## Read {stamp}\n{block}\n")
+
     def _already_read_note(self, history: list[dict] | None) -> str:
         """The sources earlier turns in this Thread already read, and where each result landed.
 
@@ -16187,6 +16278,8 @@ class Orchestrator:
                 yield from self._maybe_offer_recall(store, thread_id)
             if artifacts:
                 done["artifacts"] = artifacts
+            self._record_chat_findings(
+                project.record.path, thread_id, store.read_history(thread_id))
             finish(done)
             yield done
             with timing.span("after.handoff", record=timing_record):
@@ -18681,6 +18774,10 @@ class Orchestrator:
         # Built after history-derived withholding is armed below. Besides ordering the token's
         # Data-use identity correctly, this keeps the note beside the grant it names.
         live_read_note = ""
+        # None until the first send decides. A recovered session owes the transcript once;
+        # the nudge and fix follow-ups in this same turn do not send it again.
+        build_reseed: str | None = None
+        owed_reseed = False
         # `reason` classifies the implementation path. The standard direct path is `reused` even
         # when validation finds a stale selected ID and mints a replacement; the lifecycle booleans
         # below record that replacement separately without extending the ticket's fixed enum.
@@ -20338,6 +20435,12 @@ class Orchestrator:
                 # implementation-session timing above is gated on.
                 patch_note = ("" if gate or answer_only or arch
                               else _patch_envelope_note(handle))
+                if build_reseed is None:
+                    # A phase and an approved plan mint a clean session on purpose.
+                    if session_id is None and not fresh_session:
+                        owed_reseed, build_reseed = self._build_reseed(project)
+                    else:
+                        owed_reseed, build_reseed = False, ""
                 client.send_prompt(sid,
                                    # `live_read_note` leads rather than trails. Everything after
                                    # `current` is a block ABOUT this request, and the tail is load-
@@ -20346,8 +20449,9 @@ class Orchestrator:
                                    # The token is a standing fact about the turn, so it goes in front.
                                    # `patch_note` is one too, and rides every send of the turn for
                                    # that reason — the nudge and fix follow-ups edit as well.
-                                   "\n\n".join(p for p in (live_read_note, patch_note, source_note,
-                                                           current, chat_note,
+                                   # `build_reseed` is the transcript a dead session lost (ADR-0060).
+                                   "\n\n".join(p for p in (build_reseed, live_read_note, patch_note,
+                                                           source_note, current, chat_note,
                                                            resource_note,
                                                            unusable_note, ambiguous_note,
                                                            broken_retry_note) if p),
@@ -20371,6 +20475,19 @@ class Orchestrator:
                     operation_ids=tuple(image_reference_operations)
                 )
                 raise
+            if owed_reseed:
+                # Paid only once the summary is in the new session. A failed send leaves the
+                # debt standing, the same way Chat does.
+                project.record.clear_build_rebuild_pending(
+                    project.build_conversation, project.app_for_turn().app_id)
+                owed_reseed = False
+            if build_reseed:
+                notice = {"type": recall.REBUILT}
+                if owns_turn:
+                    project.app_for_turn().append_history(
+                        notice, project.build_conversation)
+                yield notice
+                build_reseed = ""
             # These ride the first (user) turn only, not the nudge/fix follow-ups: those carry
             # no new user reference, and a repeated block reads as a second request for the same
             # Resource. The Chat background goes with them — a nudge is Sage talking to itself
@@ -21528,10 +21645,14 @@ class Orchestrator:
                     # Architecture keeps its own file instead and gets no document — it is already
                     # a reference that nothing archives.
                     _warn_if_shapeless("plan gate", plan_md)
+                    plan_app = project.app_for_turn()
+                    plan_heading = chat_handoff.plan_heading(plan_md)
+                    plan_title = (self._fresh_label(plan_heading, except_app=plan_app.app_id)
+                                  if plan_heading else "")
                     plan_id = project.record.create_plan_doc(
                         plan_md,
                         # Written or empty, never scraped — see the Chat handoff's own call.
-                        title=chat_handoff.plan_heading(plan_md),
+                        title=plan_title,
                         author=_viewer_id(),
                         # This gate ran inside an app, so the document knows which one from the
                         # start — unlike a Chat handoff, which is planned before any app exists
@@ -21565,6 +21686,8 @@ class Orchestrator:
                     self._supersede_live_plan(project, project.app_for_turn(), plan_id,
                                               str(project.build_conversation or ""))
                     project.app_for_turn().write_plan(plan_md, plan_id)
+                    if plan_title and not plan_app.display_name():
+                        plan_app.set_display_name(plan_title)
                 # `steps` is how the card says "Approve & build (6 phases)" — and, more usefully,
                 # it's the user's chance to see BEFORE approving that a phased plan actually parsed.
                 # A plan the parser can't read still builds, just in one context.

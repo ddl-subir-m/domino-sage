@@ -145,8 +145,17 @@ class Verdict:
     catalogue: tuple[int, ...] = field(default_factory=tuple)
 
 
+# The query has already run by the time `decide` is asked. "Only the card has the result" is
+# true, and a weaker model reads it as the warehouse being unreachable — then tells the person
+# the source could not be opened, on a turn whose card is showing the rows.
+_QUERY_RAN = (
+    "The query succeeded. Its rows are on the card; they are withheld from this message. "
+    "Do not say the source was unreachable. "
+)
+
+
 def _refuse(reason: str) -> Verdict:
-    return Verdict(False, reason)
+    return Verdict(False, _QUERY_RAN + reason)
 
 
 def decide(sql: str, rows: list[list], *, connector_type: str = "") -> Verdict:

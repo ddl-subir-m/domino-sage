@@ -1021,7 +1021,7 @@ def test_a_data_source_with_no_table_picked_is_reachable_not_shut(tmp_path: Path
     is named and reachable; only WHICH table was unknown. Downstream, a build shipped a dashboard on
     invented rows behind a note asking for table names nothing had asked the person for.
 
-    Not knowing which table is a question to ask. It is not the store being shut.
+    Not knowing which table is a lookup this turn can run. It is not the store being shut.
 
     TWO STORES ON THE THREAD, since #445, and the second one is here to keep this turn reaching
     the agent at all. A sole unscoped Data Source is now read as the one the request means, so this
@@ -1057,7 +1057,9 @@ def test_a_data_source_with_no_table_picked_is_reachable_not_shut(tmp_path: Path
     # the row now names the tool they do hold, and keeps Python behind its own condition.
     assert "source 'Snowflake-Data-Warehouse'" in prompt
     assert "live_read_query" in prompt
-    assert "Do not guess a table name" in prompt
+    assert "INFORMATION_SCHEMA.TABLES" in prompt
+    assert "Do not ask the person to name a table until that lookup has failed" in prompt
+    assert "Do not guess a table name" not in prompt
     assert "Do not invent rows" in prompt
 
 

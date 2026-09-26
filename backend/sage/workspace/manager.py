@@ -812,20 +812,43 @@ class ProjectRecord:
         return (self.path / ".sage" / "threads" / safe_id(conversation, "conversation id")
                 / f"build-session{suffix}.json")
 
-    def read_session_id(self, conversation: str | None = None, app_id: str = "") -> str | None:
+    def read_build_session(self, conversation: str | None = None, app_id: str = "") -> dict:
+        """The Build session file, or {} when there is none.
+
+        `read_session_id` is the id alone. A recovered session also owes its transcript back
+        (`rebuild_pending`), and that fact lives in the same file.
+        """
         p = self.build_session_path(conversation, app_id)
         if not p.exists():
-            return None
+            return {}
         try:
-            return json.loads(p.read_text()).get("session_id")
+            data = json.loads(p.read_text())
         except (ValueError, OSError):
-            # `ValueError` covers the non-UTF-8 file as well as the bad JSON — see `_read_settings_file`.
-            return None
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def read_session_id(self, conversation: str | None = None, app_id: str = "") -> str | None:
+        rec = self.read_build_session(conversation, app_id)
+        sid = rec.get("session_id")
+        return sid if isinstance(sid, str) and sid else None
 
     def write_session_id(self, session_id: str, conversation: str | None = None,
-                         app_id: str = "") -> None:
+                         app_id: str = "", *, rebuild_pending: bool = False) -> None:
         p = self.build_session_path(conversation, app_id)
-        _write_atomic(p, json.dumps({"session_id": session_id}))
+        body: dict[str, object] = {"session_id": session_id}
+        # Absent rather than false, so a session that never died keeps the old file shape.
+        if rebuild_pending:
+            body["rebuild_pending"] = True
+        _write_atomic(p, json.dumps(body))
+
+    def clear_build_rebuild_pending(self, conversation: str | None = None,
+                                    app_id: str = "") -> None:
+        """The recovered Build session has been told what the transcript already held."""
+        p = self.build_session_path(conversation, app_id)
+        rec = self.read_build_session(conversation, app_id)
+        if not rec or not rec.pop("rebuild_pending", None):
+            return
+        _write_atomic(p, json.dumps(rec))
 
     def clear_session_id(self, conversation: str | None = None, app_id: str = "") -> None:
         """Forget which OpenCode session this Build conversation was talking to (ADR-0022).
