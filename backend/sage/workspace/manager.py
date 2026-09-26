@@ -30,6 +30,7 @@ import re
 import secrets
 import shutil
 import stat
+import subprocess
 import threading
 import time
 from collections import deque
@@ -2454,6 +2455,23 @@ class WorkspaceManager:
         """
         return ProjectRecord(project_id, self._dir)
 
+    def install_template_deps(self) -> None:
+        """Install the warm template's node_modules in place (the Makefile / Dockerfile step).
+
+        `make setup` and the image bake both run `npm ci --include=optional` in the React+Vite
+        template so each workspace can symlink a complete tree. When that bake is absent — a
+        worktree before setup, or a self-update that moved the lockfile — `link_warm_deps` calls
+        this rather than leave the app with no `.bin/vite`.
+        """
+        tmpl = self.stack.template_dir
+        if not (tmpl / "package.json").is_file():
+            return
+        log.warning("workspace: template node_modules missing — running npm ci in %s", tmpl)
+        subprocess.run(
+            ["npm", "ci", "--include=optional", "--no-fund", "--no-audit"],
+            cwd=tmpl, check=True,
+        )
+
     def link_warm_deps(self) -> bool:
         """Point node_modules at the baked template copy, repairing a wrecked one. True if changed.
 
@@ -2467,9 +2485,13 @@ class WorkspaceManager:
         The sentinel is that vite binary — it's what both `npm run dev` and `npm run build` invoke.
         Present means the deps are usable and we keep our hands off, whether they're ours or an
         agent's successful install. Absent means wreckage, and the warm copy is strictly better than
-        what's there. A template without the sentinel isn't one we can lend from, so we do nothing.
+        what's there. A template without the sentinel isn't one we can lend from, so we install it
+        first (same command as `make setup` / the image bake) and only then refuse if it still
+        cannot lend.
         """
         tmpl = self.stack.template_dir / "node_modules"
+        if not tmpl.exists() and self.stack.preview == "vite":
+            self.install_template_deps()
         if not tmpl.exists():
             return False
         node_modules = self.app_path / "node_modules"

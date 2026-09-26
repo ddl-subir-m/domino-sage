@@ -30,6 +30,8 @@ def test_parses_uvicorns_running_line():
 import subprocess
 import threading
 
+import pytest
+
 from sage.preview.supervisor import ViteSupervisor, preview_port
 
 
@@ -60,6 +62,8 @@ def test_the_port_reaches_vite_on_the_command_line(monkeypatch, tmp_path):
     """The override is worthless if Vite is never told: npm forwards it after `--`."""
     monkeypatch.setenv("SAGE_PREVIEW_PORT", "5401")
     seen = {}
+    (tmp_path / "node_modules" / ".bin").mkdir(parents=True)
+    (tmp_path / "node_modules" / ".bin" / "vite").write_text("#!/bin/sh")
 
     def fake_popen(argv, **kw):
         seen["argv"] = argv
@@ -74,6 +78,30 @@ def test_the_port_reaches_vite_on_the_command_line(monkeypatch, tmp_path):
     assert seen["argv"] == ["npm", "run", "dev", "--", "--port", "5401"]
     # and the reaping is aimed at the port we actually asked for, not at 5173
     assert seen["reaped"] == 5401
+
+
+def test_vite_supervisor_does_not_spawn_without_the_vite_binary(monkeypatch, tmp_path):
+    """`npm run dev` with no `.bin/vite` exits 127; name the missing binary instead of spawning."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.tsx").write_text("// app")
+    spawned: list[object] = []
+
+    def fake_popen(*_a, **_kw):
+        spawned.append(1)
+        return type("P", (), {
+            "stdout": None, "pid": 1,
+            "poll": lambda self: 0, "wait": lambda self: 0,
+        })()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ViteSupervisor, "_clear_stale_port", lambda self, port: None)
+
+    with pytest.raises(RuntimeError) as e:
+        ViteSupervisor(tmp_path).start(ready_timeout_s=0.1)
+
+    assert spawned == []
+    assert "node_modules/.bin/vite" in str(e.value)
 
 
 def test_a_no_build_app_is_served_by_its_own_uvicorn(monkeypatch, tmp_path):

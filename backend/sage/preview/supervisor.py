@@ -293,6 +293,12 @@ class ViteSupervisor:
         generation = self._spawn_generation(previous)
         if generation is None:
             return
+        # `npm run dev` is the bare command `vite`. Without this binary on PATH (via
+        # node_modules/.bin) the shell exits 127 and the restart loop reports that code — never
+        # that the deps were never linked. Fail here with the path, before any spawn.
+        vite = self._workspace / "node_modules" / ".bin" / "vite"
+        if not vite.exists():
+            raise OSError(errno.ENOENT, f"missing {vite}")
         port = preview_port()
         # start_new_session -> own process group so we can kill Vite + any children (esbuild).
         # SAGE_BASE_PREFIX tells vite.config.ts the Domino proxy prefix to bake into `base`/HMR.
