@@ -349,7 +349,10 @@ def test_the_resumed_turn_is_handed_what_the_last_one_measured(tmp_path: Path, m
 
     resumed = oc.prompts[-1]["text"]
     assert f".sage/threads/{tid}/findings.md" in resumed
-    assert "Read it before you plan this turn" in resumed
+    # A resume is a later turn: the file is named as earlier measurements, not as something
+    # to read before planning the original question over again.
+    assert "measurements from earlier turns" in resumed
+    assert QUESTION in resumed
 
 
 def test_continue_does_not_ride_under_another_arms_sentence(tmp_path: Path, monkeypatch):

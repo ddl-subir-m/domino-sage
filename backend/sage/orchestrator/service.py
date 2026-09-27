@@ -6672,6 +6672,32 @@ _PLAN_REQUEST_LABEL = ("The request, in the person's own words (any blocks after
 # those follow the request, and a weaker model weighs what it read last.
 _PLAN_REQUEST_AGAIN = "The request again, in the person's own words:\n"
 
+# Said at the end of a later turn, Chat or Build. The session already holds an answer to an
+# earlier sentence, and a weaker model continues that answer unless this one is marked as the
+# question. The investigation-card replay is not a later turn: it has one user row.
+_THIS_TURN_QUESTION = (
+    "The question for this turn, in the person's own words. Answer this. "
+    "Do not repeat an earlier reply unless this sentence asks for that same result. "
+    "If it narrows or corrects an earlier result, change the result:"
+)
+
+
+def _has_earlier_user_turn(history) -> bool:
+    """True when the person has already asked something in this conversation.
+
+    The current turn's user row is already on the record, so a single user row is the first
+    question. That includes the replay of an investigation card, which wrote the row and then
+    ran. A complete Recall clear starts the count over: what was said before it is not this
+    conversation.
+    """
+    rows = [r for r in (history or []) if isinstance(r, dict)]
+    for i in range(len(rows) - 1, -1, -1):
+        if rows[i].get("type") == recall.CLEARED and rows[i].get("scope") == recall.EMPTY:
+            rows = rows[i + 1:]
+            break
+    return sum(1 for row in rows
+               if row.get("type") == "user" and str(row.get("text") or "").strip()) > 1
+
 
 # The one sentence the clean no-action retry adds (#561). It names what happened and what to do,
 # and nothing else: the retry is not the place to teach the shape a second time.
@@ -14763,7 +14789,7 @@ class Orchestrator:
                 "model for the one you were asked for, and never say a model was used when it "
                 "refused.")
 
-    def _findings_note(self, thread_id: str) -> str:
+    def _findings_note(self, thread_id: str, *, continuing: bool = False) -> str:
         """Where this Thread's findings are, and — only if there are any — how old and how big.
 
         The pinned prompt already says the file MAY be written (#380). It cannot say whether it is
@@ -14795,10 +14821,15 @@ class Orchestrator:
                     "the place under .sage/ you may write that is meant to be READ BACK. Scratch is "
                     "not: a file left in .sage/scratch/ records nothing and may be stale.")
         stamp = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(timespec="seconds")
-        return (f"This Thread has findings at {rel}: {stat.st_size:,} bytes, last written {stamp}. "
-                "Read it before you plan this turn — it records what has already been measured and "
-                "what is still open. Append what you measure: the statement that produced it, the "
-                "time, and the numbers with their denominators.")
+        lead = (f"This Thread has findings at {rel}: {stat.st_size:,} bytes, last written {stamp}. ")
+        if continuing:
+            return (lead + "These are measurements from earlier turns. Use them when this question "
+                    "depends on them. Do not answer by restating this file or an earlier reply. "
+                    "Append what this turn measures: the statement that produced it, the time, and "
+                    "the numbers with their denominators.")
+        return (lead + "Read it before you plan this turn — it records what has already been "
+                "measured and what is still open. Append what you measure: the statement that "
+                "produced it, the time, and the numbers with their denominators.")
 
     def _flush_findings(self, client, sid: str, *, root: Path, thread_id: str,
                         deadline: float, stop: Callable[[], bool]) -> str:
@@ -15021,6 +15052,7 @@ class Orchestrator:
                      handoffs: list[dict] | None = None,
                      history: list[dict] | None = None,
                      declined: bool = False, rebuilt: str = "", investigating: bool = False) -> str:
+        continuing = _has_earlier_user_turn(history)
         lines = [
             f"Thread id: {thread_id}",
             f"Write Artifacts under examples/{thread_id}/.",
@@ -15030,7 +15062,7 @@ class Orchestrator:
             # refused: a read-only turn, having lost the shell, had nowhere to put a file at all.
             (f"Scratch files and any data you fetch go under .sage/scratch/{thread_id}/ — "
              f"not /tmp, and never anywhere else outside this project."),
-            self._findings_note(thread_id),
+            self._findings_note(thread_id, continuing=continuing),
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
             # An absent Live read tool is NOT sent to Python here: a bounded turn loses the shell to
@@ -15068,7 +15100,9 @@ class Orchestrator:
                 ("Investigation is open for this conversation. A selected table is a starting table. "
                  "Discover and query other relevant tables when needed, using only sources attached "
                  "to this conversation. Do not ask to open another investigation."),
-                ("The first look names the file, table, or column. It is not the answer. "
+                ("Earlier measurements are background. The question for this turn is the person's "
+                 "latest sentence." if continuing else
+                 "The first look names the file, table, or column. It is not the answer. "
                  "Append what it measured to the findings file, then take the next step."),
                 ("The person attaches a Dataset folder or a Data Source, not a single file and not "
                  "a single table. An uploaded CSV uses live_read_files with operation=analyze_text "
@@ -15211,6 +15245,8 @@ class Orchestrator:
             "turn; an answer built from invented rows is a wrong one that looks right."
         )
         lines.append("")
+        if continuing:
+            lines.append(_THIS_TURN_QUESTION)
         lines.append(prompt)
         return "\n".join(lines)
 
@@ -21332,6 +21368,29 @@ class Orchestrator:
                         owed_reseed, build_reseed = self._build_reseed(project)
                     else:
                         owed_reseed, build_reseed = False, ""
+                # `mention_files is not None` is the first send. Nudges set it to None, and a
+                # planning or broken-call retry puts the list back, so those sends are first
+                # sends again. The tail is empty on a nudge.
+                first_send = mention_files is not None
+                buried = bool(mention_files or chat_note or resource_note or unusable_note
+                              or ambiguous_note or broken_retry_note)
+                follow_up = (first_send and owns_turn and not arch and not is_approval
+                             and _has_earlier_user_turn(project.app_for_turn().read_history(
+                                 project.build_conversation)))
+                if retry_tail:
+                    # A no-action retry brings its own tail (#561): the request once, after
+                    # the listing, or nothing.
+                    request_tail = retry_tail
+                elif retry_tail is not None:
+                    request_tail = ""
+                elif follow_up:
+                    request_tail = _THIS_TURN_QUESTION + "\n" + prompt
+                elif first_send and not arch and buried and (gate or owns_turn):
+                    # Plan already repeated the request when notes followed it (#537).
+                    # Implement and answer-only turns bury it the same way.
+                    request_tail = _PLAN_REQUEST_AGAIN + prompt
+                else:
+                    request_tail = ""
                 client.send_prompt(sid,
                                    # `live_read_note` leads rather than trails. Everything after
                                    # `current` is a block ABOUT this request, and the tail is load-
@@ -21348,15 +21407,9 @@ class Orchestrator:
                                                            broken_retry_note) if p),
                                    model=handle, agent=agent,
                                    attachments=mention_files,
-                                   # Passed only when set, so every other client keeps its shape.
-                                   # A no-action retry brings its own tail (#561): the request
-                                   # once, after the listing, or nothing.
-                                   **({"tail": retry_tail} if retry_tail else {}
-                                      if retry_tail is not None else
-                                      {"tail": _PLAN_REQUEST_AGAIN + prompt}
-                                      if gate and not arch and (
-                                          mention_files or chat_note or resource_note
-                                          or unusable_note or ambiguous_note) else {}))
+                                   # Passed only when set, so a send with nothing after the request
+                                   # keeps the shape it had before a tail existed.
+                                   **({"tail": request_tail} if request_tail else {}))
                 retry_tail = None
                 if fresh_session:
                     self._turn_gave_up = False
