@@ -162,6 +162,12 @@ The table card says what the pick is actually for:
     now   Pick a {scope} to start from. {assistantName} reads its columns and can still
           reach others in {name}.
 
+Amended when the card became a multi-select — the person toggles tables and confirms the set
+(ADR-0038):
+
+    now   Choose the {scopePlural} to start from, then confirm. Their columns are read first,
+          and other tables in {name} are used only after asking.
+
 *"will then answer your question"* is dropped rather than reworded. It is a promise #407 and #408
 currently break, and the card has no business making it.
 
@@ -194,7 +200,7 @@ Neither defect knows this gate exists. They are downstream of every option consi
 including doing nothing, so they could not select between them. This decision settles which question
 the person is asked. #407 and #408 settle whether the answer runs.
 
-**It does not give the table card a way to be refused.** The card has table buttons and "Show all N"
+**It does not give the table card a way to be refused.** The card has table toggles, a confirm, and "Show all N"
 and nothing else (`message-blocks.js:1599-1663`): it can be answered but not refused, and a person
 who wants neither must abandon it and rephrase without naming the store. The funnel narrows that gap
 on the turns where the investigation card fires and does not widen it anywhere. The gap is

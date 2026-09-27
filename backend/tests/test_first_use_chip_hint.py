@@ -18,7 +18,7 @@ UI = (_WB / "js" / "components" / "composer.js").read_text()
 PREFS = (_WB / "js" / "prefs.js").read_text()
 CSS = (_WB / "css" / "chat.css").read_text()
 
-COPY = "Added to this Conversation only — an app you build declares its own Resources."
+COPY = "Added to this chat only. An app you build picks its own data."
 
 _needs_node = pytest.mark.skipif(shutil.which("node") is None,
                                  reason="node is not on PATH (it is in the Sage image)")

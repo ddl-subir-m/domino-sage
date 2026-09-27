@@ -190,7 +190,7 @@ def test_a_caller_with_no_data_sources_at_all_is_told_so_in_a_plain_sentence(
 
     assert card["sources"] == []
     assert card["message"] == (
-        "You don't have any Data Sources yet. Add one in Domino, or continue without data."
+        "No Data Sources yet. Add one in Domino, or build without data."
     )
     assert asked == []
 
@@ -391,7 +391,7 @@ def test_the_card_names_the_store_the_request_named_back_to_them(tmp_path: Path,
 
     assert card["named"] == 1
     assert "reporting-replica" in card["message"]
-    assert "Confirm it, then pick a Table" in card["message"]
+    assert "Confirm it, then choose a Table" in card["message"]
 
 
 def test_a_card_naming_two_stores_says_they_are_first_rather_than_naming_one(
@@ -422,4 +422,4 @@ def test_a_card_that_named_nothing_still_asks_the_plain_question(tmp_path: Path,
         "prompt": "chart last quarter's premiums from the warehouse"}).text)
 
     assert card["named"] == 0
-    assert card["message"].startswith("Which Data Source should this Built App read?")
+    assert card["message"].startswith("Which Data Source should this app use?")

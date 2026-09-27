@@ -1611,7 +1611,7 @@ window.SW = window.SW || {};
     }
     return h(
       antd.Tooltip,
-      { title: rationale || `Picked for you by ${SW.brand.assistant()}.` },
+      { title: rationale || 'Added for this chat.' },
       h(antd.Tag, { className: 'sw-prov sw-prov-sage', bordered: false }, SW.brand.assistant())
     );
   };

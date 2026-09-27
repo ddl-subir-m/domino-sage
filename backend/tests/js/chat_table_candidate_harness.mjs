@@ -102,7 +102,7 @@ const drawn = cards();
 
 calls.length = 0;
 await SW.store.chooseTableAndAsk(
-  prompt, 'thr_1', 'ds-dwh', { database: 'DWH', schema: 'MARTS', table: 'GONG__CALLS' },
+  prompt, 'thr_1', 'ds-dwh', [{ database: 'DWH', schema: 'MARTS', table: 'GONG__CALLS' }],
 );
 await settle();
 

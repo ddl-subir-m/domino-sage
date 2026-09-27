@@ -36,7 +36,7 @@ window.SW = window.SW || {};
         'div',
         null,
         h('p', { style: { margin: '0 0 12px' } }, SW.brand.text(
-          'Copies the file onto {dataset}. Anything that mounts {dataset} can read it.',
+          'Copies the file into {dataset}. Anyone with access to it can read the file.',
           { dataset: target.name })),
         h(
           Checkbox,
@@ -573,7 +573,7 @@ window.SW = window.SW || {};
             rowMenu.items.length === 0
               ? h(
                   Tooltip,
-                  { title: 'No actions here — check the other modes and sections' },
+                  { title: 'Nothing to do here.' },
                   h(
                     'button',
                     {

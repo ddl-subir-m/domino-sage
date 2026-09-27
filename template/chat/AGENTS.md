@@ -240,9 +240,9 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   `DataSourceClient` to discover how to query. Use it, in one script, only when that tool is
   absent or when you need row text `live_read_query` will not return:
   `from domino_data.data_sources import DataSourceClient` then
-  `DataSourceClient().get_datasource("<name from context>").query("<sql>").to_pandas()`.
-  In an open investigation, other relevant tables in that attached source are also available;
-  in ordinary {chat}, use only the selected table. A number is one `live_read_query`. Text that
+  `DataSourceClient().get_datasource("<name from context>").query("<sql>").to_pandas()` — against
+  the table the context names. In an open investigation, other relevant tables in that attached
+  source are also available; in ordinary {chat}, use only the selected tables. A number is one `live_read_query`. Text that
   needs a model — classifying, summarising, extracting, or deciding — is one `analyze_text` call.
   Put the question in `purpose` and `labels`. The call returns the judgments and coverage. It does
   not return the text. A word match, a regex, or one model call per row is not that answer.

@@ -61,10 +61,10 @@ window.SW = window.SW || {};
     const apps = handoffDraft.apps || [];
     const target = apps.find((a) => a.id === appId);
     const alwaysFiles = [
-      { path: '.sage/plan.md', note: 'Always written. Builder uses this plan.' },
+      { path: '.sage/plan.md', note: 'Always included. Build uses this plan.' },
       {
         path: '.sage/handoff.md',
-        note: 'Always written. Builder reads this summary. It can include the text of your questions.',
+        note: 'Always included. Build reads this summary, which can include your questions.',
       },
     ];
     const preferenceFiles = [

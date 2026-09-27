@@ -95,7 +95,8 @@ def test_the_click_writes_the_record_first_and_then_asks_the_question_again():
     out = _run()
 
     assert out["routes"][0] == "api/threads/thr_1/context/data_source/ds-dwh/candidate"
-    assert out["click"] == {"database": "DWH", "schema": "MARTS", "table": "GONG__CALLS"}
+    assert out["click"] == {"tables": [{"database": "DWH", "schema": "MARTS",
+                                        "table": "GONG__CALLS"}]}
     assert "api/threads/thr_1/chat/stream" in out["routes"]
     assert out["routes"].index("api/threads/thr_1/chat/stream") > 0
     # The other cards' fields ride along at their defaults, because a Chat turn carries every gate

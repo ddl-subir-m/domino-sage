@@ -41,8 +41,11 @@ Two consequences follow, and both are deliberate friction:
   confirmations, even when they own exactly one Data Source. Using the only one silently is the
   same inference through a side door, and it would change behaviour under them the day a second
   one appears.
-- The search always lands on **one** table. It never settles for a schema, because "somewhere in
-  PUBLIC" does not answer "which table has the Gong data".
+- The search always lands on tables, never on a schema, because "somewhere in PUBLIC" does not
+  answer "which table has the Gong data". The person may confirm **several** tables in one click —
+  a question can need `MARTS.GONG__CALLS` and a second table beside it — and they stay one Data
+  Source: one Binding carrying every chosen table in Build, one table chip each in Chat. A confirm
+  that names no table is still refused.
 
 ## What the catalog costs, measured
 
@@ -95,8 +98,8 @@ this whole decision exists to end.
 The catalog is cached per Data Source for the session. A warehouse changes, so a cached list will
 eventually name a table that has been dropped. The failure that hurts is not a stale list, though —
 it is a stale *choice* becoming a Binding that points at nothing, which fails for the first viewer
-of a published app. So the single chosen table is re-checked at the moment of confirmation, one
-cheap query, before the record is written. Refreshing per session bounds the drift on top of that.
+of a published app. So each chosen table is re-checked at the moment of confirmation, one
+cheap query apiece, before anything is written; one dropped table writes none of them. Refreshing per session bounds the drift on top of that.
 
 ## In Chat, where there is no app
 

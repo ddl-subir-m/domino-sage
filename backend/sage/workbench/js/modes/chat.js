@@ -81,7 +81,7 @@ window.SW = window.SW || {};
       'div',
       { className: 'sw-chat-planbar' },
       h('span', { className: 'sw-caption' },
-        SW.brand.text('Investigating — {turnPlural} here can query your {dataSourcePlural}')),
+        'Investigation is on. Messages here can query your data.'),
       h(
         Button,
         {

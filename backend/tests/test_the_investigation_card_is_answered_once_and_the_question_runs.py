@@ -108,7 +108,7 @@ def test_the_decision_survives_a_table_being_picked_beside_it(tmp_path: Path):
     tid = _thread_with_source(orch)
     orch.decide_thread_investigation(tid, "open")
 
-    orch.confirm_thread_table_candidate(tid, "ds-dwh", "DWH", "MARTS", "GONG__CALLS")
+    orch.confirm_thread_table_candidates(tid, "ds-dwh", [("DWH", "MARTS", "GONG__CALLS")])
 
     context = orch.thread_context(tid)
     assert context["investigation"]["state"] == "open"

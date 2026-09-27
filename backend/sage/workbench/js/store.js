@@ -2410,12 +2410,10 @@ window.SW = window.SW || {};
           ok: true,
           fromEvent: 'investigation-state',
           value: ev.state === 'open'
-            ? SW.brand.text('Investigation opened. {turnPlural} in this conversation can query '
-                            + 'your {dataSourcePlural} until you close it.')
+            ? 'Investigation is on. Messages here can query your data until you close it.'
             : (ev.reason === 'clear'
-              ? SW.brand.text('Investigation closed with the rest of this conversation.')
-              : SW.brand.text('Investigation closed. Later {turnPlural} are bounded again; '
-                              + 'what it measured is kept.')),
+              ? 'Investigation closed with this chat.'
+              : 'Investigation closed. Later messages stay within the usual limits. What was measured is kept.'),
         });
       } else if (ev.type === 'withhold-found' && !isAnswered(ev, withheld)
                  && !dismissedWithholds.has(withholdCardKey(ev))) {
@@ -3004,7 +3002,7 @@ window.SW = window.SW || {};
       (answer) => noteContinueOffer(block.turnId, continueOfferFrom(answer)),
       (err) => noteContinueOffer(block.turnId, {
         available: null,
-        error: `Whether this turn can continue could not be checked. ${String(err.message || err)}`,
+        error: `Couldn't check whether this can continue. ${String(err.message || err)}`,
       }));
   }
 
@@ -3258,23 +3256,23 @@ window.SW = window.SW || {};
       } else if (ev.type === 'build-recovery') {
         ensureAssistant().blocks.push({
           type: 'status', ok: true,
-          value: ev.message || 'No app edit was made. Sage is restarting once with a clean context.',
+          value: ev.message || 'No changes yet. Starting over once.',
         });
       } else if (ev.type === 'build-pre-edit-limit') {
         ensureAssistant().blocks.push({
           type: 'status', ok: false,
-          value: ev.message || 'Sage stopped before changing the app.',
+          value: ev.message || 'Stopped before changing the app.',
         });
       } else if (ev.type === 'build-rollover') {
         ensureAssistant().blocks.push({
           type: 'status', ok: true,
-          value: ev.message || 'The build is continuing once in a clean session.',
+          value: ev.message || 'Continuing in a new session.',
         });
       } else if (ev.type === 'build-context-limit') {
         const live = state.contextContinuation;
         ensureAssistant().blocks.push({
           type: 'build_context_limit',
-          message: ev.message || 'The build reached its context limit.',
+          message: ev.message || 'This build ran out of room.',
           kept: !!ev.kept,
           continuationId: ev.continuationId || '',
           conversation: (live && live.conversation) || '',
@@ -3307,8 +3305,8 @@ window.SW = window.SW || {};
             value: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'
               ? (ev.verification.stages && ev.verification.stages.runtime === 'passed'
                 && ev.verification.stages.data === 'unverified'
-                ? 'Page checks passed; data access not verified'
-                : 'Code checks passed; runtime not verified')
+                ? 'Page checks passed. Data access wasn\'t checked.'
+                : 'Code checks passed. The app wasn\'t run.')
               : ev.decision === 'answered'
               ? 'Answered'
               : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),
@@ -4168,7 +4166,7 @@ window.SW = window.SW || {};
     if (!t) return { text: 'The workspace is busy.', href: null };
     if (runningTurnHere(kind, conversationId, appId)) return null;
     if (sameRunningTurnScope(t, kind, conversationId, appId) && t.stopUnavailable) {
-      return { text: 'Stop is unavailable for this turn. Refresh Sage to update it.', href: null };
+      return { text: 'Can\'t stop this yet. Reload the page.', href: null };
     }
     const what = t.kind === 'chat' ? 'Chat is answering' : 'Build is running';
     // Name the axis that actually DIFFERS. A build running in this very conversation on another
@@ -4431,7 +4429,7 @@ window.SW = window.SW || {};
       if (turn.model_active && turn.model_active.turnId === exact
           && turn.running_turn.kind !== 'chat') {
         state.buildTyping = turn.model_active.message
-          || 'The model is working but has not returned text or a tool yet — 30 s';
+          || 'Still working…';
       } else if (reconstructing && turn.running_turn.kind !== 'chat') {
         state.buildTyping = null;
       }
@@ -4468,7 +4466,7 @@ window.SW = window.SW || {};
     if (ev.type === 'user') return;
     if (ev.type === 'model-active') {
       state.buildTyping = ev.active === false ? null
-        : (ev.message || 'The model is working but has not returned text or a tool yet — 30 s');
+        : (ev.message || 'Still working…');
     } else if (ev.type === 'active' || (ev.type === 'agent' && ev.kind === 'tool')) {
       // The command a bash step ran can be a whole pipeline, so bash shows the verb; every other
       // tool shows its subject — the file, the search pattern — which is shorter and says more.
@@ -4480,9 +4478,9 @@ window.SW = window.SW || {};
     } else if (ev.type === 'iterate') {
       state.buildTyping = ev.reason || 'Fixing errors…';
     } else if (ev.type === 'build-recovery') {
-      state.buildTyping = ev.message || 'Restarting once with a clean context…';
+      state.buildTyping = ev.message || 'Starting over…';
     } else if (ev.type === 'build-rollover') {
-      state.buildTyping = ev.message || 'Continuing once in a clean session…';
+      state.buildTyping = ev.message || 'Continuing in a new session…';
     } else if (ev.type === 'build-pre-edit-limit') {
       state.buildTyping = null;
     } else if (ev.type === 'build-context-limit') {
@@ -4853,7 +4851,7 @@ window.SW = window.SW || {};
       if (!SW.prefs.set('dataAccessShown', !!value)) {
         // The same sentence the settings drawer's own writer uses, and now it is true: the click
         // is honoured for this session and the next load will not remember it.
-        antd.message.warning("This browser isn't saving the choice, so it won't persist next time.");
+        antd.message.warning("This browser isn't saving settings. They'll reset next time.");
       }
       for (const list of [state.messages, state.conversationChat, state.buildMessages,
                           state.buildTranscript]) {
@@ -5870,7 +5868,7 @@ window.SW = window.SW || {};
         antd.Modal.confirm({
           title: `Remove ${resource.name} from ${scopeName}?`,
           content: SW.brand.text(
-            'It leaves this project. You can add it again from Browse {platformName}.'
+            'Removed from this project. You can add it again later.'
           ),
           okText: 'Remove',
           okButtonProps: { danger: true },
@@ -5948,7 +5946,7 @@ window.SW = window.SW || {};
       return new Promise((resolve) => {
         antd.Modal.confirm({
           title: `Delete ${resource.name}?`,
-          content: 'This deletes the file, and there is no undo.',
+          content: 'This deletes the file. It can\'t be undone.',
           okText: 'Delete',
           okButtonProps: { danger: true },
           onOk: async () => {
@@ -7005,7 +7003,7 @@ window.SW = window.SW || {};
           // name is a served path.
           title: `Delete ${name} from ${SW.util.datasetNameNow(attachment.dataset_id)
             || attachment.dataset}?`,
-          content: 'This deletes the file, and there is no undo.',
+          content: 'This deletes the file. It can\'t be undone.',
           okText: 'Delete',
           okButtonProps: { danger: true },
           onOk: async () => {
@@ -8043,7 +8041,7 @@ window.SW = window.SW || {};
         // unwind used to clear a flag the others were still relying on. Any of them still here
         // means a turn is running in this project — its own, or the one it is queued behind.
         state.buildRunning = detached || liveBuildTurns > 0;
-        state.buildTyping = detached ? 'Connection lost — build is still running.'
+        state.buildTyping = detached ? 'Connection lost. The build is still running.'
           : (state.buildRunning ? state.buildTyping : null);
         if (!detached) releaseRunningTurn(claim);
         notify();
@@ -8071,7 +8069,7 @@ window.SW = window.SW || {};
       applyBuildTranscript();
       liveBuildTurns += 1;
       state.buildRunning = true;
-      state.buildTyping = 'Continuing in a clean session…';
+      state.buildTyping = 'Continuing in a new session…';
       notify();
       let claim = null;
       let ticket = '';
@@ -8150,7 +8148,7 @@ window.SW = window.SW || {};
         liveBuildTurns -= 1;
         dropQueuedTurn(ticket);
         state.buildRunning = detached || liveBuildTurns > 0;
-        state.buildTyping = detached ? 'Connection lost — build is still running.'
+        state.buildTyping = detached ? 'Connection lost. The build is still running.'
           : (state.buildRunning ? state.buildTyping : null);
         if (!detached) releaseRunningTurn(claim);
         if (detached) store._watchBuild();
@@ -8236,8 +8234,10 @@ window.SW = window.SW || {};
     //
     // `answered` carries the gates this turn was already past, so the replay does not walk back
     // into one the person has settled.
-    async chooseTableAndBuild(prompt, sourceId, scope, answered, bindFirst = false) {
-      await SW.api.confirmTableCandidate(sourceId, scope, bindFirst);
+    //
+    // `tables` is the card's confirmed set, one position or several, written as one Binding.
+    async chooseTableAndBuild(prompt, sourceId, tables, answered, bindFirst = false) {
+      await SW.api.confirmTableCandidates(sourceId, tables, bindFirst);
       // `refreshWorkingSet` for `saveScope`'s reason: this writes the same Scope the same door
       // writes, and the Project's row carries a copy of it under `usedBy`.
       await Promise.all([
@@ -8249,8 +8249,11 @@ window.SW = window.SW || {};
       // server composes the same sentence off the Binding, and this one is what the person sees
       // while the turn runs. The database is left off it for the reason the card's own heading
       // carries it and its buttons do not — `MARTS` against `STAGING` is what they were picking
-      // between.
-      const tableName = [scope.schema, scope.table].filter(Boolean).join('.');
+      // between. Several tables read as `A, B and C`, the server's own join.
+      const names = tables.map((t) => [t.schema, t.table].filter(Boolean).join('.'));
+      const tableName = names.length > 1
+        ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+        : names[0];
       return store.sendBuildPrompt(prompt, { ...(answered || {}), skipTableGate: true, tableName });
     },
 
@@ -8300,8 +8303,8 @@ window.SW = window.SW || {};
     //
     // `echo` is off and `skipTableGate` is on for one reason between them: the question is already
     // in the transcript above the card, and the server will not write it a second time.
-    async chooseTableAndAsk(prompt, threadId, sourceId, scope, taskId = '') {
-      await SW.api.confirmThreadTableCandidate(threadId, sourceId, scope, taskId);
+    async chooseTableAndAsk(prompt, threadId, sourceId, tables, taskId = '') {
+      await SW.api.confirmThreadTableCandidates(threadId, sourceId, tables, taskId);
       const opened = await store.openThread(threadId);
       // The record stands either way — it is written above, and it belongs to the Thread rather
       // than to whatever is on screen. What must not follow it is the answer: `openThread` returns
@@ -8690,7 +8693,7 @@ window.SW = window.SW || {};
         liveBuildTurns -= 1;
         dropQueuedTurn(ticket);
         state.buildRunning = detached || liveBuildTurns > 0;
-        state.buildTyping = detached ? 'Connection lost — build is still running.'
+        state.buildTyping = detached ? 'Connection lost. The build is still running.'
           : (state.buildRunning ? state.buildTyping : null);
         if (!detached) releaseRunningTurn(claim);
         notify();

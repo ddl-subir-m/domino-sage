@@ -273,11 +273,9 @@ def test_refresh_reconstructs_model_active_for_the_same_running_build():
 
 
 def test_model_active_status_uses_one_clamped_thirty_second_bucket():
-    assert _model_active_status(30) == (
-        30, "The model is working but has not returned text or a tool yet — 30 s")
+    assert _model_active_status(30) == (30, "Still working…")
     assert _model_active_status(59.999) == _model_active_status(30)
-    assert _model_active_status(60) == (
-        60, "The model is working but has not returned text or a tool yet — 60 s")
+    assert _model_active_status(60) == (60, "Still working…")
 
 
 def test_native_reasoning_stream_resets_the_no_action_clock(

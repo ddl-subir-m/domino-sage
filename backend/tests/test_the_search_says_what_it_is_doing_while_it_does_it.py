@@ -223,7 +223,7 @@ def test_a_store_that_answers_none_of_its_databases_takes_the_card_back(
     # can do that silence could not, and the assistant's "which table?" a moment later does not say
     # whether the store failed or held nothing — which are different facts about their warehouse.
     assert ended["message"] == (
-        "Sage couldn't finish reading Snowflake-Data-Warehouse, so there's no Table list.")
+        "Couldn't read Snowflake-Data-Warehouse, so there's nothing to choose.")
     assert built == [1]
 
 
