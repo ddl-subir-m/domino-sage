@@ -165,8 +165,8 @@ The table card says what the pick is actually for:
 Amended when the card became a multi-select — the person toggles tables and confirms the set
 (ADR-0038):
 
-    now   Pick the {scopePlural} to start from, then confirm. {assistantName} reads those and
-          asks before using any other in {name}.
+    now   Choose the {scopePlural} to start from, then confirm. Their columns are read first,
+          and other tables in {name} are used only after asking.
 
 *"will then answer your question"* is dropped rather than reworded. It is a promise #407 and #408
 currently break, and the card has no business making it.

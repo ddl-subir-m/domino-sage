@@ -45,6 +45,8 @@ build_context_continuation_reference_max_count
                                  SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT 100
 plan_reasoning_effort            SAGE_BUILD_PLAN_REASONING_EFFORT                    high
 implement_reasoning_effort       SAGE_BUILD_IMPLEMENT_REASONING_EFFORT               low
+implement_reasoning_budget_seconds
+                                 SAGE_BUILD_IMPLEMENT_REASONING_BUDGET_SECONDS       180
 ===============================  ================================================  =========
 
 [1] ``SAGE_MAX_NUDGES`` remains an alias.
@@ -117,9 +119,14 @@ class BuildPolicy:
     build_context_continuation_reference_max_count: int = 100
     plan_reasoning_effort: str = "high"
     implement_reasoning_effort: str = "low"
+    # Wall-clock of an implement call that is still streaming reasoning and has produced no text
+    # and no tool. Not the silence between chunks: that is model_no_action_timeout_seconds, and
+    # these chunks are still arriving. A plan call is not capped.
+    implement_reasoning_budget_seconds: float = 180.0
 
     def __post_init__(self) -> None:
-        for name in ("model_no_action_notice_seconds", "model_no_action_timeout_seconds"):
+        for name in ("model_no_action_notice_seconds", "model_no_action_timeout_seconds",
+                     "implement_reasoning_budget_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) \
                     or not math.isfinite(value) or value <= 0:
@@ -194,6 +201,8 @@ _SETTINGS = (
              "SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT"),
     _Setting("plan_reasoning_effort", "SAGE_BUILD_PLAN_REASONING_EFFORT", "effort"),
     _Setting("implement_reasoning_effort", "SAGE_BUILD_IMPLEMENT_REASONING_EFFORT", "effort"),
+    _Setting("implement_reasoning_budget_seconds",
+             "SAGE_BUILD_IMPLEMENT_REASONING_BUDGET_SECONDS", "duration"),
 )
 
 _POSITIVE_INTEGER = re.compile(r"[0-9]+\Z")

@@ -62,7 +62,7 @@ def test_the_card_offers_one_act_and_it_is_continue():
     "leave it then" is a click that does nothing the person is not already doing."""
     result = _run(A_CEILING_THAT_KEPT_SOMETHING)
 
-    assert result["buttons"] == ["Continue"]
+    assert result["buttons"] == ["Continue from here"]
 
 
 @needs_node

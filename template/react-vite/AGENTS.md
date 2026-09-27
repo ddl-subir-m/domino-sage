@@ -242,77 +242,6 @@ import { appBase } from "./appBase";
 Leave it out and the app works in the preview and shows a blank page once published, because the
 router matches the viewer's full path against routes you wrote without the prefix.
 
-### The {platformName} API: read-only, through this app's own server
-
-> **Most apps never need this section.** A request for a chart, a table, or a page over data already
-> in this project is built from that data. Reaching the {platformName} API adds a call that can fail
-> in front of the user, and answers a question nobody asked.
->
-> Come here only when the request names something only the platform knows: a snapshot, a version, an
-> approval, a policy, a tag, governance, an owner, lineage, a classification, who made something, or
-> which {datasetPlural} exist. If none of those words is in the request, do not pin a snapshot, do
-> not show an approval, and do not list {datasetPlural} — build the app that was asked for. A read
-> that fails is shown as its status and path; it is never replaced by a stand-in value.
-
-A page cannot call the {platformName} API itself — it is another origin, and the browser blocks the
-call before it is sent. This app's server relays it at `GET <app>/api/domino/<platform path>`, with
-this app's own token, so `fetch` it relative to `appBase` like everything else:
-
-```ts
-import { appBase } from "./appBase";
-
-const base = appBase.replace(/\/$/, "");
-const r = await fetch(base + "/api/domino/api/datasetrw/v2/datasets?offset=0&limit=200");
-const listing = await r.json(); // the platform's own answer: listing.datasets[i].dataset — one page
-```
-
-A query string is part of the path and passes through unchanged; do not split it off.
-
-GET only, and only these families; anything else answers 403 or 405:
-
-| Read | Path after `/api/domino` |
-|---|---|
-| every {dataset} this app can see | `/api/datasetrw/v2/datasets?offset=0&limit=200` — paged, and the default page is 10: keep adding `offset` until a page comes back shorter than `limit`; `datasets[].datasetRwDto.id` and `.datasetRwDto.name`; to find one by name, match `.datasetRwDto.name` across every page — the one you want can sit past the first; no `taxonomyTags` here (the taxonomy row carries them), and its `tags` field is a different tagging system, and empty |
-| every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus`; a {dataset} nobody has snapshotted holds only its head, so expect zero committed |
-| the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
-| one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
-| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way — the id is the one beside the {dataset}'s name in this file, never the name itself |
-| governance bundles | `/api/governance/v1/bundles` — paged, rows under `data`; per bundle `id`, `name`, `policyName`, `stage`, `stages`, `policies`, `projectName`, `classificationValue`. One bundle on its own: `/api/governance/v1/bundles/<id>` |
-| a bundle's approvals | `/api/governance/v1/bundles/<id>/approvals` — a bare array, not rows under `data`; per approval `name`, `status`, `approvers`, `updatedAt`, `updatedBy` |
-| what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them |
-| a user's name from an id | `/api/users/v1/user/<userId>` — `user.fullName`, `user.userName` |
-| every user, paged | `/api/users/v1/users` — `users[].id`, `.userName`, `.firstName`, `.lastName` |
-| whose access this is | `/api/users/v1/self` — `user.fullName`, `user.userName`, `user.email` |
-
-The answer is the platform's own — status and body unchanged — and nothing is cached. It works in
-the preview (as you) and once published (as whoever published the app), and that second half is a
-rule for what you build: **every viewer reads with the publisher's access, so never present a list
-as "what the current user can access".** Show whose access it is, from `/api/users/v1/self`, or say
-nothing about access at all.
-
-- **Taxonomy tags come from `datasets-v2` with `includeTaxonomyTags=true`, and nowhere else.**
-  Without the flag the rows have no `taxonomyTags`, and `datasetRwDto.tags` is a different system
-  that reads `{}`. Nothing under `/api/governance/v1/` or `/api/taxonomy/` lists tags from inside
-  the platform. When a request says tags, use tags — do not derive a label from a name instead.
-- **The `bundle` on an attachment-overview is a stub.** Its `policyName` and `stage` read `""` and
-  its `policyVersion` reads `"0.0"` — on 25 rows out of 25. Take `bundle.id` from it and read
-  `/api/governance/v1/bundles/<id>` for anything you will show. A page that prints the embedded
-  `policyName` prints an empty string beside a governed file.
-- **An approval's field is `status`, and there is no `Rejected`.** Across 875 approvals the values
-  were `PendingSubmission`, `PendingReview`, `Approved` and `ConditionallyApproved`;
-  `PendingExpiration` and `Expired` are documented as well. Do not build an
-  approved/pending/rejected tri-state — the third bucket never fills. Treat anything that is not
-  `Approved` as not approved.
-- **Governance can be attached to the open head.** An attachment whose `identifier.snapshotVersion`
-  is missing names the mutable head, not a committed snapshot, so what was approved can change
-  afterwards. Say what an approval is attached to, and when the request wants a fixed record, pin a
-  snapshot whose `isReadWrite` is false and read that one.
-- **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
-  `user.fullName`.
-- **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
-  the listing that gave it. On any other path, the platform does not route that path from inside;
-  stop guessing at that family, because the table is the list of what answers.
-
 `sage_domino.py` and `serve.py` are {assistantName}'s, refreshed at publish; an edit to either is
 lost.
 
@@ -424,3 +353,75 @@ components outside what was asked.
 - No gratuitous gradients, no clashing accent colors, no inconsistent corner radii. Restraint reads
   as quality.
 <!-- sage:build-profile:v1:design:end -->
+<!-- sage:build-profile:v1:platform:begin -->
+### The {platformName} API: read-only, through this app's own server
+
+> **Most apps never need this section.** A request for a chart, a table, or a page over data already
+> in this project is built from that data. Reaching the {platformName} API adds a call that can fail
+> in front of the user, and answers a question nobody asked.
+>
+> Come here only when the request names something only the platform knows: a snapshot, a version, an
+> approval, a policy, a tag, governance, an owner, lineage, a classification, who made something, or
+> which {datasetPlural} exist. If none of those words is in the request, do not pin a snapshot, do
+> not show an approval, and do not list {datasetPlural} — build the app that was asked for. A read
+> that fails is shown as its status and path; it is never replaced by a stand-in value.
+
+A page cannot call the {platformName} API itself — it is another origin, and the browser blocks the
+call before it is sent. This app's server relays it at `GET <app>/api/domino/<platform path>`, with
+this app's own token, so `fetch` it relative to `appBase` like everything else:
+
+```ts
+import { appBase } from "./appBase";
+
+const base = appBase.replace(/\/$/, "");
+const r = await fetch(base + "/api/domino/api/datasetrw/v2/datasets?offset=0&limit=200");
+const listing = await r.json(); // the platform's own answer: listing.datasets[i].dataset — one page
+```
+
+A query string is part of the path and passes through unchanged; do not split it off.
+
+GET only, and only these families; anything else answers 403 or 405:
+
+| Read | Path after `/api/domino` |
+|---|---|
+| every {dataset} this app can see | `/api/datasetrw/v2/datasets?offset=0&limit=200` — paged, and the default page is 10: keep adding `offset` until a page comes back shorter than `limit`; `datasets[].datasetRwDto.id` and `.datasetRwDto.name`; to find one by name, match `.datasetRwDto.name` across every page — the one you want can sit past the first; no `taxonomyTags` here (the taxonomy row carries them), and its `tags` field is a different tagging system, and empty |
+| every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus`; a {dataset} nobody has snapshotted holds only its head, so expect zero committed |
+| the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
+| one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
+| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way — the id is the one beside the {dataset}'s name in this file, never the name itself |
+| governance bundles | `/api/governance/v1/bundles` — paged, rows under `data`; per bundle `id`, `name`, `policyName`, `stage`, `stages`, `policies`, `projectName`, `classificationValue`. One bundle on its own: `/api/governance/v1/bundles/<id>` |
+| a bundle's approvals | `/api/governance/v1/bundles/<id>/approvals` — a bare array, not rows under `data`; per approval `name`, `status`, `approvers`, `updatedAt`, `updatedBy` |
+| what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them |
+| a user's name from an id | `/api/users/v1/user/<userId>` — `user.fullName`, `user.userName` |
+| every user, paged | `/api/users/v1/users` — `users[].id`, `.userName`, `.firstName`, `.lastName` |
+| whose access this is | `/api/users/v1/self` — `user.fullName`, `user.userName`, `user.email` |
+
+The answer is the platform's own — status and body unchanged — and nothing is cached. It works in
+the preview (as you) and once published (as whoever published the app), and that second half is a
+rule for what you build: **every viewer reads with the publisher's access, so never present a list
+as "what the current user can access".** Show whose access it is, from `/api/users/v1/self`, or say
+nothing about access at all.
+
+- **Taxonomy tags come from `datasets-v2` with `includeTaxonomyTags=true`, and nowhere else.**
+  Without the flag the rows have no `taxonomyTags`, and `datasetRwDto.tags` is a different system
+  that reads `{}`. Nothing under `/api/governance/v1/` or `/api/taxonomy/` lists tags from inside
+  the platform. When a request says tags, use tags — do not derive a label from a name instead.
+- **The `bundle` on an attachment-overview is a stub.** Its `policyName` and `stage` read `""` and
+  its `policyVersion` reads `"0.0"` — on 25 rows out of 25. Take `bundle.id` from it and read
+  `/api/governance/v1/bundles/<id>` for anything you will show. A page that prints the embedded
+  `policyName` prints an empty string beside a governed file.
+- **An approval's field is `status`, and there is no `Rejected`.** Across 875 approvals the values
+  were `PendingSubmission`, `PendingReview`, `Approved` and `ConditionallyApproved`;
+  `PendingExpiration` and `Expired` are documented as well. Do not build an
+  approved/pending/rejected tri-state — the third bucket never fills. Treat anything that is not
+  `Approved` as not approved.
+- **Governance can be attached to the open head.** An attachment whose `identifier.snapshotVersion`
+  is missing names the mutable head, not a committed snapshot, so what was approved can change
+  afterwards. Say what an approval is attached to, and when the request wants a fixed record, pin a
+  snapshot whose `isReadWrite` is false and read that one.
+- **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
+  `user.fullName`.
+- **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
+  the listing that gave it. On any other path, the platform does not route that path from inside;
+  stop guessing at that family, because the table is the list of what answers.
+<!-- sage:build-profile:v1:platform:end -->

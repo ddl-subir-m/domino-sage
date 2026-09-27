@@ -162,7 +162,7 @@ def test_workbench_only_reloads_the_visible_matching_app(case):
     from .test_build_conversation_return import run as render
     result = render({'pageValidation': case})
     assert ('sageValidation=validation_current' in result['atValidation']['src']) == (case == 'current')
-    assert result['status'][-1]['value'] == 'Code checks passed; runtime not verified'
+    assert result['status'][-1]['value'] == "Code checks passed. The app wasn't run."
     assert result['status'][-1]['ok'] is None
     assert result['status'][-1]['warn'] is True
 
@@ -171,7 +171,7 @@ def test_saved_history_keeps_check_kind_and_unverified_warning():
     from .test_build_conversation_return import run as render
     rows = render({'savedVerification': 'unverified'})
     assert rows[0]['value'] == 'Syntax check passed'
-    assert rows[1]['value'] == 'Code checks passed; runtime not verified'
+    assert rows[1]['value'] == "Code checks passed. The app wasn't run."
     assert rows[1]['warn'] and rows[1]['ok'] is None
     assert render({'savedVerification': 'failed'})[-1]['value'] == 'Stopped — queries failed'
 

@@ -296,14 +296,13 @@ def test_the_receipt_names_what_stopped_and_swears_nothing_was_altered():
 
 
 def test_the_receipt_says_how_far_the_withhold_reaches():
-    """Same scope the card promised. There is no undo, so it has to keep saying where the reset is."""
-    assert "this conversation" in _text(_receipt())
+    """The receipt names what stopped. There is no undo, and nothing else was touched."""
+    assert "Stopped sending card_panel_transactions_RAW.csv." in _text(_receipt())
 
 
 def test_several_withheld_things_read_as_plural():
     said = _text(_receipt(labels=["raw.csv", "export.csv"]))
-    assert "raw.csv" in said and "export.csv" in said
-    assert "them" in said
+    assert "Stopped sending raw.csv, export.csv." in said
 
 
 def test_the_receipt_says_to_ask_again_in_different_words():

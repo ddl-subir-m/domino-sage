@@ -123,7 +123,7 @@ def test_the_card_names_the_cause_neutrally_and_offers_one_action():
     result = _run(history=A_FAILED_CHAT_TURN, get=AVAILABLE)
     (card,) = result["before"]
     text = " ".join(card["text"])
-    assert "tool call" in text.lower()
+    assert "stopped before it finished" in text.lower()
     assert "!" not in text
     for word in ("gateway", "vendor", "provider", "Sage", "Domino"):
         assert word not in text, text
@@ -144,7 +144,7 @@ def test_the_picker_offers_allowed_models_and_the_efforts_the_model_accepts():
     (effort,) = [s for s in picker["selects"] if s["label"] == "Reasoning effort"]
     assert [o["value"] for o in effort["options"]] == ["default", "none"]
     # The scope of the pick, said before the click: it is the standing pick, not a one-off.
-    assert any("later turns" in t for t in picker["text"])
+    assert any("later messages" in t for t in picker["text"])
     # And what will run, named from the pick, on the card itself.
     assert any("gpt-5.4" in t for t in picker["text"])
     assert [b["label"] for b in picker["buttons"]] == ["Continue", "Cancel"]
@@ -295,7 +295,7 @@ def test_a_failed_availability_read_is_said_on_the_card():
     result = _run(history=A_FAILED_CHAT_TURN, get="error")
     (card,) = result["before"]
     assert card["buttons"] == []
-    assert any("could not be checked" in t for t in card["text"])
+    assert any("Couldn't check whether this can continue" in t for t in card["text"])
 
 
 # --- the live stream -----------------------------------------------------------------------------

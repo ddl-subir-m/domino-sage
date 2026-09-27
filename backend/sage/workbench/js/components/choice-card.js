@@ -47,7 +47,7 @@ window.SW = window.SW || {};
           chosen.opensPanel
             // The catalogue is the platform's page, so the word is the platform's name; the label
             // beside it is whatever the option was called, dropped in rather than resolved.
-            ? SW.brand.text("Opened the {platformName} catalog. Add one there and we can continue.")
+            ? SW.brand.text("Opened the {platformName} catalog. Add one there to continue.")
             : `You chose "${chosen.label}".`
         )
     );
@@ -98,7 +98,7 @@ window.SW = window.SW || {};
                     SW.store.focusPanel(resource.kind);
                   },
                 },
-                'Show me others'
+                'See others'
               ),
               (alternatives || []).length > 0 &&
                 h(

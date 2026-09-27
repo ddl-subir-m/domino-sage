@@ -73,7 +73,7 @@ def test_a_card_read_back_off_the_thread_carries_no_buttons():
 @needs_node
 def test_the_card_offers_one_act_and_one_way_past_it():
     """Two buttons, in this order: the grant, then the turn that would have run anyway."""
-    assert _run()["buttons"] == ["Investigate", "Just answer this"]
+    assert _run()["buttons"] == ["Look across my data", "Answer this question"]
 
 
 @needs_node
@@ -126,7 +126,7 @@ def test_the_transcript_says_when_the_grant_began_and_when_it_ended():
     lines = _run("close", history)["lines"]
 
     assert len(lines) == 2
-    assert "opened" in lines[0] and "closed" in lines[1]
+    assert "is on" in lines[0] and "closed" in lines[1]
     # Closing is not deleting, and the line that reports it says so.
     assert "kept" in lines[1]
     # And it says which turns it reaches. The flag is read once at the start of a turn, so a turn

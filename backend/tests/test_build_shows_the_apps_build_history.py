@@ -139,9 +139,9 @@ def test_the_header_opens_the_selected_apps_build_history():
     not be found at all. The read it makes names no conversation: that is the whole difference
     between this list and the transcript behind it."""
     step = _opened()
-    assert step["control"]["texts"] == ["Build history"]
+    assert step["control"]["texts"] == ["Download logs"]
     assert "GET /project/history?detail=off" in step["calls"]
-    assert step["drawer"]["title"] == "Build history · Desk dashboard"
+    assert step["drawer"]["title"] == "Logs · Desk dashboard"
 
 
 @needs_node
@@ -234,11 +234,11 @@ def test_switching_app_switches_the_history_to_that_app():
     app it is about to leave. Nobody clicks: a second tab choosing another app moves the server's
     selection and the 30s poll brings it here (#95)."""
     step = _run([{"history": "thr_many", "select": "app_c", "moveTo": "app_a"}])[-1]
-    assert step["mid"]["title"] == "Build history · Rate curve viewer"
+    assert step["mid"]["title"] == "Logs · Rate curve viewer"
     assert step["mid"]["prompts"] == ["Draw the rate curve"]
     # Same drawer, never reopened, now the other app's builds under the other app's name.
     assert step["app"] == "app_a"
-    assert step["drawer"]["title"] == "Build history · Desk dashboard"
+    assert step["drawer"]["title"] == "Logs · Desk dashboard"
     assert step["drawer"]["prompts"] == ["Sort the desks by P&L", "Add a margin column"]
 
 
@@ -271,7 +271,7 @@ def test_a_history_read_that_lands_after_the_app_moved_does_not_paint():
     assert step["mid"]["prompts"] == []
     assert "Draw the rate curve" not in " ".join(step["mid"]["words"])
     # Named, so a stale list would be a wrong pairing said out loud rather than inferred.
-    assert step["mid"]["title"] == "Build history · Desk dashboard"
+    assert step["mid"]["title"] == "Logs · Desk dashboard"
 
 
 @needs_node
@@ -308,7 +308,7 @@ def test_nothing_in_the_drawer_claims_the_conversation():
     said = " ".join(step["drawer"]["words"]).lower()
     for claim in ("this conversation", "your conversation", "conversation history", "transcript"):
         assert claim not in said, claim
-    assert step["drawer"]["title"].startswith("Build history · ")
+    assert step["drawer"]["title"].startswith("Logs · ")
 
 
 # ---- criterion 4, it does not displace the preview ----------------------------------------------
@@ -389,8 +389,8 @@ def test_a_failed_diagnostic_list_does_not_invent_an_interrupted_status():
     said = " ".join(step["drawer"]["words"])
     assert "Status unavailable" in said
     assert "Implementation · Interrupted" not in said
-    assert "Download diagnostics" in step["drawer"]["buttons"]
-    assert "Download implementation diagnostics" not in step["drawer"]["buttons"]
+    assert "Download JSON" in step["drawer"]["buttons"]
+    assert "Download implementation JSON" not in step["drawer"]["buttons"]
 
 
 @needs_node

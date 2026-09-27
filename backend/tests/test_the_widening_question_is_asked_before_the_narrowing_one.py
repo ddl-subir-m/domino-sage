@@ -246,5 +246,5 @@ def test_the_card_that_is_drawn_says_what_its_click_actually_buys(tmp_path: Path
     if expected == "table-candidates":
         assert "to start from" in card["message"]
     else:
-        # "may first ask", not "will": the second card is not certain from either call site.
-        assert "may first ask where to start reading" in card["message"]
+        # "may be asked", not "will": the second card is not certain from either call site.
+        assert "may be asked where to start" in card["message"]

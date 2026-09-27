@@ -457,7 +457,7 @@ def test_a_browser_that_will_not_store_the_choice_still_honours_the_click():
     # Nothing was filed, and the person was told so rather than left to find out on the next load.
     assert result["stored"] is None
     assert result["warnings"] == [
-        "This browser isn't saving the choice, so it won't persist next time."]
+        "This browser isn't saving settings. They'll reset next time."]
 
 
 # ---- the two controls ----------------------------------------------------------------------------
@@ -633,7 +633,7 @@ def test_the_settings_drawer_carries_the_group_and_says_what_it_cannot_do():
     shell = (_JS / "components" / "shell.js").read_text()
     drawer = shell[shell.index("SW.SettingsDrawer"):]
     assert "'Data access'" in drawer
-    assert "A read that failed or came back incomplete is always shown." in drawer
+    assert "Failed or incomplete reads are always shown." in drawer
     # Written through the store, which owns the transcript this changes. A `save()` here would
     # leave the drawer agreeing with a transcript nobody had re-partitioned.
     assert "SW.store.setDataAccessShown(value)" in drawer

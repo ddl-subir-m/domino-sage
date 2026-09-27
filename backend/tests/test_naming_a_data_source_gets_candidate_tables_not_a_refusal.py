@@ -196,7 +196,7 @@ def test_a_request_no_table_name_matches_says_so_and_still_shows_the_list(
     # Plain text, no Markdown: the card renders its sentence as a text node, as the four nudges
     # beside it do, so asterisks here would reach the person as asterisks.
     assert "Nothing in Snowflake-Data-Warehouse matched" in card["message"]
-    assert "Pick a Table" in card["message"]
+    assert "Choose a Table" in card["message"]
     assert card["total"] == 7
     assert sum(len(g["tables"]) for g in card["allGroups"]) == 7
 
@@ -781,7 +781,7 @@ def test_an_inferred_store_that_stops_answering_says_nothing(tmp_path: Path, mon
     named = client.post("/api/project/build/stream", json={"prompt": PROMPT}).text
 
     assert _speaks(inferred) == []
-    assert any("couldn't" in m or "could not" in m for m in _speaks(named)), _speaks(named)
+    assert any("couldn" in m.lower() or "could not" in m.lower() for m in _speaks(named)), _speaks(named)
 
 
 def test_an_inferred_store_whose_walk_crashes_says_nothing(tmp_path: Path, monkeypatch):
@@ -800,7 +800,7 @@ def test_an_inferred_store_whose_walk_crashes_says_nothing(tmp_path: Path, monke
     named = client.post("/api/project/build/stream", json={"prompt": PROMPT}).text
 
     assert _speaks(inferred) == []
-    assert any("couldn't" in m or "could not" in m for m in _speaks(named)), _speaks(named)
+    assert any("couldn" in m.lower() or "could not" in m.lower() for m in _speaks(named)), _speaks(named)
 
 
 def test_the_arms_above_are_every_arm_the_build_gate_can_speak_from(tmp_path: Path):

@@ -5734,9 +5734,7 @@ def _model_active_status(elapsed_seconds: float) -> tuple[int, str]:
         int(max(0.0, elapsed_seconds) // _MODEL_ACTIVE_BUCKET_SECONDS)
         * _MODEL_ACTIVE_BUCKET_SECONDS,
     )
-    return bucket, (
-        "The model is working but has not returned text or a tool yet — "
-        f"{bucket} s")
+    return bucket, "Still working…"
 
 
 @dataclass
@@ -6438,6 +6436,52 @@ _PLAN_EXAMPLES = {
         ("src/arrivals.ts", "Read the arrivals file and return each sample."),
         "src/App.tsx, src/App.css"),
 }
+
+
+def _instruction_facts(project: Project, intent: BuildIntent):
+    """The ask, the plan, and the rows already in the project. Not the system instructions.
+
+    The profile is applied before the intent carrier is installed, so the chooser cannot read the
+    request body for the plan. This is the text it gets instead.
+    """
+    from ..implementation_request import InstructionFacts
+
+    local: list[str] = []
+    datasets: list[str] = []
+    for entry in project.attachments_for_turn():
+        path = str(entry.get("path") or entry.get("name") or "")
+        base = Path(path).name
+        if base:
+            local.append(base)
+    for binding in parse_bindings(project.app_for_turn().read_bindings()):
+        if binding.kind == KIND_DATA_SOURCE and binding.table:
+            local.append(binding.table)
+        elif binding.kind == KIND_DATASET:
+            if binding.display_name:
+                datasets.append(binding.display_name)
+            if binding.id:
+                datasets.append(binding.id)
+    text = "\n".join(part for part in (
+        *intent.source_requests,
+        intent.authoritative_plan,
+        intent.phase_brief,
+        intent.answers,
+    ) if part)
+    return InstructionFacts(
+        stack=_plan_stack_name(project),
+        ask_and_plan=text,
+        platform_name=str(brand.load().get("platformName") or ""),
+        local_names=tuple(local),
+        dataset_names=tuple(datasets),
+    )
+
+
+def _reasoning_only_open_call(snapshot: dict | None) -> bool:
+    """The call in progress has been reasoning and has not produced text or a tool."""
+    if not snapshot:
+        return False
+    return (snapshot.get("firstActionKind") is None
+            and int(snapshot.get("reasoningOnlyChunks") or 0) > 0)
 
 
 def _plan_stack_name(project: Project) -> str:
@@ -8908,7 +8952,7 @@ class Orchestrator:
                             terminal_context = {
                                 "ok": False, "error_count": 0,
                                 "decision": "pre_edit_limit",
-                                "message": "Sage stopped before changing the app.",
+                                "message": "Stopped before changing the app.",
                             }
                             raise _ContextTerminal()
                         if pre_edit.action is PreEditAction.RECOVER:
@@ -8980,8 +9024,8 @@ class Orchestrator:
                     )
                     terminal_context = {
                         "ok": False, "error_count": 0, "decision": "context_limit",
-                        "message": ("The build reached its context limit twice. Current app "
-                                    "changes are saved. Continue in a new clean session."),
+                        "message": ("This build ran out of room. Your changes are saved. "
+                                    "Continue in a new session."),
                         "continuationId": continuation.continuation_id,
                     }
                     raise _ContextTerminal()
@@ -8996,7 +9040,7 @@ class Orchestrator:
             except _ContextTerminal:
                 return terminal_context or {
                     "ok": False, "error_count": 0, "decision": "context_limit",
-                    "message": "The build reached its context limit.",
+                    "message": "This build ran out of room.",
                 }
             except TurnWedged:
                 return {
@@ -16101,9 +16145,8 @@ class Orchestrator:
                         resume = {"type": "continue-offer", "prompt": prompt,
                                   "threadId": thread_id,
                                   "message": brand.text(
-                                      "Continue from what this turn measured — {assistantName} "
-                                      "reads {rel} first, so the next turn starts where this one "
-                                      "stopped.", rel=kept_findings)}
+                                      "Continue from what was already found. The next reply starts from {rel}.",
+                                      rel=kept_findings)}
                         store.append_history(thread_id, resume)
                         yield resume
                     return
@@ -17104,7 +17147,7 @@ class Orchestrator:
         is nothing to learn from running that turn, so don't: name the rule and hand back the
         one-click way to actually run it (the UI turns `prompt` into a Build-in-Auto button)."""
         project = self.project()
-        message = ("Ask mode doesn't change files, so this didn't run. Switch to Auto to build it.")
+        message = ("Ask doesn't change files, so this didn't run. Switch to Auto to build it.")
         for ev in ({"type": "user", "text": prompt},
                    {"type": "ask-blocked", "prompt": prompt, "message": message},
                    {"type": "done", "ok": False, "decision": "ask mode (read-only)",
@@ -17126,8 +17169,8 @@ class Orchestrator:
         build agent builds — asked to remove everything it had built, it wrote a landing page saying
         "Ready to rebuild from scratch", which is the most literal thing those words describe."""
         project = self.project()
-        message = ("Resetting puts this app back to a blank starter. Attached files, this "
-                   "conversation, and your other apps stay.")
+        message = ("This puts the app back to a blank starter. Files, this chat, and your "
+                   "other apps stay.")
         for ev in ({"type": "user", "text": prompt},
                    # The whole turn rides along, not just the prompt: "clear everything and build X
                    # from @clickstream" is one request, and the button that answers this offer has to
@@ -17151,7 +17194,7 @@ class Orchestrator:
         Built App will conflict, and a conflict is what the merge is for."""
         project = self.project()
         shown = files[:_INCOMING_FILES_SHOWN]
-        message = ("Someone else has new changes. Pull first to build on theirs, or keep going and "
+        message = ("Someone else changed this app. Pull their changes first, or keep going and "
                    "merge later.")
         for ev in ({"type": "user", "text": prompt},
                    # The prompt rides along so a button can replay the request rather than making
@@ -17264,24 +17307,23 @@ class Orchestrator:
             # card still has to be answered, and the sentence now says why rather than leaving it to
             # be inferred from a highlight.
             message = brand.text(
-                "You named {name}. Confirm it, then pick a {scope}.",
+                "You named {name}. Confirm it, then choose a {scope}.",
                 name=str(offer.sources[0].get("name") or ""))
         elif offer.sources and offer.named:
             # More than one named, so there is no single store to name back — but the ones the
             # request named are still first, and saying that is what stops the order reading as
             # Sage's own guess.
             message = brand.text(
-                "Your request named more than one. Pick which to use, then pick a {scope}.")
+                "You named more than one. Choose which to use, then choose a {scope}.")
         elif offer.sources:
             message = brand.text(
-                "Which {dataSource} should this {builtApp} read?")
+                "Which {dataSource} should this app use?")
         else:
             # Said rather than discovered halfway through a build. The failure this replaces is the
             # assistant meeting a request about a warehouse, finding no store, and building a
             # dashboard on rows it invented — which looks finished and is worthless.
             message = brand.text(
-                "You don't have any {dataSourcePlural} yet. Add one in {platformName}, or "
-                "continue without data.")
+                "No {dataSourcePlural} yet. Add one in {platformName}, or build without data.")
         events = ({"type": "user", "text": prompt},
                   # The prompt rides along so the click replays the request rather than asking the
                   # person to type it again, and `answered` carries the gates this turn was already
@@ -17514,7 +17556,7 @@ class Orchestrator:
         skipped: list[str] = []
         gave_up = ""
         cannot_finish = brand.text(
-            "{assistantName} couldn't finish reading {name}, so there's no {scope} list.",
+            "Couldn't read {name}, so there's nothing to choose.",
             name=binding.display_name)
         try:
             for database in databases:
@@ -17742,7 +17784,7 @@ class Orchestrator:
         yield self._table_search_frame(binding, ())
         yield {"type": "table-search-ended", "sourceId": binding.id,
                "message": brand.text(
-                   "{assistantName} couldn't read {name}, so there's no {scope} list.",
+                   "Couldn't read {name}, so there's nothing to choose.",
                    name=binding.display_name)}
 
     def _shortlist_columns(self, source: DataSource, shortlist: Sequence[Candidate],
@@ -17815,14 +17857,14 @@ class Orchestrator:
         name = binding.display_name
         if ranking.matched:
             message = brand.text(
-                "Pick the {scopePlural} to use, then confirm. {assistantName} will then build "
-                "what you asked for from those.")
+                "Choose the {scopePlural} to use, then confirm. Then the app is built from your "
+                "request.")
         else:
             # Never an invented name, and never the alphabetical top five presented as answers. The
             # list is still shown, because "no name matched" is a fact about the names and not about
             # the warehouse — the person often knows the table by sight.
             message = brand.text(
-                "Nothing in {name} matched. Pick a {scope}, or say more about the data you mean.",
+                "Nothing in {name} matched. Choose a {scope}, or describe the data.",
                 name=name)
         # A database the walk could not read is named here rather than left out (#191). It rides on
         # both messages, matched or not: "no name matched" over a half-read warehouse is exactly
@@ -18001,14 +18043,14 @@ class Orchestrator:
             # dropped rather than reworded: it is a promise #407 and #408 currently break, and this
             # card has no business making it.
             message = brand.text(
-                "Pick the {scopePlural} to start from, then confirm. {assistantName} reads "
-                "those and asks before using any other in {name}.", name=name)
+                "Choose the {scopePlural} to start from, then confirm. Their columns are read "
+                "first, and other tables in {name} are used only after asking.", name=name)
         else:
             # Never an invented name, and never the alphabetical top five presented as answers. The
             # list is still shown, because "no name matched" is a fact about the names and not about
             # the warehouse — the person often knows the table by sight.
             message = brand.text(
-                "Nothing in {name} matched. Pick a {scope}, or say more about the data you mean.",
+                "Nothing in {name} matched. Choose a {scope}, or describe the data.",
                 name=name)
         # Same sentence the Build card adds, from the same helper (#191): the mode somebody happens
         # to be standing in must not decide whether they are told a database went unread.
@@ -18142,9 +18184,8 @@ class Orchestrator:
         """
         task = chat_task.await_input(store, thread_id, prompt, "investigation")
         message = brand.text(
-            "This question looks like it needs more than one answer. {assistantName} can open an "
-            "investigation for this conversation: {turnPlural} here can query your "
-            "{dataSourcePlural} directly and keep what they measure for the questions that follow. "
+            "This may need a look across your data, not just one table. "
+            "What is found stays available for later questions in this chat. "
             # Under the funnel this card comes FIRST, so the old closing sentence — "answers from
             # what is already in this conversation" — became false: declining replays the question
             # into the table gate, which then asks where to start (#392, ADR-0059).
@@ -18154,8 +18195,7 @@ class Orchestrator:
             # declined and nothing follows; above them the table gate still needs the store NAMED in
             # the sentence, and a Thread scoped to one table has no unscoped store left to walk. A
             # card that promised a question nobody then asked would be the same defect one layer up.
-            "Otherwise {assistantName} answers this one question, and may first ask where to start "
-            "reading.")
+            "Or this question can be answered on its own. You may be asked where to start.")
         events = ({"type": "investigation-offer", "prompt": prompt, "message": message,
                    # What tells the click which conversation to record the decision on, the way the
                    # table card carries the same for the same reason.
@@ -18220,13 +18260,9 @@ class Orchestrator:
         would settle the turn twice.
         """
         message = brand.text(
-            # The maintainer's wording, kept rather than improved. It says three things the person
-            # needs in order to choose and nothing else: that the calculation cannot run on this
-            # lane, that {assistantName} can do it on another, and roughly what that costs. The cost
-            # sentence is honest about the ORDER OF MAGNITUDE rather than the number — #400 measured
+            # How long it takes, as an order of magnitude rather than a number — #400 measured
             # 400.2s — which is what someone deciding whether to wait actually needs.
-            "That needs a calculation {assistantName} can't run here. Want it worked out? "
-            "It'll take a few minutes.")
+            "This needs a calculation that can't run here. It takes a few minutes.")
         # Minted here, where the offer is made, so the grant cannot exist without a card that
         # offered it. Held in memory rather than written to the Thread: a grant that survived a
         # restart would be a standing capability, which is the Thread-wide shape this door exists
@@ -18362,14 +18398,13 @@ class Orchestrator:
         name = binding.display_name
         if card["matched"]:
             message = brand.text(
-                "Pick what this {builtApp} should read. {assistantName} will then build what "
-                "you asked for.")
+                "Choose what this app should read. Then it is built from your request.")
         else:
             # The list is still shown where nothing matched, for the reason the table card shows
             # its own: "no name matched" is a fact about the names and not about the Dataset, and
             # the person very often knows the file by sight.
             message = brand.text(
-                "Nothing in {name} matched. Pick a file, or continue without attaching one.",
+                "Nothing in {name} matched. Choose a file, or continue without one.",
                 name=name)
         message += self._partial_note(card["truncated"], name)
         message += self._capped_note(card["listed"], card["total"])
@@ -18435,10 +18470,10 @@ class Orchestrator:
         """The card itself, written to the Thread rather than to a Built App's transcript."""
         if card["matched"]:
             message = brand.text(
-                "Pick the file to read. {assistantName} will then answer your question.")
+                "Choose a file. Then your question is answered.")
         else:
             message = brand.text(
-                "Nothing in {name} matched. Pick a file, or say more about the data you mean.",
+                "Nothing in {name} matched. Choose a file, or describe the data.",
                 name=asset.name)
         message += self._partial_note(card["truncated"], asset.name)
         message += self._capped_note(card["listed"], card["total"])
@@ -20152,6 +20187,11 @@ class Orchestrator:
         # it to implement instead of declaring success. Capped so a model that refuses to write
         # can't loop forever.
         made_edits = False
+        # One follow-up each, for the whole turn. A reasoning-only implement call is interrupted
+        # at its budget, and a reasoning stream that then dies is retried once. The attempt after
+        # both is the stall that already ends a quiet turn. A plan call is not part of this.
+        reasoning_budget_sent = False
+        dead_stream_retried = False
         # Set when the agent claims this turn's request cannot be acted on at all (NO_BUILD_MARKER).
         # Not reset between nudge iterations, and it doesn't need to be: a claimed turn returns
         # before the nudge loop can run, and the two nudges that follow a WRITING turn (runtime,
@@ -20207,6 +20247,9 @@ class Orchestrator:
             f"request: edit the project files (start with {project.app_for_turn().stack.entry_file}) "
             "so the app actually builds "
             "what was asked. Make the code changes now."
+        )
+        IMPLEMENT_ACT_NUDGE = (
+            "Do the next concrete step now: call a tool or edit a file."
         )
         RUNTIME_FIX_NUDGE = (
             "The app compiled but threw a runtime error when it rendered in the browser, so the "
@@ -20408,6 +20451,8 @@ class Orchestrator:
         turn_ticket = self._turns.running()
         if not gate and not answer_only and not arch:
             project.active_build_intent = build_intent or BuildIntent.for_direct(prompt)
+            project.shim.set_instruction_facts(
+                _instruction_facts(project, project.active_build_intent))
             if continuation_note:
                 current = continuation_note
             elif project.active_build_intent.kind != "phase":
@@ -20575,7 +20620,7 @@ class Orchestrator:
                 "type": "build-recovery",
                 "reason": "pre_edit_limit",
                 "attempt": 1,
-                "message": "No app edit was made. Sage is restarting once with a clean context.",
+                "message": "No changes yet. Starting over once.",
             })
             # Restore only user-approved carriers. Do not replay assistant/tool/protocol text, chat
             # context, the old implementation nudge, or a broken-call repair note.
@@ -20720,11 +20765,11 @@ class Orchestrator:
             yield persist({
                 "type": "build-context-limit",
                 "message": (
-                    "The build reached its context limit twice. Current app changes are saved. "
-                    "Continue in a new clean session."
+                    "This build ran out of room. Your changes are saved. "
+                    "Continue in a new session."
                     if kept else
-                    "The build reached its context limit twice before changing the app. "
-                    "Continue in a new clean session."
+                    "This build ran out of room before it changed the app. "
+                    "Continue in a new session."
                 ),
                 "kept": kept,
                 "continuationId": continuation.continuation_id,
@@ -20778,6 +20823,7 @@ class Orchestrator:
                 return
             yield {"type": "turn", "prompt": current[:120]}
             project.last_gateway_error = None
+            recover_dead_stream = False
             # The other two witnesses to a refused turn, reset with the first. `last_gateway_error`
             # is the shim's own; this one is OpenCode's, and it is the one that carries the failures
             # the shim never sees (ContextOverflowError, MessageOutputLengthError,
@@ -21532,14 +21578,34 @@ class Orchestrator:
                 chunk_at = project.last_stream_chunk_at
                 alive = max(last_event, chunk_at if chunk_at >= start else 0.0)
                 if appeared and time.monotonic() - alive >= quiet_limit:
+                    quiet_for = time.monotonic() - alive
+                    # A reasoning stream that died with no text and no tool gets one more call in
+                    # this session. Decided before the pre-edit claim: that claim ends the guard,
+                    # and the retry is still this turn. A second death, a turn that already edited,
+                    # an open tool, and a person's Stop take the stall below. The 3-minute interrupt
+                    # is a separate follow-up; this is the one that remains after it.
+                    can_retry_dead = (
+                        not gate and not answer_only and not tool_open
+                        and not agent_wrote() and not project.stop_requested
+                        and not dead_stream_retried
+                        and _reasoning_only_open_call(project.active_model_snapshot()))
+                    if can_retry_dead:
+                        stopped = self._stop_wedged_session(
+                            client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
+                        if stopped:
+                            log.error(
+                                "build turn wedged: no OpenCode output for %.0fs (nothing open) "
+                                "— retrying the reasoning stream once", quiet_for)
+                            recover_dead_stream = True
+                            break
                     if (project.pre_edit_guard is not None
                             and not project.pre_edit_guard.claim_existing_terminal()):
                         break
-                    quiet_for = time.monotonic() - alive
+                    if not can_retry_dead:
+                        stopped = self._stop_wedged_session(
+                            client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
                     log.error("build turn wedged: no OpenCode output for %.0fs (%s) — giving up",
                               quiet_for, "a call was still open" if tool_open else "nothing open")
-                    stopped = self._stop_wedged_session(
-                        client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
                     # Before the branch, because it is true of both: nothing was built either way.
                     #
                     # And gated on `owns_turn` like the other three writers (#269). The flag means
@@ -21596,6 +21662,12 @@ class Orchestrator:
                 log.warning("build: the event stream carried nothing for %s — the turn polled "
                             "blind. Check the session directory.", sid)
             tap.close()
+            if recover_dead_stream:
+                dead_stream_retried = True
+                iterate_reason = "dead reasoning stream"
+                yield {"type": "iterate", "reason": iterate_reason}
+                current = IMPLEMENT_ACT_NUDGE
+                continue
 
             guard = project.pre_edit_guard
             pending_pre_edit = guard.consume_pending() if guard is not None else None
@@ -21629,6 +21701,26 @@ class Orchestrator:
             err = project.last_gateway_error or (
                 {"message": _error_raw(turn_failure)} if turn_failure is not None else None)
             if err is not None:
+                if (err.get("code") == "implement_reasoning_budget"
+                        and not gate and not answer_only):
+                    # One interrupt per turn. The next long think, and a think after an edit or
+                    # a Stop, uses the stall a quiet turn already ends on.
+                    if (not reasoning_budget_sent and not agent_wrote()
+                            and not project.stop_requested):
+                        reasoning_budget_sent = True
+                        yield {"type": "model-active", "active": False}
+                        iterate_reason = "implement reasoning budget"
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = IMPLEMENT_ACT_NUDGE
+                        continue
+                    if owns_turn:
+                        self._turn_gave_up = True
+                    restore_mode()
+                    elapsed = float(err.get("elapsed_ms") or 0) / 1000
+                    yield from stalled_offer(
+                        elapsed or self._build_policy.implement_reasoning_budget_seconds,
+                        in_tool=False)
+                    return
                 if err.get("code") == "model_no_action_timeout" and gate:
                     attempt, action = plan_recovery.choose()
                     record = timing.current()
