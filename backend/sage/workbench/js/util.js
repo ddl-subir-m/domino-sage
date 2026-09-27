@@ -1241,6 +1241,7 @@ window.SW = window.SW || {};
       switch (ev.doing) {
         case 'read': return name ? `Reading ${name}…` : 'Reading the data…';
         case 'query': return name ? `Querying ${name}…` : 'Running the query…';
+        case 'analyze': return name ? `Analyzing ${name}…` : 'Analyzing text…';
         case 'write': return name ? `Saving ${name}…` : 'Saving the results…';
         case 'bash': return 'Running Python…';
         // A Delegated model call (ADR-0057). `detail` is the Alias and which call this is, and both

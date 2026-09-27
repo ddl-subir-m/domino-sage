@@ -3488,11 +3488,42 @@ _CHAT_QUERY = re.compile(r"""get_datasource\(\s*['"]([^'"]+)['"]""")
 _CHAT_DATASET_READ = re.compile(r"""download_file\(\s*['"]([^'"]+)['"]""")
 
 
-def _chat_activity(tool: str, subject: str) -> tuple[str, str]:
+# OpenCode namespaces an MCP tool with its server key. The model is offered
+# `sage-live-read_live_read_query`; the server is called as `live_read_query`. One name here.
+_LIVE_READ_PREFIX = "sage-live-read_"
+_LIVE_READ_TOOLS = frozenset({"live_read_query", "live_read_table", "live_read_files"})
+
+
+def _bare_tool_name(tool: str) -> str:
+    return str(tool or "").strip().lower().removeprefix(_LIVE_READ_PREFIX)
+
+
+def _chat_named(inp: dict | None, *keys: str) -> str:
+    """The first of `keys` whose value is a non-empty string."""
+    if not isinstance(inp, dict):
+        return ""
+    for key in keys:
+        value = inp.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _chat_label_is_live_read(label: str) -> bool:
+    """True when a `_tool_label` string names a live read.
+
+    The label is the tool name, or `name (detail)`. The detail of a bash call is the command,
+    and a command that mentions a live read is still bash.
+    """
+    return _bare_tool_name(str(label).split(" (", 1)[0]) in _LIVE_READ_TOOLS
+
+
+def _chat_activity(tool: str, subject: str, inp: dict | None = None) -> tuple[str, str]:
     """(the kind of work, the thing it is working on) for a tool call Chat should name."""
-    if tool in ("read", "write"):
-        return tool, subject
-    if tool == "bash":
+    name = _bare_tool_name(tool)
+    if name in ("read", "write"):
+        return name, subject
+    if name == "bash":
         found = _CHAT_QUERY.search(subject)
         if found:
             return "query", found.group(1)
@@ -3500,6 +3531,12 @@ def _chat_activity(tool: str, subject: str) -> tuple[str, str]:
         if found:
             return "read", found.group(1)
         return "bash", ""
+    if name == "live_read_query":
+        return "query", _chat_named(inp, "source")
+    if name in ("live_read_table", "live_read_files"):
+        if isinstance(inp, dict) and inp.get("operation") == "analyze_text":
+            return "analyze", _chat_named(inp, "source", "dataset")
+        return "read", _chat_named(inp, "table", "dataset", "source")
     return "", ""
 
 
@@ -4413,7 +4450,7 @@ def _chat_live_event(ev) -> dict | None:
             # Measured live: read and write both send `path`. `filePath` is kept because the
             # transcript's own parts use it (see _tool_detail) and this has to agree with them.
             subject = str(inp.get("path") or inp.get("filePath") or "")
-        doing, subject = _chat_activity(tool, subject)
+        doing, subject = _chat_activity(tool, subject, inp)
         if not doing:
             return {"type": "agent", "kind": "tool", "doing": "idle"}
         return {"type": "agent", "kind": "tool", "tool": tool, "doing": doing, "detail": subject}
@@ -15931,7 +15968,18 @@ class Orchestrator:
                     yield done
                     return
                 now = time.monotonic()
-                quiet_limit = tool_quiet if running_tools else idle_quiet
+                # A live read stays quiet for as long as the server is judging row text. That
+                # silence is the ceiling's, not the 240s tool window's — a bash call, including
+                # one whose command mentions a live read, still uses the tool window. A caller
+                # who passed timeout_s already set both windows to that number.
+                live_read_open = (
+                    timeout_s is None
+                    and any(_chat_label_is_live_read(label) for label in running_tools.values())
+                )
+                quiet_limit = (
+                    _CHAT_TURN_MAX_S if live_read_open
+                    else tool_quiet if running_tools else idle_quiet
+                )
                 # Two witnesses to a turn being alive, not one (#466). `last_activity` is what
                 # OpenCode says, and OpenCode says nothing at all during a model call — so a single
                 # call slower than this window read as a stopped turn and was killed mid-answer.
@@ -15950,6 +15998,12 @@ class Orchestrator:
                 alive = max(last_activity, chunk_at if chunk_at >= started else 0.0)
                 quiet = now - alive >= quiet_limit
                 ceiling = now - started >= _CHAT_TURN_MAX_S
+                # A live read's quiet window is the ceiling's length, counted from the last thing
+                # the turn said. A read that opened as the turn opened has both true on the poll
+                # that notices the ceiling, and the quiet sentence would say a step didn't finish.
+                # The ceiling's sentence is the one that is true.
+                if live_read_open and ceiling:
+                    quiet = False
                 # When the work stops and the writing starts. A ceiling no longer than the slice
                 # reserves nothing at all rather than reserving everything: the tail is carved OUT
                 # of the ceiling, so `<= 0` is a ceiling with no work in front of it, and opening
