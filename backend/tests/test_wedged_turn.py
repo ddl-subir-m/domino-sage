@@ -954,6 +954,7 @@ def test_a_quiet_reasoning_stream_is_retried_once_then_stalls(tmp_path: Path):
     assert [e.get("reason") for e in _of(events, "iterate")] == ["dead reasoning stream"]
     assert len(oc.prompts) == 2
     assert "Do the next concrete step now" in oc.prompts[1]["text"]
+    assert "The next tool call must edit" in oc.prompts[1]["text"]
     assert _of(events, "done")[0]["decision"] == "stalled"
 
 
@@ -1020,6 +1021,7 @@ def test_an_implement_reasoning_budget_sends_one_follow_up(tmp_path: Path):
 
     assert [e.get("reason") for e in _of(events, "iterate")] == ["implement reasoning budget"]
     assert "Do the next concrete step now" in oc.prompts[1]["text"]
+    assert "The next tool call must edit" in oc.prompts[1]["text"]
     assert _of(events, "done")[0]["ok"] is True
 
 

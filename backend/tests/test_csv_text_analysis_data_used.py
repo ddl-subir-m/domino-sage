@@ -443,3 +443,199 @@ def test_real_opencode_analyzes_complaints_without_sending_email_column(tmp_path
         server.server_close()
         server_thread.join(timeout=5)
         project.control.disarm_chat(control_token)
+
+
+class _Warehouse:
+    name = "Snowflake-Data-Warehouse"
+    connector = "Snowflake"
+    connector_type = "SnowflakeConfig"
+
+
+def test_a_dataset_csv_is_judged_without_using_the_upload_path(tmp_path):
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return sse(json.dumps(labels_for(request)))
+
+    root = tmp_path / "mount" / "support"
+    root.mkdir(parents=True)
+    (root / "complaints.csv").write_text(COMPLAINTS)
+    turn, data, _journal, _source = setup_turn(tmp_path, provider=provider)
+    turn = replace(
+        turn,
+        upload_for=lambda _path: None,
+        bound={"dataset": ("support",)},
+        dataset_root=lambda name: root if name == "support" else None,
+    )
+
+    reply = json.loads(run.perform(
+        "live_read_files", analysis_args(dataset="support", path="complaints.csv"), turn))
+
+    assert reply["coverage"]["processed"] == 12
+    assert data.events("turn1")[0]["source"] == "support/complaints.csv"
+    assert "person4@example.invalid" not in json.dumps(calls)
+    assert "Item arrived broken" in json.dumps(calls)
+
+
+def test_a_data_source_table_is_judged_from_the_text_column_only(tmp_path):
+    calls = []
+    asked = []
+    text = "The customer asked us to support ARM on their own cluster and not as a side remark."
+
+    def provider(request):
+        calls.append(request)
+        body = json.loads(request["messages"][1]["content"])
+        rows = [{"id": record["id"], "label": "genuine_ask"} for record in body["records"]]
+        return sse(json.dumps({"records": rows}))
+
+    def run_statement(_source, sql, *, limit, cell_limit=80):
+        asked.append((sql, limit, cell_limit))
+        from sage.resources.provider import StatementRows
+        return StatementRows(["account", "transcript"], [["Acme", text]], False)
+
+    turn, data, journal, _source = setup_turn(tmp_path, provider=provider)
+    turn = replace(
+        turn,
+        upload_for=lambda _path: None,
+        bound={"datasource": ("Snowflake-Data-Warehouse",)},
+        source_for=lambda name: _Warehouse() if name == "Snowflake-Data-Warehouse" else None,
+        run_statement=run_statement,
+    )
+
+    reply = json.loads(run.perform("live_read_table", {
+        "operation": "analyze_text",
+        "source": "Snowflake-Data-Warehouse",
+        "database": "DWH",
+        "schema": "MARTS",
+        "table": "GONG_CALLS",
+        "text_column": "transcript",
+        "id_column": "account",
+        "labels": ["genuine_ask", "not_an_ask"],
+        "alias": "sonnet",
+        "purpose": "Mark genuine customer asks for ARM support",
+    }, turn))
+
+    assert reply["coverage"]["processed"] == 1
+    assert reply["selected"]["rows"] == [["r000001", "genuine_ask"]]
+    sql, limit, cell_limit = asked[0]
+    assert '"transcript"' in sql and '"account"' in sql
+    assert "SELECT *" not in sql
+    assert "email" not in sql.lower()
+    assert cell_limit == 2000
+    assert limit == 10_001
+    traffic = json.dumps(calls)
+    assert calls[0]["model"] == "sonnet"
+    assert "ARM" in traffic
+    assert "Mark genuine customer asks" in traffic
+    assert text not in json.dumps(journal)
+    assert data.events("turn1")[0]["source"] == "DWH.MARTS.GONG_CALLS"
+
+
+def test_a_data_source_outside_the_conversation_is_not_read_for_analysis(tmp_path):
+    def run_statement(*_args, **_kwargs):
+        raise AssertionError("rows touched")
+
+    turn, _data, _journal, _source = setup_turn(tmp_path)
+    turn = replace(
+        turn,
+        bound={"datasource": ()},
+        chips={"datasource": ()},
+        source_for=lambda _name: _Warehouse(),
+        run_statement=run_statement,
+    )
+
+    said = run.perform("live_read_table", {
+        "operation": "analyze_text",
+        "source": "Snowflake-Data-Warehouse",
+        "database": "DWH",
+        "schema": "MARTS",
+        "table": "GONG_CALLS",
+        "text_column": "transcript",
+    }, turn)
+
+    assert "isn't in this conversation" in said
+    assert "Do not look for it another way" in said
+
+
+class _File:
+    def __init__(self, path):
+        self.path = path
+
+
+class _Listing:
+    def __init__(self, paths):
+        self.files = [_File(path) for path in paths]
+
+
+def test_a_dataset_folder_names_its_csv_files_before_any_model_call(tmp_path):
+    def provider(_request):
+        raise AssertionError("model called")
+
+    root = tmp_path / "mount" / "support"
+    root.mkdir(parents=True)
+    (root / "cases.csv").write_text("id,body\n1,The customer asked about ARM.\n")
+    (root / "calls.csv").write_text("id,transcript\n1,Please support ARM on our cluster.\n")
+    turn, _data, _journal, _source = setup_turn(tmp_path, provider=provider)
+    turn = replace(
+        turn,
+        upload_for=lambda _path: None,
+        bound={"dataset": ("support",)},
+        dataset_root=lambda name: root if name == "support" else None,
+        list_files=lambda name: _Listing(["cases.csv", "calls.csv"]) if name == "support" else None,
+    )
+
+    said = run.perform("live_read_files", {"operation": "analyze_text", "dataset": "support"}, turn)
+
+    assert "cases.csv" in said and "calls.csv" in said
+    assert "transcript" in said and "body" in said
+    assert "Do not ask the person to attach a file" in said
+
+
+def test_a_dataset_folder_with_one_named_column_is_judged(tmp_path):
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        return sse(json.dumps(labels_for(request)))
+
+    root = tmp_path / "mount" / "support"
+    root.mkdir(parents=True)
+    (root / "complaints.csv").write_text(COMPLAINTS)
+    turn, data, _journal, _source = setup_turn(tmp_path, provider=provider)
+    turn = replace(
+        turn,
+        upload_for=lambda _path: None,
+        bound={"dataset": ("support",)},
+        dataset_root=lambda name: root if name == "support" else None,
+        list_files=lambda name: _Listing(["complaints.csv"]) if name == "support" else None,
+    )
+
+    reply = json.loads(run.perform("live_read_files", {
+        "operation": "analyze_text", "dataset": "support",
+        "path": "public/data/support/complaints.csv",
+        "text_column": "complaint", "id_column": "ticket",
+        "labels": ["delivery", "damage", "billing"],
+    }, turn))
+
+    assert reply["coverage"]["processed"] == 12
+    assert data.events("turn1")[0]["source"] == "support/complaints.csv"
+    assert "person4@example.invalid" not in json.dumps(calls)
+
+
+def test_a_data_source_without_a_table_stops_for_one_catalogue_read(tmp_path):
+    def run_statement(*_args, **_kwargs):
+        raise AssertionError("rows touched")
+
+    turn, _data, _journal, _source = setup_turn(tmp_path)
+    turn = replace(turn, run_statement=run_statement, bound={"datasource": ("Snowflake-Data-Warehouse",)})
+
+    said = run.perform("live_read_table", {
+        "operation": "analyze_text",
+        "source": "Snowflake-Data-Warehouse",
+        "text_column": "transcript",
+    }, turn)
+
+    assert "attached without a table" in said
+    assert "INFORMATION_SCHEMA.TABLES" in said
+    assert "Do not ask the person to attach a table" in said

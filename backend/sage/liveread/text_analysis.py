@@ -39,13 +39,203 @@ class BatchResult:
     error: str = ""
 
 
+def _load(args, turn, text_column, id_column, row_limit):
+    """Rows from an upload, a mounted Dataset CSV, or a bound Data Source table.
+
+    A string return is the sentence the model should read. A tuple is the source label, the
+    bytes the coverage hash is taken from, the columns, the row dicts, and the upload path to
+    re-read when the analysis finishes. A Dataset or a table has no second local file to watch.
+    """
+    if args.get("source"):
+        return _load_table(args, turn, text_column, id_column, row_limit)
+    dataset = str(args.get("dataset") or "upload")
+    path = str(args.get("path") or "")
+    if dataset == "upload":
+        target = turn.upload_for(path) if turn.upload_for else None
+        if target is None:
+            return "This source is not available in this conversation."
+        try:
+            raw, columns, rows = _read_csv(Path(target))
+        except (OSError, UnicodeError, csv.Error):
+            return "The CSV could not be analyzed. Check its encoding and rows. No result was saved."
+        return path, raw, columns, rows, Path(target)
+    from .calculate import _rows_from_dataset
+    loaded, refused = _rows_from_dataset(args, turn)
+    if refused:
+        return refused
+    source, raw = loaded
+    try:
+        columns, rows = _parse_csv(raw)
+    except (UnicodeError, csv.Error):
+        return "The CSV could not be analyzed. Check its encoding and rows. No result was saved."
+    return source, raw, columns, rows, None
+
+
+def _load_table(args, turn, text_column, id_column, row_limit):
+    from ..orchestrator import brand
+    from ..resources.provider import ResourceUnavailable, dialect_for, levels_missing
+    from . import grant
+    from .run import _scoped
+
+    name, database, schema, table, _limit = _scoped({**args, "limit": 1}, turn)
+    if not table:
+        return "Name the table to analyze."
+    refused = grant.reachable(
+        "datasource", name,
+        bound=turn.bound.get("datasource", ()),
+        chips=turn.chips.get("datasource", ()),
+    )
+    if refused:
+        return refused.says
+    source = turn.source_for(name) if turn.source_for else None
+    if source is None:
+        return brand.text(
+            "{assistantName} could not find {name} among the {dataSourcePlural} it can open here.",
+            name=name or "that",
+        )
+    if turn.run_statement is None:
+        return "This data source cannot be read for text analysis in this turn."
+    try:
+        dialect = dialect_for(source)
+    except ResourceUnavailable as error:
+        return str(error)
+    if dialect.sample is None:
+        return "This data source cannot be read for text analysis."
+    missing = levels_missing(dialect.sample, database, schema)
+    if missing:
+        return brand.text(
+            "{assistantName} does not know which {missing} {table} is in. Give the full name "
+            "as database.schema.table.",
+            missing=" and ".join(missing), table=table,
+        )
+    selected = []
+    for column in (id_column, text_column):
+        if isinstance(column, str) and column and column not in selected:
+            selected.append(column)
+    fetch = row_limit if row_limit is not None else MAX_RECORDS + 1
+    try:
+        quoted = ", ".join(dialect.ident(column) for column in selected)
+        sql = dialect.statement(
+            dialect.sample, database=database, schema=schema, table=table, limit=fetch)
+    except ValueError as error:
+        return str(error)
+    if " * " not in sql:
+        return "This data source cannot project columns for text analysis."
+    sql = sql.replace(" * ", f" {quoted} ", 1)
+    try:
+        answer = turn.run_statement(source, sql, limit=fetch, cell_limit=MAX_TEXT_CHARS)
+    except ResourceUnavailable as error:
+        return str(error)
+    columns = [str(column) for column in answer.columns]
+    rows = []
+    for row in answer.rows:
+        if len(row) != len(columns):
+            return ("The table could not be analyzed. A row had the wrong number of fields. "
+                    "No result was saved.")
+        rows.append({
+            columns[i]: "" if row[i] is None else str(row[i]) for i in range(len(columns))
+        })
+    label = ".".join(part for part in (database, schema, table) if part)
+    raw = json.dumps([columns, rows], ensure_ascii=True).encode()
+    return label or table, raw, columns, rows, None
+
+
+def _inside_dataset(path: str) -> str:
+    """A file name inside the Dataset. A workspace path names the folder the person attached."""
+    rel = path.replace("\\", "/").strip().lstrip("/")
+    marker = "public/data/"
+    if rel.startswith(marker):
+        rest = rel[len(marker):]
+        pieces = rest.split("/", 1)
+        if len(pieces) == 2 and pieces[1]:
+            return pieces[1]
+    return rel
+
+
+def _header(path: Path) -> list[str]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            line = handle.readline(8192)
+    except OSError:
+        return []
+    return next(csv.reader([line]), [])
+
+
+def _resolve_coarse_attachment(args: dict, turn):
+    """A Dataset folder or a Data Source, when the person could not attach a file or a table.
+
+    A string is what the model should do next. A dict is the same call with the file path filled
+    in, when the folder holds one CSV and the text column was already named.
+    """
+    if args.get("source") and not str(args.get("table") or "").strip():
+        return ("This Data Source was attached without a table. "
+                "One live_read_query of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS "
+                "names the table and the text column. Call live_read_table again with "
+                "operation=analyze_text, this source, that table, and text_column. "
+                "Do not ask the person to attach a table.")
+    dataset = str(args.get("dataset") or "")
+    if not dataset or dataset == "upload" or str(args.get("path") or "").strip():
+        if dataset and dataset != "upload" and args.get("path"):
+            return {**args, "path": _inside_dataset(str(args.get("path") or ""))}
+        return args
+    from ..orchestrator import brand
+    from . import grant
+    refused = grant.reachable(
+        "dataset", dataset,
+        bound=turn.bound.get("dataset", ()),
+        chips=turn.chips.get("dataset", ()),
+    )
+    if refused:
+        return refused.says
+    names: list[str] = []
+    listing = turn.list_files(dataset) if turn.list_files else None
+    if listing is not None:
+        names = [str(f.path) for f in listing.files if str(f.path).lower().endswith(".csv")]
+    root = turn.dataset_root(dataset) if turn.dataset_root else None
+    base = Path(root).resolve() if root and Path(root).is_dir() else None
+    if not names and base is not None:
+        names = sorted(
+            p.relative_to(base).as_posix()
+            for p in base.rglob("*")
+            if p.is_file() and p.suffix.lower() == ".csv" and p.resolve().is_relative_to(base)
+        )
+    if listing is None and base is None:
+        return brand.text(
+            "{name} isn't mounted here, so its files can't be listed. Tell the person that.",
+            name=dataset,
+        )
+    found = []
+    for name in names[:40]:
+        cols: list[str] = []
+        if base is not None:
+            target = (base / name).resolve()
+            if target.is_file() and target.is_relative_to(base):
+                cols = _header(target)
+        found.append((name, cols))
+    if (len(found) == 1 and isinstance(args.get("text_column"), str) and args.get("text_column")):
+        return {**args, "path": found[0][0]}
+    if not found:
+        return ("This Dataset folder has no CSV files to judge. Tell the person that. "
+                "Do not ask them to attach a different file.")
+    described = []
+    for name, cols in found:
+        described.append(f"{name} (columns: {', '.join(cols[:12])})" if cols else name)
+    more = f" and {len(names) - 40} more" if len(names) > 40 else ""
+    return ("This Dataset folder was attached without a single file. "
+            f"CSV files: {'; '.join(described)}{more}. "
+            "Call analyze_text again with path set to the file the question needs and "
+            "text_column set to its text column. Do not ask the person to attach a file.")
+
+
 def analyze(args: dict, turn) -> str:
     if turn.analyze_text_batch is None:
         return "Text analysis through the LLM Gateway is not available in this turn."
-    source = str(args.get("path") or "")
-    target = turn.upload_for(source) if turn.upload_for else None
-    if target is None:
-        return "This source is not available in this conversation."
+    if args.get("alias") and not args.get("model"):
+        args = {**args, "model": args["alias"]}
+    resolved = _resolve_coarse_attachment(args, turn)
+    if isinstance(resolved, str):
+        return resolved
+    args = resolved
 
     text_column = args.get("text_column")
     id_column = args.get("id_column")
@@ -77,13 +267,16 @@ def analyze(args: dict, turn) -> str:
     if row_limit is not None and (type(row_limit) is not int or row_limit < 1):
         return "The row limit must be a positive integer."
 
-    try:
-        raw, columns, rows = _read_csv(Path(target))
-    except (OSError, UnicodeError, csv.Error):
-        return "The CSV could not be analyzed. Check its encoding and rows. No result was saved."
+    loaded = _load(args, turn, text_column, id_column, row_limit)
+    if isinstance(loaded, str):
+        return loaded
+    source, raw, columns, rows, watch = loaded
     if text_column not in columns or (id_column and id_column not in columns):
-        return "The CSV must have the selected text column and source ID column."
+        return "The data must have the selected text column and source ID column."
     if len(rows) > MAX_RECORDS and row_limit is None:
+        if args.get("source"):
+            return (f"This table has more than {MAX_RECORDS} records, above the analysis limit. "
+                    "No sample was used. Ask for an explicitly labelled sample or add a limit.")
         return (f"This CSV has {len(rows)} records, above the {MAX_RECORDS} record analysis limit. "
                 "No sample was used. Ask for an explicitly labelled sample or add a limit.")
 
@@ -93,7 +286,9 @@ def analyze(args: dict, turn) -> str:
         return "No records with text were available to analyze. No result was saved."
 
     operation = "du_" + uuid4().hex
-    name = args.get("result_name") or f"{Path(source).stem}-analysis-{operation[-8:]}"
+    leaf = source.rsplit("/", 1)[-1]
+    stem = Path(leaf).stem if leaf.lower().endswith(".csv") else leaf.replace(".", "-")
+    name = args.get("result_name") or f"{stem}-analysis-{operation[-8:]}"
     if not isinstance(name, str) or not name or Path(name).name != name or name in (".", ".."):
         return "The result name must be one filename without a directory."
     output = turn.examples_dir / f"{name}.table.json"
@@ -119,7 +314,7 @@ def analyze(args: dict, turn) -> str:
     analyzed_rows = [row for batch in batch_results for row in batch.rows]
     failed = sum(batch.failed for batch in batch_results)
     unfinished += sum(batch.unfinished for batch in batch_results)
-    source_changed = _source_changed(Path(target), source_sha)
+    source_changed = _source_changed(watch, source_sha) if watch is not None else False
     if source_changed:
         unfinished = max(unfinished, len(records) - len(analyzed_rows) - failed)
 
@@ -183,6 +378,12 @@ def _read_csv(path: Path) -> tuple[bytes, list[str], list[dict[str, str]]]:
     raw = path.read_bytes()
     if len(raw) > MAX_BYTES:
         raise csv.Error("too large")
+    return raw, *_parse_csv(raw)
+
+
+def _parse_csv(raw: bytes) -> tuple[list[str], list[dict[str, str]]]:
+    if len(raw) > MAX_BYTES:
+        raise csv.Error("too large")
     reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig")), strict=True)
     columns = reader.fieldnames or []
     if not columns or len(columns) != len(set(columns)):
@@ -192,7 +393,7 @@ def _read_csv(path: Path) -> tuple[bytes, list[str], list[dict[str, str]]]:
         if None in row:
             raise csv.Error("wrong field count")
         rows.append({k: "" if v is None else v for k, v in row.items()})
-    return raw, columns, rows
+    return columns, rows
 
 
 def _manifest(rows: list[dict[str, str]], text_column: str, id_column: str | None,

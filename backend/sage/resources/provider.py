@@ -1114,7 +1114,7 @@ def frame_rows(frame: Any, limit: int = SAMPLE_CELL_LIMIT) -> tuple[list[str], l
     return columns, [[sample_value(col[i], limit) for col in values] for i in range(len(values[0]))]
 
 
-def _drain_within(result: Any, limit: int) -> StatementRows:
+def _drain_within(result: Any, limit: int, cell_limit: int = SAMPLE_CELL_LIMIT) -> StatementRows:
     """At most `limit` rows out of a Flight stream, and whether the store had more to say.
 
     Chunk by chunk rather than `result.to_pandas()`, which is what every other caller in this file
@@ -1147,7 +1147,7 @@ def _drain_within(result: Any, limit: int) -> StatementRows:
                 if len(rows) >= limit:
                     truncated = True
                     return StatementRows(columns, rows, True)
-                rows.append([sample_value(col[i]) for col in held])
+                rows.append([sample_value(col[i], cell_limit) for col in held])
     finally:
         if truncated:
             reader.cancel()
@@ -1237,7 +1237,8 @@ class ResourceProvider(Protocol):
     # belongs to the caller that also has to say "500 of more" on the card — a default here would
     # let a second caller arrive later, pass nothing, and quietly mean a different 500.
     def run_statement(self, source: DataSource, sql: str, *, limit: int,
-                      timeout_s: float = STATEMENT_TIMEOUT_S) -> StatementRows: ...
+                      timeout_s: float = STATEMENT_TIMEOUT_S,
+                      cell_limit: int = SAMPLE_CELL_LIMIT) -> StatementRows: ...
 
 
 def records_of(payload: Any) -> list[dict]:
@@ -2357,7 +2358,8 @@ class DominoResourceProvider:
         return ResourceUnavailable(f"{source.name} did not answer: {_scrubbed(_unwrapped(said))}")
 
     def run_statement(self, source: DataSource, sql: str, *, limit: int,
-                      timeout_s: float = STATEMENT_TIMEOUT_S) -> StatementRows:
+                      timeout_s: float = STATEMENT_TIMEOUT_S,
+                      cell_limit: int = SAMPLE_CELL_LIMIT) -> StatementRows:
         """Run one statement the AGENT composed against a bound Data Source (ADR-0058).
 
         READ-ONLY IS THE WAREHOUSE'S JOB, NOT THIS FUNCTION'S. Sage does not read the statement to
@@ -2400,7 +2402,7 @@ class DominoResourceProvider:
             try:
                 client = DataSourceClient()
                 result = client.get_datasource(source.name).query(sql)
-                answer["rows"] = _drain_within(result, max(1, int(limit)))
+                answer["rows"] = _drain_within(result, max(1, int(limit)), cell_limit)
             # `BaseException`, not `Exception`. Nothing here is swallowed — it is carried across to
             # the calling thread and re-raised there. A `KeyboardInterrupt` or a `SystemExit` raised
             # inside this worker would otherwise be printed by the threading module and lost, and
@@ -2841,7 +2843,8 @@ class FakeResourceProvider:
         return SampleRows(table, names, rows)
 
     def run_statement(self, source: DataSource, sql: str, *, limit: int,
-                      timeout_s: float = STATEMENT_TIMEOUT_S) -> StatementRows:
+                      timeout_s: float = STATEMENT_TIMEOUT_S,
+                      cell_limit: int = SAMPLE_CELL_LIMIT) -> StatementRows:
         """One composed statement, from `statements` above (ADR-0058).
 
         `timeout_s` is accepted and ignored, and that is worth saying rather than leaving to be
@@ -2865,5 +2868,5 @@ class FakeResourceProvider:
         columns, rows = held
         cap = max(1, int(limit))
         return StatementRows(list(columns),
-                             [[sample_value(v) for v in row] for row in rows[:cap]],
+                             [[sample_value(v, cell_limit) for v in row] for row in rows[:cap]],
                              len(rows) > cap)

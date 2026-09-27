@@ -312,6 +312,9 @@ def _source(kind: str, binding: str, limit: int, **named: str) -> dict:
 
 
 def _table(args: dict, turn: Turn) -> str:
+    if args.get("operation") == "analyze_text":
+        from .text_analysis import analyze
+        return analyze(args, turn)
     if args.get("operation") == "sum":
         from .calculate import calculate
 

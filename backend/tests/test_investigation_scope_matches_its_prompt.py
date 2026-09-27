@@ -30,6 +30,17 @@ def test_open_investigation_treats_the_selected_table_as_a_starting_point(tmp_pa
     assert "relevant tables" in prompt
     assert "only sources attached to this conversation" in prompt
     assert "do not query another table" not in prompt
+    assert "classifying, summarising, extracting, or deciding" in prompt
+    assert "one model call per row" in prompt
+    assert "findings file" in prompt
+    assert "live_read_files" in prompt
+    assert "dataset=upload" in prompt
+    assert "Dataset folder" in prompt
+    assert "Do not ask the person to attach a file or a table" in prompt
+    assert "live_read_table" in prompt
+    assert "operation=analyze_text" in prompt
+    assert "Count from those judgments" in prompt
+    assert "not for a Data Source table" not in prompt
 
 
 def test_ordinary_chat_keeps_its_one_table_instruction(tmp_path: Path):

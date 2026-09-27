@@ -4503,7 +4503,10 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "- {dataset} {name}{where}, files at {path}. {state} "
                 "This chip does not put them in an app; Attach folder on this {dataset} is that act. "
                 "Do not search the rest of this workspace for a substitute: if the path above does "
-                "not open, say so and name it, and stop.",
+                "not open, say so and name it, and stop. "
+                "The person attached this folder, not one file. To judge text in it, call "
+                "`live_read_files` with operation=analyze_text and dataset {name}, and omit path. "
+                "Do not ask the person to attach a file.",
                 name=name, where=where, path=path,
                 # Falls back to the old sentence when no workspace was given to look in, which is
                 # the one case where naming files would be a guess.
@@ -4663,7 +4666,9 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "turn's token, source {quoted}, and one SELECT of at most 50 rows from "
                 "INFORMATION_SCHEMA.TABLES (or the catalog this source uses). Then query the table "
                 "the question needs, named in full as database.schema.table. Do not ask the person "
-                "to name a table until that lookup has failed. To see a few rows, call "
+                "to name a table until that lookup has failed. To judge text in a table you found, "
+                "call `live_read_table` with operation=analyze_text, source {quoted}, that table, "
+                "and text_column. Do not ask the person to attach a table. To see a few rows, call "
                 "`live_read_table` with the same token and source. If those tools are not in your "
                 "tool list this turn and you have a shell, "
                 "`from domino_data.data_sources import DataSourceClient` then "
@@ -14309,9 +14314,21 @@ class Orchestrator:
                 "For CSV totals use live_read_files with operation=sum, dataset=upload, the authorized "
                 "path, group_by, sum_column, and selected_fields (result columns and/or total). "
                 "This one call calculates locally, writes a table, and returns the selected result. "
-                "For complaint classification or summary, use operation=analyze_text, dataset=upload, "
-                "the authorized path, text_column, optional id_column, labels when classifying, "
-                "and a bounded batch_size. It sends only the selected text and stable task-local IDs "
+                "To classify, summarise, extract, or decide about text, use analyze_text, "
+                "not one model call per row and not a word or regex match. "
+                "The person can attach a Dataset folder or a Data Source, not a single file and not "
+                "a single table. "
+                "An uploaded CSV: live_read_files, operation=analyze_text, dataset=upload, "
+                "the authorized path. "
+                "A Dataset folder: live_read_files, operation=analyze_text, and the Dataset name. "
+                "Omit path. The reply names the CSV files and their columns. Call again with path "
+                "set to the file name inside the folder, not the public/data path, and text_column. "
+                "A Data Source with no table: one live_read_query of INFORMATION_SCHEMA.TABLES and "
+                "INFORMATION_SCHEMA.COLUMNS, then live_read_table, operation=analyze_text, the source, "
+                "the table, and text_column. Do not ask the person to attach a file or a table. "
+                "Pass text_column, optional id_column, labels when classifying, alias when this "
+                "conversation names a model, purpose for the judgment, and a bounded batch_size. "
+                "It sends only the selected text and stable task-local IDs "
                 "through the LLM Gateway, rejects missing, duplicate, unknown or malformed returned "
                 "IDs as incomplete, writes a result table, and reports coverage. "
                 "For an attached text, Markdown, DOCX or searchable PDF requirements document, "
@@ -14699,8 +14716,26 @@ class Orchestrator:
             lines += [
                 ("Investigation is open for this conversation. A selected table is a starting table. "
                  "Discover and query other relevant tables when needed, using only sources attached "
-                 "to this conversation. Python and queries across those tables are available under "
-                 "the existing data disclosure rules. Do not ask to open another investigation."),
+                 "to this conversation. Do not ask to open another investigation."),
+                ("The first look names the file, table, or column. It is not the answer. "
+                 "Append what it measured to the findings file, then take the next step."),
+                ("The person attaches a Dataset folder or a Data Source, not a single file and not "
+                 "a single table. An uploaded CSV uses live_read_files with operation=analyze_text "
+                 "and dataset=upload. A Dataset folder uses live_read_files with operation=analyze_text "
+                 "and the Dataset name, and omits path. The reply names the CSV files and their "
+                 "columns. Call again with path set to the file name inside the folder, not the "
+                 "public/data path, and text_column. A Data Source with no table uses one "
+                 "live_read_query of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS, then "
+                 "the statement or the text call the question needs. Do not ask the person to attach "
+                 "a file or a table."),
+                ("A number is one live_read_query. Text that needs a model — classifying, "
+                 "summarising, extracting, or deciding — is one analyze_text call: live_read_files "
+                 "for a CSV, live_read_table for a Data Source table. Put the question in purpose "
+                 "and labels. Pass alias as a name this conversation can call. The call returns the "
+                 "judgments and coverage. It does not return the text. Count from those judgments "
+                 "and append that count to the findings file before you refine. A word match, a "
+                 "regex, or one model call per row is not the answer and will not finish inside "
+                 "the turn."),
                 "",
             ]
         # The first turn after a summary-scoped clear keeps the promise the offer made: the model
@@ -20192,7 +20227,9 @@ class Orchestrator:
             "what was asked. Make the code changes now."
         )
         IMPLEMENT_ACT_NUDGE = (
-            "Do the next concrete step now: call a tool or edit a file."
+            "Do the next concrete step now. Stop reasoning about the approach. "
+            f"The next tool call must edit {project.app_for_turn().stack.entry_file}. "
+            "Do not read another file first, and do not explain the change before the edit."
         )
         RUNTIME_FIX_NUDGE = (
             "The app compiled but threw a runtime error when it rendered in the browser, so the "
