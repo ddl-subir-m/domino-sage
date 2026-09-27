@@ -121,8 +121,8 @@ def test_a_card_this_tab_watched_arrive_keeps_its_buttons_through_a_re_read():
 
 @needs_node
 @pytest.mark.parametrize("card,expected", [
-    (RESET_OFFER, ["Reset and build this", "Just reset", "Build without resetting"]),
-    (INCOMING_CHANGES, ["Pull and build this", "Keep building"]),
+    (RESET_OFFER, ["Reset and build", "Reset only", "Don't reset"]),
+    (INCOMING_CHANGES, ["Pull, then build", "Keep going"]),
     (BUILD_STALLED, ["Try again"]),
     (MENTIONS_UNRESOLVED, ["Use in Demo app"]),
 ])

@@ -153,7 +153,7 @@ def test_a_dropped_stream_keeps_stop_refreshes_and_then_leaves_building_after_ca
     assert out["afterDrop"] == {
         "running": True,
         "stopOffered": True,
-        "typing": "Connection lost — build is still running.",
+        "typing": "Connection lost. The build is still running.",
         "watcher": True,
     }
     assert out["afterRefresh"] == {"running": True, "stopOffered": True}
@@ -268,7 +268,7 @@ def test_an_old_backend_without_any_exact_identity_offers_only_a_safe_message():
     """No header and no queue event means no correlated Stop can be sent safely."""
     assert _run("legacyNoIdentity") == {
         "stopOffered": False,
-        "message": "Stop is unavailable for this turn. Refresh Sage to update it.",
+        "message": "Can't stop this yet. Reload the page.",
         "stopPosts": 0, "buildStateReads": 0}
 
 
@@ -281,7 +281,7 @@ def test_overlapping_chat_state_reads_settle_in_request_order():
 def test_a_failed_state_read_after_stream_loss_keeps_the_exact_stop_claim():
     assert _run("droppedStateFailure") == {
         "running": True, "stopOffered": True,
-        "typing": "Connection lost — build is still running.", "watcher": True,
+        "typing": "Connection lost. The build is still running.", "watcher": True,
         "turnId": "turn_abc"}
 
 

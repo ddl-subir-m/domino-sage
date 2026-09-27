@@ -37,19 +37,17 @@ def _buttons(rendered: dict) -> list[dict]:
 
 def test_the_first_rung_says_what_it_costs_and_what_survives():
     said = _text(_render({"type": "recall_offer", "scope": "summary"}))
-    assert "refused the same way twice" in said       # why it is being offered at all
-    assert "Recall" in said                           # the thing being cleared, by its name
-    assert "transcript stays" in said                 # and the thing that is not
-    assert "summary of what was said" in said         # the promise `recall.seed` then keeps
+    assert "blocked twice" in said                    # why it is being offered at all
+    assert "chat stays" in said                       # and the thing that is not
+    assert "short summary is kept" in said            # the promise `recall.seed` then keeps
 
 
 def test_the_second_rung_says_why_the_first_one_failed():
     """Otherwise clicking again looks like the same button doing the same thing twice."""
     said = _text(_render({"type": "recall_offer", "scope": "empty"}))
-    assert "still being refused" in said
-    assert "summary carried over must hold the value too" in said
-    assert "nothing from this conversation" in said
-    assert "transcript stays" in said
+    assert "Still blocked." in said
+    assert "summary still includes what was blocked" in said
+    assert "chat stays" in said
 
 
 def test_each_rung_asks_for_the_clear_it_advertised():
@@ -59,8 +57,8 @@ def test_each_rung_asks_for_the_clear_it_advertised():
     complete = _render({"type": "recall_offer", "scope": "empty"})
     assert _buttons(seeded)[0]["act"] == "clear:summary"
     assert _buttons(complete)[0]["act"] == "clear:empty"
-    assert _buttons(seeded)[0]["text"] == "Clear recall"
-    assert _buttons(complete)[0]["text"] == "Clear recall completely"
+    assert _buttons(seeded)[0]["text"] == "Start fresh"
+    assert _buttons(complete)[0]["text"] == "Clear everything"
 
 
 def test_the_destructive_act_is_the_primary_and_the_only_primary():
@@ -81,8 +79,8 @@ def test_the_divider_says_which_clear_happened():
     """The transcript would otherwise lie about why the model forgot what is written above it."""
     seeded = _text(_render({"type": "recall_cleared", "scope": "summary"}))
     complete = _text(_render({"type": "recall_cleared", "scope": "empty"}))
-    assert "with a summary of what was said above" in seeded
-    assert "nothing from above" in complete
+    assert "short summary of the chat above" in seeded
+    assert "Nothing from above" in complete
     assert seeded != complete
 
 
@@ -181,20 +179,19 @@ def test_dismissing_one_offer_does_not_dismiss_the_next():
 def test_builds_first_rung_promises_what_build_actually_keeps():
     said = _text(_render({"type": "recall_offer", "scope": "summary", "surface": "build"}))
 
-    assert "refused the same way twice" in said
-    assert "your app, its plan and this transcript stay" in said
-    assert "the agent reads them back" in said
+    assert "blocked twice" in said
+    assert "app, plan, and chat stay" in said
     # The mechanism that is not on this side. Promising it would describe something that does not
     # happen, and would have both halves saying the same words for different reasons.
-    assert "short summary of what was said" not in said
+    assert "short summary" not in said
 
 
 def test_builds_last_rung_says_the_new_session_was_refused_too():
     said = _text(_render({"type": "recall_offer", "scope": "empty", "surface": "build"}))
 
-    assert "Starting over was not enough" in said
-    assert "Your app, its plan and this transcript all stay" in said
-    assert "The summary carried over" not in said
+    assert "fresh start still included what was blocked" in said
+    assert "app, plan, and chat stay" in said
+    assert "summary still includes" not in said
 
 
 def test_chats_wording_is_untouched():
@@ -202,8 +199,8 @@ def test_chats_wording_is_untouched():
     first = _text(_render({"type": "recall_offer", "scope": "summary"}))
     complete = _text(_render({"type": "recall_offer", "scope": "empty"}))
 
-    assert "the model keeps a short summary of what was said" in first
-    assert "The summary carried over must hold the value too" in complete
+    assert "short summary is kept" in first
+    assert "summary still includes what was blocked" in complete
 
 
 def test_builds_buttons_reach_builds_clear_and_not_chats():
@@ -226,4 +223,4 @@ def test_both_sides_keep_the_same_labels():
         block = {"type": "recall_offer", "scope": "summary"}
         if surface:
             block["surface"] = surface
-        assert [b["text"] for b in _buttons(_render(block))] == ["Clear recall", "Not now"]
+        assert [b["text"] for b in _buttons(_render(block))] == ["Start fresh", "Not now"]

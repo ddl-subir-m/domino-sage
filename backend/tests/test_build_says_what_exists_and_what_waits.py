@@ -119,7 +119,7 @@ def _plan_note(screen: dict) -> str:
 def test_a_plan_nobody_has_built_from_says_it_is_waiting_to_be_read():
     screen = _screen(built=False, plan={**_LIVE, "retryStep": 0})
 
-    assert "clears the transcript, not the plan" in _plan_note(screen)
+    assert "clears the messages, not the plan" in _plan_note(screen)
 
 
 @needs_node
@@ -133,7 +133,7 @@ def test_a_plan_whose_build_did_not_finish_says_so():
     screen = _screen(built=False, plan={**_LIVE, "retryStep": 1})
 
     detail = _plan_note(screen)
-    assert "did not finish" in detail
+    assert "didn't finish" in detail
     assert "try again" in detail
     assert "wrote" not in detail
 
@@ -243,13 +243,13 @@ def test_a_turn_running_elsewhere_does_not_unwrite_what_is_already_on_disk():
 @needs_node
 def test_the_two_notes_do_not_say_the_same_half_twice():
     """The pair is the point of this screen, so it is the ordinary reading rather than a rare one.
-    Both notes opened "A new conversation clears the transcript, not the …", which reads as a
+    Both notes opened "A new chat clears the messages, not the …", which reads as a
     stutter once they are drawn together."""
     screen = _screen(built=True, plan=_LIVE)
 
-    stems = [n["detail"].startswith("A new conversation clears the transcript")
+    stems = [n["detail"].startswith("A new chat clears the messages")
              for n in screen["notes"]]
     assert stems.count(True) == 1
     # And the plan note still says what to do about the plan, which is the half that was carrying
     # the information.
-    assert "Open it in the rail to review it" in _plan_note(screen)
+    assert "Open the plan in the sidebar" in _plan_note(screen)

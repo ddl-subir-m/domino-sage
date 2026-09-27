@@ -630,11 +630,9 @@ window.SW = window.SW || {};
                       // Which is why the server keeps the origin id and answers `originLive`
                       // separately instead of blanking the id, which would collapse the two.
                       title: !plan.originThreadId
-                        ? 'This plan has no conversation on record, so there is nothing to hand ' +
-                          'off from. Ask for it in a conversation to build it.'
+                        ? 'This plan isn\'t tied to a chat. Ask for it in a chat to build it.'
                         : !plan.originLive
-                        ? 'The conversation this plan came from was deleted, so there is nothing ' +
-                          'to hand off from. Start a new conversation and ask for it there.'
+                        ? 'That chat was deleted. Start a new one and ask for this plan there.'
                         : null,
                     },
                     // A disabled button fires no mouse events, so the tooltip needs something
@@ -789,7 +787,7 @@ window.SW = window.SW || {};
               h(
                 'div',
                 { className: 'sw-caption', style: { marginTop: 8 } },
-                'Switch back to Preview to edit. The preview writes straight to this file.'
+                'Switch to Preview to edit. Changes save to this file.'
               )
             )
           : SECTIONS.map((section) => {

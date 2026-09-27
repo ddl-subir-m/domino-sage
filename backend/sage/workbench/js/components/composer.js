@@ -580,8 +580,7 @@ window.SW = window.SW || {};
       antd.Modal.confirm({
         title: activeApp ? `Reset "${activeApp.name}" to the starter template?`
           : 'Reset this app to the starter template?',
-        content: "This app's code is removed and can't be recovered. Files, resources, and this "
-          + 'conversation stay.',
+        content: "This app's code is deleted and can't be recovered. Files, data, and this chat stay.",
         okText: 'Reset app',
         okButtonProps: { danger: true },
         cancelText: 'Cancel',
@@ -698,7 +697,7 @@ window.SW = window.SW || {};
     // this sentence names the pick, and saying the session requires another model would have the
     // control contradict itself in two consecutive sentences (#276).
     const pinWhy = signingSlot && !override
-      ? `${pinnedModel} is required for this session, so every Build turn uses it.`
+      ? `This session uses ${pinnedModel} for every build.`
       : '';
     // The chip is the only thing left on screen once the menu closes, so a level picked in there
     // has to be readable here too — otherwise the person who chose one has no evidence it took, and
@@ -1016,7 +1015,7 @@ window.SW = window.SW || {};
         ...efforts.map((value) => ({ key: value, label: effortLabel(value) })),
         ...(strandedChatEffort ? [{ key: '__stranded__',
           label: `${effortLabel(strandedChatEffort)} — not accepted`, disabled: true,
-          title: `${effectiveModel} doesn't accept this level beside tools. Choose Model default or another level.`,
+          title: `${effectiveModel} doesn't support this setting with tools. Pick another.`,
         }] : []),
       ],
       onClick: ({ key }) => {
@@ -1172,7 +1171,7 @@ window.SW = window.SW || {};
                   title: att.pending
                     ? 'Adding to the conversation…'
                     : chipNote(att, att.addedBy === 'sage'
-                      ? `${SW.brand.assistant()} added this — ${att.rationale || 'picked for you.'}`
+                      ? 'Added for this chat.'
                       : 'You added this to the conversation.'),
                 },
                 h(
@@ -1223,7 +1222,7 @@ window.SW = window.SW || {};
             h(
               'span',
               { className: 'sw-chip-hint-text' },
-              'Added to this Conversation only — an app you build declares its own Resources.'
+              'Added to this chat only. An app you build picks its own data.'
             ),
             h(
               Button,
@@ -1482,7 +1481,7 @@ window.SW = window.SW || {};
                     title: [
                       buildBarred ? lockNote(buildPick) : pinWhy,
                       buildBarred ? '' : strandedFact,
-                      `This turn is running on ${buildLabel}. Wait for it to finish to change the model.`,
+                      `This build is using ${buildLabel}. Wait for it to finish before changing the model.`,
                     ].filter(Boolean).join(' '),
                   },
                   // The span is load-bearing: a browser dispatches no mouse events on a disabled
@@ -1654,9 +1653,9 @@ window.SW = window.SW || {};
                   type: 'button',
                   'aria-label': 'Build mode',
                   title: modeQueued
-                    ? `This turn is still ${BUILD_MODE_LABEL[buildTurnMode] || buildTurnMode}. Your pick applies to the next message.`
+                    ? `This message is still in ${BUILD_MODE_LABEL[buildTurnMode] || buildTurnMode}. Your choice applies next time.`
                     : (activeBuildMode.id === 'ask'
-                      ? 'Ask mode answers questions and never changes files'
+                      ? 'Ask answers questions and doesn\'t change files.'
                       : 'Mode'),
                 },
                   h('span', {

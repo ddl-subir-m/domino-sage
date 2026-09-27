@@ -504,8 +504,7 @@ window.SW = window.SW || {};
       antd.Modal.confirm({
         title: 'Rename the assistant?',
         content: SW.brand.text(
-          '{assistantName} restarts to use the new name, so the next message takes a moment '
-          + 'longer. A running build is not interrupted.'
+          '{assistantName} restarts to use the new name. The next message may take a moment. A running build keeps going.'
         ),
         okText: 'Rename and restart',
         onOk: () => save(names),
@@ -608,7 +607,7 @@ window.SW = window.SW || {};
     // because that is true of all of them.
     const save = (name, value) => {
       if (!SW.prefs.set(name, value)) {
-        antd.message.warning("This browser isn't saving the choice, so it won't persist next time.");
+        antd.message.warning("This browser isn't saving settings. They'll reset next time.");
       }
     };
 
@@ -663,9 +662,7 @@ window.SW = window.SW || {};
         // Said here because the control cannot show it: the choice reaches only the next New app.
         // An app keeps the stack it was born with, so a switch here changes nothing on screen now.
         h('div', { className: 'sw-setting-hint' },
-          SW.brand.text('Applies when you click New app. A {builtApp} keeps the stack it was ' +
-                        'started with. FastAPI + Ant Design has no build step, so it starts and ' +
-                        'publishes faster.'))
+          SW.brand.text('Applies to the next new app. Existing apps keep their stack. FastAPI + Ant Design starts and publishes faster.'))
       ),
       h(
         'div',
@@ -705,7 +702,7 @@ window.SW = window.SW || {};
         h(
           'div',
           { className: 'sw-setting-hint' },
-          'A read that failed or came back incomplete is always shown.'
+          'Failed or incomplete reads are always shown.'
         )
       ),
       h(

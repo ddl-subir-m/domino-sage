@@ -568,7 +568,7 @@ def test_not_connected_says_sage_cannot_see_rather_than_that_there_is_nobody():
     """The state the fake provider produces off Domino. "No people found" here would be a claim
     about the creator's colleagues, made from a failure to look at them."""
     said = " ".join(modal(connected=False)["said"])
-    assert "can't show who's on this" in said
+    assert "Can't show who's on this" in said
     # No picker, because there is nothing to pick from and offering one would imply there is.
     assert modal(connected=False)["offers"] == []
 
@@ -686,7 +686,7 @@ def test_the_dialog_names_the_place_the_rows_would_go():
     said = " ".join(modal(connected=True, keptRows={
         "on": False, "destination": "github.com/acme/analytics"})["said"])
     assert "Keep data rows in this Project's files" in said
-    assert "They're committed and pushed to github.com/acme/analytics." in said
+    assert "Saved and pushed to github.com/acme/analytics." in said
 
 
 @needs_node
@@ -694,7 +694,7 @@ def test_a_destination_nobody_can_read_is_said_rather_than_left_blank():
     """The case the opt-out exists for. A sentence naming nothing would read as though the
     rows went nowhere, which is the one reading that would make leaving it on feel free."""
     said = " ".join(modal(connected=True, keptRows={"on": False, "destination": ""})["said"])
-    assert "can't tell where this Project pushes" in said
+    assert "Can't tell who else can read these rows." in said
 
 
 @needs_node
@@ -703,8 +703,8 @@ def test_the_dialog_says_a_later_delete_cannot_undo_it():
     it — by then the rows are pushed, and saying it there explains a loss rather than offering a
     choice."""
     said = " ".join(modal(connected=True)["said"])
-    assert "a later delete cannot remove" in said
-    assert "committed and pushed" in said
+    assert "deleting later won't remove" in said
+    assert "rows already saved" in said
 
 
 @needs_node
@@ -742,8 +742,8 @@ def test_the_dialog_says_what_leaving_it_off_costs_the_charts():
     what buys them back, so the sentence beside it has to be true about that — a person who reads
     only "rows" would not expect a picture to go with them."""
     said = " ".join(modal(connected=True)["said"])
-    assert "charts are shown but not saved" in said
-    assert "a title with no image" in said
+    assert "charts show now but aren't saved" in said
+    assert "you'll see the title only" in said
 
 
 @needs_node
@@ -762,7 +762,5 @@ def test_the_dialog_says_the_gateway_s_checks_do_not_cover_the_card():
     """
     for kept in ({"on": False, "destination": ""}, {"on": True, "destination": "github.com/a/b"}):
         said = " ".join(modal(connected=True, keptRows=kept)["said"])
-        assert "not to rows shown on a card" in said, kept
-        # Spans the {llmGateway} token, so a mistyped or dropped key paints the brace and reds
-        # this, rather than leaving it green beside a caption nobody can read.
-        assert "LLM Gateway checks apply to data sent to a model" in said, kept
+        assert "not rows shown here" in said, kept
+        assert "Checks cover data sent to a model" in said, kept
