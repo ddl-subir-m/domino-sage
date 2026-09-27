@@ -346,7 +346,16 @@ def _client(tmp_path: Path, monkeypatch, resources=None):
     monkeypatch.setattr(appmod, "orchestrator", _orch(tmp_path, resources=resources))
     # Both are process-wide state the route reads and writes. Through monkeypatch so one test's
     # Preflight cannot leave its verdict, or its survival count, behind for another.
-    monkeypatch.setattr(appmod, "PREFLIGHT_SLOTS", dict(appmod.PREFLIGHT_SLOTS))
+    #
+    # The slot verdict starts pending, rather than as a copy of `PREFLIGHT_SLOTS`. That global is
+    # filled by `_run_slot_preflight` on the app lifespan, and other tests open a TestClient
+    # without pinning it, so this process can already be holding slot faults when the file runs.
+    # `dict(...)` copies those faults in. The second request then reports them, because a Problem
+    # seen twice is said — and this file asserts the list is exactly empty, which is the shape
+    # that can see an inherited verdict. CI failed on six slots (`s`, `p`, `i`, `a`) this file
+    # never configured.
+    monkeypatch.setattr(appmod, "PREFLIGHT_SLOTS",
+                        {"state": "pending", "error": None, "slots": []})
     monkeypatch.setattr(appmod, "_PREFLIGHT_SEEN", set())
     return appmod, TestClient(appmod.control_app)
 
