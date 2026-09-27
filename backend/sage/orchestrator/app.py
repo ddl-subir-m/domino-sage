@@ -4702,8 +4702,10 @@ async def chat_completions(request: Request):
         # behavior; invalid/incomplete streams simply cannot erase the captured earlier failure.
         from ..gateway.events import StreamEvents
         from ..gateway.protocol import Protocol
+        from ..shim.tool_json import ArgumentRepair
 
         recovery_events = StreamEvents(Protocol.CHAT) if recovered is not None else None
+        repair = ArgumentRepair(Protocol.CHAT)
 
         def complete_recovery():
             if recovery_events is None:
@@ -4790,10 +4792,11 @@ async def chat_completions(request: Request):
                 upstream_msg += _unverified_route_note(project)
                 project.last_gateway_error = {"message": upstream_msg}
                 stopped = True
+                yield from repair.finish()
                 yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")
                 return
             sniff(chunk)
-            yield chunk
+            yield from repair.push_chunk(chunk)
 
         if first is ka.DONE:
             complete_recovery()
@@ -4809,6 +4812,7 @@ async def chat_completions(request: Request):
                 yield ka.KEEPALIVE  # SSE comment: ignored by the parser, resets the client's read timer
                 continue
             if item is ka.DONE:
+                yield from repair.finish()
                 complete_recovery()
                 call.done()
                 return
@@ -4820,6 +4824,7 @@ async def chat_completions(request: Request):
                 )
                 project.last_gateway_error = {"message": f"{type(e).__name__}: {e}"}
                 call.done(ok=False, error=f"{type(e).__name__}: {e}")
+                yield from repair.finish()
                 yield from ka.error_sse(
                     f"\n\n⚠️ The model gateway closed the stream mid-response ({type(e).__name__}). "
                     "This is usually an upstream idle or duration limit — please retry."
