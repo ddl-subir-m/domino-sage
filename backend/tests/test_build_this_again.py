@@ -163,7 +163,7 @@ def test_build_this_again_builds_the_edited_plan(tmp_path: Path):
     assert oc.prompts[-1]["agent"] != "sage-plan"
     assert intents and "Sort the table by date" in intents[-1].authoritative_plan
     assert "Sort the table by date" not in oc.prompts[-1]["text"]
-    assert len(oc.sessions) == sessions_before + 1
+    assert len(oc.sessions) == sessions_before
     assert oc.prompts[-1]["session"] == oc.sessions[-1]["id"]
     assert "// the sorted table" in (_workspace(orch).path / "src" / "App.tsx").read_text()
     # And the edit is on record as a version of the same document, not a second document.

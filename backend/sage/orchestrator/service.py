@@ -19539,7 +19539,10 @@ class Orchestrator:
         with timing.span("setup.seed"):
             project = self._ensure_seeded()
         project.active_build_intent = None
-        if fresh_session:
+        # An approved plan stays uninterruptible until its first send, whether or not that send
+        # opens a new session. Stop during attachment or reference preflight must not kill the
+        # planning session this turn is about to keep (ADR-0070).
+        if fresh_session or is_approval:
             project.fresh_session_preflight = True
         mode_at_start = mode or project.control.snapshot().mode
         is_question = _looks_like_question(prompt)
@@ -19553,10 +19556,10 @@ class Orchestrator:
         if not answer_only:
             with timing.span("setup.attachments"):
                 mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
-        if fresh_session and project.stop_requested:
+        if project.fresh_session_preflight and project.stop_requested:
             # Stop can land while attachment paths are being resolved. There is no active session,
             # transcript row, or filesystem baseline yet, so consume it here before the missing-input
-            # exit can leave the flag for the next turn. The fresh preflight marker keeps Stop from
+            # exit can leave the flag for the next turn. The preflight marker keeps Stop from
             # interrupting the planning session while resolution runs.
             project.stop_requested = False
             self._turn_gave_up = True
@@ -19633,7 +19636,7 @@ class Orchestrator:
                 sid = self._ensure_session(project, project.build_conversation)
                 implementation_session_created = sid != selected_before
                 implementation_session_persisted = implementation_session_created
-        if not fresh_session:
+        if not fresh_session and not is_approval:
             project.active_session_id = sid
         # The plan gate's whole decision, taken here rather than beside the first line that reads it.
         # Every input to it is a local read but one: the scope classifier is a gateway round trip, and
@@ -20745,7 +20748,7 @@ class Orchestrator:
                                            for item in prepared_references]
                 plan_reference_records = [live_reference.plan_record(item)
                                           for item in prepared_references]
-            if fresh_session and project.stop_requested:
+            if project.fresh_session_preflight and project.stop_requested:
                 self._turn_gave_up = True
                 yield handle_stop()
                 return
@@ -21272,6 +21275,10 @@ class Orchestrator:
             # the one failure here that is silent: /event delivers only the events of the directory
             # the connection asks for, so a mismatched value connects, stays open, carries nothing,
             # and leaves a turn exactly as slow as it was with no error anywhere to say why.
+            # The planning session becomes interruptible at the first send, not during preflight.
+            if project.fresh_session_preflight:
+                project.active_session_id = sid
+                project.fresh_session_preflight = False
             tap = _EventTap(client, sid, directory=str(project.app_for_turn().path))
             try:
                 if not gate and not answer_only and not arch:

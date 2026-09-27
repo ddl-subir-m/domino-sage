@@ -674,10 +674,11 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-setting' },
-        h('div', { className: 'sw-setting-label' }, 'How Sage works'),
+        h('div', { className: 'sw-setting-label' },
+          SW.brand.text('How {assistantName} works')),
         h(antd.Radio.Group, {
           role: 'radiogroup',
-          'aria-label': 'How Sage works',
+          'aria-label': SW.brand.text('How {assistantName} works'),
           value: howSageWorks,
           onChange: (e) => chooseHow(e.target.value),
           optionType: 'button',
