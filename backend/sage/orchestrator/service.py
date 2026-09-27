@@ -21407,7 +21407,9 @@ class Orchestrator:
                                                            broken_retry_note) if p),
                                    model=handle, agent=agent,
                                    attachments=mention_files,
-                                   tail=request_tail)
+                                   # Passed only when set, so a send with nothing after the request
+                                   # keeps the shape it had before a tail existed.
+                                   **({"tail": request_tail} if request_tail else {}))
                 retry_tail = None
                 if fresh_session:
                     self._turn_gave_up = False
