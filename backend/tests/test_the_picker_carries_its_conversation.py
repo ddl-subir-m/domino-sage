@@ -32,8 +32,11 @@ needs_node = pytest.mark.skipif(
 )
 
 
-def _pick(app: str, thread: str, select: str = "app_a") -> dict:
-    steps = [{"pick": app, "thread": thread, "select": select}]
+def _pick(app: str, thread: str, select: str = "app_a", saved: dict | None = None) -> dict:
+    step = {"pick": app, "thread": thread, "select": select}
+    if saved is not None:
+        step["saved"] = saved
+    steps = [step]
     out = subprocess.run(
         ["node", str(_HARNESS)],
         input=json.dumps(steps),
@@ -66,6 +69,14 @@ def test_a_conversation_that_never_touched_the_app_hands_you_to_the_one_that_did
     the server's: `ThreadStore.list` answers newest-activity-first and the client keeps that order,
     so the helper takes the first match instead of forming a second opinion about recency."""
     step = _pick("app_b", "thr_one")
+    assert step["hash"] == "#/build/thr_many?app=app_b"
+
+
+@needs_node
+def test_a_saved_conversation_that_never_touched_the_app_is_not_the_one_opened():
+    """A return target saved while some other conversation was on screen must not win. `thr_none`
+    never changed P&L report; the newest conversation that did is still the one the pick opens."""
+    step = _pick("app_b", "thr_none", saved={"app_b": "thr_none"})
     assert step["hash"] == "#/build/thr_many?app=app_b"
 
 
