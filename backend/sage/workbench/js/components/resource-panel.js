@@ -156,9 +156,10 @@ window.SW = window.SW || {};
     // the row went on offering to add something a turn was already using. Kept apart from
     // `inContext` rather than folded into it for the reason written above it.
     callableHere,
-    // Chat only. The cheap half of the pair the mark leaves open — one click to put a row into the
-    // Conversation, which is a Session-context door and so one the panel is allowed to own
-    // (ADR-0021's table). Build has no verb for it (#147), so Build passes none.
+    // One click to put a row into the Conversation. A Session-context door, so the panel may own it
+    // (ADR-0021's table). Both modes: Build stands in the same Conversation the chips name, and
+    // withholding the click there left `@` as the only way to write the chip the composer already
+    // draws. Passing none is what draws the spacer.
     onAddToContext,
     // A single always-visible act, for a row whose whole point is to be opened into something else.
     // `{ icon, title, onClick }`. Plans carry one; nothing else does yet.
@@ -179,8 +180,11 @@ window.SW = window.SW || {};
     // mounts writable (`_default_dataset`), so offering only the ones someone added to the project
     // greyed this out while the copy would have worked.
     const writableDatasets = SW.store.get().datasetTargets || [];
-    // "Use in this conversation" / "Stop using here" is a Conversation-scope act, so it only belongs on a
-    // Chat surface — a Build reader has no conversation for the verb to name (#147).
+    // "Use in this conversation" / "Stop using here" writes a chip on this Conversation. Build is a
+    // view of that same Conversation (ADR-0009): the chips already sit over the Build composer, and
+    // `@` already posts the same chip from there. The mode used to hide the act (#147), on the
+    // reading that Build had no Conversation to name. It does. The app's own add stays on the
+    // header — this item does not bind anything.
     const inChat = SW.router.get().mode === 'chat';
     const isScratch = resource.source === 'scratch';
     const noWritableDataset = {
@@ -243,18 +247,17 @@ window.SW = window.SW || {};
     const items = contextItem
       ? [{ key: 'remove-from-conversation', label: 'Stop using here' }]
       : [
-          ...(inChat
-            ? [{
-                // `inContext` and not `callableHere`: this pair is the CHIP's door. There is
-                // nothing for `Stop using here` to take off a row that only an app binds, and the
-                // offer to put a chip on one is worth keeping — a chip stays with the conversation
-                // when the app selection moves, and the Binding's reach moves with it (#410).
-                key: inContext ? 'remove-resource-from-conversation' : 'mention',
-                label: inContext ? 'Stop using here' : 'Use here',
-                // Long form as hover, short as ink (`resource-tree.js:307`).
-                title: inContext ? undefined : 'Use in this conversation',
-              }]
-            : []),
+          {
+            // `inContext` and not `callableHere`: this pair is the CHIP's door. There is
+            // nothing for `Stop using here` to take off a row that only an app binds, and the
+            // offer to put a chip on one is worth keeping — a chip stays with the conversation
+            // when the app selection moves, and the Binding's reach moves with it (#410).
+            // Both modes. The app's add is the header's `Use in {app}`; this item is the chip.
+            key: inContext ? 'remove-resource-from-conversation' : 'mention',
+            label: inContext ? 'Stop using here' : 'Use here',
+            // Long form as hover, short as ink (`resource-tree.js:307`).
+            title: inContext ? undefined : 'Use in this conversation',
+          },
           ...(isScratch
             ? inChat
               ? writableDatasets.length
@@ -781,9 +784,9 @@ window.SW = window.SW || {};
       // Two guards on the Binding half, and neither is on the chip half beside it.
       //
       // `inChat`, because the mark's words are Chat's words — "is in this conversation". In Build
-      // the slot drew a spacer, since `attachedIds` holds no chips there, and a Binding is already
-      // said twice on that surface: the `Required by {app}` bar and the `saysAppUse` subtitle. A
-      // third saying of it, in the other mode's grammar, is not an improvement.
+      // a Binding does not earn that tick: the `Required by {app}` bar and the `saysAppUse`
+      // subtitle already say it, and the empty slot is the conversation's `+`. A third saying of
+      // the Binding, in the other mode's grammar, is not an improvement.
       //
       // `!isMissing`, because the mark claims the Conversation can REACH it, and a row Domino no
       // longer lists cannot be reached whatever the manifest still records. Without this, deleting
@@ -814,7 +817,10 @@ window.SW = window.SW || {};
           inContext,
           callableHere,
           // `callableHere`, so the row stops offering an act on something a turn already uses.
-          onAddToContext: inChat && !callableHere ? addToContext : null,
+          // Both modes. In Chat a Binding counts as reachable, so the tick replaces the `+`. In
+          // Build it does not — the header already says what the app holds — and the `+` is how a
+          // row gets onto this Conversation.
+          onAddToContext: !callableHere ? addToContext : null,
           highlighted: Boolean(panelFilter) && SW.util.RESOURCE_META[resource.kind]
             && SW.util.RESOURCE_META[resource.kind].group === filterGroup,
           onOpen: openResource,

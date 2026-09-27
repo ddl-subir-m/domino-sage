@@ -1,14 +1,14 @@
-"""`Use in this conversation` / `Stop using here` is a Chat-only act (#147, ADR-0023).
+"""`Use in this conversation` / `Stop using here` writes a chip on this Conversation.
 
-WHAT #147 CHANGED. Both labels write or drop a chip on THIS Conversation
-(`SW.store.addToContext` / `SW.store.removeResourceFromConversation`). Build has no Conversation on
-screen for either verb to name, so a Project-list row offering them there was the resource-panel.js
-bug #147 fixed: no mode check on the `mention` / `remove-resource-from-conversation` menu item,
-so a Build reader saw "chat" while standing in Build.
+WHAT #147 CHANGED, AND WHAT FOLLOWED IT. Both labels write or drop a chip
+(`SW.store.addToContext` / `SW.store.removeResourceFromConversation`). #147 hid them in Build on
+the reading that Build had no Conversation to name. Build is a view of that Conversation now
+(ADR-0009), the chips already sit over the Build composer, and the same menu is offered there.
+The bind stays off this row either way — that is the header's door.
 
-THE BUILD-MODE HALF OF THIS PAIR is `test_the_resource_browser_stops_offering_use_in_app.py`, which
-asserts the now-empty menu on the same two rows this file exercises in Chat. Read together, the two
-files are one claim: the act rides the mode, not the kind or the row.
+THE BUILD-MODE HALF OF THIS PAIR is `test_the_resource_browser_stops_offering_use_in_app.py`,
+which asserts the same two rows in Build. Read together, the two files are one claim: the act
+rides the Conversation, in both modes, and it is not a bind.
 """
 
 from __future__ import annotations
