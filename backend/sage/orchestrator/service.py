@@ -12809,6 +12809,27 @@ class Orchestrator:
             })
         return out or None
 
+    def _chat_data_dir(self, store: ThreadStore, thread_id: str) -> Path | None:
+        """The `public/data` Chat may read for this thread.
+
+        The newest bound handoff whose app directory is still there. Otherwise the selected
+        app, when that directory is there. Otherwise nothing to link. Chat sends no app header,
+        so this does not follow another tab.
+        """
+        for entry in reversed(store.read_handoffs(thread_id)):
+            if str(entry.get("status") or "") != "bound":
+                continue
+            app_id = str(entry.get("appId") or "")
+            if not app_id:
+                continue
+            app_dir = self._wm.apps_dir / app_id
+            if app_dir.is_dir():
+                return app_dir / "public" / "data"
+        selected_dir = self._wm.apps_dir / self._wm.selected_app_id()
+        if selected_dir.is_dir():
+            return selected_dir / "public" / "data"
+        return None
+
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> tuple[str, bool]:
         """This Thread's OpenCode session, and whether a turn still owes it a rebuild.
@@ -12832,19 +12853,18 @@ class Orchestrator:
         talked to. Doing it in silence was the defect.
         """
         # Chat stands at the Project root, where its Threads, Artifacts and scratch live. The one
-        # thing it borrows from the app is `public/data/`, and only once an app exists to borrow
-        # from: linking it would otherwise create the app directory a confirmed handoff is what
-        # creates (ADR-0008).
-        has_app = project.workspace.exists()
+        # thing it borrows from the app is `public/data/`. That app is the conversation's newest
+        # bound handoff, not whichever app a Build tab selected last.
+        data_dir = self._chat_data_dir(store, thread_id)
         work = str(ensure_chat_workdir(
             project.record.path, self._chat_agents_md(),
-            data_dir=project.workspace.path / "public" / "data" if has_app else None,
+            data_dir=data_dir,
             thread_id=thread_id))
         # That link creates `public/data/` in order to point at it, so the tree can now exist
         # before anything has been attached. It must be out of git either way: the gitignore line
         # is what keeps Dataset bytes from ever reaching the app's repo.
-        if has_app:
-            self._ensure_gitignored(project.workspace.path, "public/data/")
+        if data_dir is not None:
+            self._ensure_gitignored(data_dir.parent.parent, "public/data/")
         rec = store.read_session(thread_id) or {}
         # A debt an EARLIER call recorded and no turn has paid yet. Read on the reuse path too, and
         # that is the whole point of storing it: the planner (`draft_handoff_plan`) mints in this
