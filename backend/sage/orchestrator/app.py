@@ -834,7 +834,8 @@ class _AppViewMiddleware:
     A header selects the view and never calls `_bind_app`. It does not stop a preview and it does
     not change which app is selected. A missing header leaves the view unset, so reads stay on the
     selected app, and still stashes that app's workspace so a turn can pin it after the lock. An
-    id that is not an app answers 404 and does not fall through onto the selected app.
+    id that is not an app answers 404 and does not fall through onto the selected app — except on
+    `GET /api/apps`, which ignores the header.
 
     The `finally` clears the binding. A ContextVar left set on a pooled worker would hand the next
     request an app it did not name.
@@ -849,6 +850,10 @@ class _AppViewMiddleware:
             return
         headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
         app_id = (headers.get("x-sage-app") or "").strip()
+        # The list is the same whichever app a tab names, and it is how a tab whose app another tab
+        # deleted finds out. Refusing it left that tab reading an empty Project.
+        if scope["method"] == "GET" and scope["path"].removeprefix(BASE_PREFIX) == "/api/apps":
+            app_id = ""
         view_token = None
         workspace_token = None
         try:

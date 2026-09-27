@@ -1348,11 +1348,18 @@ window.SW = window.SW || {};
     if (fresh) {
       applyAppScope(ticket, { activeApp: fresh });
     } else if (apps && (!current || !fresh)) {
+      // The cascade's reads go out naming `activeApp`, and the server refuses an app that is gone.
+      if (current) applyAppScope(ticket, { activeApp: null });
       const adopt = state.apps.find((a) => a.selected) || null;
       if (adopt && cascade && appScopeCurrent(ticket, 'activeApp')) {
         await refreshAppScope(adopt, ticket);
       } else {
         applyAppScope(ticket, { activeApp: adopt });
+      }
+      // Deleted by another tab. A URL still naming it would put a reload back on it.
+      const route = SW.router && SW.router.get && SW.router.get();
+      if (current && route && route.mode === 'build' && route.query.app === current.id) {
+        SW.router.replace(adopt ? SW.appRoute(adopt) : `#/build${state.thread ? `/${state.thread.id}` : ''}`);
       }
     }
     notify();

@@ -418,3 +418,18 @@ def test_deleting_the_app_on_screen_moves_the_tab_onto_one_that_is_left():
     assert step["after"]["view"]["app"] == "app_d"
     assert step["after"]["view"]["hash"].endswith("?app=app_d")
     assert step["create"] == "ok"
+
+
+@needs_node
+def test_an_app_deleted_by_another_tab_moves_this_tab_onto_one_that_is_left():
+    """Nothing in this tab cleared its app, so its poll still names the deleted one. The list has to
+    answer that poll anyway, and the tab has to leave a URL naming an app that is gone."""
+    step = _run([{"deletedElsewhere": True}])[-1]
+
+    listed = next(i for i, c in enumerate(step["calls"]) if " GET /apps" in c)
+    after_poll = step["calls"][listed + 1:]
+    assert not [c for c in after_poll if c.endswith("app=app_a")], after_poll
+    assert step["after"]["apps"] == ["app_b", "app_c", "app_d"]
+    assert step["after"]["view"]["app"] == "app_d"
+    assert step["after"]["view"]["hash"].endswith("?app=app_d")
+    assert step["create"] == "ok"
