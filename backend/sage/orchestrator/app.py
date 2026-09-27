@@ -14,6 +14,7 @@ import asyncio
 import collections
 import concurrent.futures
 import contextlib
+import contextvars
 import functools
 import logging
 import os
@@ -116,6 +117,8 @@ from .service import (
     TurnBusy,
     UploadUnavailable,
     _chat_save_landed,
+    _request_view,
+    _request_workspace,
 )
 
 _feedback = FeedbackRunner()
@@ -810,7 +813,8 @@ class _ViewerIdentityMiddleware:
 control_app.add_middleware(_ViewerIdentityMiddleware)
 
 
-# Added last, so it sits OUTSIDE the two above and sees every response they let through.
+# Outside the two above, so it sees every response they let through. The app-view
+# middleware sits outside this one and names the app before anything else reads it.
 #
 # The JSON here is mostly prose and source: the Build log answers a single read at megabytes and
 # gzips ~6x, and nothing on the Workbench was compressed before, because Domino's nginx gzips
@@ -822,6 +826,53 @@ control_app.add_middleware(_ViewerIdentityMiddleware)
 # Level 6 rather than the library's 9: on a megabyte of log the last three levels cost more CPU
 # than the bytes they save are worth over a proxy on the same host.
 control_app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+
+
+class _AppViewMiddleware:
+    """Bind `X-Sage-App` to that app's view for this request, and clear it when the request ends.
+
+    A header selects the view and never calls `_bind_app`. It does not stop a preview and it does
+    not change which app is selected. A missing header leaves the view unset, so reads stay on the
+    selected app, and still stashes that app's workspace so a turn can pin it after the lock. An
+    id that is not an app answers 404 and does not fall through onto the selected app.
+
+    The `finally` clears the binding. A ContextVar left set on a pooled worker would hand the next
+    request an app it did not name.
+    """
+
+    def __init__(self, app) -> None:
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
+        app_id = (headers.get("x-sage-app") or "").strip()
+        view_token = None
+        workspace_token = None
+        try:
+            if app_id:
+                if app_id not in orchestrator._wm.app_ids():
+                    response = JSONResponse({"error": "unknown app"}, status_code=404)
+                    await response(scope, receive, send)
+                    return
+                project = orchestrator.project(start_preview=False, seed_app=False)
+                view = orchestrator._view_for(project, app_id)
+                view_token = _request_view.set(view)
+                workspace_token = _request_workspace.set(view.workspace)
+            elif orchestrator._project is not None:
+                workspace_token = _request_workspace.set(
+                    orchestrator._project._selected_view.workspace)
+            await self._app(scope, receive, send)
+        finally:
+            if workspace_token is not None:
+                _request_workspace.reset(workspace_token)
+            if view_token is not None:
+                _request_view.reset(view_token)
+
+
+control_app.add_middleware(_AppViewMiddleware)
 
 
 @control_app.get("/")
@@ -3334,7 +3385,8 @@ def _turn_sse(events, what: str):
     import json as _json
 
     q: queue.Queue = queue.Queue()
-    threading.Thread(target=_pump_events, args=(events, q),
+    ctx = contextvars.copy_context()
+    threading.Thread(target=ctx.run, args=(_pump_events, events, q),
                      name=f"sage-{what}", daemon=True).start()
     while True:
         item = ka.get(q, ka.KEEPALIVE_INTERVAL_S)
