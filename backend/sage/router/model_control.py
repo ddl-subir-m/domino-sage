@@ -59,6 +59,9 @@ class ModelControl:
         # it is serving Chat or Build.
         self._withheld: frozenset[str] = frozenset()
         self._withheld_token: object | None = None
+        # Direct is per turn, same token discipline as read-only (ADR-0070). A stale disarm from
+        # the turn that finished must not clear the turn that has already armed the next one.
+        self._direct_token: object | None = None
 
     def set_mode(self, mode: Mode) -> None:
         """The user's standing mode choice — what the next turn runs as. While a turn is pinned
@@ -121,6 +124,17 @@ class ModelControl:
         self._read_only_token = token
         self._read_only_reason = reason
         return token
+
+    def arm_direct(self) -> object:
+        """Arm Direct for this turn and return its token. The shim reads `snapshot().direct`."""
+        token = object()
+        self._direct_token = token
+        return token
+
+    def disarm_direct(self, token: object) -> None:
+        """Clear Direct only if `token` is still the live one."""
+        if self._direct_token is token:
+            self._direct_token = None
 
     def disarm_read_only(self, token: object) -> None:
         """Clear the read-only guarantee, but only if `token` is still the live one. A disarm from a
@@ -284,4 +298,5 @@ class ModelControl:
                 else frozenset()
             ),
             effort_rows_armed=self._saved_effort_slots_token is not None,
+            direct=self._direct_token is not None,
         )

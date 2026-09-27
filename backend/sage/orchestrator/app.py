@@ -3391,6 +3391,10 @@ def build_stream(body: dict) -> StreamingResponse:
     # manifest entry per file, so a folder pick writes many and none of them names the folder. See
     # `_picked_dataset_text`. Empty for the way past, which attached nothing to name.
     dataset_pick = str((body or {}).get("datasetPick") or "")
+    # Only the string `direct` is Direct. Anything else, including a missing field, is Guided.
+    # A local, like the flags above: the streaming return below has to keep its media type inside
+    # the window the compressor test measures, and this argument is not part of that return.
+    works = "direct" if str((body or {}).get("howSageWorks") or "") == "direct" else "guided"
 
     def refuse_with(message: str) -> StreamingResponse:
         def refuse():
@@ -3415,7 +3419,7 @@ def build_stream(body: dict) -> StreamingResponse:
     events = orchestrator.build_stream(
         prompt, mentions, resources, conversation, skip_reset_gate, skip_incoming_gate,
         skip_table_gate, skip_source_gate, chosen_source, skip_dataset_gate, dismissed_dataset,
-        dataset_pick, turn_ticket=turn_ticket)
+        dataset_pick, how_sage_works=works, turn_ticket=turn_ticket)
     return StreamingResponse(
         _turn_sse(events, "build_stream"),
         media_type="text/event-stream",
@@ -3902,6 +3906,8 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     dropped = str((body or {}).get("datasetDismissed") or "")
     invq = bool((body or {}).get("investigationAnswered"))
     task_id = str((body or {}).get("taskId") or "")
+    # Same closed pair as the build route: only `direct` is Direct.
+    works = "direct" if str((body or {}).get("howSageWorks") or "") == "direct" else "guided"
     turn_id = new_id("turn")
     turn_ticket, turn_state = orchestrator.prepare_stream_turn(
         turn_id, kind="chat", conversation=thread_id)
@@ -3910,7 +3916,8 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
             thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
             skip_dataset_gate=dset, dismissed_dataset=dropped,
             skip_investigation_gate=invq, task_id=task_id,
-            other_lane_grant=grant, turn_ticket=turn_ticket), "chat_stream"),
+            other_lane_grant=grant, how_sage_works=works,
+            turn_ticket=turn_ticket), "chat_stream"),
         media_type="text/event-stream",
         headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
                  "X-Sage-Turn-Sequence": str(turn_ticket.sequence),

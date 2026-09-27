@@ -264,8 +264,8 @@ def test_no_part_of_tmp_is_allowed_because_sage_writes_its_own_server_log_there(
                 assert not any(p.startswith("/tmp") for p in rule), key
 
 
-@pytest.mark.parametrize("agent", ["sage-chat", "sage-ask", "sage-plan", "sage-architect",
-                                   "sage-implement"])
+@pytest.mark.parametrize("agent", ["sage-chat", "sage-chat-direct", "sage-ask", "sage-plan",
+                                   "sage-architect", "sage-implement", "sage-implement-direct"])
 def test_no_agent_block_writes_the_word_ask(agent):
     # Deliberately narrow, and named for what it can actually see. #407 was NOT an `ask` anybody
     # wrote — it was a key nobody mentioned, falling through to OpenCode's default — and no test

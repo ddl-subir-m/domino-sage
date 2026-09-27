@@ -41,12 +41,13 @@ OWNER_ADMIN = "admin"
 # consecutive Preflights. The Problem would then never report at all (ADR-0064).
 UNSENT_WORK = "workspace-unsent-work"
 
-# The agents `opencode.json` defines, one per mode plus the architect the plan path hands to. Held
-# here as a tuple rather than read back off the file, because the failure being reported is exactly
-# "the file was not loaded": a check that read the same file the check is about would agree with a
-# deployment that never opened it.
+# The agents `opencode.json` defines: one per mode, the architect the plan path hands to, and the
+# two short Direct prompts (ADR-0070). Held here as a tuple rather than read back off the file,
+# because the failure being reported is exactly "the file was not loaded": a check that read the
+# same file the check is about would agree with a deployment that never opened it.
 SAGE_AGENTS: tuple[str, ...] = (
-    "sage-chat", "sage-ask", "sage-plan", "sage-architect", "sage-implement",
+    "sage-chat", "sage-chat-direct", "sage-ask", "sage-plan", "sage-architect",
+    "sage-implement", "sage-implement-direct",
 )
 
 # The direct vendor keys OpenCode auto-detects and can reach a model with WITHOUT going through the

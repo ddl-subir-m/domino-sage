@@ -38,6 +38,10 @@ CATALOG = ModelCatalog(
         # 1. Auto mode picks by phase.
         (SessionState(Mode.AUTO, Phase.PLAN), "strong-vendor", Reason.AUTO_PLAN),
         (SessionState(Mode.AUTO, Phase.IMPLEMENT), "cheap-vendor", Reason.AUTO_IMPLEMENT),
+        # Direct Auto is the Implement slot on a read and on a write. Phase stays PLAN on a read
+        # because the shim does not write it (ADR-0070).
+        (SessionState(Mode.AUTO, Phase.PLAN, direct=True), "cheap-vendor", Reason.AUTO_IMPLEMENT),
+        (SessionState(Mode.AUTO, Phase.IMPLEMENT, direct=True), "cheap-vendor", Reason.AUTO_IMPLEMENT),
         # 2. Ask mode is always pinned to the ask model, no override.
         (SessionState(Mode.ASK, Phase.PLAN, picked_model="my-model"), "ask-vendor", Reason.ASK_PINNED),
         (SessionState(Mode.ASK, Phase.PLAN), "ask-vendor", Reason.ASK_PINNED),

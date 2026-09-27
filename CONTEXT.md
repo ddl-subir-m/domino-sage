@@ -459,6 +459,25 @@ the app; Plan, which proposes; and Implement, which builds.
 _Kind_: name
 _Avoid_: agent mode, code mode, editor, IDE
 
+**Direct**:
+A way of working a person chooses, for themselves, in which Chat, Auto, and Implement skip the
+automatic cards and the plan gate and run one short agent. [[Guided]] is the other choice, and the
+one they have until they choose this. The choice follows the person across Projects and never goes
+in git. It is not a Build mode: Ask stays read-only and Plan still proposes, whichever is selected.
+Chat stays an answer — Direct explains the result, rather than echoing a terminal. Every model call
+still goes through the enforcement shim, Sage-owned files stay untouchable, and raw rows stay off
+the transcript. See
+[ADR-0070](docs/adr/0070-guided-stays-the-default-and-direct-is-still-sage.md).
+_Kind_: word
+_Avoid_: bare (that describes the harness, not the choice), terminal mode, agent mode, unguided
+
+**Guided**:
+How Sage works until a person chooses [[Direct]]: the cards, the plan gate, and — on an approved
+unphased build — the planning session reused for the build. It is the fallback, and the word for
+the path Sage already took.
+_Kind_: word
+_Avoid_: default mode (the fallback is this word), classic, wizard
+
 **Model assignment**:
 Which model a Build mode runs on and how hard it is asked to reason, chosen once and kept. A
 model and an Effort, saved together. There are three: Plan, Implement, and

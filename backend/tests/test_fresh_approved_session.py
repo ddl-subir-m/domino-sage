@@ -1,4 +1,8 @@
-"""Approved plans cross into one clean, durable implementation session (#526)."""
+"""An approved plan is built in the session that drafted it (ADR-0070).
+
+A recovery that starts over still opens a later session. The clean-session door remains for a
+phased continuation, which is what the setup-failure tests drive directly.
+"""
 from __future__ import annotations
 
 import json
@@ -12,7 +16,7 @@ from sage import build_diagnostics
 from sage.build_policy import BuildPolicy
 from sage.feedback.runner import FeedbackReport
 from sage.orchestrator import handoff
-from sage.orchestrator.service import Orchestrator
+from sage.orchestrator.service import Orchestrator, _TurnTicket
 from sage.pre_edit_guard import PreEditAction, PreEditGuard, PreEditState
 from sage.router.models import Mode, ModelCatalog
 
@@ -178,24 +182,18 @@ def test_approval_and_one_clean_recovery_use_fresh_sessions_then_reuse_the_recov
         conversation=CONVERSATION, plan_edits=EDITED, answers="Use compact rows."))
 
     assert _done(events)["ok"] is True
-    implementation_session = opencode.sessions[-1]["id"]
-    first_implementation_session = opencode.sessions[-2]["id"]
-    assert implementation_session not in {planning_session, first_implementation_session}
-    assert len(opencode.sessions) == 3
+    assert len(opencode.sessions) == 2
+    recovery_session = opencode.sessions[-1]["id"]
+    assert recovery_session != planning_session
     approval_prompts = opencode.prompts[1:3]
     assert [prompt["session"] for prompt in approval_prompts] == [
-        first_implementation_session, implementation_session,
+        planning_session, recovery_session,
     ]
-    assert planning_session not in {prompt["session"] for prompt in approval_prompts}
-    assert opencode.active_at_dispatch[1:3] == [
-        first_implementation_session, implementation_session,
-    ]
-    assert project.session_id == implementation_session
+    assert opencode.active_at_dispatch[1:3] == [planning_session, recovery_session]
+    assert project.session_id == recovery_session
     assert project.record.read_session_id(
-        CONVERSATION, project.workspace.app_id) == implementation_session
-    assert {session["directory"] for session in opencode.sessions[-2:]} == {
-        str(project.workspace.path)
-    }
+        CONVERSATION, project.workspace.app_id) == recovery_session
+    assert opencode.sessions[-1]["directory"] == str(project.workspace.path)
     assert "I only inspected the app." not in approval_prompts[1]["text"]
     assert "IMPLEMENT_NUDGE" not in approval_prompts[1]["text"]
     first_intent = opencode.intents[1]
@@ -207,8 +205,8 @@ def test_approval_and_one_clean_recovery_use_fresh_sessions_then_reuse_the_recov
 
     project.control.set_mode(Mode.IMPLEMENT)
     list(orch.build_stream("Add a direct follow-up.", conversation=CONVERSATION))
-    assert len(opencode.sessions) == 3
-    assert opencode.prompts[-1]["session"] == implementation_session
+    assert len(opencode.sessions) == 2
+    assert opencode.prompts[-1]["session"] == recovery_session
     assert project.pre_edit_guard is None
 
 
@@ -230,7 +228,7 @@ def test_retry_of_a_live_approved_plan_gets_another_clean_session(tmp_path: Path
     assert _done(second)["ok"] is True
     assert [event["type"] for event in first].count("build-recovery") == 1
     assert [event["type"] for event in second].count("build-recovery") == 1
-    assert len(opencode.sessions) == 5
+    assert len(opencode.sessions) == 3
     assert opencode.prompts[-1]["session"] not in {opencode.prompts[0]["session"], first_clean}
     assert orch.project(start_preview=False).pre_edit_guard is None
 
@@ -286,7 +284,19 @@ def test_session_setup_failure_sends_nothing_keeps_the_old_selection_and_plan(
 
         monkeypatch.setattr(record_type, "write_session_id", fail_this_record)
 
-    events = list(orch.approve_stream(conversation=CONVERSATION))
+    # The continuation door still asks for a clean session. Unphased approve does not.
+    # The public door holds the turn and clears the guard when the stream ends.
+    ticket = _TurnTicket("turn_setup")
+    assert list(orch._acquire_turn(
+        ticket, kind="build", conversation=CONVERSATION, prompt="", app=True)) == []
+    try:
+        events = list(orch._build_stream(
+            "continue", is_approval=True, mode=Mode.IMPLEMENT,
+            user_text="Continued the build.", fresh_session=True))
+    finally:
+        orch._clear_turn_baseline()
+        if orch._turns.running() is ticket:
+            orch._release_turn()
 
     assert [prompt["session"] for prompt in opencode.prompts] == [old_id]
     assert project.session_id == old_id
@@ -308,7 +318,9 @@ def test_disconnect_after_persistence_keeps_the_new_selection_and_live_plan(tmp_
     orch, opencode = _build(tmp_path, [Turn(text=DRAFT)])
     _plan(orch)
     planning_session = opencode.prompts[0]["session"]
-    stream = orch.approve_stream(conversation=CONVERSATION)
+    stream = orch._build_stream(
+        "continue", is_approval=True, mode=Mode.IMPLEMENT,
+        user_text="Continued the build.", fresh_session=True)
     for event in stream:
         if event["type"] == "turn":
             break
@@ -317,6 +329,7 @@ def test_disconnect_after_persistence_keeps_the_new_selection_and_live_plan(tmp_
     assert new_id != planning_session
     assert project.active_session_id == new_id
     stream.close()
+    orch._clear_turn_baseline()
 
     assert [prompt["session"] for prompt in opencode.prompts] == [planning_session]
     assert project.session_id == new_id
@@ -487,7 +500,7 @@ def test_recovery_requires_confirmed_old_session_abort(tmp_path: Path):
     assert [event["type"] for event in events].count("build-recovery") == 0
     assert any(event["type"] == "build-stalled" for event in events)
     assert _done(events)["decision"] == "wedged"
-    assert len(blocked.sessions) == 2  # planning plus initial implementation; no recovery
+    assert len(blocked.sessions) == 1  # the planning session; no recovery
     assert blocked.prompts[-1]["session"] == blocked.sessions[-1]["id"]
 
 
@@ -498,8 +511,8 @@ class _BlockedRecoveryCreateOpenCode(RecordingOpenCode):
         self.release_recovery = threading.Event()
 
     def create_session(self, directory: str, model: dict | None = None) -> str:
-        # Planning and initial implementation are sessions 1 and 2. Block session 3.
-        if len(self.sessions) == 2:
+        # Planning is already open. The next create is the recovery session.
+        if len(self.sessions) == 1:
             self.creating_recovery.set()
             assert self.release_recovery.wait(2)
         return super().create_session(directory, model)
@@ -590,7 +603,7 @@ def test_late_edit_before_begin_recovery_disarms_without_a_recovery_event(tmp_pa
     events = list(orch.approve_stream(conversation=CONVERSATION))
 
     assert not any(event["type"] == "build-recovery" for event in events)
-    assert len(opencode.sessions) == 2  # planning and initial implementation only
+    assert len(opencode.sessions) == 1  # the planning session; recovery never opened
     assert orch.project(start_preview=False).workspace.path.joinpath(
         "src", "App.tsx").read_text() == "// late shell edit\n"
     assert _done(events)["ok"] is True
@@ -619,7 +632,7 @@ def test_user_write_during_recovery_start_rebaselines_and_keeps_pending_recovery
     events = list(orch.approve_stream(conversation=CONVERSATION))
 
     assert [event["type"] for event in events].count("build-recovery") == 1
-    assert len(opencode.sessions) == 3
+    assert len(opencode.sessions) == 2
     assert _done(events)["ok"] is True
     assert "compact table format" in (
         orch.project(start_preview=False).workspace.path / "AGENTS.md").read_text()
@@ -784,7 +797,7 @@ def test_stop_targets_the_new_implementation_session(tmp_path: Path):
     list(orch.approve_stream(conversation=CONVERSATION))
 
     implementation_session = opencode.prompts[1]["session"]
-    assert implementation_session != planning_session
+    assert implementation_session == planning_session
     assert opencode.interrupted_sessions
     assert set(opencode.interrupted_sessions) == {implementation_session}
     assert orch.project(start_preview=False).session_id == implementation_session
@@ -805,8 +818,8 @@ def test_diagnostics_expose_only_safe_session_state(tmp_path: Path, caplog):
                    if row["turn"]["kind"] == "approve")
     approval = store.get(summary["turn"]["turnId"], project.workspace.app_id, CONVERSATION)
     assert approval["implementationSession"] == {
-        "fresh": True, "reason": "approved_plan", "created": True,
-        "persisted": True, "dispatchStarted": True,
+        "fresh": False, "reason": "reused", "created": False,
+        "persisted": False, "dispatchStarted": True,
     }
     encoded = json.dumps(approval)
     assert private not in encoded

@@ -216,6 +216,10 @@ def _profile_text(text: str, profile: str,
         # from the model.
         kept_ids.add("implement")
         kept_ids |= {block_id for block_id in _OPTIONAL_BLOCKS if block_id in sections}
+    elif profile == "direct":
+        # Common and implement only. `sections` is ignored: Direct does not send the design
+        # essay or the platform table, even when the caller names them (ADR-0070).
+        kept_ids.add("implement")
     elif profile != "plan":  # Callers use a fixed stage enum; keep this guard local for direct tests.
         raise BuildInstructionProfileError("Unknown Build instruction profile")
 
