@@ -901,6 +901,9 @@ function panelContents(tree) {
     // The overflow menu hangs inside the row it acts on and carries no class of its own, so it is
     // recognised by having items at all. Which row holds which removal is the whole question.
     if (row && n.items) { row.items = n.items; row.onMenu = n.onMenu; }
+    // The row's `+`, which is an icon with no text. The aria-label is the only thing that says
+    // the click writes a chip, so a menu that grew the same words would not prove the button.
+    if (row && cls.includes('sw-res-ctx-add')) row.addLabel = n.label;
     // The panel has one heading and its list is divided by group labels — `Data (2)`,
     // `Plans (1)` — where it used to carry `sw-panel-section-title` heads for three different
     // scopes (#151). The label is the section now; the count in it is dropped, because a section

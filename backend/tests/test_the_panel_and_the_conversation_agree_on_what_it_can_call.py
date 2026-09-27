@@ -244,12 +244,12 @@ def test_a_bound_model_api_is_not_ticked_because_no_turn_can_reach_it(tmp_path: 
 
 @needs_node
 def test_in_build_a_binding_draws_no_conversation_mark(tmp_path: Path):
-    """The mark speaks Chat's sentence, so it belongs to Chat.
+    """The tick speaks Chat's sentence, so a Binding does not earn it in Build.
 
-    Build says a Binding twice already, in its own grammar: the `Required by {app}` bar and the
-    `saysAppUse` subtitle. Before this change the slot drew a spacer there — `attachedIds` holds no
-    chips in Build — and widening the mark without a mode guard would have put "is in this
-    conversation" on every bound row of a surface that is not a conversation.
+    Build says a Binding in its own grammar: the `Required by {app}` bar and the `saysAppUse`
+    subtitle. The slot used to be a spacer. It is the conversation's `+` now — Build stands in
+    the same Conversation, and a Binding is not a chip — and it is still not the tick. Widening
+    the tick without a mode guard would have put "is in this conversation" on every bound row.
     """
     orch = _orch(tmp_path)
     project = orch.project(start_preview=False)
@@ -262,9 +262,11 @@ def test_in_build_a_binding_draws_no_conversation_mark(tmp_path: Path):
     in_build = _drawn(orch, tid, mode="build")[f"llm_alias:{OPUS_ID}"]
 
     assert in_chat["slot"] == "mark", "the same Binding, on the surface whose sentence this is"
-    assert in_build["slot"] == "spacer", (
-        "Build drew the conversation's mark; the row's own `Required by` bar is Build's way to say it"
+    assert in_build["slot"] == "add", (
+        "Build hid the conversation's add; the Binding is the app's record, not this Conversation's"
     )
+    assert in_build["offersAdd"]
+    assert in_build["callableHere"] is False
 
 
 @needs_node

@@ -196,7 +196,8 @@ def test_a_missing_row_only_a_conversation_holds_points_at_that_conversation():
     the chip can come off in front of the turns that put it there.
     """
     report = _act("listed")
-    assert report["chatDoors"] == ["Open Positions review"]
+    # `Use here` is this Conversation's chip, in front of the door that opens the other one.
+    assert report["chatDoors"] == ["Use here", "Open Positions review"]
     assert report["chatRemovals"] == [], "no removal offered, and none styled as one"
     assert report["chatRoutes"] == ["#/build/conv_9"]
 
@@ -207,7 +208,8 @@ def test_a_missing_row_both_holders_keep_offers_both_doors():
     Unbinding the app and stopping there would walk the creator straight into the second refusal —
     the reason the removal asks both questions before either one answers.
     """
-    assert _act("listed")["pairDoors"] == ["Remove from Sales trends", "Open Positions review"]
+    assert _act("listed")["pairDoors"] == [
+        "Use here", "Remove from Sales trends", "Open Positions review"]
 
 
 def test_a_resource_domino_still_holds_keeps_the_ordinary_removal():
@@ -216,7 +218,7 @@ def test_a_resource_domino_still_holds_keeps_the_ordinary_removal():
     A live Resource an app binds has always just answered 409, and a live one a conversation holds
     now does too. Widening the pre-warn to them is a different question from this one.
     """
-    assert _act("listed")["liveDoors"] == ["Remove from quick-start"]
+    assert _act("listed")["liveDoors"] == ["Use here", "Remove from quick-start"]
 
 
 def test_a_same_scope_reload_does_not_blink_the_marks_off():

@@ -124,31 +124,28 @@ def test_every_route_that_binds_a_resource_is_on_the_apps_own_surface():
 
 
 @needs_node
-def test_the_row_offers_no_menu_in_build_since_the_conversations_act_moved_to_chat():
-    """The whole menu, asserted as a whole. Read as a list rather than as an absence, because the
-    failure this ticket could cause is not the act coming back — it is the row losing the cheap act
-    that shared the menu with it.
-
-    `mention` used to be that act regardless of mode — this file's own name for it, before #147
-    mode-gated `Use in this conversation` to the surface with a Conversation to put it in
-    (`test_use_in_this_chat_is_a_chat_only_act.py`). In Build the menu is empty now, and that is
-    correct rather than a second door lost: #147 did not reopen anything this ticket closed."""
+def test_build_offers_the_conversations_chip_and_not_a_bind():
+    """Build stands in the same Conversation Chat does (ADR-0009), so the chip's door is on the
+    row here too. What must stay gone is the bind: `Use in {app}` writes a manifest publish reads,
+    and that door is the header's. The sign under the name stays, which is the #129 split."""
     row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"], "Claude Sonnet 4")
-    assert _keys(row) == []
-    assert [i["label"] for i in row["items"]] == []
-    # The sign stays on the row the door left, which is the point of the #129 split: it is the only
-    # thing that tells a Resource this app can reach from one merely sitting in the Project.
+    assert _keys(row) == ["mention"]
+    assert [i["label"] for i in row["items"]] == ["Use here"]
+    assert [i["title"] for i in row["items"]] == ["Use in this conversation"]
+    assert row["addLabel"] == "Use Claude Sonnet 4 in this conversation"
+    assert not any(i["key"] == "use-in-app" for i in row["items"])
     assert f"Not used by {APP}" in row["texts"]
 
 
 @needs_node
-def test_a_resource_this_conversations_uses_offers_no_way_back_out_in_build():
-    """The other half of the pair ADR-0015 named. `Stop using here` shared `Use in this conversation`'s menu
-    slot and its mode gate came with it (#147): both are acts on the Conversation, and Build has none
-    to act on. The Chat-mode half of this pair is `test_use_in_this_chat_is_a_chat_only_act.py`."""
+def test_a_chip_in_build_still_offers_the_way_back_out():
+    """The other half of the pair ADR-0015 named. The chip is the Conversation's, and Build draws
+    that Conversation, so closing it is the same act as in Chat. The Chat-mode half of this pair
+    is `test_use_in_this_chat_is_a_chat_only_act.py`."""
     row = _row(_run([{"panel": "thr_many", "select": APP_ID}])[-1]["rows"], "Market data EOD")
-    assert _keys(row) == []
-    assert [i["label"] for i in row["items"]] == []
+    assert _keys(row) == ["remove-resource-from-conversation"]
+    assert [i["label"] for i in row["items"]] == ["Stop using here"]
+    assert "addLabel" not in row
 
 
 @needs_node
