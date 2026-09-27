@@ -16,8 +16,10 @@ from sage.workspace.threads import ThreadStore
 from .fake_opencode import Turn
 from .test_a_bound_dataset_with_no_files_asks_which_ones import (
     _calls_dataset,
-    _orch as _dataset_orch,
     _thread_with_dataset,
+)
+from .test_a_bound_dataset_with_no_files_asks_which_ones import (
+    _orch as _dataset_orch,
 )
 from .test_a_chat_build_request_is_asked_which_table import (
     _gong_warehouse,
