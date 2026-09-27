@@ -52,6 +52,7 @@ from ..router.phase_classifier import (
 from ..tool_result_window import apply_tool_result_window
 from . import keepalive as ka
 from .chat_paths import apply_withheld, strip_denied_writes
+from .tool_json import redact_invalid_tool_results
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
 # attached — a silently dropped part reads as "the user sent nothing", and the agent then invents
@@ -483,6 +484,13 @@ class EnforcementShim:
         `phase` is empty for the turns that have none — Chat and Ask; see the call site.
         """
         requested = request.get("model")
+        # The invalid tool quotes the raw arguments back (`Text: ...`). Replace that result
+        # before anything else reads the messages, and keep the message: dropping it while the
+        # tool call stays is an HTTP 400. A repaired call never produces this result.
+        if isinstance(request.get("messages"), list):
+            redacted = redact_invalid_tool_results(request["messages"])
+            if redacted is not request["messages"]:
+                request = {**request, "messages": redacted}
         state = self._control.snapshot()
 
         # Per-step phase: in Auto mode, classify THIS inference from its own message tail (plan
