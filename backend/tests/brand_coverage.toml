@@ -209,6 +209,11 @@ shows_pack = true
 
 [[surface]]
 kind = "python-prose"
+module = "sage/liveread/text_analysis.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
 module = "sage/orchestrator/app.py"
 shows_pack = true
 
