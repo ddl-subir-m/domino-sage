@@ -85,9 +85,11 @@ const json = (body, status = 200) => ({
 
 function route(path, init) {
   let m;
-  // `_AppViewMiddleware`: a header naming an app that is not there is refused before any route.
+  // `_AppViewMiddleware`: a header naming an app that is not there is refused before any route,
+  // except on the list itself.
   const named = ((init && init.headers) || {})['X-Sage-App'];
-  if (named && !APPS.some((a) => a.id === named)) return json({ error: 'unknown app' }, 404);
+  const listing = path === '/apps' && !(init && init.method && init.method !== 'GET');
+  if (named && !listing && !APPS.some((a) => a.id === named)) return json({ error: 'unknown app' }, 404);
   if ((m = path.match(/^\/apps\/([^/?]+)\?domino_app=/)) && init && init.method === 'DELETE') {
     APPS.splice(APPS.findIndex((a) => a.id === m[1]), 1);
     if (selected === m[1]) selected = APPS[APPS.length - 1].id;
@@ -474,6 +476,23 @@ for (const step of steps) {
     tab.unmount();
     APPS.unshift({ id: 'app_a', name: 'Desk dashboard', built: true });
     report.push({ step: 'deleteShown', after, create, calls: calls.slice(mark) });
+    continue;
+  }
+
+  // Another tab deletes the app this one is showing. The server is all that changes; this tab
+  // hears about it on its next poll, like any other move.
+  if (step.deletedElsewhere) {
+    const tab = makeTab('t1', '#/build/thr_many?app=app_a');
+    await tab.settle();
+    const mark = calls.length;
+    APPS.splice(APPS.findIndex((a) => a.id === 'app_a'), 1);
+    selected = 'app_d';
+    await tab.poll();
+    const after = { view: tab.view(), apps: tab.SW.store.get().apps.map((a) => a.id) };
+    const create = await tab.SW.api.createApp().then(() => 'ok', (err) => err.message);
+    tab.unmount();
+    APPS.unshift({ id: 'app_a', name: 'Desk dashboard', built: true });
+    report.push({ step: 'deletedElsewhere', after, create, calls: calls.slice(mark) });
     continue;
   }
 

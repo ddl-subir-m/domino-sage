@@ -109,3 +109,18 @@ def test_a_header_for_an_unknown_app_is_not_found(tmp_path: Path, monkeypatch):
 
     read = client.get("/api/bindings", headers={"X-Sage-App": missing})
     assert read.status_code == 404, read.text
+
+
+def test_the_app_list_answers_a_header_for_an_app_that_is_gone(tmp_path: Path, monkeypatch):
+    """A tab whose app another tab deleted still sends it. The list is how that tab finds out, so
+    it answers — the same list, with the same selection, as a read with no header."""
+    _orch, _root, app_a, app_b, client = _two_apps(tmp_path, monkeypatch)
+    missing = "app_" + "0" * 21
+
+    read = client.get("/api/apps", headers={"X-Sage-App": missing})
+    assert read.status_code == 200, read.text
+    assert read.json() == client.get("/api/apps").json()
+    assert read.json()["selected"] == app_b
+    assert [r["id"] for r in read.json()["items"]] == [app_a, app_b]
+
+    assert client.post("/api/apps", headers={"X-Sage-App": missing}).status_code == 404
