@@ -1442,7 +1442,8 @@ window.SW = window.SW || {};
             size: 'small',
             icon: h(ExportOutlined, null),
             'aria-label': 'Open preview in a new tab',
-            onClick: () => window.open('./preview/', '_blank'),
+            onClick: () => window.open(
+              activeApp && activeApp.id ? `./preview/${activeApp.id}/` : './preview/', '_blank'),
           })
         ),
         // Everything else this app can do, in one right-aligned menu (see `appMenu` above) rather

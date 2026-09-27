@@ -4462,7 +4462,7 @@ window.SW = window.SW || {};
           && SW.router.get().mode === 'build' && document.visibilityState !== 'hidden') {
         // Retire a status probe issued before this document request.
         previewProbe += 1;
-        state.previewSrc = `./preview/?sageValidation=${encodeURIComponent(ev.validationId)}`;
+        state.previewSrc = `./preview/${ev.appId}/?sageValidation=${encodeURIComponent(ev.validationId)}`;
         state.previewStatus = 'ok';
         state.previewDetail = null;
         state.buildTyping = 'Checking the changed page…';
@@ -4673,7 +4673,7 @@ window.SW = window.SW || {};
     const generation = appGen;
     const current = () => mine === previewProbe && scope === scopeLoad && generation === appGen
       && app === (state.activeApp && state.activeApp.id);
-    const url = `./preview/?t=${Date.now()}`;
+    const url = `./preview/${app ? `${app}/` : ''}?t=${Date.now()}`;
     try {
       if (statusOnly || retry) {
         const statusRes = await fetch(`./api/preview/${retry ? 'retry' : 'status'}${

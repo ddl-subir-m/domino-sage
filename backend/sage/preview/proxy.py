@@ -24,8 +24,10 @@ cross-origin and the browser blocks it — an app with a model was untestable un
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
+import re
 from collections.abc import Callable
 
 import httpx
@@ -38,6 +40,21 @@ from ..orchestrator import brand
 from .read_outcomes import read_request
 
 log = logging.getLogger(__name__)
+
+# The browser path `/preview/<appId>/...` names an app only when the first segment is an id.
+# Anything else, including `/preview/` and `assets/`, is the process default's preview.
+_APP_ID = re.compile(r"^app_[0-9a-f]{21}$")
+preview_route_app: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "sage_preview_route_app", default=None)
+
+
+def _bind_preview_path(path: str, known_app: Callable[[str], bool] | None) -> tuple[str, contextvars.Token]:
+    app_id = None
+    if known_app is not None and path:
+        segment, _sep, rest = path.partition("/")
+        if _APP_ID.fullmatch(segment) and known_app(segment):
+            path, app_id = rest, segment
+    return path, preview_route_app.set(app_id)
 
 # Hop-by-hop headers must not be forwarded across a proxy.
 _HOP = {"connection", "keep-alive", "transfer-encoding", "upgrade", "te", "trailer", "proxy-authorization", "proxy-authenticate"}
@@ -221,7 +238,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                      get_mount_base: Callable[[], str] | None = None,
                      on_platform_read: Callable[..., None] | None = None,
                      get_read_context: Callable[[str, str, str, str], dict | None] | None = None,
-                     get_status: Callable[[], dict] | None = None) -> FastAPI:
+                     get_status: Callable[[], dict] | None = None,
+                     known_app: Callable[[str], bool] | None = None) -> FastAPI:
     """Preview proxy mounted at `/preview` on the control app.
 
     Vite bakes `base = <base_prefix>/preview/` into the HTML/JS it serves, so it only responds at
@@ -272,6 +290,13 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
 
     @app.websocket("/{path:path}")
     async def ws_proxy(client_ws: WebSocket, path: str) -> None:
+        path, token = _bind_preview_path(path, known_app)
+        try:
+            await _ws_proxy(client_ws, path)
+        finally:
+            preview_route_app.reset(token)
+
+    async def _ws_proxy(client_ws: WebSocket, path: str) -> None:
         # Vite HMR connects to "/" with the "vite-hmr" subprotocol. Preserve subprotocol + query.
         subprotocols = client_ws.scope.get("subprotocols", [])
         await client_ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
@@ -299,6 +324,13 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
     async def http_proxy(request: Request, path: str) -> Response:
+        path, token = _bind_preview_path(path, known_app)
+        try:
+            return await _http_proxy(request, path)
+        finally:
+            preview_route_app.reset(token)
+
+    async def _http_proxy(request: Request, path: str) -> Response:
         kind = ("query" if path.startswith(_QUERY_PREFIX) else
                 "platform" if path.startswith(_PLATFORM_PREFIX) else "")
         read_path = ("/" + path[len(_PLATFORM_PREFIX):] if kind == "platform" else "/" + path)

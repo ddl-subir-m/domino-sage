@@ -103,13 +103,14 @@ def parse_uvicorn_url(line: str) -> str | None:
     return m.group(1) if m else None
 
 
-def make_supervisor(workspace: Path, base_prefix: str = "") -> ViteSupervisor:
+def make_supervisor(workspace: Path, base_prefix: str = "", *,
+                    pinned_port: bool = False) -> ViteSupervisor:
     """Pick from the shared stack resolution. Unresolved apps get an inert supervisor;
     `start` refuses them with the resolver's reason before it can spawn a process."""
     stack = preview_stack_of(Path(workspace))
     if stack is not None and stack.preview == "uvicorn":
-        return UvicornSupervisor(workspace, base_prefix)
-    return ViteSupervisor(workspace, base_prefix)
+        return UvicornSupervisor(workspace, base_prefix, pinned_port=pinned_port)
+    return ViteSupervisor(workspace, base_prefix, pinned_port=pinned_port)
 
 
 class ViteSupervisor:
@@ -117,16 +118,21 @@ class ViteSupervisor:
     # that base is baked into what it emits (`vite.config.ts`), so the proxy has to land there.
     # A server that serves at the root answers "".
     def mount_base(self) -> str:
-        return f"{self._base_prefix}/preview"
+        # Matches the base Vite bakes when SAGE_PREVIEW_APP names this directory. The proxy
+        # strips that id off the browser path and puts this back on the way upstream.
+        return f"{self._base_prefix}/preview/{self._workspace.name}"
 
     # The server's own name, for the sentences a failure to start carries.
     _NAME = "Vite dev server"
     _parse_url = staticmethod(parse_vite_url)
 
-    def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3) -> None:
+    def __init__(self, workspace: Path, base_prefix: str = "", max_restarts: int = 3, *,
+                 pinned_port: bool = False) -> None:
         self._workspace = Path(workspace)
         self._base_prefix = base_prefix  # baked into Vite's `base`/HMR via SAGE_BASE_PREFIX
+        self._pinned_port = pinned_port
         self._max_restarts = max_restarts
+        self.last_traffic: float | None = None
         self._proc: subprocess.Popen | None = None
         self._upstream: str | None = None
         self._ready = threading.Event()
@@ -279,6 +285,30 @@ class ViteSupervisor:
             raise RuntimeError(self._last_error or f"{self._NAME} not ready")
         return self._upstream
 
+    def note_traffic(self, now: float) -> None:
+        """A proxy hit or a status/retry read. Idle reap reads this and nothing else."""
+        self.last_traffic = now
+
+    def idle_stop(self) -> None:
+        """The tab that was asking for this preview has gone. The next request may start it.
+
+        Not `stop()`: that latches `_stopped`, and `retry_start` then refuses until somebody
+        presses Retry. An idle preview comes back when its tab does.
+        """
+        with self._state_lock:
+            self._kill()
+            self._requested = False
+            self._state = "failed"
+            self._last_error = None
+            self._settled.set()
+
+    def _listen_port(self) -> int:
+        """The default app keeps `SAGE_PREVIEW_PORT` when it is set, so two Sage processes on
+        one machine do not both take it. Every other preview takes a free port."""
+        if self._pinned_port and os.environ.get("SAGE_PREVIEW_PORT", "").strip():
+            return preview_port()
+        return _free_port()
+
     def stop(self) -> None:
         with self._state_lock:
             self._stopped = True
@@ -293,15 +323,17 @@ class ViteSupervisor:
         generation = self._spawn_generation(previous)
         if generation is None:
             return
-        port = preview_port()
+        port = self._listen_port()
         # start_new_session -> own process group so we can kill Vite + any children (esbuild).
         # SAGE_BASE_PREFIX tells vite.config.ts the Domino proxy prefix to bake into `base`/HMR.
+        # SAGE_PREVIEW_APP names this app in that base, so two previews do not share one path.
         self._launch(
             # `--port` after `--` so npm forwards it to Vite. Passed on the command line rather
             # than set in `vite.config.ts` because a workspace seeded from an older template never
             # re-seeds (#40) — the flag reaches those too, a config change would not.
             ["npm", "run", "dev", "--", "--port", str(port)],
-            {**os.environ, "SAGE_BASE_PREFIX": self._base_prefix}, port, generation,
+            {**os.environ, "SAGE_BASE_PREFIX": self._base_prefix,
+             "SAGE_PREVIEW_APP": self._workspace.name}, port, generation,
         )
 
     def _launch(self, command: list[str], env: dict, port: int, generation: int) -> None:
@@ -545,7 +577,7 @@ class UvicornSupervisor(ViteSupervisor):
         generation = self._spawn_generation(previous)
         if generation is None:
             return
-        port = _free_port() if not os.environ.get("SAGE_PREVIEW_PORT", "").strip() else preview_port()
+        port = self._listen_port()
         self._launch(
             [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
              "--reload", "--reload-dir", ".", "--log-level", "info"],

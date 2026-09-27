@@ -3,8 +3,8 @@
 A Project holds many Built Apps and each has its own directory, so moving between them is looking
 rather than editing. Three rules meet here:
 
-- One preview runs at a time, and it serves whichever app is on screen. Selecting another app stops
-  the one that was running and starts it again in the new directory.
+- Each open app keeps its own preview. Selecting another app starts that one and leaves the
+  preview already running where it is.
 - The turn lock stays one per Project. A second turn waits behind the one running (#79), and
   SWITCHING does not take that lock at all — a build that is already running keeps running in the
   app it started in, and the rail says which app that is.
@@ -178,16 +178,31 @@ def test_selecting_an_app_restarts_the_preview_in_that_apps_directory(tmp_path: 
     assert project.queries.workspace == root / "apps" / first
 
 
-def test_only_one_preview_runs_at_a_time(tmp_path: Path):
-    """The one left behind is stopped, not merely forgotten: a Vite still serving the app somebody
-    walked away from is a second dev server on a port this one wants."""
+def test_opening_another_app_does_not_stop_the_preview_already_running(tmp_path: Path):
+    """Each open app keeps the preview that is already serving it."""
+    orch, _oc, root, first, second = _two_apps(tmp_path)
+    project = orch.project(start_preview=False)
+    orch._ensure_preview_running(project)
+    preview_a = project.supervisor
+    assert preview_a.workspace == root / "apps" / second
+    assert preview_a.running
+
+    orch.select_app(first)
+    orch._ensure_preview_running(orch.project(start_preview=False))
+
+    assert preview_a.running
+    assert preview_a is not orch.project(start_preview=False).supervisor
+
+
+def test_each_open_app_keeps_its_own_preview(tmp_path: Path):
+    """Opening the other app starts a second preview. The one already running is still that process."""
     orch, _oc, _root, first, _second = _two_apps(tmp_path)
     orch._ensure_preview_running(orch.project(start_preview=False))
 
     orch.select_app(first)
     orch._ensure_preview_running(orch.project(start_preview=False))
 
-    assert [v.running for v in FakeVite.made].count(True) == 1
+    assert [v.running for v in FakeVite.made].count(True) == 2
     assert orch.project(start_preview=False).supervisor.running
 
 

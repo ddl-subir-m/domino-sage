@@ -531,11 +531,18 @@ _ENTRY_POINT = "app.sh"
 # none.
 
 
-def _supervisor_for(workspace: Path, base_prefix: str):
+def _supervisor_for(workspace: Path, base_prefix: str, *, pinned_port: bool = False):
     """The preview server for the app at `workspace`, by its stack (#490): the template's Vite dev
     server for a react-vite app, the app's own uvicorn for a fastapi-antd one. Reads the two classes
-    off this module at call time, so a test that stands in for `ViteSupervisor` still does."""
-    return _supervisor_class(workspace)(workspace, base_prefix)
+    off this module at call time, so a test that stands in for `ViteSupervisor` still does.
+
+    `pinned_port` is the process default app: when `SAGE_PREVIEW_PORT` is set, that one preview
+    takes it. Every other app takes a free port.
+    """
+    return _supervisor_class(workspace)(workspace, base_prefix, pinned_port=pinned_port)
+
+
+_PREVIEW_IDLE_S = 180
 
 
 def _supervisor_class(workspace: Path):
@@ -7839,7 +7846,7 @@ class Orchestrator:
                                project_name=self._cost_project_label,
                                build_policy=self._build_policy)
         shim.resolve_capability = self.route_capability
-        supervisor = _supervisor_for(workspace.path, domino_base_prefix())
+        supervisor = _supervisor_for(workspace.path, domino_base_prefix(), pinned_port=True)
         queries = PreviewQueries(workspace.path, self._wm.template)
         view = AppView(workspace=workspace, supervisor=supervisor, queries=queries)
         # Cached BEFORE the preview starts, and the start below is best-effort (#500). A preview that
@@ -8412,6 +8419,9 @@ class Orchestrator:
             # minute, and holding the rail's own lock across that would make every click in the
             # rail wait for Domino.
             with self._app_lock:
+                gone = project._views.get(app_id)
+                if gone is not None:
+                    gone.supervisor.stop()
                 self._wm.delete_app(app_id)
                 project.record.clear_plan_docs(app_id)
                 # And the rail's tags, on the same rule as the plan documents: they name an app that
@@ -8424,6 +8434,9 @@ class Orchestrator:
                 # pointed at a directory that is not there.
                 if project._selected_view.workspace.app_id == app_id:
                     self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
+                # `_bind_app` remembers the view it left. The deleted app is gone; its preview
+                # was stopped above and must not stay reachable.
+                project._views.pop(app_id, None)
         finally:
             self._release_turn()
         return {
@@ -8469,12 +8482,10 @@ class Orchestrator:
         turn. A turn asks `project.app_for_turn()` for its app and pinned its attachments at its start,
         so what changes here is only what the person is looking at.
 
-        The preview of the app being left is STOPPED rather than restarted here. It serves whichever
-        directory it was started in, so one left running would go on serving the app the person just
-        left; `_preview_upstream` starts it again in the new directory the next time a preview is
-        asked for. The Build session goes with it — a session is opened on one directory, and the
-        one cached here belongs to the app being left. The view that was left keeps its own
-        workspace, so a request that already named that app still reads it.
+        The preview of the app being left keeps running. Another tab may still have it open, and
+        selecting this app is not what stops that one. Delete stops the deleted app's supervisor
+        and nothing else. The view that was left keeps its own workspace, so a request that already
+        named that app still reads it.
 
         Assignments in here are the selected app's. A request that named a different app must not
         have that view overwritten by the switch, so the request binding is unset for the duration.
@@ -8486,12 +8497,9 @@ class Orchestrator:
                 left_id = getattr(leaving.workspace, "app_id", None)
                 if left_id:
                     project._views[left_id] = leaving
-                leaving.supervisor.stop()
                 leaving.queries.stop()
                 dest = self._view_for(project, workspace.app_id)
-                dest.supervisor.stop()
                 dest.queries.stop()
-                dest.supervisor = _supervisor_for(workspace.path, domino_base_prefix())
                 dest.queries = PreviewQueries(workspace.path, self._wm.template)
                 project._selected_view = dest
             with project.pre_edit_tree_lock:
@@ -8618,9 +8626,43 @@ class Orchestrator:
 
     def _restart_preview_for_config_change(self, project: Project) -> None:
         project.supervisor.stop()
-        project.supervisor = _supervisor_for(project.workspace.path, domino_base_prefix())
+        app_id = getattr(project.workspace, "app_id", None)
+        pinned = bool(app_id) and app_id == self._wm.selected_app_id()
+        project.supervisor = _supervisor_for(
+            project.workspace.path, domino_base_prefix(), pinned_port=pinned)
 
-    def _ensure_preview_running(self, project: Project) -> None:
+    def view_for_preview(self, project: Project) -> AppView:
+        """The preview a `/preview/...` request is for. An app id in the path is that app.
+        Anything else is the process default, not whichever tab last sent a header."""
+        from ..preview.proxy import preview_route_app
+        app_id = preview_route_app.get()
+        if app_id:
+            return self._view_for(project, app_id)
+        return project._selected_view
+
+    def _account_preview_traffic(self, project: Project, view: AppView | None = None) -> None:
+        """Mark `view` as just used, and stop any preview nobody has asked for in 180 seconds.
+
+        Called from the proxy and from preview status/retry. The open tab polls status every
+        1.5 seconds, which keeps its supervisor alive. No thread waits on the clock.
+        """
+        now = time.monotonic()
+        for other in list(project._views.values()):
+            sup = other.supervisor
+            last = getattr(sup, "last_traffic", None)
+            if last is None or now - last < _PREVIEW_IDLE_S:
+                continue
+            idle = getattr(sup, "idle_stop", None)
+            if idle is not None:
+                idle()
+            else:
+                sup.stop()
+        target = view if view is not None else project._active_view()
+        note = getattr(target.supervisor, "note_traffic", None)
+        if note is not None:
+            note(now)
+
+    def _ensure_preview_running(self, project: Project, view: AppView | None = None) -> None:
         """Nudge a dead preview back up, WITHOUT making this request wait or fail.
 
         Every preview request reaches here, and a pane showing a broken app re-polls about once a
@@ -8631,12 +8673,13 @@ class Orchestrator:
         the session a thread or a turn.
         """
         try:
-            project.supervisor.upstream()
+            target = view if view is not None else project._active_view()
+            target.supervisor.upstream()
         except RuntimeError:
-            project.supervisor.retry_start()
-        if project.queries.port is None:
+            target.supervisor.retry_start()
+        if target.queries.port is None:
             try:
-                project.queries.start()
+                target.queries.start()
             except Exception:
                 log.exception("preview: the queries server could not start")
 

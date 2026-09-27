@@ -4827,15 +4827,32 @@ _install_native_routes(control_app, lambda: orchestrator)
 # Preview proxy for the bound project, mounted under /preview on the one control port. Vite bakes
 # base=<prefix>/preview/, so the proxy re-adds that when forwarding upstream (see make_preview_app).
 # Chat may have attached an empty volume; seeding + Vite start happen here, not on Thread open.
+def _preview_known_app(app_id: str) -> bool:
+    try:
+        return app_id in orchestrator._wm.app_ids()
+    except Exception:
+        return False
+
+
 def _preview_upstream() -> str:
     project = orchestrator._ensure_seeded()
-    orchestrator._ensure_preview_running(project)
-    return project.supervisor.upstream()
+    view = orchestrator.view_for_preview(project)
+    orchestrator._account_preview_traffic(project, view)
+    orchestrator._ensure_preview_running(project, view)
+    return view.supervisor.upstream()
+
+
+def _preview_status_snapshot() -> dict:
+    if orchestrator._project is None:
+        return {}
+    project = orchestrator.project(start_preview=False, seed_app=False)
+    return orchestrator.view_for_preview(project).supervisor.status()
 
 
 @control_app.get("/api/preview/status")
 def _preview_status() -> dict:
     project = orchestrator.project(start_preview=False, seed_app=False)
+    orchestrator._account_preview_traffic(project)
     return project.supervisor.status()
 
 
@@ -4843,13 +4860,16 @@ def _preview_status() -> dict:
 def _preview_retry(appId: str | None = None) -> dict:
     with orchestrator._app_lock:
         project = orchestrator.project(start_preview=False, seed_app=False)
-        if appId is not None and appId != project.workspace.app_id:
-            return JSONResponse(status_code=409, content={
-                "error": "The selected app changed. Retry its preview again.",
-            })
-        project = orchestrator._ensure_seeded()
-        project.supervisor.retry_start(explicit=True)
-        return project.supervisor.status()
+        if appId is not None:
+            if appId not in orchestrator._wm.app_ids():
+                return JSONResponse(status_code=404, content={"error": "unknown app"})
+            view = orchestrator._view_for(project, appId)
+        else:
+            view = project._active_view()
+        orchestrator._account_preview_traffic(project, view)
+        orchestrator._ensure_seeded()
+        view.supervisor.retry_start(explicit=True)
+        return view.supervisor.status()
 
 
 # The previewed app's own named queries (#24). Answered by `serve.py` on loopback rather than 404'd
@@ -4857,7 +4877,9 @@ def _preview_retry(appId: str | None = None) -> dict:
 # here — `_preview_upstream` above is what seeds the project, and a query arriving before the page
 # that would ask it means something is wrong rather than something to boot a project for.
 def _preview_queries():
-    return orchestrator._project.queries if orchestrator._project is not None else None
+    if orchestrator._project is None:
+        return None
+    return orchestrator.view_for_preview(orchestrator._project).queries
 
 
 # The previewed app's platform reads (#489): the template's own `sage_domino.py`, called by the proxy
@@ -4941,10 +4963,10 @@ def _preview_approve_model(model: str) -> str | None:
 
 
 def _preview_mount_base() -> str:
-    """What the selected app's preview server serves at (#490). Asked of the supervisor the
-    orchestrator holds rather than worked out here, so a switch of app is a switch of answer."""
+    """What this request's preview server serves at. An app id in the path is that app;
+    anything else is the process default."""
     project = orchestrator._ensure_seeded()
-    return project.supervisor.mount_base()
+    return orchestrator.view_for_preview(project).supervisor.mount_base()
 
 
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
@@ -4953,7 +4975,8 @@ control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _
                                                get_mount_base=_preview_mount_base,
                                                on_platform_read=_preview_platform_read,
                                                get_read_context=_preview_read_context,
-                                               get_status=_preview_status))
+                                               get_status=_preview_status_snapshot,
+                                               known_app=_preview_known_app))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of

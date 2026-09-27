@@ -30,6 +30,7 @@ for (const file of ['util.js', 'store.js', 'prefs.js', 'modes/builder.js']) {
 }
 const { SW } = sandbox;
 SW.brand = { text: (s) => s };
+SW.api = { appHeaders: () => ({}) };
 SW.prefs = { get: () => ({}) };
 const reply = (body, status = 200) => ({ ok: status < 400, status,
   json: async () => body, headers: { get: () => 'application/json' } });
