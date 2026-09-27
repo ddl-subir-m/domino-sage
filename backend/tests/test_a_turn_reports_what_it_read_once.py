@@ -79,11 +79,11 @@ def test_three_operations_on_one_turn_draw_one_card():
     for operation_id in ("du_1", "du_2", "du_3"):
         assert f"Operation: {operation_id}" in drawn["words"]
         assert f"{operation_id}.table.json" in drawn["words"]
-    assert "Analyzed through the LLM Gateway" in drawn["words"]
+    assert "Analyzed from" in drawn["words"]
     assert "Calculated in Domino" in drawn["words"]
     # The fold is shut when a reader meets it, so the count is the only thing that can say it
     # holds more than one operation.
-    assert "Data used (3 operations)" in drawn["words"]
+    assert "Data used (3)" in drawn["words"]
 
 
 @needs_node
@@ -129,7 +129,7 @@ def test_a_document_reference_draws_coverage_without_row_only_fields():
     drawn = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})
 
     assert drawn["sections"] == 1
-    assert "Prepared through the LLM Gateway from" in drawn["words"]
+    assert "Prepared from" in drawn["words"]
     assert "requirements.md" in drawn["words"]
     assert "100 of 120 characters prepared" in drawn["words"]
     assert "Heading: Programming Notes" in drawn["words"]
@@ -157,7 +157,7 @@ def test_a_pdf_reference_draws_selected_page_coverage():
 
     words = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})["words"]
 
-    assert "PDF pages: 8 source; 3 selected (1, 3, 8); 3 processed (1, 3, 8)" in words
+    assert "PDF: 8 pages in the file, 3 selected, 3 read." in words
     assert "Whole document" not in words
 
 
@@ -182,8 +182,8 @@ def test_a_pdf_page_cap_does_not_claim_that_complete_text_was_truncated():
 
     words = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})["words"]
 
-    assert "PDF pages: 25 source; 20 selected" in words
-    assert "20 processed" in words
+    assert "PDF: 25 pages in the file, 20 selected" in words
+    assert "20 read" in words
     assert "The selected text was complete" in words
     assert "Page coverage was capped" in words
     assert "The selected text was truncated" not in words
@@ -191,12 +191,12 @@ def test_a_pdf_page_cap_does_not_claim_that_complete_text_was_truncated():
 
 @needs_node
 @pytest.mark.parametrize(("status", "message"), [
-    ("withheld", "Document content was withheld"),
-    ("source_too_large", "exceeded the source-size limit"),
-    ("not_text", "was not valid text"),
-    ("heading_not_unique", "heading was missing or not unique"),
-    ("empty_document", "contained no text to transfer"),
-    ("no_extractable_text", "had no extractable text"),
+    ("withheld", "This document was withheld"),
+    ("source_too_large", "too large to read"),
+    ("not_text", "isn't plain text"),
+    ("heading_not_unique", "appears more than once"),
+    ("empty_document", "has no text"),
+    ("no_extractable_text", "no text to extract"),
 ])
 def test_a_failed_document_reference_never_claims_that_content_was_prepared(status, message):
     event = {
@@ -212,7 +212,7 @@ def test_a_failed_document_reference_never_claims_that_content_was_prepared(stat
 
     words = _draw({"type": "data_used", "turnId": "turn_a", "events": [event]})["words"]
 
-    assert "Document preparation did not transfer content from" in words
+    assert "Couldn't read" in words
     assert message in words
     assert "Prepared through the LLM Gateway" not in words
     assert "characters prepared" not in words
@@ -236,11 +236,11 @@ def test_table_and_image_references_draw_their_own_event_shapes():
 
     words = _draw({"type": "data_used", "turnId": "turn_a", "events": [table, image]})["words"]
 
-    assert "Prepared bounded table structure from" in words
+    assert "Prepared the table from" in words
     assert "12 rows described; 2 columns prepared" in words
     assert "Rows were not copied into the prompt" in words
-    assert "Sent through the model image carrier from" in words
-    assert "The routed model received the image" in words
+    assert "Sent the image from" in words
+    assert "The model received the image" in words
     assert "Artifact:" not in words
 
 
@@ -256,8 +256,8 @@ def test_an_unsupported_image_draws_a_truthful_not_sent_result():
     words = _draw({"type": "data_used", "turnId": "turn_a", "events": [image]})["words"]
 
     assert "Image reference was not sent from" in words
-    assert "cannot process images" in words
-    assert "Delivery: not sent" in words
+    assert "can't read images" in words
+    assert "wasn't sent" in words
     assert "rows processed" not in words
 
 
@@ -272,8 +272,7 @@ def test_an_image_without_a_model_request_draws_a_truthful_not_sent_result():
 
     words = _draw({"type": "data_used", "turnId": "turn_a", "events": [image]})["words"]
 
-    assert "No model request was made" in words
-    assert "Delivery: not sent" in words
+    assert "The image wasn't sent" in words
 
 
 @needs_node
@@ -352,7 +351,7 @@ def test_re_persists_multiply_by_read_not_by_model_call():
     # Latest copy wins on content — the re-persists are how `requests` accumulates, so keeping the
     # first copy would show a read with no gateway evidence at all.
     words = result["rendered"][0]["words"]
-    assert "Data used (2 operations)" in words
+    assert "Data used (2)" in words
     for request_id in ("req_1", "req_2", "req_3"):
         assert f"Request: {request_id}" in words
     assert "Gateway delivery: unknown" not in words

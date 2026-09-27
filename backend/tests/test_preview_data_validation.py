@@ -184,7 +184,7 @@ def test_live_and_saved_ui_keep_data_unverified_distinct():
     live = render({'pageValidation': 'current', 'verificationStages': stages})['status'][-1]
     saved = render({'savedVerification': 'unverified', 'verificationStages': stages})[-1]
     for row in (live, saved):
-        assert row['value'] == 'Page checks passed; data access not verified'
+        assert row['value'] == "Page checks passed. Data access wasn't checked."
         assert row['ok'] is None and row['warn'] is True
 
 

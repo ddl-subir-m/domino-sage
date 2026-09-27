@@ -97,7 +97,7 @@ window.SW = window.SW || {};
         placement: 'right',
         // The app is named in the title rather than left to the header behind the mask, which is
         // the one thing a reader cannot check while this is open.
-        title: activeApp ? `Build history · ${activeApp.name}` : 'Build history',
+        title: activeApp ? `Logs · ${activeApp.name}` : 'Logs',
       },
       loading && h(Skeleton, { active: true, paragraph: { rows: 6 } }),
       // The read failed, said as a fact about the read. Its own state rather than the empty one
@@ -114,8 +114,7 @@ window.SW = window.SW || {};
           h(
             'div',
             { className: 'sw-empty-detail' },
-            'The log is on the workspace volume and nothing is lost — this is the read, not your '
-              + 'builds.'
+            "Couldn't read the logs. They're still saved."
           ),
           h(
             Button,
@@ -137,13 +136,13 @@ window.SW = window.SW || {};
               { className: 'sw-bh-intro' },
               // Why there can be rows in here this conversation never asked for (#72). Without it
               // the extra rows read as a bug.
-              'Includes builds asked for in other conversations.'
+              'Includes logs from other chats.'
             ),
             (appHistory.historyFailed || appHistory.diagnosticsFailed) && h(
               'div', { role: 'alert', className: 'sw-bh-read-warning' },
               appHistory.diagnosticsFailed
-                ? 'Diagnostic records could not be read. Transcript history is still shown.'
-                : 'Transcript history could not be read. Retained diagnostic records are still shown.'
+                ? 'Couldn\'t read the logs. The chat is still here.'
+                : 'Couldn\'t read the chat. The logs are still here.'
             ),
             runs.length === 0
               ? h(
@@ -157,7 +156,7 @@ window.SW = window.SW || {};
                   h(
                     'div',
                     { className: 'sw-empty-detail' },
-                    'Describe a change in the composer, or approve a plan.'
+                    'Describe a change, or approve a plan.'
                   )
                 )
               : runs.map((row) => h(BuildRunRow, { key: row.id, block: row.block }))
@@ -248,15 +247,15 @@ window.SW = window.SW || {};
         at && h('div', { className: 'sw-bh-run-at' }, SW.util.relativeTime(at))
       ),
       diagnosticTurns.length === 0 && h(Button, { size: 'small', disabled: true,
-        title: 'Diagnostics were not captured for this older turn.' }, 'Download diagnostics'),
+        title: 'No log for this older build.' }, 'Download JSON'),
       diagnosticTurns.map((record) => {
         const target = record.turn || record;
         return h('div', { className: 'sw-bh-diagnostic', key: target.turnId },
           h('div', { className: 'sw-bh-diagnostic-label' },
             `${phaseLabel(record)} · ${outcomeLabel(record)}`),
           h(Button, { size: 'small', loading: downloading === target.turnId,
-            onClick: () => download(record) }, record.identityOnly ? 'Download diagnostics'
-              : `Download ${phaseLabel(record).toLowerCase()} diagnostics`));
+            onClick: () => download(record) }, record.identityOnly ? 'Download JSON'
+              : `Download ${phaseLabel(record).toLowerCase()} JSON`));
       }),
       downloadError && h('div', { role: 'alert' }, downloadError),
       // The run's `app_change` cards are deliberately NOT drawn. Every row in this log is this

@@ -38,7 +38,7 @@ def _offer(reason: str) -> list[dict]:
 
 def test_the_explicit_offer_says_the_answer_lands_here():
     """Declining this one runs the question in Chat, so the button says so."""
-    assert _offer("explicit")[1]["text"] == "Answer it here"
+    assert _offer("explicit")[1]["text"] == "Answer here"
 
 
 def test_the_classifier_offer_still_says_not_now():

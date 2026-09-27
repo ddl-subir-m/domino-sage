@@ -614,10 +614,7 @@ window.SW = window.SW || {};
         // to say and is false — and a person deciding whether to drop somebody else's work is
         // exactly who must not be told it.
         title: SW.brand.text(
-          '{assistantName} resolved the merge conflicts on its own and chose how to combine each ' +
-            'side. It rewrote {files}. Undo reverts merge {sha} and pushes, putting the code back ' +
-            'as it was. The incoming work stays in the history, but Pull and build will not bring ' +
-            'it back — git counts it as already merged.',
+          '{assistantName} merged both sides and rewrote {files}. Undo puts your code back. Pull and build will not bring the other changes back.',
           { files: all || 'files this merge did not record', sha: merge.sha }
         ),
       },
@@ -627,7 +624,7 @@ window.SW = window.SW || {};
         // Both clauses, not just the first: what was rewritten, and that the agent — not a person —
         // decided how. "Sage combined" alone reads as bookkeeping; the second clause is the part
         // that makes an Undo worth looking at.
-        SW.brand.text('{assistantName} combined incoming changes in {files} — it chose how',
+        SW.brand.text('{assistantName} merged changes in {files}',
                       { files: named || 'this Project' }),
         h(Button, {
           type: 'link',
@@ -941,7 +938,7 @@ window.SW = window.SW || {};
           // the whole sentence readable to the lint, and an app a user named with braces in it is
           // not scanned again on the way through.
           title: SW.brand.text(
-            'Record what this app depends on. It joins what {app} needs to run.',
+            'Add something {app} needs to run.',
             { app: app.name }
           ),
         },
@@ -1197,7 +1194,7 @@ window.SW = window.SW || {};
         mark &&
           h(
             Tooltip,
-            { title: '"not used" is from the last build. It still publishes.' },
+            { title: '"Not used" is from the last build. It is still included when you publish.' },
             h('span', { className: 'sw-appdeps-unused' }, ' (not used)')
           ),
         h(
@@ -1392,7 +1389,7 @@ window.SW = window.SW || {};
                 'Cost & activity'
               ),
             },
-            { key: 'history', label: 'Build history' },
+            { key: 'history', label: 'Download logs' },
           ].filter(Boolean),
         },
       ],
@@ -1476,7 +1473,7 @@ window.SW = window.SW || {};
             h('div', { className: 'sw-preview-overlay-text' },
               empty ? 'No app has been built yet.'
                 : starting ? `Starting ${previewDetail && previewDetail.server || 'preview'}…`
-                  : stalled ? "Preview didn't start in 90 seconds. Select Retry to check it."
+                  : stalled ? 'Preview didn\'t start. Try again.'
                   : `${previewDetail && previewDetail.server || 'Preview'} is unavailable.`),
             previewDetail && previewDetail.error &&
               h('div', { className: 'sw-preview-overlay-text', style: { marginTop: 8 } }, previewDetail.error),
@@ -1727,17 +1724,15 @@ window.SW = window.SW || {};
     // disk. And no promise about where the retry resumes — an unphased build has no seam and runs
     // the plan whole however far the last attempt got.
     const planNote = stoppedAt > 1
-      ? `A build started from this plan and stopped at step ${stoppedAt}; the steps before it are `
-        + 'already in the app. Say "try again" to run it again, or describe a change to replace it.'
+      ? `The build stopped at step ${stoppedAt}. Earlier steps are already in the app. Say "try again", or describe a change.`
       : stoppedAt === 1
-        ? 'A build started from this plan and did not finish. Say "try again" to run it again, or '
-          + 'describe a change to replace it.'
+        ? 'This build didn\'t finish. Say "try again", or describe a change.'
         // Without the shared stem when the note above has just said it. The two notes drawing
         // together is the state this whole screen was rewritten for, so "a new conversation clears
         // the transcript, not the X" twice running is now the ordinary reading rather than a rare
         // one, and it reads as a stutter.
-        : (resumed ? '' : 'A new conversation clears the transcript, not the plan. ')
-          + 'Open it in the rail to review it, or describe a change to replace it.';
+        : (resumed ? '' : 'A new chat clears the messages, not the plan. ')
+          + 'Open the plan in the sidebar, or describe a change.';
     // Whether there is app code in the preview at all, which is NOT `built`: `mark_built` runs only
     // on a build that finished every phase, so a FIRST phased build that died at step 4 left three
     // phases on disk (they are deliberately not reverted) under a row that still says false. A
@@ -1816,7 +1811,7 @@ window.SW = window.SW || {};
                       h(
                         'div',
                         { className: 'sw-empty-detail' },
-                        'A new conversation clears the transcript, not the app. Describe a change to keep building on it.'
+                        'A new chat clears the messages, not the app. Describe a change to keep going.'
                       )
                     ),
                   pendingPlan &&

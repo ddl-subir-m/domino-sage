@@ -48,8 +48,7 @@ def test_a_merge_nobody_read_is_said_beside_the_app_it_is_about():
 
     assert not any("combined incoming changes" in w for w in plain["words"])
     said = " ".join(offered["words"])
-    assert ("combined incoming changes in apps/app_d/src/App.tsx, README.md and 1 more"
-            " — it chose how") in said
+    assert ("Sage merged changes in apps/app_d/src/App.tsx, README.md and 1 more") in said
     assert "Undo" in offered["words"]
     # Its own mark, not `behind`'s: work that already landed unread is a different fact from work
     # waiting to come in, and the two are said in the same 44px strip.
@@ -60,20 +59,20 @@ def test_a_merge_nobody_read_is_said_beside_the_app_it_is_about():
 def test_the_full_list_and_what_undo_will_do_are_on_the_tooltip():
     """The strip is 44px and the app's name has to stay the heaviest thing in it, so the names are
     capped there and carried whole here — `sw-build-others` a few lines up does the same. A person
-    deciding whether to undo needs the sha, because the Workbench cannot show them a diff (#366)."""
+    deciding whether to undo needs what the click costs, because the Workbench cannot show them a
+    diff (#366)."""
     offered = _run(_HEADER, [
         {"build": "thr_one", "select": "app_d", "stamps": {"app_d": {"resolvedMerge": MERGE}}},
     ])[-1]
 
-    tip = next(t for t in offered["titles"] if "resolved the merge conflicts" in t)
+    tip = next(t for t in offered["titles"] if "merged both sides" in t)
     for named in MERGE["files"]:
         assert named in tip
-    assert MERGE["sha"] in tip
     # What the undo COSTS, and the reason this assertion is here rather than a looser one:
     # reverting a merge does not re-arm the pull, so "the changes can be taken again with Pull and
     # build" reads well and is false. The person deciding whether to drop somebody else's work is
     # the one who must not be told it.
-    assert "will not bring it back" in tip
+    assert "will not bring the other changes back" in tip
     assert "can be taken again" not in tip
 
 

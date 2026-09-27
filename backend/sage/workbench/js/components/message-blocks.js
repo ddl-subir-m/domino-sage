@@ -430,14 +430,14 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-title' },
         h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
-        asked ? "Let's open this in Build." : 'This is starting to look like an app.'
+        asked ? 'Open this in Build.' : 'This could become an app.'
       ),
       h(
         'div',
         { className: 'sw-suggestion-detail' },
         asked
-          ? 'I can turn this conversation into a plan to start from.'
-          : 'I can write a plan so you can review it, share it, and build from it.'
+          ? 'Turn this chat into a plan, then build from it.'
+          : 'Write a plan you can review, share, and build.'
       ),
       h(
         Space,
@@ -455,7 +455,7 @@ window.SW = window.SW || {};
           // nothing runs, and nothing is owed. The explicit card was raised INSTEAD of a turn, so
           // declining it runs the question here; `Not now` reads as later, promises nothing, and
           // the answer that then arrives is a surprise nobody was waiting for.
-          asked ? 'Answer it here' : 'Not now'
+          asked ? 'Answer here' : 'Not now'
         )
       )
     );
@@ -488,8 +488,8 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-title' },
         h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
-        policyChange ? 'This conversation needs a fresh model context.'
-          : complete ? "It's still being refused." : 'This conversation keeps being refused.'
+        policyChange ? 'This chat needs a fresh start.'
+          : complete ? 'Still blocked.' : 'This chat keeps getting blocked.'
       ),
       h(
         'div',
@@ -497,22 +497,15 @@ window.SW = window.SW || {};
         // eslint-disable-next-line no-nested-ternary
         policyChange
           ? (build
-            ? 'The access rules changed. Clear recall to continue. Your app, plan and transcript stay.'
-            : 'The access rules changed. Clear recall to continue with a summary. Your transcript stays.')
+            ? 'Access rules changed. Start fresh to continue. Your app, plan, and chat stay.'
+            : 'Access rules changed. Start fresh to continue. A short summary is kept, and your chat stays.')
           : complete
           ? (build
-            ? 'Starting over was not enough, so what the gateway matched came back into the new '
-              + 'session. Clearing Recall again leaves the model nothing it has been told here. '
-              + 'Your app, its plan and this transcript all stay.'
-            : 'The summary carried over must hold the value too. Clearing Recall completely leaves '
-              + 'the model nothing from this conversation. Your transcript stays.')
+            ? 'A fresh start still included what was blocked. Clear everything to continue. Your app, plan, and chat stay.'
+            : 'The summary still includes what was blocked. Clear everything to continue. Your chat stays.')
           : (build
-            ? 'The gateway has refused the same way twice, so what it matched is in this '
-              + "conversation's Recall. Clearing Recall starts the model over: your app, its plan "
-              + 'and this transcript stay, and the agent reads them back.'
-            : 'The gateway has refused the same way twice, so what it matched is in this '
-              + "conversation's Recall. Clearing Recall starts the model over: your transcript "
-              + 'stays, and the model keeps a short summary of what was said.')
+            ? 'This was blocked twice. Start fresh to continue. Your app, plan, and chat stay.'
+            : 'This was blocked twice. Start fresh to continue. A short summary is kept, and your chat stays.')
       ),
       h(
         Space,
@@ -524,7 +517,7 @@ window.SW = window.SW || {};
             size: 'small',
             onClick: () => clear(complete ? 'empty' : 'summary'),
           },
-          complete ? 'Clear recall completely' : 'Clear recall'
+          complete ? 'Clear everything' : 'Start fresh'
         ),
         // No dismiss. Declining is not a preference about a want, the way it is on a Build offer —
         // it is a judgment made before trying anything else, and this is the only exit. Hiding it
@@ -543,8 +536,8 @@ window.SW = window.SW || {};
       'div',
       { className: 'sw-recall-cleared' },
       complete
-        ? 'Recall cleared completely. The model has nothing from above.'
-        : 'Recall cleared. The model starts over here, with a summary of what was said above.'
+        ? 'Started over. Nothing from above was kept.'
+        : 'Started over, keeping a short summary of the chat above.'
     );
   }
 
@@ -560,8 +553,7 @@ window.SW = window.SW || {};
     return h(
       'div',
       { className: 'sw-recall-cleared' },
-      'Memory rebuilt. The model lost this conversation and was given a summary of the messages ' +
-        'above, so some details may be missing. If something above matters, say it again.'
+      'This chat was summarized, so some details may be missing. Repeat anything that matters.'
     );
   }
 
@@ -574,21 +566,13 @@ window.SW = window.SW || {};
   // would go looking for a file that has been rewritten, and would not find one.
   function RecallWithheld({ block }) {
     const labels = (block || {}).labels || [];
-    const many = labels.length > 1;
     return h(
       'div',
       { className: 'sw-recall-cleared' },
-      `No longer sending ${labels.join(', ') || 'that content'}. Nothing was changed or deleted — `
-      + `this conversation stops sending ${many ? 'them' : 'it'}. `
-      // Only when their own question was what went. Retyping it is the obvious next move and the
-      // one that fails without a word: the same text hashes to the same key, so it is stopped
-      // before it is sent and nothing appears to say why. Said here because there is nowhere else
-      // — no card is drawn for a turn that was never refused. On a withheld FILE this is worse
-      // than silence, since it would set a person rewriting words that were fine all along.
-      + (block.prompt
-        ? 'Ask again in different words — Sage stops the same ones before they are sent. '
-        : '')
-      + 'A new conversation starts fresh.'
+      `Stopped sending ${labels.join(', ') || 'that content'}. Nothing was changed or deleted.`
+      // Only when their own question was what went. The same text is stopped before it is sent,
+      // so saying so only then does not send someone to rewrite a file that was fine.
+      + (block.prompt ? ' If you ask again, use different words.' : '')
     );
   }
 
@@ -1383,13 +1367,13 @@ window.SW = window.SW || {};
                   loading: busy === 'open',
                   disabled: !!busy,
                   onClick: run('open', answer('open')),
-                }, 'Investigate'),
+                }, 'Look across my data'),
                 h(Button, {
                   size: 'small',
                   loading: busy === 'decline',
                   disabled: !!busy,
                   onClick: run('decline', answer('decline')),
-                }, 'Just answer this'))
+                }, 'Answer this question'))
             )
           : null
       )
@@ -1431,7 +1415,7 @@ window.SW = window.SW || {};
                   disabled: !!busy,
                   onClick: run('open', () => SW.store.workItOutOnTheOtherLane(
                     block.prompt, block.threadId, block.grant)),
-                }, 'Work it out'),
+                }, 'Run the calculation'),
                 h(Button, {
                   size: 'small',
                   disabled: !!busy,
@@ -1477,7 +1461,7 @@ window.SW = window.SW || {};
                 disabled: !!busy,
                 onClick: run('continue', () => SW.store.continueAfterTheCeiling(
                   block.prompt, block.threadId)),
-              }, 'Continue')
+              }, 'Continue from here')
             )
           : null
       )
@@ -1488,22 +1472,21 @@ window.SW = window.SW || {};
   // fault it was (ADR-0069, #570). The `error` row above the card carries the detailed failure;
   // this is the way back in.
   const CONTINUE_CAUSE_TEXT = {
-    invalid_tool_call: 'This turn ended on tool calls that could not be read.',
-    model_no_action: 'This turn ended without an action on the request.',
+    invalid_tool_call: 'This reply stopped before it finished.',
+    model_no_action: 'This reply didn\'t take the next step.',
   };
   // Where the new Attempt starts, by the row's `stage` — the resume path #569 takes.
   const CONTINUE_STAGE_TEXT = {
-    chat: 'Another model can pick the question up from here.',
-    planning: 'Another model can plan this request again. The plan still needs your approval.',
-    implementation: 'Another model can carry on building the approved plan from where this build '
-      + 'stopped.',
+    chat: 'You can continue with another model.',
+    planning: 'You can plan this again with another model. You\'ll still approve the plan.',
+    implementation: 'You can keep building with another model, from where this stopped.',
   };
   // The scope of the pick, said before the click: the route sets it through the same standing
   // pick the pickers set (`set_chat_pick` on Chat, `control.pick` on Build), so it is not a
   // one-off for this Attempt and the card must not let it read as one.
   const CONTINUE_SCOPE_TEXT = {
-    chat: 'The pick becomes the Chat model for later turns too, until you change it.',
-    build: 'The pick becomes the Build model override for later turns too, until you change it.',
+    chat: 'This becomes the model for later messages, until you change it.',
+    build: 'This becomes the model for later builds, until you change it.',
   };
   const CONTINUE_EFFORT_LABEL = (value) => (!value ? 'Model default'
     : value === 'xhigh' ? 'Extra high' : value.charAt(0).toUpperCase() + value.slice(1));
@@ -1550,7 +1533,7 @@ window.SW = window.SW || {};
       // Superseded by the turn after it; nothing to ask and nothing to press.
     } else if (!entry || entry.pending) {
       body.push(h('div', { className: 'sw-continue-note' },
-                  'Checking whether this turn can continue…'));
+                  'Checking whether this can continue…'));
     } else if (entry.available === false) {
       body.push(h('div', { className: 'sw-continue-reason', 'data-reason': entry.reason },
                   entry.message));
@@ -1606,7 +1589,7 @@ window.SW = window.SW || {};
       { className: 'sw-nudge sw-continue-model' },
       h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
       h('div', { className: 'sw-nudge-main' },
-        h('div', null, CONTINUE_CAUSE_TEXT[block.cause] || 'This turn ended before it was done.'),
+        h('div', null, CONTINUE_CAUSE_TEXT[block.cause] || 'Stopped before it finished.'),
         ...body)
     );
   }
@@ -1664,20 +1647,20 @@ window.SW = window.SW || {};
                   loading: busy === 'both',
                   disabled: !!busy,
                   onClick: run('both', () => SW.store.resetAndBuild(block.prompt)),
-                }, 'Reset and build this'),
+                }, 'Reset and build'),
                 h(Button, {
                   size: 'small',
                   loading: busy === 'reset',
                   disabled: !!busy,
                   onClick: run('reset', () => SW.store.resetApp()),
-                }, 'Just reset'),
+                }, 'Reset only'),
                 h(Button, {
                   type: 'text',
                   size: 'small',
                   loading: busy === 'build',
                   disabled: !!busy,
                   onClick: run('build', () => SW.store.buildWithoutReset(block.prompt)),
-                }, 'Build without resetting'))
+                }, "Don't reset"))
             )
           : null
       )
@@ -1726,14 +1709,14 @@ window.SW = window.SW || {};
                   loading: busy === 'pull',
                   disabled: !!busy,
                   onClick: run('pull', () => SW.store.pullAndBuild(block.prompt)),
-                }, 'Pull and build this'),
+                }, 'Pull, then build'),
                 h(Button, {
                   type: 'text',
                   size: 'small',
                   loading: busy === 'keep',
                   disabled: !!busy,
                   onClick: run('keep', () => SW.store.buildWithIncoming(block.prompt)),
-                }, 'Keep building'))
+                }, 'Keep going'))
             )
           : null
       )
@@ -1789,7 +1772,7 @@ window.SW = window.SW || {};
                   disabled: !!busy,
                   onClick: run('none',
                     () => SW.store.buildWithoutSource(block.prompt, block.answered)),
-                }, 'Build without one'))
+                }, 'Build without data'))
             )
           : null
       )
@@ -2369,7 +2352,7 @@ window.SW = window.SW || {};
     if (!operations.length) return null;
     return h('details', { className: 'sw-data-used' },
       h('summary', null, operations.length > 1
-        ? `Data used (${operations.length} operations)` : 'Data used'),
+        ? `Data used (${operations.length})` : 'Data used'),
       ...operations.map((event) => {
         const coverage = event.coverage || {};
         const textOperation = event.operation === 'text_analysis';
@@ -2381,52 +2364,50 @@ window.SW = window.SW || {};
         const selectedPages = Array.isArray(coverage.selected_pages) ? coverage.selected_pages : [];
         const processedPages = Array.isArray(coverage.processed_pages) ? coverage.processed_pages : [];
         const pdfPageCoverage = documentPrepared && event.source_type === 'pdf'
-          ? `PDF pages: ${coverage.source_pages || 0} source; ` +
-            `${selectedPages.length} selected (${selectedPages.join(', ') || 'none'}); ` +
-            `${processedPages.length} processed (${processedPages.join(', ') || 'none'}). `
+          ? `PDF: ${coverage.source_pages || 0} pages in the file, ${selectedPages.length} selected, ${processedPages.length} read. `
           : '';
         const documentTextTruncated = Number(coverage.sent_characters || 0) <
           Number(coverage.selected_characters || 0);
         const documentFailure = ({
-          withheld: 'Document content was withheld. No document text was prepared.',
-          source_too_large: 'The document exceeded the source-size limit. No document text was prepared.',
-          not_text: 'The file was not valid text. No document text was prepared.',
-          heading_not_unique: 'The requested heading was missing or not unique. No document text was prepared.',
-          heading_not_supported: 'This file type does not support heading selection. No document text was prepared.',
-          selector_too_long: 'The requested heading exceeded the selector limit. No document text was prepared.',
-          empty_document: 'The document contained no text to transfer.',
-          unavailable: 'The document was unavailable. No document text was prepared.',
-          malformed_document: 'The document was malformed or corrupt. No document text was prepared.',
-          encrypted_document: 'The document was encrypted. No document text was prepared.',
-          document_xml_too_large: 'The Word document XML exceeded the extraction limit. No document text was prepared.',
-          no_extractable_text: 'The PDF had no extractable text. No document text was prepared.',
-          invalid_page_selection: 'The PDF page selection was invalid. No document text was prepared.',
-          too_many_pages: 'The PDF selection exceeded the 20-page limit. No document text was prepared.',
-          page_out_of_range: 'The PDF page selection was outside the document. No document text was prepared.',
-          page_selection_not_supported: 'This document type does not support page selection. No document text was prepared.',
-          extraction_unavailable: 'PDF text extraction was unavailable. No document text was prepared.',
-        })[event.status] || 'Document preparation failed. No document text was prepared.';
+          withheld: 'This document was withheld.',
+          source_too_large: 'This document is too large to read.',
+          not_text: "This file isn't plain text.",
+          heading_not_unique: 'That heading is missing, or it appears more than once.',
+          heading_not_supported: "This file type doesn't let you pick a heading.",
+          selector_too_long: 'That heading name is too long.',
+          empty_document: 'This document has no text.',
+          unavailable: "This document isn't available.",
+          malformed_document: 'This document is damaged.',
+          encrypted_document: 'This document is encrypted.',
+          document_xml_too_large: 'This Word file is too large to read.',
+          no_extractable_text: 'This PDF has no text to extract.',
+          invalid_page_selection: "Those PDF pages aren't valid.",
+          too_many_pages: 'A PDF selection can be at most 20 pages.',
+          page_out_of_range: "Those pages aren't in this PDF.",
+          page_selection_not_supported: "This document type doesn't support page selection.",
+          extraction_unavailable: "Couldn't extract text from this PDF.",
+        })[event.status] || "Couldn't read this document.";
         const source = String(event.source || 'unknown source');
         return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
           h('p', null, imageReference && event.delivery === 'sent'
-            ? 'Sent through the model image carrier from '
+            ? 'Sent the image from '
             : imageReference ? 'Image reference was not sent from '
-            : tablePrepared ? 'Prepared bounded table structure from '
-            : tableReference ? 'Table reference preparation failed for '
-            : documentPrepared ? 'Prepared through the LLM Gateway from '
-            : documentOperation ? 'Document preparation did not transfer content from '
-            : textOperation ? 'Analyzed through the LLM Gateway from ' : 'Calculated in Domino from ',
+            : tablePrepared ? 'Prepared the table from '
+            : tableReference ? 'Couldn\'t prepare the table for '
+            : documentPrepared ? 'Prepared from '
+            : documentOperation ? 'Couldn\'t read '
+            : textOperation ? 'Analyzed from ' : 'Calculated in Domino from ',
             h(Tag, { 'aria-label': `Source file: ${source}` }, source.split('/').pop()), '.'),
           imageReference
             ? h('p', null, event.delivery === 'sent'
-              ? 'The routed model received the image.'
+              ? 'The model received the image.'
               : event.failure === 'capability'
-                ? 'The routed model cannot process images. Delivery: not sent.'
+                ? 'This model can\'t read images, so it wasn\'t sent.'
                 : event.failure === 'no_request'
-                  ? 'No model request was made. Delivery: not sent.'
+                  ? 'The image wasn\'t sent.'
                   : event.delivery === 'pending'
-                    ? 'No model request has reached the image carrier yet.'
-                : 'The image carrier was unavailable. Delivery: not sent.')
+                    ? 'The image hasn\'t been sent yet.'
+                : 'Couldn\'t send the image.')
             : tablePrepared
               ? h('p', null, `${coverage.processed || 0} rows described; ` +
                 `${(event.selected_fields || []).length} columns prepared. ` +

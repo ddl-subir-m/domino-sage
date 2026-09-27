@@ -527,10 +527,10 @@ def test_policy_checkpoint_card_reuses_the_clear_button_with_accurate_words(surf
         block['surface'] = 'build'
     rendered = _render(block)
     text = _text(rendered)
-    assert 'access rules changed' in text
+    assert 'Access rules changed' in text
     assert 'gateway has refused' not in text
-    assert _buttons(rendered)[0]['text'] == 'Clear recall'
-    assert ('app, plan and transcript stay' if surface == 'build' else 'continue with a summary') in text
+    assert _buttons(rendered)[0]['text'] == 'Start fresh'
+    assert ('app, plan, and chat stay' if surface == 'build' else 'short summary is kept') in text
 
 
 def test_the_body_that_reaches_the_gateway_carries_its_cache_breakpoints(running):
