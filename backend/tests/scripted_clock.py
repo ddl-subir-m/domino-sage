@@ -39,3 +39,39 @@ def script_the_clock():
         time.monotonic = saved_monotonic
 
     return restore
+
+
+def script_poll_clock():
+    """Credit a streamless poll's erased sleep without changing other sleeps.
+
+    Tests that set their own monotonic clock keep control of it. Disable retained
+    callbacks on restore so a later monkeypatch undo cannot revive this clock.
+    """
+    import time
+
+    from sage.orchestrator import service
+
+    saved_sleep = time.sleep
+    saved_monotonic = time.monotonic
+    saved_wall_sleep = service._WALL_SLEEP
+    state = {"active": True, "offset": 0.0}
+
+    def monotonic() -> float:
+        return saved_monotonic() + (state["offset"] if state["active"] else 0.0)
+
+    def wall_sleep(seconds: float) -> None:
+        if (state["active"] and time.monotonic is monotonic
+                and time.sleep is not saved_sleep):
+            state["offset"] += seconds
+        else:
+            saved_wall_sleep(seconds)
+
+    time.monotonic = monotonic
+    service._WALL_SLEEP = wall_sleep
+
+    def restore() -> None:
+        state["active"] = False
+        time.monotonic = saved_monotonic
+        service._WALL_SLEEP = saved_wall_sleep
+
+    return restore
