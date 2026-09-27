@@ -35,11 +35,13 @@ from starlette.concurrency import run_in_threadpool
 from ..build_policy import load_build_policy
 from ..gateway.client import GatewayUpstreamError
 from ..gateway.factory import build_gateway
+from ..gateway.protocol import Protocol
 from ..preview.prefix import domino_project_label
 from ..router.model_control import ModelControl
 from ..router.models import Mode, ModelCatalog, Phase
 from . import keepalive as ka
 from .enforcement import EnforcementShim
+from .tool_json import ArgumentRepair
 
 log = logging.getLogger("sage.shim")
 logging.basicConfig(level=logging.INFO)
@@ -124,6 +126,7 @@ async def chat_completions(
         # Every chunk, not just the first: the frame arrives whenever the provider gets round to
         # failing, which for a thinking model is after the stream has already committed.
         stopped = False
+        repair = ArgumentRepair(Protocol.CHAT)
 
         def relay(chunk: bytes):
             nonlocal stopped
@@ -131,6 +134,7 @@ async def chat_completions(
             if upstream_msg:
                 log.error("gateway returned an error frame inside a 200 stream: %s", upstream_msg)
                 stopped = True
+                yield from repair.finish()
                 yield from ka.error_sse(f"\n\n⚠️ The model gateway rejected this request: {upstream_msg}")
                 return
             # Said, not acted on. A cut answer is still the best answer there is, so it goes to
@@ -143,7 +147,7 @@ async def chat_completions(
                     "A tool call cut mid-arguments is what this looks like from the build.",
                     cut, time.monotonic() - started, requested,
                 )
-            yield chunk
+            yield from repair.push_chunk(chunk)
 
         if first is ka.DONE:
             return
@@ -157,6 +161,7 @@ async def chat_completions(
                 yield ka.KEEPALIVE  # SSE comment: ignored by the parser, resets the client's read timer
                 continue
             if item is ka.DONE:
+                yield from repair.finish()
                 return
             if ka.is_error(item):
                 e = item[1]
@@ -164,6 +169,7 @@ async def chat_completions(
                     "gateway stream broke mid-response after %.1fs (%s): %s",
                     time.monotonic() - started, type(e).__name__, e,
                 )
+                yield from repair.finish()
                 yield from ka.error_sse(
                     f"\n\n⚠️ The model gateway closed the stream mid-response ({type(e).__name__}). "
                     "This is usually an upstream idle or duration limit — please retry."

@@ -29,6 +29,7 @@ from ..shim.native import (
     sdk_view,
     session_policy,
 )
+from ..shim.tool_json import ArgumentRepair
 from ..tool_result_window import completed_tool_results
 
 # The same logger the legacy `/v1/chat/completions` handler writes to, so its "model call ->
@@ -312,6 +313,10 @@ def install(app, get_orchestrator):
         call.prepared(forwarded_bytes, requested_alias=outbound.get("model"),
                       request_composition=composition)
         events = StreamEvents(protocol, response_contract=contract)
+        # After the witness. feed() records the gateway's bytes and repairs nothing; OpenCode
+        # executes what this yields. A finished object with a raw newline or a trailing comma
+        # is rewritten. A cut-off call is forwarded unchanged.
+        repair = ArgumentRepair(protocol)
         cancel = StreamCancellation()
         if intent is not None:
             checked = build_intent.inspect(outbound, protocol, intent)
@@ -472,8 +477,13 @@ def install(app, get_orchestrator):
                                 project.mark_active_model_timeout(call_id)
                                 call.no_action_timeout()
                                 raise _ModelNoActionTimeout(active)
-                    yield from frames
+                    # Published while argument frames are held, so the live write label moves
+                    # before the call closes. The pump only copies this when a chunk is yielded.
+                    if events.tool_input_lines:
+                        project.tool_input_lines = dict(events.tool_input_lines)
+                    yield from repair.push_frames(frames)
                 if not cancel.event.is_set():
+                    yield from repair.finish()
                     events.finish()
                     if build_watchdog:
                         log_no_action_terminal(
