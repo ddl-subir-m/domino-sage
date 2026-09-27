@@ -85,6 +85,14 @@ const json = (body, status = 200) => ({
 
 function route(path, init) {
   let m;
+  // `_AppViewMiddleware`: a header naming an app that is not there is refused before any route.
+  const named = ((init && init.headers) || {})['X-Sage-App'];
+  if (named && !APPS.some((a) => a.id === named)) return json({ error: 'unknown app' }, 404);
+  if ((m = path.match(/^\/apps\/([^/?]+)\?domino_app=/)) && init && init.method === 'DELETE') {
+    APPS.splice(APPS.findIndex((a) => a.id === m[1]), 1);
+    if (selected === m[1]) selected = APPS[APPS.length - 1].id;
+    return json({ ok: true, id: m[1], dominoApp: 'none', selected });
+  }
   if ((m = path.match(/^\/apps\/([^/?]+)\/select$/))) {
     selected = m[1];
     return json({});
@@ -451,6 +459,21 @@ for (const step of steps) {
     }
     tab.unmount();
     report.push({ step: 'sequence', acts });
+    continue;
+  }
+
+  // Delete the app this tab is showing, then press New app — the two things a person does next.
+  if (step.deleteShown) {
+    const tab = makeTab('t1', '#/build/thr_many?app=app_a');
+    await tab.settle();
+    const mark = calls.length;
+    await tab.SW.store.deleteApp('app_a');
+    await tab.settle();
+    const after = { view: tab.view(), apps: tab.SW.store.get().apps.map((a) => a.id) };
+    const create = await tab.SW.api.createApp().then(() => 'ok', (err) => err.message);
+    tab.unmount();
+    APPS.unshift({ id: 'app_a', name: 'Desk dashboard', built: true });
+    report.push({ step: 'deleteShown', after, create, calls: calls.slice(mark) });
     continue;
   }
 

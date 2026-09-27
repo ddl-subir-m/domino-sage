@@ -7760,6 +7760,11 @@ window.SW = window.SW || {};
     // deleted app and get a 404 for its trouble.
     async deleteApp(id, { deleteDominoApp = false } = {}) {
       const out = await SW.api.deleteApp(id, { deleteDominoApp });
+      // Every request carries `activeApp` as `X-Sage-App`, and the server refuses an id it no longer
+      // has — `/apps` included, so the reload could never find the app that is left.
+      if (state.activeApp && state.activeApp.id === id) {
+        applyAppScope(appScopeTicket(), { activeApp: null });
+      }
       await store.loadBuild();
       // The app's Bindings went with its directory, and `usedBy` on every Project row is computed
       // off the apps' own manifests — so without this the rail goes on saying `Used by 1 app`
