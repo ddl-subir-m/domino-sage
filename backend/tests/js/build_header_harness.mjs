@@ -413,6 +413,19 @@ function serve(url, init) {
   return body;
 }
 
+function requestedApp(init) {
+  const headers = (init && init.headers) || {};
+  return headers['X-Sage-App'] || selected;
+}
+
+// The app this tab is showing. `selected` is the process default, which a poll can change without
+// this tab moving, so a render that passed `selected` in as `?app=` would be the follow effect
+// this work removes.
+function tabApp() {
+  const app = SW.store.get().activeApp;
+  return (app && app.id) || selected;
+}
+
 function route(path, init) {
   let m;
   if ((m = path.match(/^\/apps\/([^/?]+)\/select$/))) {
@@ -428,17 +441,16 @@ function route(path, init) {
     if (appsFail) return json({ error: 'unavailable' }, 500);
     return json({ items: apps.map((a) => ({ ...a, selected: a.id === selected })), selected });
   }
-  // The publish route carries NO app id, the way the real one does not: the server ships the app
-  // it has selected. So this writes to `selected` and to nothing else, which is what makes "the
-  // publish reached the selected app and no other" a claim the fixture can be asked about
-  // afterwards rather than a request path a test could match and be satisfied by.
+  // The publish path carries no app id. The header names the app this tab is publishing, and a
+  // request with no header still publishes the process default.
   if (path === '/publish' && init && init.method === 'POST') {
     // What the request CARRIED, kept whether or not the publish then works: the name is the one
     // thing on this wire that the browser decides, and a refusal must not be able to swallow the
     // claim that it was sent (#218).
     published.push(init.body ? JSON.parse(init.body) : {});
     if (publishFails) return json({ error: publishFails }, 409);
-    const row = apps.find((a) => a.id === selected);
+    const publishing = requestedApp(init);
+    const row = apps.find((a) => a.id === publishing);
     const again = !!(row && row.published);
     if (row) {
       row.published = true;
@@ -449,7 +461,7 @@ function route(path, init) {
       const named = published[published.length - 1].name;
       if (named) { row.name = named; row.publishName = named; }
     }
-    return json({ published: true, app_id: `da_${selected}`, url: row ? row.url : '', republished: again });
+    return json({ published: true, app_id: `da_${publishing}`, url: row ? row.url : '', republished: again });
   }
   // The two reads behind the pre-publish notice (#35). Two routes rather than one, the way the
   // server has them: the query check is local disk and the egress read may reach the gateway, so a
@@ -470,14 +482,14 @@ function route(path, init) {
   // before the listing below, which would otherwise swallow the path.
   if (path.startsWith('/project/history/row/')) {
     const i = Number(path.slice('/project/history/row/'.length));
-    const row = (HISTORY[selected] || [])[i];
+    const row = (HISTORY[requestedApp(init)] || [])[i];
     if (rowDetailFails) return json({ error: 'unavailable' }, 500);
     if (!row || !row.detail) return json({ error: 'no such row in this app\'s log' }, 404);
     return json({ detail: row.detail });
   }
   if (path.startsWith('/project/history')) {
     if (historyFails) return json({ error: 'unavailable' }, 500);
-    const rows = (useDateFixture ? DATE_HISTORY : HISTORY)[selected] || [];
+    const rows = (useDateFixture ? DATE_HISTORY : HISTORY)[requestedApp(init)] || [];
     const named = path.match(/[?&]conversation=([^&]+)/);
     const picked = named
       ? rows.filter((r) => r.conversation === decodeURIComponent(named[1]))
@@ -512,12 +524,13 @@ function route(path, init) {
     // holds no demonstrated call for. Nothing is recorded on this path.
     if (bindRefusal) return json({ error: bindRefusal }, 409);
     const row = BINDABLE.find((r) => r.id === `${body.kind}:${body.id}`);
-    bound[selected] = [
-      ...(bound[selected] || []),
+    const app = requestedApp(init);
+    bound[app] = [
+      ...(bound[app] || []),
       { kind: body.kind, id: body.id, name: row ? row.name : body.id,
         display_name: row ? row.name : body.id },
     ];
-    return json({ bindings: bound[selected] });
+    return json({ bindings: bound[app] });
   }
   // The second act's own route (#142). It EDITS the Binding named in the path and refuses where
   // there is none, the way the real one does — a fake that appended, or that wrote a Binding on the
@@ -527,15 +540,15 @@ function route(path, init) {
     const id = decodeURIComponent(m[1]);
     const body = JSON.parse(init.body || '{}');
     scoped.push({ id, ...body });
-    const row = (bound[selected] || []).find((b) => b.kind === 'data_source' && b.id === id);
+    const row = (bound[requestedApp(init)] || []).find((b) => b.kind === 'data_source' && b.id === id);
     if (!row) return json({ error: 'There is no Scope to set.' }, 404);
     ['database', 'schema', 'table'].forEach((k) => {
       if (body[k]) row[k] = body[k];
       else delete row[k];
     });
-    return json({ bindings: bound[selected] });
+    return json({ bindings: bound[requestedApp(init)] });
   }
-  if (path === '/bindings') return json({ bindings: bound[selected] || [] });
+  if (path === '/bindings') return json({ bindings: bound[requestedApp(init)] || [] });
   // The three listings the ladder is read off, the same routes the Resource Browser's cascade
   // walks. A level nobody has answered comes back with the names under wherever the walk is.
   if ((m = path.match(/^\/data-sources\/([^/?]+)\/databases/))) {
@@ -553,7 +566,7 @@ function route(path, init) {
   }
   if (path === '/project') {
     if (projectFails) return json({ error: 'unavailable' }, 502);
-    return json({ attached: attached[selected] || [] });
+    return json({ attached: attached[requestedApp(init)] || [] });
   }
   // Membership, the local file half of the panel. `usedBy` is left off deliberately: this fixture
   // holds no app manifests, so the honest answer is the one an unbound Project gives.
@@ -564,10 +577,11 @@ function route(path, init) {
   if ((m = path.match(/^\/bindings\/([^/]+)\/([^/?]+)$/)) && init && init.method === 'DELETE') {
     const kind = decodeURIComponent(m[1]);
     const id = decodeURIComponent(m[2]);
-    const gone = (bound[selected] || []).find((b) => b.kind === kind && b.id === id) || null;
-    bound[selected] = (bound[selected] || []).filter((b) => b !== gone);
+    const app = requestedApp(init);
+    const gone = (bound[app] || []).find((b) => b.kind === kind && b.id === id) || null;
+    bound[app] = (bound[app] || []).filter((b) => b !== gone);
     return json({
-      bindings: bound[selected],
+      bindings: bound[app],
       refs: USES[`${kind}:${id}`] || [],
       kind,
       name: gone ? gone.display_name || gone.name : id,
@@ -575,7 +589,8 @@ function route(path, init) {
   }
   if (path === '/project/files/detach' && init && init.method === 'POST') {
     const p = JSON.parse(init.body || '{}').path;
-    attached[selected] = (attached[selected] || []).filter((a) => a.path !== p);
+    const app = requestedApp(init);
+    attached[app] = (attached[app] || []).filter((a) => a.path !== p);
     return json({ detached: p, removed_copies: LEAKED[p] || [], refs: USES[p] || [], status: 'ok' });
   }
   if (path.match(/^\/threads\/([^/]+)\/conversation$/)) return json({ history: [] });
@@ -1163,12 +1178,16 @@ async function arrive(threadId, appId, mode) {
   // behind, and the next step would open on a rail somebody else had narrowed.
   SW.store.set({ railAppFilter: null });
   await SW.store.openThread(threadId);
+  // The route is Build before the reads. A header is sent only in that mode, and a read taken
+  // before the route exists would answer for the process default while this tab already names
+  // its own app.
+  const modeName = mode || 'build';
+  const at = `#/${modeName}/${threadId}${appId ? `?app=${appId}` : ''}`;
+  sandbox.location.hash = at;
+  SW.router.go(at);
   if (appId) await SW.store.selectApp(appId);
   await SW.store.loadApps();
   await SW.store.loadBuild();
-  const at = `#/${mode || 'build'}/${threadId}?app=${selected}`;
-  sandbox.location.hash = at;
-  SW.router.go(at);
 }
 
 // --- the run ---------------------------------------------------------------
@@ -1457,7 +1476,7 @@ for (const step of steps) {
     // caused. A row that reads a written record answers out of the store; one that fetches shows
     // up as a call between these two lines (#92).
     calls.length = 0;
-    let tree = SW.BuildMode({ conversationId: step.build, appId: selected });
+    let tree = SW.BuildMode({ conversationId: step.build, appId: tabApp() });
     let nodes = flatten(tree);
     const renderCalls = calls.slice();
     // The effects Build schedules, run so the timer it wants is a fact rather than a reading of
@@ -1481,7 +1500,7 @@ for (const step of steps) {
       const waited = timeouts.find((t) => t.ms >= 90000);
       if (!waited) throw new Error('Build armed no give-up timer while the preview was starting');
       waited.fn();
-      tree = SW.BuildMode({ conversationId: step.build, appId: selected });
+      tree = SW.BuildMode({ conversationId: step.build, appId: tabApp() });
       nodes = flatten(tree);
     }
 
@@ -2006,7 +2025,7 @@ for (const step of steps) {
     // read. So a paint is: draw, run what the draw scheduled, let it settle, draw again.
     const paint = async () => {
       effects.length = 0;
-      flatten(SW.BuildMode({ conversationId: step.history, appId: selected }));
+      flatten(SW.BuildMode({ conversationId: step.history, appId: tabApp() }));
       for (const e of effects) {
         try {
           const off = e.fn();
@@ -2015,7 +2034,7 @@ for (const step of steps) {
       }
       await settle();
       await settle();
-      return SW.BuildMode({ conversationId: step.history, appId: selected });
+      return SW.BuildMode({ conversationId: step.history, appId: tabApp() });
     };
 
     expanded = !!step.expand;
@@ -2031,7 +2050,7 @@ for (const step of steps) {
     // Build history is an item in the header's own `…` menu now (`624ff9b`), where it used to be a
     // control with an aria-label of its own. Both are accepted: what these tests are about is the
     // drawer behind the door, not which shape the door takes.
-    const drawn = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }));
+    const drawn = flatten(SW.BuildMode({ conversationId: step.history, appId: tabApp() }));
     const control = drawn.find((n) => n.onClick && n.label === 'Build history');
     const menu = control
       ? null
@@ -2072,15 +2091,18 @@ for (const step of steps) {
       await settle();
       const stale = held.shift();
       if (!stale) throw new Error('the drawer never asked for the app history');
-      // The selection moves the way a second tab moves it: `/apps` simply starts answering
-      // differently, and the poll cascades onto the new app.
-      selected = step.switchTo;
-      await SW.store.loadApps();
+      // This tab switches while the read is still out. The header on the read already in flight
+      // names the app being left. A poll would not switch the drawer, so the move is `selectApp`.
+      const switching = SW.store.selectApp(step.switchTo);
+      // `loadBuild` reads the log again when the drawer is open. That read is the new app's, and
+      // parking it on the same hold as the stale one would wait on itself.
+      holding = null;
       stale.release();
       await read;
+      await switching;
       holding = null;
       held.length = 0;
-      mid = readDrawer(SW.BuildMode({ conversationId: step.history, appId: selected }));
+      mid = readDrawer(SW.BuildMode({ conversationId: step.history, appId: tabApp() }));
       tree = await paint();
     }
 
@@ -2094,7 +2116,7 @@ for (const step of steps) {
       SW.store.closeBuildHistory();
       await paint();
       calls.length = 0;
-      const redrawn = flatten(SW.BuildMode({ conversationId: step.history, appId: selected }));
+      const redrawn = flatten(SW.BuildMode({ conversationId: step.history, appId: tabApp() }));
       const again = redrawn.find((n) => n.onClick && n.label === 'Build history');
       const againMenu = again
         ? null
@@ -2171,7 +2193,7 @@ for (const step of steps) {
     const s = SW.store.get();
     // Taken before the render, so the row's own reads cannot land in the tick's ledger (#92).
     const ticked = calls.slice();
-    const nodes = flatten(SW.BuildMode({ conversationId: step.thread, appId: selected }));
+    const nodes = flatten(SW.BuildMode({ conversationId: step.thread, appId: tabApp() }));
     report.push({
       step: `poll ${step.select} -> ${step.poll}`,
       calls: ticked,
@@ -2386,7 +2408,7 @@ for (const step of steps) {
       const ok = confirm.onOk();
       await settle();
       selected = step.raceTo;
-      await SW.store.loadApps();
+      await SW.store.selectApp(step.raceTo);
       held.shift().release();
       await ok;
       await acted;
@@ -2448,7 +2470,7 @@ for (const step of steps) {
     published.length = 0;
     calls.length = 0;
     const menuOf = () => {
-      const found = flatten(SW.BuildMode({ conversationId: step.publish, appId: selected }))
+      const found = flatten(SW.BuildMode({ conversationId: step.publish, appId: tabApp() }))
         .find((n) => n.items && n.items.some((i) => i.key === 'publish'));
       if (!found) throw new Error('nothing in the Build header offers to publish');
       return found;
@@ -2541,7 +2563,7 @@ for (const step of steps) {
   if (step.openapp) {
     await arrive(step.openapp, step.select);
     opened.length = 0;
-    const nodes = flatten(SW.BuildMode({ conversationId: step.openapp, appId: selected }));
+    const nodes = flatten(SW.BuildMode({ conversationId: step.openapp, appId: tabApp() }));
     const menu = nodes.find((n) => n.items && n.items.some((i) => i.key === 'open'));
     if (!menu) throw new Error('nothing in the Build header offers to open the app');
     const item = menu.items.find((i) => i.key === 'open');

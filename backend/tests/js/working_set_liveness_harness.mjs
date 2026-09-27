@@ -394,6 +394,11 @@ report.freeRemovals = free && free.items;
 if (stuck) {
   const key = stuck.keys.find((k) => String(k || '').startsWith('unbind-app:'));
   if (key) {
+    // The door's app is gone when the loaded list does not contain it. Selecting no longer
+    // asks the server, so a missing row is the refusal.
+    if (act === 'deadapp') {
+      SW.store.set({ apps: [{ id: 'app_other', name: 'Still here', selected: true }] });
+    }
     await stuck.onClick({ key });
     await settle();
   }

@@ -27,8 +27,8 @@ window.SW = window.SW || {};
 
     // The one read. Open with nothing for the app on screen is the whole condition, and it
     // describes both moments that need a read: opening (which clears the list on the way in), and
-    // the selection moving underneath an open drawer — which needs nobody to click, because a
-    // second tab choosing another app moves it here too (#95). The gate drops the old app's list
+    // the selection moving underneath an open drawer — this tab's own switch. Another tab's
+    // selection does not. The gate drops the old app's list
     // when that happens, so `null` is the signal and the app id is what makes it fire twice.
     useEffect(() => {
       if (buildHistoryOpen && loading) SW.store.readAppHistory();

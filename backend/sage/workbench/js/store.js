@@ -1317,39 +1317,43 @@ window.SW = window.SW || {};
   // reload — it is true only for the few seconds between a press and the conversation it starts.
   let railAutoExpanded = false;
 
-  // The Build rail's list. `activeApp` follows it rather than being set beside it, so the row that
-  // is lit and the app the server is pointed at cannot drift apart.
+  // The Build rail's list. A poll refreshes names, behind, and building on the app this tab is
+  // already showing. It does not install the row marked selected: that flag is the process
+  // default, and another tab's create, delete, or handoff must not move this one.
   //
-  // What hangs off the app follows it too (#95). This is the read Build polls every 30s, and every
-  // 2s mid-build, so the selected app can move here with nobody clicking — a second tab choosing a
-  // different app is enough. Until this cascaded, `bindings` and `appAttachments` went on
-  // describing the app selected before, and the header's scope row names the app over those lists
-  // outright, so the wrong pairing was printed rather than implied.
+  // A tab with no app yet, or one whose app has gone, takes that default. Create, delete, and
+  // handoff still select it for a Build URL that names no app.
   //
-  // Guarded on the id, not run every tick: unguarded, a poll costing one request would cost three,
-  // forever, in every open Build tab. `cascade: false` is for the callers that refresh app-scoped
-  // state themselves straight after — without it `loadBuild` would read `/bindings` twice on every
-  // app switch.
+  // What hangs off the app follows a real switch (#95). `cascade: false` is for the callers that
+  // refresh app-scoped state themselves straight after — without it `loadBuild` would read
+  // `/bindings` twice on every app switch.
   //
   // `ticket` is passed by the callers that read this list as part of a bigger chain, and defaulted
-  // here for the rest: which app is selected is what THIS read said, so the cascade it fires writes
-  // under that read's place in the queue rather than minting a fresher one for information that is
-  // no newer (#101).
+  // here for the rest (#101).
+  // Set once a list has actually come back. `state.apps` starts empty and a failed read leaves it
+  // empty too, and those two are not "this id is gone".
+  let appsLoaded = false;
+
   async function loadAppList({ cascade = true, ticket = appScopeTicket() } = {}) {
     const apps = await SW.api.apps().catch(() => null);
     state.apps = apps || [];
-    const next = state.apps.find((a) => a.selected) || null;
-    const moved = (next && next.id) !== (state.activeApp && state.activeApp.id);
-    // A read that FAILED is not an app that moved. `apps()` answers empty for a 500 as readily as
-    // for a Project with no apps, so without this one blip fires the whole cascade, and the tick
-    // that recovers fires it again.
-    //
-    // A superseded read is not worth two more requests to install either, so the queue is asked
-    // here as well as at the write: the tick that lost costs the one read it had already made.
-    if (apps && moved && cascade && appScopeCurrent(ticket, 'activeApp')) {
-      await refreshAppScope(next, ticket);
-    } else {
-      applyAppScope(ticket, { activeApp: next });
+    if (apps) appsLoaded = true;
+    // This tab's app is the one its URL named. A poll refreshes that row's name, behind, and
+    // building, and does not install whichever app another tab selected. A tab that has no app yet
+    // — a Build URL that names none — still takes the selected row, which is the default create,
+    // delete, and handoff leave behind. An app that has disappeared takes that default too: delete
+    // selected whatever is left, and the route this caller writes next has to name it.
+    const current = state.activeApp;
+    const fresh = current && state.apps.find((a) => a.id === current.id);
+    if (fresh) {
+      applyAppScope(ticket, { activeApp: fresh });
+    } else if (apps && (!current || !fresh)) {
+      const adopt = state.apps.find((a) => a.selected) || null;
+      if (adopt && cascade && appScopeCurrent(ticket, 'activeApp')) {
+        await refreshAppScope(adopt, ticket);
+      } else {
+        applyAppScope(ticket, { activeApp: adopt });
+      }
     }
     notify();
   }
@@ -1652,7 +1656,9 @@ window.SW = window.SW || {};
   async function tableArtifactBlocks(art) {
     const path = art.path || '';
     try {
-      const res = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`, {
+        headers: SW.api.appHeaders(),
+      });
       const body = await res.json();
       if (!res.ok) throw new Error((body && body.error) || res.statusText);
       // Old conversations can name unfinished files. Keep valid zero-row tables and
@@ -4598,9 +4604,8 @@ window.SW = window.SW || {};
   // draws, and paying for the whole file on every app switch would buy a list nobody had asked to
   // see.
   //
-  // Ticketed like the reads beside it, and for the sharper version of the same reason: the route
-  // carries no app id, so its answer is only ever "the app that was selected when it was asked".
-  // A read that resolves after the creator has moved is answering about an app that is no longer
+  // Ticketed like the reads beside it. The header names the app at the moment the read is asked.
+  // A read that resolves after this tab has moved is answering about an app that is no longer
   // on screen, and it loses here rather than painting (#101).
   // A failure is REPORTED rather than flattened to an empty list, which is the same rule
   // `loadAppList` states 780 lines up about `apps()`: `[]` answers a 500 as readily as it answers
@@ -4674,6 +4679,7 @@ window.SW = window.SW || {};
         const statusRes = await fetch(`./api/preview/${retry ? 'retry' : 'status'}${
           retry && app ? `?appId=${encodeURIComponent(app)}` : ''}`, {
           method: retry ? 'POST' : 'GET', cache: 'no-store',
+          headers: SW.api.appHeaders(),
         });
         const detail = await statusRes.json();
         if (!current() || (detail.appId && app && detail.appId !== app)) return;
@@ -7668,9 +7674,21 @@ window.SW = window.SW || {};
       buildReadGeneration += 1;
       notify();
       try {
-        await SW.api.selectApp(id);
-        // Reloads the app list with it: the transcript, the Bindings, the plan pin and the preview
-        // are all the app's, so switching reloads the whole of Build, not one row's flag.
+      const row = (state.apps || []).find((a) => a.id === id);
+      // A list that has loaded and does not contain this id is an app that is gone, including a
+      // Project whose list came back empty. Switching anyway would put a dead id in the URL. A
+      // list that has not loaded yet — a deep link arrives before the first poll — still names
+      // the id and lets the reload fill the row.
+      if ((appsLoaded || (state.apps && state.apps.length)) && !row) {
+        antd.message.warning(
+          SW.brand.text('{assistantName} could not switch to that {builtApp}.')
+        );
+        return state.activeApp;
+      }
+      applyAppScope(appScopeTicket(), { activeApp: row || { id } });
+        // Reloads this tab's app: the transcript, the Bindings, the plan pin and the preview are
+        // all the app's. It does not POST select. Create, delete, and handoff still do, on the
+        // server, and that remains the default a Build URL with no app lands on.
         await store.loadBuild();
         const selected = state.activeApp;
         state.activePlanId = (selected && selected.planId) || null;
@@ -7893,7 +7911,7 @@ window.SW = window.SW || {};
         const refs = collectTurnRefs(text);
         const res = await fetch(url || './api/project/build/stream', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...SW.api.appHeaders() },
           body: JSON.stringify(body || {
             prompt: text, conversation: state.thread.id,
             skipResetGate, skipIncomingGate, skipTableGate, skipSourceGate, chosenSource,
@@ -8078,7 +8096,7 @@ window.SW = window.SW || {};
       try {
         const res = await fetch('./api/project/build/continue', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...SW.api.appHeaders() },
           body: JSON.stringify({
             continuationId: block.continuationId,
             conversation,
@@ -8586,7 +8604,7 @@ window.SW = window.SW || {};
         if (buildAgain) payload.build_again = true;
         const res = await fetch('./api/project/build/approve', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...SW.api.appHeaders() },
           body: JSON.stringify(payload),
         });
         if (!res.ok) {

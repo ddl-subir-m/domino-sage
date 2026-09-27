@@ -22,8 +22,8 @@ window.SW = window.SW || {};
   // the selected one in, so that case never arose from a click — every rail link named whatever
   // was in the preview, and opening a Conversation left Build looking at another one's work.
   //
-  // `?app=` is still readable grammar: a shared link carries it, and the URL follows a selection
-  // moved in another tab (#100). It is only no longer written here.
+  // `?app=` is still readable grammar: a shared link carries it. A tab keeps the app its own URL
+  // names, so another tab's selection does not rewrite this one. It is only no longer written here.
   SW.conversationRoute = function conversationRoute(thread, mode) {
     return mode === 'build' ? `#/build/${thread.id}` : `#/chat/${thread.id}`;
   };

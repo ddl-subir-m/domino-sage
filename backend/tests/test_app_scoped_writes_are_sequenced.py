@@ -173,22 +173,20 @@ def _read_then_switch() -> dict:
 
 @needs_node
 def test_the_newer_write_wins_however_the_two_resolve():
-    """The whole of #101. The stale read resolves LAST and used to win for that reason alone."""
+    """A `/bindings` read taken under this tab's app, and a poll that reports a different selected
+    app. The poll does not move the tab, so the read is not stale and it lands."""
     step = _read_then_switch()
-    assert step["activeApp"] == "app_a"
-    assert step["bindings"] == ["Claude Sonnet 4", "Market data EOD", "Churn risk"]
-    assert step["attachments"] == ["margins.csv", "legacy.csv"]
+    assert step["activeApp"] == "app_c"
+    assert step["bindings"] == ["Qwen 2.5"]
+    assert step["attachments"] == []
 
 
 @needs_node
 def test_the_stale_read_is_dropped_rather_than_repaired_by_a_later_one():
-    """Dropped, not corrected afterwards: nothing re-reads once the loser lands, so if the stale
-    write went in it would sit on screen until the next poll 30 seconds later."""
+    """The poll did not move the tab, so it did not start a second read of the lists."""
     step = _read_then_switch()
-    # The reads the race made, and no others. A fix that recovered by fetching again would show up
-    # here as a second `/bindings` after the last `/apps`.
-    assert step["calls"].count("GET /bindings") == 2
-    assert step["calls"].count("GET /project") == 2
+    assert step["calls"].count("GET /bindings") == 1
+    assert step["calls"].count("GET /project") == 1
 
 
 @needs_node
@@ -202,10 +200,10 @@ def test_the_apps_own_list_names_the_new_app_over_the_new_apps_records():
     step = _read_then_switch()
     deps = step["appDeps"] or {"title": "", "said": []}
     said = " ".join([deps["title"] or ""] + deps["said"])
-    assert "Desk dashboard" in said
-    assert "Market data EOD" in said
-    assert "margins.csv" in said
-    assert "Qwen 2.5" not in said
+    assert "Rate curve viewer" in said
+    assert "Qwen 2.5" in said
+    assert "Desk dashboard" not in said
+    assert "margins.csv" not in said
 
 
 # ---- an act, against a read that started before it --------------------------------------------
@@ -356,8 +354,8 @@ def test_a_switch_with_nothing_racing_it_reads_each_record_once_and_installs_it(
 
 @needs_node
 def test_a_poll_that_changes_nothing_still_costs_the_one_read_it_always_cost():
-    """The tick that loses the race stops at its own read rather than cascading into two more it
-    would only throw away — and the tick that changes nothing is unaffected by any of this."""
+    """A poll does not cascade into the lists, whether or not its selected flag names this tab's
+    app. The tick that changes nothing is the same one read."""
     steps = _run(
         [
             {"thread": "thr_many", "select": "app_a", "poll": "app_a"},
@@ -365,4 +363,4 @@ def test_a_poll_that_changes_nothing_still_costs_the_one_read_it_always_cost():
         ]
     )
     assert steps[0]["calls"] == ["GET /apps"]
-    assert steps[1]["calls"] == ["GET /apps", "GET /project", "GET /bindings"]
+    assert steps[1]["calls"] == ["GET /apps"]

@@ -227,19 +227,15 @@ def test_build_dates_sort_iso_and_seconds_in_the_same_seconds_unit():
 
 
 @needs_node
-def test_switching_app_switches_the_history_to_that_app():
-    """The list follows the header WHILE IT IS OPEN, which is the version of this criterion that
-    can fail. Two separate opens would pass on an implementation that never dropped anything —
-    opening reads — so the selection moves here with the drawer already on screen and showing the
-    app it is about to leave. Nobody clicks: a second tab choosing another app moves the server's
-    selection and the 30s poll brings it here (#95)."""
+def test_a_poll_does_not_switch_the_open_history():
+    """The list follows this tab's app WHILE IT IS OPEN. A second tab choosing another app changes
+    what `/apps` reports and must not change the builds on screen."""
     step = _run([{"history": "thr_many", "select": "app_c", "moveTo": "app_a"}])[-1]
     assert step["mid"]["title"] == "Logs · Rate curve viewer"
     assert step["mid"]["prompts"] == ["Draw the rate curve"]
-    # Same drawer, never reopened, now the other app's builds under the other app's name.
-    assert step["app"] == "app_a"
-    assert step["drawer"]["title"] == "Logs · Desk dashboard"
-    assert step["drawer"]["prompts"] == ["Sort the desks by P&L", "Add a margin column"]
+    assert step["app"] == "app_c"
+    assert step["drawer"]["title"] == "Logs · Rate curve viewer"
+    assert step["drawer"]["prompts"] == ["Draw the rate curve"]
 
 
 @needs_node
@@ -255,9 +251,9 @@ def test_each_app_opens_on_its_own_builds():
 
 
 def _late_response() -> dict:
-    """A read of `app_c`'s log, issued while `app_c` is selected and landing AFTER a poll has moved
-    the selection to `app_a`. The route carries no app id, so what is in flight is `app_c`'s
-    builds — and it resolves last, which is the only reason it used to win."""
+    """A read of `app_c`'s log, issued while this tab is on `app_c` and landing AFTER this tab
+    switches to `app_a`. The header named `app_c` when the read was asked, and it resolves last,
+    which is the only reason it used to win."""
     return _run([{"history": "thr_many", "select": "app_c", "switchTo": "app_a"}])[-1]
 
 
