@@ -53,7 +53,8 @@ def test_how_sage_works_starts_guided_and_only_direct_is_the_other_answer():
 def test_account_settings_sets_how_sage_works_and_the_composer_does_not():
     drawer = (_JS / "components" / "shell.js").read_text()
     drawer = drawer[drawer.index("SW.SettingsDrawer"):]
-    assert "How Sage works" in drawer
+    # The label is the pack's assistant name, so the source does not spell Sage.
+    assert drawer.count("SW.brand.text('How {assistantName} works')") == 2
     assert "chooseHow" in drawer
     assert "save('howSageWorks', value)" in drawer
     assert "{ label: 'Guided', value: 'guided' }" in drawer
