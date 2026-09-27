@@ -362,7 +362,14 @@ def test_a_click_that_names_no_table_is_refused_rather_than_recorded_as_a_schema
                       json={"database": "DWH", "schema": "MARTS"})
 
     assert res.status_code == 400
-    assert res.json()["error"] == "Pick one Table. Sage does not record a schema from here."
+    assert res.json()["error"] == (
+        "Pick at least one Table. Sage does not record a schema from here.")
+    # The set form refuses the same way: empty, or any entry that stops at a schema.
+    for tables in ([], [{"database": "DWH", "schema": "MARTS", "table": "GONG__CALLS"},
+                        {"database": "DWH", "schema": "MARTS"}]):
+        res = client.post("/api/bindings/data_source/ds-dwh/candidate", json={"tables": tables})
+        assert res.status_code == 400, tables
+    assert "schema" not in _sources(client)[0]
     assert "schema" not in _sources(client)[0]
 
 

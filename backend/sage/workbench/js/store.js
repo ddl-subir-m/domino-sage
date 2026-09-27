@@ -8236,8 +8236,10 @@ window.SW = window.SW || {};
     //
     // `answered` carries the gates this turn was already past, so the replay does not walk back
     // into one the person has settled.
-    async chooseTableAndBuild(prompt, sourceId, scope, answered, bindFirst = false) {
-      await SW.api.confirmTableCandidate(sourceId, scope, bindFirst);
+    //
+    // `tables` is the card's confirmed set, one position or several, written as one Binding.
+    async chooseTableAndBuild(prompt, sourceId, tables, answered, bindFirst = false) {
+      await SW.api.confirmTableCandidates(sourceId, tables, bindFirst);
       // `refreshWorkingSet` for `saveScope`'s reason: this writes the same Scope the same door
       // writes, and the Project's row carries a copy of it under `usedBy`.
       await Promise.all([
@@ -8249,8 +8251,11 @@ window.SW = window.SW || {};
       // server composes the same sentence off the Binding, and this one is what the person sees
       // while the turn runs. The database is left off it for the reason the card's own heading
       // carries it and its buttons do not — `MARTS` against `STAGING` is what they were picking
-      // between.
-      const tableName = [scope.schema, scope.table].filter(Boolean).join('.');
+      // between. Several tables read as `A, B and C`, the server's own join.
+      const names = tables.map((t) => [t.schema, t.table].filter(Boolean).join('.'));
+      const tableName = names.length > 1
+        ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+        : names[0];
       return store.sendBuildPrompt(prompt, { ...(answered || {}), skipTableGate: true, tableName });
     },
 
@@ -8300,8 +8305,8 @@ window.SW = window.SW || {};
     //
     // `echo` is off and `skipTableGate` is on for one reason between them: the question is already
     // in the transcript above the card, and the server will not write it a second time.
-    async chooseTableAndAsk(prompt, threadId, sourceId, scope, taskId = '') {
-      await SW.api.confirmThreadTableCandidate(threadId, sourceId, scope, taskId);
+    async chooseTableAndAsk(prompt, threadId, sourceId, tables, taskId = '') {
+      await SW.api.confirmThreadTableCandidates(threadId, sourceId, tables, taskId);
       const opened = await store.openThread(threadId);
       // The record stands either way — it is written above, and it belongs to the Thread rather
       // than to whatever is on screen. What must not follow it is the answer: `openThread` returns

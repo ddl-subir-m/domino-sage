@@ -121,7 +121,8 @@ def test_the_click_writes_the_record_first_and_then_replays_the_request():
     assert out["routes"][0] == "api/bindings/data_source/ds-dwh/candidate"
     assert "api/project/build/stream" in out["routes"]
     assert out["routes"].index("api/project/build/stream") > out["routes"].index("api/bindings")
-    assert out["click"] == {"database": "DWH", "schema": "MARTS", "table": "GONG__CALLS"}
+    assert out["click"] == {"tables": [{"database": "DWH", "schema": "MARTS",
+                                        "table": "GONG__CALLS"}]}
     assert out["replay"]["prompt"] == PROMPT
     assert out["replay"]["skipTableGate"] is True
 
@@ -289,7 +290,7 @@ def test_the_merged_cards_click_carries_the_flag_that_binds_the_store_too():
     out = _run(history=merged)
 
     assert out["click"]["bindFirst"] is True
-    assert out["click"]["table"] == "GONG__CALLS"
+    assert out["click"]["tables"][0]["table"] == "GONG__CALLS"
 
 
 def test_an_ordinary_cards_click_asks_for_no_binding_at_all():

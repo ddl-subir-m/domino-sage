@@ -350,6 +350,8 @@ def _unbound_block(problems: list[str] | None, names: HelperNames) -> str:
 def _scope_sentence(binding: Binding) -> str:
     kind = binding.connector_type[:-6] if binding.connector_type.endswith("Config") else ""
     where = f"**{binding.scope}** in " if binding.scope else ""
+    if binding.tables:
+        where = _and_list_of([f"**{'.'.join(p for p in t if p)}**" for t in binding.tables]) + " in "
     named = (brand.text("the {kind} {dataSource}", kind=kind) if kind
              else brand.text("the {dataSource}"))
     return f"This app reads {where}{named} **{binding.display_name}**."
@@ -599,7 +601,19 @@ def _scope_rule(binding: Binding, stranded: list[tuple[str, str]] | None, table:
     is given and the check the published app makes cannot disagree. `None` means Sage could not ask,
     and then the safe instruction is the strict one: a qualified statement runs on every connector,
     where an unqualified one runs only where the Scope travels.
+
+    A chosen set spanning more than one schema overrides both: only one part of the store can
+    travel as configuration, so every table has to carry its own position in the statement.
     """
+    places = {(database, schema) for database, schema, _ in binding.tables}
+    if len(places) > 1:
+        whole = len({database for database, _ in places}) > 1
+        named = ", ".join(
+            f"`FROM {'.'.join(p for p in ((d if whole else ''), s, t) if p)}`"
+            for d, s, t in binding.tables)
+        return (f"- **Qualify every table in `.sage/queries.json`** — {named}. The chosen tables "
+                "sit in more than one schema, and only one part of the store can travel as "
+                "configuration, so a table left unqualified is looked for in the wrong place.")
     if stranded is None:
         return brand.text("- Write the table name qualified — `FROM {qualified}` — unless the user "
                           "says otherwise. {assistantName} could not confirm what this connector "

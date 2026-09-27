@@ -253,8 +253,8 @@ def rank(prompt: str, source: Binding, tables: Iterable[Candidate]) -> Ranking:
                    sum(1 for (whole, part), _ in scored if whole or part))
 
 
-def named_candidate(prompt: str, candidates: Iterable[Candidate]) -> Candidate | None:
-    """The one table the request names outright, or None to raise the card (#426).
+def named_candidates(prompt: str, candidates: Iterable[Candidate]) -> tuple[Candidate, ...]:
+    """The tables the request names outright, or () to raise the card (#426).
 
     MATCHED AGAINST THE CANDIDATES, never parsed out of the sentence. A dotted name pulled from
     prose would let a request scope a Binding to a table the store does not hold; matching the
@@ -267,15 +267,16 @@ def named_candidate(prompt: str, candidates: Iterable[Candidate]) -> Candidate |
     `Candidate` says — so those keep the card. Widening this to resolve a unique bare name is a
     real option and a separate decision; it is not made here.
 
-    EXACTLY ONE, or the card. Two tables named in one sentence is a question, not an answer, and
-    guessing which was meant is the thing the card exists to stop.
+    EVERY ONE NAMED, and nothing beyond. The card may confirm several tables, so a sentence naming
+    several in full has answered it the same way a sentence naming one has. Nothing is guessed past
+    the names actually in the sentence.
 
     This reads no record and writes none. It answers "did they already say", and the caller decides
     what that is worth — which keeps ADR-0038's split intact: looking is not choosing.
     """
     said = (prompt or "").casefold()
     if not said:
-        return None
+        return ()
     hits: list[Candidate] = []
     for c in candidates:
         if not (c.database and c.schema and c.table):
@@ -289,9 +290,7 @@ def named_candidate(prompt: str, candidates: Iterable[Candidate]) -> Candidate |
                 hits.append(c)
                 break
             start = said.find(name, start + 1)
-        if len(hits) > 1:
-            return None
-    return hits[0] if len(hits) == 1 else None
+    return tuple(dict.fromkeys(hits))
 
 
 def asked_words(prompt: str, *names: str) -> list[str]:

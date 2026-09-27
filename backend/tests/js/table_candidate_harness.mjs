@@ -18,7 +18,7 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history, prompt, answered, stream } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { history, prompt, answered, stream, tables } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const json = (body) => ({
   ok: true, status: 200,
@@ -225,7 +225,7 @@ const drawn = SW.store.get().buildMessages
 
 calls.length = 0;
 await SW.store.chooseTableAndBuild(
-  prompt, 'ds-dwh', { database: 'DWH', schema: 'MARTS', table: 'GONG__CALLS' },
+  prompt, 'ds-dwh', tables || [{ database: 'DWH', schema: 'MARTS', table: 'GONG__CALLS' }],
   // Off the drawn card rather than passed in, so the flag is followed the whole way the button
   // follows it (#206): the history row carries it, the store copies it onto the block, and the
   // click sends it. Reading it here is the only place that proves the middle step.

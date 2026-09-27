@@ -239,7 +239,7 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   `from domino_data.data_sources import DataSourceClient` then
   `DataSourceClient().get_datasource("<name from context>").query("<sql>").to_pandas()` — against
   the table the context names. In an open investigation, other relevant tables in that attached
-  source are also available; in ordinary {chat}, use only the selected table.
+  source are also available; in ordinary {chat}, use only the selected tables.
   Do not grep the filesystem, env, or `/opt/sage` for credentials. **Print little.** What a
   script prints is kept and re-read on every step that follows it, so print the few numbers you
   need and no more — never a whole frame, and at most a handful of rows. `df.head()` on a wide

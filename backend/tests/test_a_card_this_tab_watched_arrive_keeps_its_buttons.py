@@ -111,12 +111,12 @@ def test_a_card_this_tab_watched_arrive_keeps_its_buttons_through_a_re_read():
     out = _live(TABLE_CARD)
 
     assert out["arrived"]["blocks"] == [
-        {"type": "table_candidates", "live": True, "buttons": ["GONG__CALLS"]}]
+        {"type": "table_candidates", "live": True, "buttons": ["GONG__CALLS", "Use this Table"]}]
     # A re-read really landed between the two reads. Without this the test below could pass on a run
     # where nothing ever re-read anything, which is the one way it could certify nothing at all.
     assert out["reread"]["reads"] > out["arrived"]["reads"]
     assert out["reread"]["blocks"] == [
-        {"type": "table_candidates", "live": True, "buttons": ["GONG__CALLS"]}]
+        {"type": "table_candidates", "live": True, "buttons": ["GONG__CALLS", "Use this Table"]}]
 
 
 @needs_node

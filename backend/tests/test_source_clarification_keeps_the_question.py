@@ -115,8 +115,8 @@ def test_decline_ranks_tables_for_arm_and_the_table_card_keeps_that_task(tmp_pat
     assert card["taskId"] == offer["taskId"]
     assert "GONG__CALL_TRANSCRIPTS" in str(card["allGroups"])
     assert "SFDC__CASE" in str(card["allGroups"])
-    orch.confirm_thread_table_candidate(tid, "ds-dwh", "DWH", "MARTS", "SFDC__ACCOUNT",
-                                        task_id=card["taskId"])
+    orch.confirm_thread_table_candidates(tid, "ds-dwh", [("DWH", "MARTS", "SFDC__ACCOUNT")],
+                                         task_id=card["taskId"])
     events = list(orch.chat_stream(tid, ASK, skip_table_gate=True, task_id=card["taskId"]))
     assert not any(e["type"] == "investigation-offer" for e in events)
     assert oc.prompts[-1]["text"].endswith(ASK)

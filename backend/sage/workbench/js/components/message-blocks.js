@@ -1796,9 +1796,9 @@ window.SW = window.SW || {};
     );
   }
 
-  // The tables a search found, for the person to pick one (#183, ADR-0038). Sage finds; the person
-  // binds — so this card IS the declaration, and every button on it writes the same record the
-  // panel's picker writes before replaying the request that produced the card.
+  // The tables a search found, for the person to pick one or more (#183, ADR-0038). Sage finds; the
+  // person binds — so this card IS the declaration, and its confirm writes every table picked onto
+  // the same record the panel's picker writes before replaying the request that produced the card.
   //
   // Grouped by schema because the schema is the difference being asked about: `MARTS.GONG__CALLS`
   // is the modeled table a daily summary wants and `STAGING.STG_GONG__CALLS` is the raw one it does
@@ -1821,6 +1821,14 @@ window.SW = window.SW || {};
     // hold `all` true through a settled card carrying 602 tables, which is the one case the cap
     // exists to prevent. The state is only the click, which is the only thing state is for here.
     const [expanded, setExpanded] = useState(false);
+    // The tables toggled so far, as positions. A click adds or removes one and sends nothing; the
+    // confirm below writes the whole set. That extra click for a single table is what lets a
+    // second click add a table rather than replace the first.
+    const [picked, setPicked] = useState([]);
+    const at = (p) => `${p.database}.${p.schema}.${p.table}`;
+    const toggle = (pos) => setPicked((now) => (now.some((p) => at(p) === at(pos))
+      ? now.filter((p) => at(p) !== at(pos))
+      : [...now, pos]));
     const all = expanded || (!block.matched && (block.total || 0) <= 60);
     const groups = (all ? block.allGroups : block.groups) || [];
     const shown = groups.reduce((n, g) => n + (g.tables || []).length, 0);
@@ -1884,33 +1892,43 @@ window.SW = window.SW || {};
                 h('div', { className: 'sw-table-group-head' },
                   [group.database, group.schema].filter(Boolean).join('.')),
                 h(Space, { size: 6, wrap: true },
-                  (group.tables || []).map((table) => h(Button, {
-                    key: table,
-                    size: 'small',
-                    className: 'sw-table-pick',
-                    // Keyed on the whole position for the same reason the heading carries it: two
-                    // schemas can hold one table name, and a key that dropped the database would
-                    // spin both rows on one click.
-                    loading: busy === `${group.database}.${group.schema}.${table}`,
-                    disabled: !!busy,
-                    // Which door the click writes through (#188). A card drawn in Chat carries the
-                    // Thread it belongs to, and the table goes on that conversation's own row —
-                    // Chat has no Built App to hold a Binding, and the record crosses at the
-                    // handoff. Without a Thread this is the Build card and writes the Binding.
-                    onClick: run(`${group.database}.${group.schema}.${table}`,
-                      () => (block.threadId
-                        ? SW.store.chooseTableAndAsk(
-                          block.prompt, block.threadId, block.sourceId,
-                          { database: group.database, schema: group.schema, table },
-                          block.taskId || '',
-                        )
-                        : SW.store.chooseTableAndBuild(
-                          block.prompt, block.sourceId,
-                          { database: group.database, schema: group.schema, table },
-                          block.answered, block.bindFirst,
-                        ))),
-                  }, table)))
+                  (group.tables || []).map((table) => {
+                    const pos = { database: group.database, schema: group.schema, table };
+                    // Compared on the whole position for the same reason the heading carries it:
+                    // two schemas can hold one table name, and a test that dropped the database
+                    // would select both rows on one click.
+                    const on = picked.some((p) => at(p) === at(pos));
+                    return h(Button, {
+                      key: table,
+                      size: 'small',
+                      className: on ? 'sw-table-pick is-picked' : 'sw-table-pick',
+                      type: on ? 'primary' : 'default',
+                      'aria-pressed': on,
+                      disabled: !!busy,
+                      onClick: () => toggle(pos),
+                    }, table);
+                  }))
               )),
+              h(Button, {
+                type: 'primary',
+                size: 'small',
+                className: 'sw-table-confirm',
+                disabled: !picked.length || !!busy,
+                loading: busy === 'confirm',
+                // Which door the confirm writes through (#188). A card drawn in Chat carries the
+                // Thread it belongs to, and the tables go on that conversation's own context —
+                // Chat has no Built App to hold a Binding, and the record crosses at the handoff.
+                // Without a Thread this is the Build card and writes the Binding.
+                onClick: run('confirm', () => (block.threadId
+                  ? SW.store.chooseTableAndAsk(
+                    block.prompt, block.threadId, block.sourceId, picked, block.taskId || '',
+                  )
+                  : SW.store.chooseTableAndBuild(
+                    block.prompt, block.sourceId, picked, block.answered, block.bindFirst,
+                  ))),
+              }, picked.length > 1
+                ? SW.brand.text('Use these {count} {scopePlural}', { count: picked.length })
+                : SW.brand.text('Use this {scope}')),
               hidden > 0
                 ? h(Button, {
                     type: 'link',

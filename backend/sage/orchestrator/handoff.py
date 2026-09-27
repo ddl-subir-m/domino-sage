@@ -12,6 +12,7 @@ import concurrent.futures
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from .. import degraded
@@ -804,6 +805,31 @@ def binding_from_context(item: dict) -> Binding | None:
         schema = scope.get("schema") or None
         table = scope.get("table") or None
     return Binding(kind, rid, name, name, database, schema, table)
+
+
+def union_table_chips(bindings: list[Binding]) -> dict[tuple[str, str], Binding]:
+    """One Binding per key, carrying every table the Conversation chose on that Data Source.
+
+    A Conversation holds one row per table chip, and each reads back as its own Binding with the
+    same key. The first row for a key keeps its fields; the tables of every row for it are
+    collected in row order, and the first of them is the Binding's own table.
+    """
+    first: dict[tuple[str, str], Binding] = {}
+    chosen: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
+    for b in bindings:
+        first.setdefault(b.key, b)
+        seen = chosen.setdefault(b.key, [])
+        seen += [p for p in b.positions if p not in seen]
+    out: dict[tuple[str, str], Binding] = {}
+    for key, b in first.items():
+        tables = chosen[key]
+        if b.kind != KIND_DATA_SOURCE or not tables:
+            out[key] = b
+            continue
+        database, schema, table = tables[0]
+        out[key] = replace(b, database=database or None, schema=schema or None, table=table,
+                           tables=tuple(tables) if len(tables) > 1 else ())
+    return out
 
 
 def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
