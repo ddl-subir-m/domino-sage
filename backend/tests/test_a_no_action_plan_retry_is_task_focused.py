@@ -446,3 +446,114 @@ def test_first_action_at_113_s_completes_while_reasoning_idle_gap_times_out(
     # The reasoning frames reach OpenCode as the model sent them (ADR-0066); what must not carry
     # them is Sage's own record of the call.
     assert "PRIVATE" not in json.dumps(call)
+
+
+_TOOL = {"choices": [{"delta": {"tool_calls": [
+    {"index": 0, "id": "call", "function": {"name": "read", "arguments": "{}"}}]}}]}
+
+
+def _fast_clock():
+    ticks = {"n": 0.0}
+
+    def monotonic():
+        ticks["n"] += 0.5
+        return ticks["n"]
+
+    return monotonic
+
+
+def test_a_reasoning_only_implement_stream_is_interrupted_at_its_budget(
+        running, monkeypatch):  # noqa: F811
+    from sage.gateway.client import FakeGatewayClient
+    from sage.orchestrator import native_routes
+
+    client, orch, _ = running
+    assert client.post(
+        "/api/project/model", json={"mode": "implement", "pick": "GLM 5.3 OR"}).status_code == 200
+    orch._build_policy = replace(
+        orch._build_policy, implement_reasoning_budget_seconds=3,
+        model_no_action_timeout_seconds=120)
+    monkeypatch.setattr(native_routes, "time", SimpleNamespace(monotonic=_fast_clock()))
+
+    class ScriptedGateway(FakeGatewayClient):
+        def route(self, request, labels, *, protocol, cancel):
+            for _ in range(8):
+                yield _sse(_REASONING)
+
+    orch._project.shim._gateway = ScriptedGateway()
+    timing.start_turn("build", turn_id="turn")
+    try:
+        with active(orch) as headers:
+            response = dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR")
+    finally:
+        record = timing.finish_turn()
+
+    error = orch._project.last_gateway_error
+    assert error["code"] == "implement_reasoning_budget"
+    assert error["reasoning_only_chunks"] >= 1
+    assert timing.as_dict(record)["calls"][0]["outcome"] == "implement_reasoning_budget"
+    assert "sage_gateway_error" in response.text
+    assert "PRIVATE" not in json.dumps(timing.as_dict(record))
+
+
+def test_a_tool_before_the_budget_is_left_alone(running, monkeypatch):  # noqa: F811
+    from sage.gateway.client import FakeGatewayClient
+    from sage.orchestrator import native_routes
+
+    client, orch, _ = running
+    assert client.post(
+        "/api/project/model", json={"mode": "implement", "pick": "GLM 5.3 OR"}).status_code == 200
+    orch._build_policy = replace(orch._build_policy, implement_reasoning_budget_seconds=3)
+    monkeypatch.setattr(native_routes, "time", SimpleNamespace(monotonic=_fast_clock()))
+
+    class ScriptedGateway(FakeGatewayClient):
+        def route(self, request, labels, *, protocol, cancel):
+            yield _sse(_TOOL)
+            yield _sse(_REASONING)
+            yield _sse(_STOP)
+
+    orch._project.shim._gateway = ScriptedGateway()
+    timing.start_turn("build", turn_id="turn")
+    try:
+        with active(orch) as headers:
+            response = dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR")
+    finally:
+        record = timing.finish_turn()
+
+    assert orch._project.last_gateway_error is None
+    call = timing.as_dict(record)["calls"][0]
+    assert call["outcome"] == "success" and call["firstActionKind"] == "tool"
+    assert "sage_gateway_error" not in response.text
+
+
+def test_a_plan_call_that_reasons_past_the_implement_budget_is_left_alone(
+        running, monkeypatch):  # noqa: F811
+    from sage.gateway.client import FakeGatewayClient
+    from sage.orchestrator import native_routes
+
+    client, orch, _ = running
+    assert client.post(
+        "/api/project/model", json={"mode": "plan", "pick": "GLM 5.3 OR"}).status_code == 200
+    orch._build_policy = replace(orch._build_policy, implement_reasoning_budget_seconds=3)
+    monkeypatch.setattr(native_routes, "time", SimpleNamespace(monotonic=_fast_clock()))
+
+    class ScriptedGateway(FakeGatewayClient):
+        def route(self, request, labels, *, protocol, cancel):
+            for _ in range(8):
+                yield _sse(_REASONING)
+            yield _sse(_TEXT)
+            yield _sse(_STOP)
+
+    orch._project.shim._gateway = ScriptedGateway()
+    timing.start_turn("build", turn_id="turn")
+    try:
+        with active(orch) as headers:
+            response = dispatch(client, headers, Protocol.CHAT, "GLM 5.3 OR")
+    finally:
+        record = timing.finish_turn()
+
+    assert orch._project.last_gateway_error is None
+    call = timing.as_dict(record)["calls"][0]
+    assert call["outcome"] == "success" and call["firstActionKind"] == "text"
+    assert "sage_gateway_error" not in response.text
+    assert "PRIVATE" not in json.dumps(call)

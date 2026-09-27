@@ -921,3 +921,152 @@ def test_a_stuck_call_that_will_not_stop_names_the_step_too(tmp_path: Path):
     assert card["stuck"] is True
     assert "A step wouldn't stop" in card["message"]
     assert "Restart the workspace" in card["message"]
+
+
+def _reasoning_call(oc, project):
+    """Every poll looks like a reasoning-only model call that has not acted."""
+    real = oc.is_running
+
+    def running(session_id):
+        project.begin_active_model_call("call", "turn", 0.0)
+        active = project.active_model_call
+        active.reasoning_only_chunks = 4
+        active.chunk_count = 4
+        return real(session_id)
+
+    oc.is_running = running
+
+
+def test_a_quiet_reasoning_stream_is_retried_once_then_stalls(tmp_path: Path):
+    orch, oc = _wedged(tmp_path)
+    project = orch.project(start_preview=False)
+    send = oc.send_prompt
+
+    def send_and_stay(*args, **kwargs):
+        send(*args, **kwargs)
+        oc.stay_running = True
+
+    oc.send_prompt = send_and_stay
+    _reasoning_call(oc, project)
+
+    events = list(orch.build_stream("add a chart"))
+
+    assert [e.get("reason") for e in _of(events, "iterate")] == ["dead reasoning stream"]
+    assert len(oc.prompts) == 2
+    assert "Do the next concrete step now" in oc.prompts[1]["text"]
+    assert _of(events, "done")[0]["decision"] == "stalled"
+
+
+def test_a_quiet_turn_that_already_edited_stalls_without_a_retry(tmp_path: Path):
+    orch, oc = _wedged(tmp_path, turns=[Turn(writes={"src/chart.tsx": "chart\n"})])
+    project = orch.project(start_preview=False)
+    _reasoning_call(oc, project)
+
+    events = list(orch.build_stream("add a chart"))
+
+    assert _of(events, "iterate") == []
+    assert len(oc.prompts) == 1
+    assert _of(events, "done")[0]["decision"] == "stalled"
+
+
+def test_stop_does_not_retry_a_quiet_reasoning_stream(tmp_path: Path):
+    orch, oc = _wedged(tmp_path)
+    project = orch.project(start_preview=False)
+    real = oc.is_running
+
+    def running(session_id):
+        project.stop_requested = True
+        project.begin_active_model_call("call", "turn", 0.0)
+        project.active_model_call.reasoning_only_chunks = 4
+        project.active_model_call.chunk_count = 4
+        return real(session_id)
+
+    oc.is_running = running
+
+    events = list(orch.build_stream("add a chart"))
+
+    assert not any(e.get("reason") == "dead reasoning stream" for e in events)
+    assert len(oc.prompts) == 1
+
+
+def _budget_error(project):
+    project.last_gateway_error = {
+        "code": "implement_reasoning_budget",
+        "message": "safe",
+        "elapsed_ms": 180_000,
+        "chunk_count": 12,
+        "reasoning_only_chunks": 12,
+    }
+
+
+def test_an_implement_reasoning_budget_sends_one_follow_up(tmp_path: Path):
+    ws = tmp_path / "mnt" / "code"
+    oc = FakeOpenCode(ws, [Turn(), Turn(writes={"src/chart.tsx": "chart\n"})])
+    orch = _orch(tmp_path, oc)
+    project = orch.project(start_preview=False)
+    sent = 0
+    send = oc.send_prompt
+
+    def send_with_budget(*args, **kwargs):
+        nonlocal sent
+        sent += 1
+        send(*args, **kwargs)
+        if sent == 1:
+            _budget_error(project)
+
+    oc.send_prompt = send_with_budget
+
+    events = list(orch.build_stream("add a chart"))
+
+    assert [e.get("reason") for e in _of(events, "iterate")] == ["implement reasoning budget"]
+    assert "Do the next concrete step now" in oc.prompts[1]["text"]
+    assert _of(events, "done")[0]["ok"] is True
+
+
+def test_a_second_reasoning_budget_stalls(tmp_path: Path):
+    ws = tmp_path / "mnt" / "code"
+    oc = FakeOpenCode(ws, [Turn(), Turn(), Turn()])
+    orch = _orch(tmp_path, oc)
+    project = orch.project(start_preview=False)
+    send = oc.send_prompt
+
+    def send_with_budget(*args, **kwargs):
+        send(*args, **kwargs)
+        _budget_error(project)
+
+    oc.send_prompt = send_with_budget
+
+    events = list(orch.build_stream("add a chart"))
+
+    assert len(oc.prompts) == 2
+    assert [e.get("reason") for e in _of(events, "iterate")] == ["implement reasoning budget"]
+    assert _of(events, "done")[0]["decision"] == "stalled"
+
+
+def test_the_budget_interrupt_leaves_one_dead_stream_retry(tmp_path: Path):
+    """The 3-minute interrupt and the dead stream are one recovery each, in that order."""
+    ws = tmp_path / "mnt" / "code"
+    oc = FakeOpenCode(ws, [Turn(), Turn(), Turn()])
+    orch = _orch(tmp_path, oc)
+    project = orch.project(start_preview=False)
+    sent = 0
+    send = oc.send_prompt
+
+    def send_prompt(*args, **kwargs):
+        nonlocal sent
+        sent += 1
+        send(*args, **kwargs)
+        if sent == 1:
+            _budget_error(project)
+        else:
+            oc.stay_running = True
+
+    oc.send_prompt = send_prompt
+    _reasoning_call(oc, project)
+
+    events = list(orch.build_stream("add a chart"))
+
+    assert [e.get("reason") for e in _of(events, "iterate")] == [
+        "implement reasoning budget", "dead reasoning stream"]
+    assert len(oc.prompts) == 3
+    assert _of(events, "done")[0]["decision"] == "stalled"
