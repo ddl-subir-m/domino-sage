@@ -204,7 +204,8 @@ def _run_case(tmp_path: Path, stack_name: str, mode: Mode, case: DecisionCase):
     intents = []
     send = oc.send_prompt
 
-    def dispatch(session_id, text, model=None, agent=None, attachments=None, chat=False):
+    def dispatch(session_id, text, model=None, agent=None, attachments=None, chat=False,
+                 tail=""):
         scenario_index = len(oc.prompts) - scenario_start
         effect = case.effects[scenario_index]
         if effect == "noop":
@@ -214,7 +215,7 @@ def _run_case(tmp_path: Path, stack_name: str, mode: Mode, case: DecisionCase):
             oc.turns[oc._next].writes[stack.entry_file] = current.read_text()
         states.append(project.control.snapshot())
         intents.append(project.active_build_intent)
-        send(session_id, text, model, agent, attachments, chat)
+        send(session_id, text, model, agent, attachments, chat, tail=tail)
         if effect == "opaque":
             # A shell/heredoc write has no edit/write part. Only the turn-start tree hash sees it.
             current = Path(oc._session_dir(session_id)) / stack.entry_file
