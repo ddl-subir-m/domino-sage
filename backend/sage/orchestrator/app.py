@@ -2660,6 +2660,19 @@ def _scope_levels(body: dict) -> tuple[str, str, str]:
     return tuple(str(body.get(level) or "") for level in ("database", "schema", "table"))
 
 
+def _candidate_positions(body: dict) -> list[tuple[str, str, str]] | None:
+    """The tables a candidate card confirmed, or None when any of them names no table.
+
+    `tables` is the card's set. A body with no `tables` is one table given as the three levels, the
+    shape a single confirm has always sent. An empty set, or an entry that stops at a schema, is
+    None: the card declares tables, never a schema.
+    """
+    raw = (body or {}).get("tables")
+    rows = [_scope_levels(t if isinstance(t, dict) else {}) for t in raw] \
+        if isinstance(raw, list) else [_scope_levels(body or {})]
+    return rows if rows and all(t for _, _, t in rows) else None
+
+
 # Bindings are their own route, not part of /api/resources: that one has nothing to list for a kind
 # whose service will not answer, and a creator auditing an app needs the dependency list precisely
 # then.
@@ -2794,23 +2807,23 @@ async def set_binding_scope(resource_id: str, request: Request) -> JSONResponse:
 async def confirm_table_candidate(resource_id: str, request: Request) -> JSONResponse:
     """Record the table a person picked off a candidate card, once it is proved to still be there."""
     body = await request.json()
-    database, schema, table = _scope_levels(body)
-    if not table:
-        # A candidate is always one table. Settling for the schema is the answer this whole path
+    positions = _candidate_positions(body)
+    if positions is None:
+        # A candidate is always a table. Settling for the schema is the answer this whole path
         # exists to refuse: "somewhere in PUBLIC" does not say which table holds the data, and a
         # schema-level record is still available from the panel, the surface that owns that door.
         return JSONResponse(status_code=400, content={"error": brand_text(
-            "Pick one {scope}. {assistantName} does not record a schema from here."
+            "Pick at least one {scope}. {assistantName} does not record a schema from here."
         )})
     # Which acts this click is claiming to be (#206). The merged card is drawn before anything is
     # bound and its click answers the store and the table together, so it says so and is written
     # through the door that records both. Said by the card rather than inferred from the manifest
     # being empty: a request that did not mean to declare a Binding must still be refused below,
     # and inferring it here would turn that refusal into a silent bind.
-    write = (orchestrator.confirm_source_and_table_candidate if body.get("bindFirst")
-             else orchestrator.confirm_table_candidate)
+    write = (orchestrator.confirm_source_and_table_candidates if body.get("bindFirst")
+             else orchestrator.confirm_table_candidates)
     try:
-        return JSONResponse(content={"bindings": write(resource_id, database, schema, table)})
+        return JSONResponse(content={"bindings": write(resource_id, positions)})
     except ResourceNotBound:
         return JSONResponse(status_code=404, content={"error": brand_text(
             "This app doesn't need that {dataSource} to run, so there is no {scope} to record. "
@@ -3913,16 +3926,16 @@ async def confirm_thread_table_candidate(thread_id: str, resource_id: str,
                                          request: Request) -> JSONResponse:
     """Record the table a person picked off a candidate card in Chat, once it is proved still there."""
     body = await request.json()
-    database, schema, table = _scope_levels(body)
-    if not table:
-        # A candidate is always one table, here as much as on the Binding door: "somewhere in
+    positions = _candidate_positions(body)
+    if positions is None:
+        # A candidate is always a table, here as much as on the Binding door: "somewhere in
         # PUBLIC" does not say which table holds the data.
         return JSONResponse(status_code=400, content={"error": brand_text(
-            "Pick one {scope}. {assistantName} does not record a schema from here."
+            "Pick at least one {scope}. {assistantName} does not record a schema from here."
         )})
     try:
-        return JSONResponse(content=orchestrator.confirm_thread_table_candidate(
-            thread_id, resource_id, database, schema, table,
+        return JSONResponse(content=orchestrator.confirm_thread_table_candidates(
+            thread_id, resource_id, positions,
             task_id=str((body or {}).get("taskId") or "")))
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "unknown thread"})

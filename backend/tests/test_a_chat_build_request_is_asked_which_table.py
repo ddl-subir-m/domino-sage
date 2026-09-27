@@ -211,7 +211,7 @@ def test_the_nudge_still_arrives_on_the_turn_the_click_buys(tmp_path: Path):
     tid = _thread_with_source(orch)
     assert "table-candidates" in _types(list(orch.chat_stream(tid, PROMPT)))
 
-    orch.confirm_thread_table_candidate(tid, "ds-dwh", "DWH", "MARTS", "GONG__CALLS")
+    orch.confirm_thread_table_candidates(tid, "ds-dwh", [("DWH", "MARTS", "GONG__CALLS")])
     answered = list(orch.chat_stream(tid, PROMPT, skip_table_gate=True))
 
     kinds = _types(answered)

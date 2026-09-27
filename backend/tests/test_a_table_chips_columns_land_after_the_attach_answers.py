@@ -199,7 +199,7 @@ def test_a_pin_on_another_chip_keeps_the_columns_that_landed_meanwhile(tmp_path:
     done = threading.Event()
 
     def pin():
-        orch.confirm_thread_table_candidate(tid, "ds-dwh", "DWH", "MARTS", "DIM_ACCOUNT")
+        orch.confirm_thread_table_candidates(tid, "ds-dwh", [("DWH", "MARTS", "DIM_ACCOUNT")])
         done.set()
 
     threading.Thread(target=pin, daemon=True).start()

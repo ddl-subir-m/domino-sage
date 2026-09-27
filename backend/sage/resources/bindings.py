@@ -65,6 +65,19 @@ class Binding:
     # still say which of its queries are honest. Recorded rather than asked at query time for the same
     # reason `display_name` is: the record has to read when the network does not.
     connector_type: str = ""
+    # Every table a candidate card confirmed, as `(database, schema, table)`, when it confirmed more
+    # than one. Empty for a single table, which stays in the three fields above so the manifest keeps
+    # its one-table shape. When set, its first entry IS those three fields: a reader that only knows
+    # one table still reads a real one. The tables can sit in different schemas, which is why the
+    # three string fields alone cannot hold the set.
+    tables: tuple[tuple[str, str, str], ...] = ()
+
+    @property
+    def positions(self) -> tuple[tuple[str, str, str], ...]:
+        """Every chosen table as `(database, schema, table)`; empty where no table is chosen."""
+        if self.tables:
+            return self.tables
+        return ((self.database or "", self.schema or "", self.table),) if self.table else ()
 
     @property
     def key(self) -> tuple[str, str]:
@@ -115,6 +128,9 @@ class Binding:
                            ("table", self.table), ("connector_type", self.connector_type)):
             if value:
                 out[key] = value
+        if len(self.tables) > 1:
+            out["tables"] = [{k: v for k, v in zip(("database", "schema", "table"), t) if v}
+                             for t in self.tables]
         return out
 
 
@@ -166,8 +182,18 @@ def parse_bindings(raw: object) -> list[Binding]:
         name = str(e.get("name") or rid)
         out.append(Binding(kind, rid, name, str(e.get("display_name") or name),
                            _scope_part(e, "database"), _scope_part(e, "schema"),
-                           _scope_part(e, "table"), str(e.get("connector_type") or "")))
+                           _scope_part(e, "table"), str(e.get("connector_type") or ""),
+                           _tables(e)))
     return out
+
+
+def _tables(entry: dict) -> tuple[tuple[str, str, str], ...]:
+    """The recorded table set, or () when the entry holds one table or none."""
+    rows = [(_scope_part(t, "database") or "", _scope_part(t, "schema") or "",
+             _scope_part(t, "table") or "")
+            for t in entry.get("tables") or [] if isinstance(t, dict)]
+    rows = [r for r in rows if r[2]]
+    return tuple(rows) if len(rows) > 1 else ()
 
 
 def _scope_part(entry: dict, key: str) -> str | None:
@@ -250,7 +276,9 @@ def mention_note(mentions: list[Mention], recorded: list[Binding]) -> str:
         # The display name is what the creator picked from; the name is what they typed after the @.
         # Both, when they differ, so neither reading of the mention is left guessing.
         name = b.display_name if b.display_name == b.name else f"{b.display_name} (`{b.name}`)"
-        if b.table:
+        if b.tables:
+            scope = ", reading " + ", ".join(f"`{'.'.join(p for p in t if p)}`" for t in b.tables)
+        elif b.table:
             scope = f", reading `{b.scope}`"
         elif b.scope:
             # Not `reading \`DWH.MARTS\``. Under the word Table that reads as a table nobody

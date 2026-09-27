@@ -781,15 +781,16 @@ SW.api = {
   // a click that did not mean to bind must still be refused there.
   // Absent rather than `false` on the ordinary click: the flag is a claim the merged card makes,
   // and a request that is not making it should look exactly as it did before this existed.
-  confirmTableCandidate: (resourceId, scope, bindFirst = false) =>
+  // `tables` is every position the card's confirm carries, one or several.
+  confirmTableCandidates: (resourceId, tables, bindFirst = false) =>
     post(`/bindings/data_source/${encodeURIComponent(resourceId)}/candidate`,
-         { ...(scope || {}), ...(bindFirst ? { bindFirst: true } : {}) }),
-  // The same click, answered in Chat (#188). A different record, not a different act: Chat has no
-  // Built App to depend on anything, so the table goes on the Thread's own context row and crosses
+         { tables, ...(bindFirst ? { bindFirst: true } : {}) }),
+  // The same confirm, answered in Chat (#188). A different record, not a different act: Chat has
+  // no Built App to depend on anything, so the tables go on the Thread's own context and cross
   // into a Binding at the handoff.
-  confirmThreadTableCandidate: (threadId, resourceId, scope, taskId = '') =>
+  confirmThreadTableCandidates: (threadId, resourceId, tables, taskId = '') =>
     post(`/threads/${encodeURIComponent(threadId)}/context/data_source/`
-      + `${encodeURIComponent(resourceId)}/candidate`, { ...(scope || {}), ...(taskId ? { taskId } : {}) }),
+      + `${encodeURIComponent(resourceId)}/candidate`, { tables, ...(taskId ? { taskId } : {}) }),
   // The investigation card's buttons, and the bar's Close (#386, ADR-0056). One route for all three
   // answers because they are one question — a conversation is open, declined or closed, never two
   // of them — and the answer comes back as the record, so the bar redraws off what was written

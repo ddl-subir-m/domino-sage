@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.resources.table_search import Candidate, named_candidate
+from sage.resources.table_search import Candidate, named_candidates
 from sage.workspace.threads import ThreadStore
 
 from .test_a_chat_build_request_is_asked_which_table import (
@@ -92,28 +92,36 @@ CANDIDATES = (
     ("compare SANDBOX.PUBLIC.GONG__CALLS over time", "GONG__CALLS"),
 ])
 def test_a_fully_qualified_name_resolves_to_its_candidate(prompt: str, want: str):
-    found = named_candidate(prompt, CANDIDATES)
-    assert found is not None and found.table == want, prompt
+    found = named_candidates(prompt, CANDIDATES)
+    assert len(found) == 1 and found[0].table == want, prompt
+
+
+def test_several_fully_qualified_names_resolve_to_every_one_of_them():
+    """The card confirms a set, so a sentence naming several in full has answered it too. Only the
+    names in the sentence, in the order the candidates hold them, and nothing guessed past them."""
+    found = named_candidates(
+        "join DWH.MARTS.GONG__CALLS and SANDBOX.PUBLIC.GONG__CALLS", CANDIDATES)
+    assert found == (Candidate("DWH", "MARTS", "GONG__CALLS"),
+                     Candidate("SANDBOX", "PUBLIC", "GONG__CALLS"))
 
 
 @pytest.mark.parametrize("prompt,why", [
     ("show me GONG__CALLS", "bare: two databases hold one, which is what the position is for"),
     ("show me MARTS.GONG__CALLS", "half-qualified: no database"),
-    ("join DWH.MARTS.GONG__CALLS and SANDBOX.PUBLIC.GONG__CALLS", "two named is a question"),
     ("rows from DWH.MARTS.NOT_A_TABLE", "names nothing the store holds"),
     ("rows from RAW.DWH.MARTS.GONG__CALLS", "a longer path that merely ends with one"),
     ("DWH.MARTS.GONG__CALLS.DURATION", "a column reference, not the table alone"),
     ("", "no sentence at all"),
 ])
 def test_anything_less_than_one_exact_name_keeps_the_card(prompt: str, why: str):
-    assert named_candidate(prompt, CANDIDATES) is None, why
+    assert named_candidates(prompt, CANDIDATES) == (), why
 
 
 def test_the_match_is_against_the_candidates_and_never_parsed_out_of_the_sentence():
     """A name that resolves to nothing must raise the card, not scope the Binding to a table the
     store does not hold. Parsing dotted names out of prose would do the second."""
-    assert named_candidate("rows from MADE.UP.NAME", CANDIDATES) is None
-    assert named_candidate("rows from DWH.MARTS.GONG__CALLS", ()) is None
+    assert named_candidates("rows from MADE.UP.NAME", CANDIDATES) == ()
+    assert named_candidates("rows from DWH.MARTS.GONG__CALLS", ()) == ()
 
 
 # --------------------------------------------------------------------------------------
@@ -134,7 +142,7 @@ def test_the_chat_turn_is_not_spent_asking_for_a_table_the_person_named(tmp_path
 
 
 def test_the_record_it_writes_is_the_one_the_click_would_have_written(tmp_path: Path):
-    """Through `confirm_thread_table_candidate`, not around it — one writer, one record (ADR-0038).
+    """Through `confirm_thread_table_candidates`, not around it — one writer, one record (ADR-0038).
 
     The columns matter as much as the position: the row is what the turn prompt renders from, and a
     table with no columns beside it sends the agent to ask the store what it just chose.
@@ -150,6 +158,22 @@ def test_the_record_it_writes_is_the_one_the_click_would_have_written(tmp_path: 
     assert scope.get("schema") == "MARTS"
     assert scope.get("table") == "GONG__CALLS"
     assert _row(orch, tid).get("columns"), "the click reads columns; so must this"
+
+
+def test_a_chat_sentence_naming_two_tables_records_both_and_skips_the_card(tmp_path: Path):
+    """Several named in full is the card answered with several: the first on the store's row, the
+    second as its own table chip, and no card."""
+    orch, _oc = _orch(tmp_path)
+    _gong_warehouse(orch)
+    tid = _thread_with_source(orch)
+
+    events = _events(orch, tid, "@Snowflake-Data-Warehouse join DWH.MARTS.GONG__CALLS to "
+                                "DWH.STAGING.STG_GONG__CALLS")
+
+    assert _cards(events) == []
+    items = ThreadStore(orch._chat_project().record.path).read_context(tid).get("items") or []
+    tables = [(i.get("scope") or {}).get("table") for i in items]
+    assert tables == ["GONG__CALLS", "STG_GONG__CALLS"]
 
 
 def test_a_bare_table_name_still_gets_the_card(tmp_path: Path):
@@ -187,7 +211,7 @@ def test_a_record_that_cannot_be_written_asks_rather_than_ending_the_turn(
     def _refuse(*_a, **_k):
         raise RuntimeError("the store would not answer")
 
-    orch.confirm_thread_table_candidate = _refuse  # type: ignore[method-assign]
+    orch.confirm_thread_table_candidates = _refuse  # type: ignore[method-assign]
     with caplog.at_level(logging.ERROR):
         events = _events(orch, tid, NAMED)
 

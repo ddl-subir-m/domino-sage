@@ -222,6 +222,9 @@ from ..workspace.threads import (
     title_from_prompt,
     withhold_table_rows,
 )
+from ..workspace.threads import (
+    _now as _thread_now,
+)
 from . import (
     attachment_repair,
     brand,
@@ -4457,9 +4460,29 @@ def _at_token_hits(token: str, name: str, path: str) -> bool:
     return t in names or t in stems
 
 
+def _columns_text(item: dict) -> str:
+    """A table chip's columns as `name type, name type`, or "" when it holds none."""
+    cols = item.get("columns") if isinstance(item.get("columns"), list) else []
+    return ", ".join(
+        " ".join(
+            str(p) for p in (
+                (c.get("name") if isinstance(c, dict) else None),
+                (c.get("type") if isinstance(c, dict) else None),
+            ) if p
+        )
+        # Wide tables often put timestamps last. Dropping those names forces the
+        # agent to rediscover metadata this chip already holds (#472).
+        for c in cols
+    ).strip()
+
+
 def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = "",
-                       thread_id: str = "<threadId>", investigating: bool = False) -> str:
+                       thread_id: str = "<threadId>", investigating: bool = False,
+                       also: tuple[dict, ...] = ()) -> str:
     """One context row for the Chat turn prompt.
+
+    `also` is every other table chip on the same Data Source as a scoped `item`. With any, the one
+    row names the whole set, since each chip's own sentence would call its table the only one.
 
     `thread_id` fills the scratch destination in the two Dataset rows, which hand the model a
     `download_file(...)` call it is meant to run verbatim. It defaults to the literal
@@ -4600,20 +4623,40 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
         # of naming a route that cannot work — the defect, with the arrow turned around.
         store = source_name or ("" if scope and scope.get("table")
                                 else str(item.get("name") or "").strip())
+        if scope and scope.get("table") and store and also:
+            # Several tables chosen on this store (the candidate card's set). Each is named with its
+            # columns, and the turn is told to query those and ask before any other table in the
+            # store. The prompt is the control here, as it is for one table; there is no SQL
+            # allowlist behind it.
+            rows = [item, *also]
+            first = scope_label(scope)
+            listed = "; ".join(
+                scope_label(r.get("scope")) + (f" (columns: {c})" if (c := _columns_text(r)) else "")
+                for r in rows)
+            tables_scope = (
+                "These are the starting tables. Discover and query other relevant tables in "
+                "{name} when the question needs them. Use only sources attached to this "
+                "conversation. "
+                if investigating else
+                "Either way, these are the selected tables in this conversation: query those, and "
+                "before using any other table in {name}, say which and ask. ")
+            return brand.text(
+                "- {dataSource} {name}, tables {listed}. To work a number out of them — a count, a "
+                "total, an average, a ranking, a group-by — call `live_read_query` with this "
+                "turn's token, source {quoted}, and one SELECT against those tables; a join across "
+                "them is still one SELECT. To see a few rows, call `live_read_table` with the same "
+                "token and source. If those tools are not in your tool list this turn and you have "
+                "a shell, `from domino_data.data_sources import DataSourceClient` then "
+                '`DataSourceClient().get_datasource({quoted}).query('
+                '"SELECT * FROM {first} LIMIT 50").to_pandas()`. '
+                + tables_scope +
+                "Do not search files, env, or /opt/sage for credentials. Do not invent rows. "
+                "If the query errors, tell the person.",
+                name=name, listed=listed, first=first, quoted=repr(store),
+            )
         if scope and scope.get("table") and store:
             dotted = scope_label(scope)
-            cols = item.get("columns") if isinstance(item.get("columns"), list) else []
-            col_txt = ", ".join(
-                " ".join(
-                    str(p) for p in (
-                        (c.get("name") if isinstance(c, dict) else None),
-                        (c.get("type") if isinstance(c, dict) else None),
-                    ) if p
-                )
-                # Wide tables often put timestamps last. Dropping those names forces the
-                # agent to rediscover metadata this chip already holds (#472).
-                for c in cols
-            ).strip()
+            col_txt = _columns_text(item)
             extra = f" Columns: {col_txt}." if col_txt else ""
             # The tools come first and Python second, because on this side of the fork Python is
             # usually the route the turn does NOT have: a `data_answer` turn is read-only and a
@@ -12343,6 +12386,11 @@ class Orchestrator:
             # would otherwise be a Vite start waiting for the first caller who arrives cold.
             project = self.project(start_preview=False, seed_app=False)
             bound = {b.key for b in parse_bindings(project.workspace.read_bindings())}
+        # Every table chip for one Data Source, unioned onto its one Binding. A Binding is replaced
+        # in place by key, so binding chip by chip would leave only the last table on the app.
+        merged = chat_handoff.union_table_chips(
+            [b for b in (chat_handoff.binding_from_context(i) for i in context) if b is not None])
+        resolved_by_key: dict[tuple, bool] = {}
         bindings, uploads, files = [], [], []
         for item in context:
             # Every receipt row carries the CHIP it is about, not just a name. Two chips in one
@@ -12362,7 +12410,9 @@ class Orchestrator:
             # click recorded. It did not, and that is how an app shipped querying `FROM GONG`.
             binding = chat_handoff.binding_from_context(item)
             if binding is not None and binding.key not in bound:
-                resolved = self._bind_from_handoff(binding)
+                if binding.key not in resolved_by_key:
+                    resolved_by_key[binding.key] = self._bind_from_handoff(merged[binding.key])
+                resolved = resolved_by_key[binding.key]
                 # Named as the chip is named, because the bar's sentence names chips: a receipt that
                 # said `ds-1` would not answer the question the person clicked.
                 bindings.append({"chip": chip, "resolved": resolved, "crossed": True,
@@ -12478,7 +12528,7 @@ class Orchestrator:
             return True
         try:
             self.bind_data_source(binding.id, binding.database or "", binding.schema or "",
-                                  binding.table or "")
+                                  binding.table or "", tables=binding.tables)
         except (LookupError, ResourceUnavailable) as e:
             log.warning("handoff: Data Source %s did not resolve (%s) — recording it unresolved, "
                         "the app will not be able to open it until it is re-bound", binding.id, e)
@@ -14729,9 +14779,19 @@ class Orchestrator:
         urls = [u for u in (urls or []) if u]
         if items or urls:
             lines.append("Session context:")
+            # Table chips on one Data Source render as one row naming them all (`also`).
+            tables_by_source: dict[str, list[dict]] = {}
+            for it in items:
+                if (str(it.get("kind") or "") in ("data_source", "datasource", "table")
+                        and (it.get("scope") or {}).get("table") and it.get("sourceName")
+                        and self._context_source_id(it)):
+                    tables_by_source.setdefault(self._context_source_id(it), []).append(it)
             for it in items:
                 note = folder = ""
                 kind = str(it.get("kind") or "")
+                same = tables_by_source.get(self._context_source_id(it)) or []
+                if it in same[1:]:
+                    continue
                 if workspace is not None and kind in ("file", "artifact"):
                     note = _describe_context_file(workspace, it)
                 elif workspace is not None and kind == "dataset":
@@ -14739,7 +14799,8 @@ class Orchestrator:
                     # `describe()` on a directory says "Is a directory", which is true and useless.
                     folder = _context_folder_state(workspace, it)
                 lines.append(_chat_context_line(it, file_note=note, folder_note=folder,
-                                               thread_id=thread_id, investigating=investigating))
+                                               thread_id=thread_id, investigating=investigating,
+                                               also=tuple(same[1:]) if same[:1] == [it] else ()))
             for url in urls:
                 lines.append(
                     f"- URL {url}. Read this page and answer from what it contains. "
@@ -17317,6 +17378,8 @@ class Orchestrator:
         invented `GONG` — while the database above them is a level the card never asked about. A
         store with no schema at all says the table alone rather than leaving a leading dot.
 
+        Every table the confirm recorded, when it recorded several.
+
         The first Data Source carrying a table, which on this turn is the one the click just scoped:
         this runs only where a table card is being answered, and `_data_source_binding` reads the
         app's store the same way.
@@ -17329,7 +17392,10 @@ class Orchestrator:
                         if b.kind == KIND_DATA_SOURCE and b.table), None)
         if binding is None:
             return ""
-        return f"Use {'.'.join(p for p in (binding.schema, binding.table) if p)}."
+        names = [".".join(p for p in (schema, table) if p)
+                 for _, schema, table in binding.positions]
+        joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+        return f"Use {joined}."
 
     def _picked_dataset_text(self, pick: str) -> str:
         """The bubble a Dataset file or folder pick writes, so the click reads as what it chose.
@@ -17582,18 +17648,18 @@ class Orchestrator:
         #
         # A failure to record asks rather than ending the turn, which leaves the person where they
         # were before this existed.
-        picked = (table_search.named_candidate(prompt, ranking.candidates)
-                  if unbound is None else None)
-        if picked is not None:
+        picked = (table_search.named_candidates(prompt, ranking.candidates)
+                  if unbound is None else ())
+        if picked:
+            named = ", ".join(f"{c.database}.{c.schema}.{c.table}" for c in picked)
             try:
-                self.confirm_table_candidate(binding.id, picked.database, picked.schema,
-                                             picked.table)
+                self.confirm_table_candidates(
+                    binding.id, [(c.database, c.schema, c.table) for c in picked])
             except Exception:
-                log.exception("table gate (build): %s.%s.%s was named but could not be recorded — "
-                              "asking instead", picked.database, picked.schema, picked.table)
+                log.exception("table gate (build): %s named but could not be recorded — "
+                              "asking instead", named)
             else:
-                log.info("table gate (build): %s.%s.%s named outright — recorded without asking",
-                         picked.database, picked.schema, picked.table)
+                log.info("table gate (build): %s named outright — recorded without asking", named)
                 return False
         yield from self._table_candidates_events(prompt, binding, ranking, answered, user_text,
                                                  skipped, bind_first=unbound is not None)
@@ -17682,7 +17748,7 @@ class Orchestrator:
         that reason, and it would not have matched the measured prompt, which names no store word
         at all.
 
-        `named_candidate` beside `matched`, because they disagree in one direction that matters. A
+        `named_candidates` beside `matched`, because they disagree in one direction that matters. A
         table named out of the store's own handle words — a source called `Gong` holding `GONG` —
         scores nothing, since the handles are stripped from the request before tables are scored.
         A sentence naming a table outright is the clearest data intent there is, and declining it
@@ -17692,8 +17758,8 @@ class Orchestrator:
         rather than after: `table_rank` reorders and carries `matched` through untouched.
         """
         ranking = table_search.rank(prompt, binding, found)
-        return bool(ranking.matched) or table_search.named_candidate(
-            prompt, ranking.candidates) is not None
+        return bool(ranking.matched) or bool(table_search.named_candidates(
+            prompt, ranking.candidates))
 
     def _table_search_gave_up(self, binding: Binding):
         """Say a walk died before it could ask anything, instead of going quiet.
@@ -17791,7 +17857,8 @@ class Orchestrator:
         name = binding.display_name
         if ranking.matched:
             message = brand.text(
-                "Choose a {scope}. Then the app is built from your request.")
+                "Choose the {scopePlural} to use, then confirm. Then the app is built from your "
+                "request.")
         else:
             # Never an invented name, and never the alphabetical top five presented as answers. The
             # list is still shown, because "no name matched" is a fact about the names and not about
@@ -17927,17 +17994,17 @@ class Orchestrator:
         #
         # A failure to record falls through to the card rather than ending the turn. The person is
         # then where they were before this existed, which is the direction to be wrong in.
-        picked = table_search.named_candidate(prompt, ranking.candidates)
-        if picked is not None:
+        picked = table_search.named_candidates(prompt, ranking.candidates)
+        if picked:
+            named = ", ".join(f"{c.database}.{c.schema}.{c.table}" for c in picked)
             try:
-                self.confirm_thread_table_candidate(thread_id, binding.id, picked.database,
-                                                    picked.schema, picked.table)
+                self.confirm_thread_table_candidates(
+                    thread_id, binding.id, [(c.database, c.schema, c.table) for c in picked])
             except Exception:
-                log.exception("table gate (chat): %s.%s.%s was named but could not be recorded — "
-                              "asking instead", picked.database, picked.schema, picked.table)
+                log.exception("table gate (chat): %s named but could not be recorded — "
+                              "asking instead", named)
             else:
-                log.info("table gate (chat): %s.%s.%s named outright — recorded without asking",
-                         picked.database, picked.schema, picked.table)
+                log.info("table gate (chat): %s named outright — recorded without asking", named)
                 return None
         return self._chat_table_candidates_events(store, thread_id, prompt, binding, ranking,
                                                   skipped)
@@ -17969,14 +18036,15 @@ class Orchestrator:
         name = binding.display_name
         if ranking.matched:
             # What the pick actually buys, rather than a fence it does not hold (#392, ADR-0059).
-            # The click records a position — a `database.schema` for bare names to resolve in, and
-            # the chosen table's column names in the turn's prompt — and `live_read_table` takes
-            # its table name from the model's own arguments, so this does not choose what gets
-            # read. "will then answer your question" is dropped rather than reworded: it is a
-            # promise #407 and #408 currently break, and this card has no business making it.
+            # The confirm records positions — each chosen table and its column names in the turn's
+            # prompt, which tells the answer to query those and ask before any other — and
+            # `live_read_table` takes its table name from the model's own arguments, so this is the
+            # prompt's instruction and not a SQL allowlist. "will then answer your question" is
+            # dropped rather than reworded: it is a promise #407 and #408 currently break, and this
+            # card has no business making it.
             message = brand.text(
-                "Choose a {scope} to start from. Its columns are read first, and other tables "
-                "in {name} stay available.", name=name)
+                "Choose the {scopePlural} to start from, then confirm. Their columns are read "
+                "first, and other tables in {name} are used only after asking.", name=name)
         else:
             # Never an invented name, and never the alphabetical top five presented as answers. The
             # list is still shown, because "no name matched" is a fact about the names and not about
@@ -26043,6 +26111,7 @@ class Orchestrator:
 
     def bind_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",
+        *, tables: tuple[tuple[str, str, str], ...] = (),
     ) -> list[dict]:
         """Record that the app uses one Data Source, and which part of it (#11, #142).
 
@@ -26063,16 +26132,22 @@ class Orchestrator:
         charset check, the column read and the replace-in-place rule.
 
         Re-binding replaces in place, because `Binding.key` leaves the scope out.
+
+        `tables` is every table a candidate card confirmed, when it confirmed more than one. Its
+        first entry is the three levels above, so the Binding reads as that table to anything that
+        only knows one.
         """
         # Charset-checked here as well as where the SQL is built. Not belt-and-braces for its own
         # sake: this is what keeps the manifest holding only names that can be sent, so the slice that
         # builds the app's query out of this record inherits the guarantee rather than re-earning it.
         parts = [safe_identifier(p) if p else None for p in (database, schema, table)]
+        chosen = tuple(tuple(safe_identifier(p) if p else "" for p in t) for t in tables)
         source = self._data_source(source_id)
-        return self._bind_data_source(source, parts)
+        return self._bind_data_source(source, parts, chosen if len(chosen) > 1 else ())
 
     @_coordinate_user_tree_change
-    def _bind_data_source(self, source: DataSource, parts: list[str | None]) -> list[dict]:
+    def _bind_data_source(self, source: DataSource, parts: list[str | None],
+                          tables: tuple[tuple[str, str, str], ...] = ()) -> list[dict]:
         """Write a validated Data Source Binding under user-tree coordination."""
         # The connector type travels with the scope, because the published app cannot ask for it: what
         # a Data Source will accept as a configuration override differs per connector, and that is what
@@ -26080,7 +26155,7 @@ class Orchestrator:
         # (#14). Domino's own string, not the label — `connector` says "Snowflake" for every Snowflake
         # source, and only the type string keys a table.
         binding = Binding(KIND_DATA_SOURCE, source.id, source.name, source.name, *parts,
-                          source.connector_type)
+                          source.connector_type, tables)
         # The schema BEFORE the record, because recording is what re-renders what the agent is told
         # and that render reads this file. One extra query at the end of a cascade the creator has
         # just spent three on, and the last one they wait for.
@@ -26091,6 +26166,7 @@ class Orchestrator:
 
     def scope_data_source(
         self, source_id: str, database: str = "", schema: str = "", table: str = "",
+        *, tables: tuple[tuple[str, str, str], ...] = (),
     ) -> list[dict]:
         """Say which part of a Data Source the app reads, against a Binding it already holds (#142).
 
@@ -26114,12 +26190,12 @@ class Orchestrator:
         recorded = parse_bindings(self.project().workspace.read_bindings())
         if not any(b.kind == KIND_DATA_SOURCE and b.id == source_id for b in recorded):
             raise ResourceNotBound(source_id)
-        return self.bind_data_source(source_id, database, schema, table)
+        return self.bind_data_source(source_id, database, schema, table, tables=tables)
 
-    def confirm_table_candidate(
-        self, source_id: str, database: str, schema: str, table: str,
+    def confirm_table_candidates(
+        self, source_id: str, positions: list[tuple[str, str, str]],
     ) -> list[dict]:
-        """A candidate clicked: prove the table is still there, then write the ordinary record.
+        """Candidates confirmed: prove each table is still there, then write the ordinary record.
 
         The click is the declaration (ADR-0038), so what it writes is `scope_data_source`'s record
         and nothing else. No second, parallel record: the manifest entry a search produces and the
@@ -26130,18 +26206,25 @@ class Orchestrator:
         list. The catalog behind the card may have been read minutes ago and cached for the session;
         a list that has drifted costs a person one more click. A dropped table written into the
         record costs the first viewer of the published app a broken screen, and by then nobody is
-        watching. So the one table being recorded is looked for again, in a query narrow enough to
+        watching. So each table being recorded is looked for again, in a query narrow enough to
         be worth it, and the read deliberately goes past `_table_catalog` — asking the cache whether the
-        cache is stale answers nothing.
+        cache is stale answers nothing. Every table is checked before any is written, so one dropped
+        table leaves the record as it was.
+
+        Several tables are still ONE Binding: one Data Source is one dependency, and the set lives
+        inside it (`Binding.tables`).
 
         The panel's own picker is not sent through here. Its list came from a cascade the creator
         walked seconds ago, so it is checking a fact it just established.
         """
-        self._verify_table_choice(source_id, database, schema, table)
-        return self.scope_data_source(source_id, database, schema, table)
+        for database, schema, table in positions:
+            self._verify_table_choice(source_id, database, schema, table)
+        database, schema, table = positions[0]
+        return self.scope_data_source(source_id, database, schema, table,
+                                      tables=tuple(positions))
 
-    def confirm_source_and_table_candidate(
-        self, source_id: str, database: str, schema: str, table: str,
+    def confirm_source_and_table_candidates(
+        self, source_id: str, positions: list[tuple[str, str, str]],
     ) -> list[dict]:
         """The merged card's click: the Binding and the Scope, declared in one act (#206).
 
@@ -26160,8 +26243,10 @@ class Orchestrator:
         catalog read minutes old costs one more click when it has drifted, and a dropped table
         written into the record costs the first viewer of the published app a broken screen.
         """
-        self._verify_table_choice(source_id, database, schema, table)
-        return self.bind_data_source(source_id, database, schema, table)
+        for database, schema, table in positions:
+            self._verify_table_choice(source_id, database, schema, table)
+        database, schema, table = positions[0]
+        return self.bind_data_source(source_id, database, schema, table, tables=tuple(positions))
 
     def _verify_table_choice(self, source_id: str, database: str, schema: str,
                              table: str) -> DataSource:
@@ -26187,16 +26272,41 @@ class Orchestrator:
                 table=table, schema=schema or database, name=source.name))
         return source
 
-    def confirm_thread_table_candidate(
-        self, thread_id: str, source_id: str, database: str, schema: str, table: str,
+    def _columns_for_tables(self, source, positions: list[tuple[str, str, str]],
+                            ) -> dict[tuple[str, str, str], list[dict]]:
+        """Columns per chosen table: one read per distinct database and schema.
+
+        A schema holding one chosen table is read for that table alone, exactly as a single pick
+        is. A schema holding several is read whole and kept to the chosen ones, so tables in one
+        schema cost one read and each further schema costs one more.
+        """
+        by_schema: dict[tuple[str, str], list[str]] = {}
+        for database, schema, table in positions:
+            by_schema.setdefault((database, schema), []).append(table)
+        out: dict[tuple[str, str, str], list[dict]] = {}
+        for (database, schema), tables in by_schema.items():
+            only = tables[0] if len(tables) == 1 else ""
+            cols = self._columns_for_context(
+                source, {"database": database, "schema": schema, "table": only})
+            for table in tables:
+                out[(database, schema, table)] = [c for c in cols if c.get("table") == table]
+        return out
+
+    def confirm_thread_table_candidates(
+        self, thread_id: str, source_id: str, positions: list[tuple[str, str, str]],
         *, task_id: str = "",
     ) -> dict:
-        """A candidate clicked in Chat: prove the table is still there, record it on the Thread.
+        """Candidates confirmed in Chat: prove each table is still there, record them on the Thread.
 
         Chat has no Built App, so there is no Binding to hold the table (#188). The Thread's own
-        context row is where the choice goes — the row a handoff already reads through
+        context row is where the first choice goes — the row a handoff already reads through
         `binding_from_context`, so the table crosses into the Binding by the path that was there
         before this, in the one call `_bind_from_handoff` already makes. No second, parallel record.
+
+        Each further table is its own table chip, the record the panel already writes for a pinned
+        table, so nothing new has to learn to read it. The unscoped row carrying the first table is
+        what stops the card being offered again: `named_source` only asks about a store with no
+        table on it.
 
         The columns are read here for the same reason the panel's picker reads them: the row is what
         the turn prompt renders from, and a table with no columns beside it sends the agent to ask
@@ -26224,29 +26334,45 @@ class Orchestrator:
         # the next question, for good.
         row = next((r for r in rows if not (r.get("scope") or {}).get("table")), rows[0])
         row_id = str(row.get("id") or "")
-        source = self._verify_table_choice(source_id, database, schema, table)
-        scope = {"database": database, "schema": schema, "table": table}
+        for database, schema, table in positions:
+            source = self._verify_table_choice(source_id, database, schema, table)
         # Read BEFORE the write, off the lock: describing the table takes as long as the warehouse
         # takes, and a read-modify-write held open across it would clobber whatever landed on this
         # file meanwhile — a column read for another chip (`set_context_columns`) most of all,
         # which nothing re-runs.
-        columns = self._columns_for_context(source, scope)
+        columns = self._columns_for_tables(source, positions)
+        first, *more = positions
 
         def apply(body: dict) -> dict | None:
             chat_task.require(body, task_id)
-            live = next((i for i in body.get("items") or [] if str(i.get("id") or "") == row_id),
-                        None)
+            items = body.get("items") or []
+            live = next((i for i in items if str(i.get("id") or "") == row_id), None)
             if live is None:
                 return None  # closed while the store was being asked; nothing to record it on
-            live["scope"] = scope
+            live["scope"] = dict(zip(("database", "schema", "table"), first))
             live["sourceName"] = source.name
             # Dropped before they are set again, not overwritten only when the read worked: a
             # row that carried another table's columns and moved to one the store will not
             # describe would otherwise keep the old names beside the new scope — handing the agent
             # the wrong column names for the right table.
             live.pop("columns", None)
-            if columns:
-                live["columns"] = columns
+            if columns.get(first):
+                live["columns"] = columns[first]
+            held = {str(i.get("resourceId") or "") for i in items}
+            for database, schema, table in more:
+                dotted = ".".join(p for p in (database, schema, table) if p)
+                rid = f"table:{source_id}:{dotted}"
+                if rid in held:
+                    continue
+                chip = {"id": new_id("ctx"), "addedBy": "user", "addedAt": _thread_now(),
+                        "kind": "data_source", "name": table, "resourceId": rid,
+                        "bindingKey": ["data_source", source_id], "subtitle": source.name,
+                        "sourceName": source.name,
+                        "scope": {"database": database, "schema": schema, "table": table}}
+                if columns.get((database, schema, table)):
+                    chip["columns"] = columns[(database, schema, table)]
+                items.append(chip)
+            body["items"] = items
             return body
 
         # The whole row back, not `{"items": items}`: this record carries the investigation
@@ -26298,8 +26424,7 @@ class Orchestrator:
         inside: Inside | None = None
         try:
             if binding.schema:  # columns live under a schema; a Scope above one has none to read
-                columns = self._resources.list_columns(
-                    source, binding.database or "", binding.schema, binding.table or "")
+                columns = self._binding_columns(source, binding)
             else:
                 inside = self._read_inside(source, binding)
         except ResourceUnavailable as e:
@@ -26307,6 +26432,25 @@ class Orchestrator:
         except Exception:
             log.exception("bound schema: could not read inside %s", source.name)
         self._write_schema_entries(self.project(), {binding.id: (binding, columns, inside)})
+
+    def _binding_columns(self, source: DataSource, binding: Binding) -> list[Column]:
+        """The columns a scoped Binding reads: its one table or schema, or every chosen table.
+
+        Several chosen tables cost one read per distinct database and schema, kept to the chosen
+        tables. A schema holding one of them is read for that table alone, as a single pick is.
+        """
+        if len(binding.positions) < 2:
+            return self._resources.list_columns(
+                source, binding.database or "", binding.schema or "", binding.table or "")
+        by_schema: dict[tuple[str, str], list[str]] = {}
+        for database, schema, table in binding.positions:
+            by_schema.setdefault((database, schema), []).append(table)
+        columns: list[Column] = []
+        for (database, schema), tables in by_schema.items():
+            only = tables[0] if len(tables) == 1 else ""
+            columns += [c for c in self._resources.list_columns(source, database, schema, only)
+                        if c.table in tables]
+        return columns
 
     def _read_inside(self, source: DataSource, binding: Binding) -> Inside | None:
         """The names ONE level below a Scope that stopped above a schema.
@@ -28684,8 +28828,7 @@ class Orchestrator:
         columns: list[Column] = []
         inside: Inside | None = None
         if binding.schema:
-            columns = self._resources.list_columns(
-                source, binding.database or "", binding.schema, binding.table or "")
+            columns = self._binding_columns(source, binding)
         else:
             inside = self._read_inside(source, binding)
         fresh[binding.id] = (binding, columns, inside)
