@@ -19,6 +19,7 @@ from ..gateway.events import StreamEvents
 from ..gateway.protocol import Protocol
 from ..pre_edit_guard import PreEditAction
 from ..request_composition import measure, wire_bytes
+from ..router.models import Phase
 from ..shim import keepalive as ka
 from ..shim.enforcement import _capture_refusal
 from ..shim.native import (
@@ -53,11 +54,21 @@ _MODEL_NO_ACTION_MESSAGE = (
     "The model kept streaming without producing text or starting a tool call. "
     "Sage stopped this attempt safely."
 )
+_IMPLEMENT_REASONING_BUDGET_MESSAGE = (
+    "The implementation turn kept reasoning without text or a tool call. "
+    "Sage stopped this attempt so the next step can start."
+)
 
 
 class _ModelNoActionTimeout(Exception):
     def __init__(self, snapshot: dict) -> None:
         super().__init__(_MODEL_NO_ACTION_MESSAGE)
+        self.snapshot = snapshot
+
+
+class _ImplementReasoningBudget(Exception):
+    def __init__(self, snapshot: dict) -> None:
+        super().__init__(_IMPLEMENT_REASONING_BUDGET_MESSAGE)
         self.snapshot = snapshot
 
 
@@ -421,9 +432,10 @@ def install(app, get_orchestrator):
                     active = None
                     if build_watchdog:
                         # Idle since the previous chunk (reasoning, text, or tool), else since the
-                        # call began. `elapsedSeconds` is wall-clock from start and must not kill a
-                        # model that is still streaming thinking; ActiveModelCall.last_chunk_at
-                        # lives in service.py and is only read here.
+                        # call began. `elapsedSeconds` is wall-clock from start. It must not kill
+                        # a plan call that is still streaming thinking. An implement call has its
+                        # own budget below, because these chunks are still arriving and the idle
+                        # timer never sees them.
                         now = time.monotonic()
                         prior = project.active_model_snapshot(now)
                         active = project.observe_active_model_call(
@@ -438,6 +450,12 @@ def install(app, get_orchestrator):
                         if active is not None and active["firstActionKind"] is not None:
                             log_no_action_terminal(active, active["firstActionKind"])
                         elif active is not None:
+                            phase = project.control.snapshot().phase
+                            if (phase is Phase.IMPLEMENT
+                                    and active["chunkCount"] > 0
+                                    and active["elapsedSeconds"]
+                                    >= policy.implement_reasoning_budget_seconds):
+                                raise _ImplementReasoningBudget(active)
                             if prior is not None and prior["lastChunkAt"] is not None:
                                 idle = now - prior["lastChunkAt"]
                             else:
@@ -462,6 +480,8 @@ def install(app, get_orchestrator):
                             project.active_model_snapshot(),
                             events.first_action_kind or "completed_no_action")
             except _ModelNoActionTimeout:
+                raise
+            except _ImplementReasoningBudget:
                 raise
             except Exception:
                 if build_watchdog:
@@ -533,6 +553,8 @@ def install(app, get_orchestrator):
             # Provider error bodies can contain reasoning or a signature. Do not log or echo them.
             if isinstance(error, _ModelNoActionTimeout):
                 message = _MODEL_NO_ACTION_MESSAGE
+            elif isinstance(error, _ImplementReasoningBudget):
+                message = _IMPLEMENT_REASONING_BUDGET_MESSAGE
             elif isinstance(error, GatewayUpstreamError):
                 message = f"The model gateway refused this request (HTTP {error.status})."
                 if "guardrail_blocked" in error.body:
@@ -584,6 +606,17 @@ def install(app, get_orchestrator):
                 outcome = "model_output_limit"
             elif isinstance(error, _ModelNoActionTimeout):
                 outcome = "no_action_timeout"
+            elif isinstance(error, _ImplementReasoningBudget):
+                snapshot = error.snapshot
+                project.last_gateway_error.update({
+                    "code": "implement_reasoning_budget",
+                    "call_id": call_id,
+                    "turn_id": running_ticket.id,
+                    "elapsed_ms": round(snapshot["elapsedSeconds"] * 1000),
+                    "chunk_count": snapshot["chunkCount"],
+                    "reasoning_only_chunks": snapshot["reasoningOnlyChunks"],
+                })
+                outcome = "implement_reasoning_budget"
             call.done(ok=False, error=message, outcome=outcome)
             return message
 

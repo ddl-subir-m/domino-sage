@@ -6397,6 +6397,52 @@ _PLAN_EXAMPLES = {
 }
 
 
+def _instruction_facts(project: Project, intent: BuildIntent):
+    """The ask, the plan, and the rows already in the project. Not the system instructions.
+
+    The profile is applied before the intent carrier is installed, so the chooser cannot read the
+    request body for the plan. This is the text it gets instead.
+    """
+    from ..implementation_request import InstructionFacts
+
+    local: list[str] = []
+    datasets: list[str] = []
+    for entry in project.attachments_for_turn():
+        path = str(entry.get("path") or entry.get("name") or "")
+        base = Path(path).name
+        if base:
+            local.append(base)
+    for binding in parse_bindings(project.app_for_turn().read_bindings()):
+        if binding.kind == KIND_DATA_SOURCE and binding.table:
+            local.append(binding.table)
+        elif binding.kind == KIND_DATASET:
+            if binding.display_name:
+                datasets.append(binding.display_name)
+            if binding.id:
+                datasets.append(binding.id)
+    text = "\n".join(part for part in (
+        *intent.source_requests,
+        intent.authoritative_plan,
+        intent.phase_brief,
+        intent.answers,
+    ) if part)
+    return InstructionFacts(
+        stack=_plan_stack_name(project),
+        ask_and_plan=text,
+        platform_name=str(brand.load().get("platformName") or ""),
+        local_names=tuple(local),
+        dataset_names=tuple(datasets),
+    )
+
+
+def _reasoning_only_open_call(snapshot: dict | None) -> bool:
+    """The call in progress has been reasoning and has not produced text or a tool."""
+    if not snapshot:
+        return False
+    return (snapshot.get("firstActionKind") is None
+            and int(snapshot.get("reasoningOnlyChunks") or 0) > 0)
+
+
 def _plan_stack_name(project: Project) -> str:
     """The recorded app stack, or the new-app default before a Chat handoff creates one."""
     resolution = resolve_stack(project.app_for_turn().path)
@@ -20084,6 +20130,11 @@ class Orchestrator:
         # it to implement instead of declaring success. Capped so a model that refuses to write
         # can't loop forever.
         made_edits = False
+        # One follow-up each, for the whole turn. A reasoning-only implement call is interrupted
+        # at its budget, and a reasoning stream that then dies is retried once. The attempt after
+        # both is the stall that already ends a quiet turn. A plan call is not part of this.
+        reasoning_budget_sent = False
+        dead_stream_retried = False
         # Set when the agent claims this turn's request cannot be acted on at all (NO_BUILD_MARKER).
         # Not reset between nudge iterations, and it doesn't need to be: a claimed turn returns
         # before the nudge loop can run, and the two nudges that follow a WRITING turn (runtime,
@@ -20139,6 +20190,9 @@ class Orchestrator:
             f"request: edit the project files (start with {project.app_for_turn().stack.entry_file}) "
             "so the app actually builds "
             "what was asked. Make the code changes now."
+        )
+        IMPLEMENT_ACT_NUDGE = (
+            "Do the next concrete step now: call a tool or edit a file."
         )
         RUNTIME_FIX_NUDGE = (
             "The app compiled but threw a runtime error when it rendered in the browser, so the "
@@ -20340,6 +20394,8 @@ class Orchestrator:
         turn_ticket = self._turns.running()
         if not gate and not answer_only and not arch:
             project.active_build_intent = build_intent or BuildIntent.for_direct(prompt)
+            project.shim.set_instruction_facts(
+                _instruction_facts(project, project.active_build_intent))
             if continuation_note:
                 current = continuation_note
             elif project.active_build_intent.kind != "phase":
@@ -20710,6 +20766,7 @@ class Orchestrator:
                 return
             yield {"type": "turn", "prompt": current[:120]}
             project.last_gateway_error = None
+            recover_dead_stream = False
             # The other two witnesses to a refused turn, reset with the first. `last_gateway_error`
             # is the shim's own; this one is OpenCode's, and it is the one that carries the failures
             # the shim never sees (ContextOverflowError, MessageOutputLengthError,
@@ -21464,14 +21521,34 @@ class Orchestrator:
                 chunk_at = project.last_stream_chunk_at
                 alive = max(last_event, chunk_at if chunk_at >= start else 0.0)
                 if appeared and time.monotonic() - alive >= quiet_limit:
+                    quiet_for = time.monotonic() - alive
+                    # A reasoning stream that died with no text and no tool gets one more call in
+                    # this session. Decided before the pre-edit claim: that claim ends the guard,
+                    # and the retry is still this turn. A second death, a turn that already edited,
+                    # an open tool, and a person's Stop take the stall below. The 3-minute interrupt
+                    # is a separate follow-up; this is the one that remains after it.
+                    can_retry_dead = (
+                        not gate and not answer_only and not tool_open
+                        and not agent_wrote() and not project.stop_requested
+                        and not dead_stream_retried
+                        and _reasoning_only_open_call(project.active_model_snapshot()))
+                    if can_retry_dead:
+                        stopped = self._stop_wedged_session(
+                            client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
+                        if stopped:
+                            log.error(
+                                "build turn wedged: no OpenCode output for %.0fs (nothing open) "
+                                "— retrying the reasoning stream once", quiet_for)
+                            recover_dead_stream = True
+                            break
                     if (project.pre_edit_guard is not None
                             and not project.pre_edit_guard.claim_existing_terminal()):
                         break
-                    quiet_for = time.monotonic() - alive
+                    if not can_retry_dead:
+                        stopped = self._stop_wedged_session(
+                            client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
                     log.error("build turn wedged: no OpenCode output for %.0fs (%s) — giving up",
                               quiet_for, "a call was still open" if tool_open else "nothing open")
-                    stopped = self._stop_wedged_session(
-                        client, sid, grace_seconds=self._build_policy.stop_grace_seconds)
                     # Before the branch, because it is true of both: nothing was built either way.
                     #
                     # And gated on `owns_turn` like the other three writers (#269). The flag means
@@ -21528,6 +21605,12 @@ class Orchestrator:
                 log.warning("build: the event stream carried nothing for %s — the turn polled "
                             "blind. Check the session directory.", sid)
             tap.close()
+            if recover_dead_stream:
+                dead_stream_retried = True
+                iterate_reason = "dead reasoning stream"
+                yield {"type": "iterate", "reason": iterate_reason}
+                current = IMPLEMENT_ACT_NUDGE
+                continue
 
             guard = project.pre_edit_guard
             pending_pre_edit = guard.consume_pending() if guard is not None else None
@@ -21561,6 +21644,26 @@ class Orchestrator:
             err = project.last_gateway_error or (
                 {"message": _error_raw(turn_failure)} if turn_failure is not None else None)
             if err is not None:
+                if (err.get("code") == "implement_reasoning_budget"
+                        and not gate and not answer_only):
+                    # One interrupt per turn. The next long think, and a think after an edit or
+                    # a Stop, uses the stall a quiet turn already ends on.
+                    if (not reasoning_budget_sent and not agent_wrote()
+                            and not project.stop_requested):
+                        reasoning_budget_sent = True
+                        yield {"type": "model-active", "active": False}
+                        iterate_reason = "implement reasoning budget"
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = IMPLEMENT_ACT_NUDGE
+                        continue
+                    if owns_turn:
+                        self._turn_gave_up = True
+                    restore_mode()
+                    elapsed = float(err.get("elapsed_ms") or 0) / 1000
+                    yield from stalled_offer(
+                        elapsed or self._build_policy.implement_reasoning_budget_seconds,
+                        in_tool=False)
+                    return
                 if err.get("code") == "model_no_action_timeout" and gate:
                     attempt, action = plan_recovery.choose()
                     record = timing.current()
