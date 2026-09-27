@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 
 # These tools have implementations, but not on a Build implementation turn. The artifact writer
 # and delegated model call are scoped to Chat by the enforcement shim. Keep both OpenCode spellings
@@ -32,9 +33,99 @@ _REQUIRED_BLOCKS = ("common", "implement")
 _OPTIONAL_BLOCKS = ("design", "platform")
 _BLOCK_ORDER = _REQUIRED_BLOCKS + _OPTIONAL_BLOCKS
 
-#: Every optional section. The shim passes this until a per-turn trigger is chosen, so that the
-#: grammar can withhold a section without any turn yet losing one.
+#: Every optional section. A caller that wants the whole file still passes this. The shim does not:
+#: it asks `choose_instruction_sections` what this turn needs.
 IMPLEMENT_SECTIONS = frozenset(_OPTIONAL_BLOCKS)
+
+# A FastAPI turn drops the design system only when the ask is a server change and says nothing
+# about the page. Anything else, including an empty ask, keeps it.
+_SERVER_CHANGE = re.compile(r"(?i)(?<!\w)(?:app\.py|routes?|endpoints?|server)(?!\w)")
+_PAGE_CHANGE = re.compile(
+    r"(?i)(?<!\w)(?:pages?|screens?|dashboards?|charts?|forms?|ui|frontend|app\.js)(?!\w)|static/"
+)
+
+
+@dataclass(frozen=True)
+class InstructionFacts:
+    """What the chooser may read. The ask and the approved plan, never the system instructions.
+
+    An empty value keeps every optional section. The shim starts from that, and a turn that never
+    records facts must not quietly drop the API or the design system.
+    """
+
+    stack: str = ""
+    ask_and_plan: str = ""
+    platform_name: str = ""
+    local_names: tuple[str, ...] = ()
+    dataset_names: tuple[str, ...] = ()
+
+
+def choose_instruction_sections(facts: InstructionFacts | None = None) -> frozenset[str]:
+    """Which optional sections this implement turn gets.
+
+    The platform API stays unless the turn is positively only about rows already in the project.
+    A miss invents `/api/domino/...` paths, and Domino datasets, jobs, and users are not a list
+    Sage can finish. The design system is the other way round: a React turn is a screen, so it
+    always goes; a FastAPI turn drops it only for a server change that does not touch the page.
+    """
+    facts = facts or InstructionFacts()
+    sections = set()
+    if _include_design(facts):
+        sections.add("design")
+    if _include_platform(facts):
+        sections.add("platform")
+    return frozenset(sections)
+
+
+def _include_design(facts: InstructionFacts) -> bool:
+    if facts.stack != "fastapi-antd":
+        return True
+    text = facts.ask_and_plan
+    if not text.strip():
+        return True
+    return not (_SERVER_CHANGE.search(text) and not _PAGE_CHANGE.search(text))
+
+
+def _include_platform(facts: InstructionFacts) -> bool:
+    text = facts.ask_and_plan
+    if not facts.local_names or not _about_local_rows(text, facts.local_names):
+        return True
+    if _cites_dataset(text, facts.dataset_names):
+        return True
+    if _names_platform(text, facts.platform_name):
+        return True
+    return re.search(r"(?i)(?<!\w)api(?!\w)", text) is not None
+
+
+def _about_local_rows(text: str, names: tuple[str, ...]) -> bool:
+    if re.search(r"(?i)(?<!\w)attached(?!\w)", text):
+        return True
+    return any(_whole_word(text, name) for name in names)
+
+
+def _cites_dataset(text: str, names: tuple[str, ...]) -> bool:
+    """A Dataset binding, or an @ of the Dataset itself. A file inside it (`@id/path`) is not one."""
+    for name in names:
+        if not name:
+            continue
+        if re.search(rf"(?i)@{re.escape(name)}(?!/)", text):
+            return True
+        if re.search(rf"(?i)(?<!\w){re.escape(name)}(?!/)(?!\w)", text):
+            return True
+    return False
+
+
+def _names_platform(text: str, platform_name: str) -> bool:
+    name = platform_name.strip()
+    if len(name) < 2:
+        return False
+    return _whole_word(text, name)
+
+
+def _whole_word(text: str, name: str) -> bool:
+    if not name:
+        return False
+    return re.search(rf"(?i)(?<!\w){re.escape(name)}(?!\w)", text) is not None
 
 
 class BuildInstructionProfileError(ValueError):

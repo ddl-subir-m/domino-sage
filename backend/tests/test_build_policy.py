@@ -46,6 +46,7 @@ EXPECTED = {
     "build_context_continuation_reference_max_count": 100,
     "plan_reasoning_effort": "high",
     "implement_reasoning_effort": "low",
+    "implement_reasoning_budget_seconds": 180.0,
 }
 
 ENVIRONMENT = {
@@ -87,6 +88,7 @@ ENVIRONMENT = {
         "SAGE_BUILD_CONTEXT_CONTINUATION_REFERENCE_MAX_COUNT",
     "plan_reasoning_effort": "SAGE_BUILD_PLAN_REASONING_EFFORT",
     "implement_reasoning_effort": "SAGE_BUILD_IMPLEMENT_REASONING_EFFORT",
+    "implement_reasoning_budget_seconds": "SAGE_BUILD_IMPLEMENT_REASONING_BUDGET_SECONDS",
 }
 
 

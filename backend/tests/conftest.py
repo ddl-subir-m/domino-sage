@@ -317,9 +317,22 @@ _WALL_MONOTONIC = time.monotonic
 
 
 @pytest.fixture(autouse=True)
-def _the_wall_clock_starts_each_test():
-    """Put the real clock back after a test, including after `monkeypatch` undoes one."""
-    yield
+def _the_wall_clock_starts_each_test(_turn_lock_is_handed_back):
+    """Skip erased poll waits, then restore real time before the turn-lock grace.
+
+    Start from the captured clock: monkeypatch can restore an inactive wrapper after
+    fixture teardown. Wrapping that again would build a chain across tests.
+    """
+    from tests.scripted_clock import script_poll_clock
+
     time.sleep = _WALL_SLEEP
     time.monotonic = _WALL_MONOTONIC
-
+    service._WALL_SLEEP = _WALL_SLEEP
+    restore = script_poll_clock()
+    try:
+        yield
+    finally:
+        restore()
+        time.sleep = _WALL_SLEEP
+        time.monotonic = _WALL_MONOTONIC
+        service._WALL_SLEEP = _WALL_SLEEP

@@ -21,9 +21,10 @@ from ..build_policy import BuildPolicy
 from ..gateway.capabilities import legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..implementation_request import (
-    IMPLEMENT_SECTIONS,
+    InstructionFacts,
     apply_instruction_profile,
     assemble_for_route,
+    choose_instruction_sections,
 )
 from ..router import llm_router
 from ..router.model_control import ModelControl
@@ -351,6 +352,9 @@ class EnforcementShim:
         # exists to end. Keyed by file, so a file written twice reports once, at its latest state.
         self._syntax_notes: dict[str, str] = {}
         self._syntax_note_lock = threading.Lock()
+        # Empty facts keep design and platform. The build loop replaces this with the turn's ask,
+        # plan, and stack before an implement call. A request that arrives first must not drop them.
+        self._instruction_facts = InstructionFacts()
         self.resolve_capability = legacy
 
     @property
@@ -376,6 +380,14 @@ class EnforcementShim:
         """Swap the catalog this shim's requests resolve against (e.g. a per-project override of
         which model Auto uses for plan/implement). Takes effect on the next request."""
         self._catalog = catalog
+
+    def set_instruction_facts(self, facts: InstructionFacts) -> None:
+        """What the next implement call may use to withhold design or the platform API.
+
+        Set once for the turn, from the ask and the approved plan. A nudge sent later in the same
+        turn does not replace it: the nudge is Sage's sentence, and the choice was already made.
+        """
+        self._instruction_facts = facts
 
     def note_no_progress(self, calls: int) -> None:
         """Queue one progress note for the next request this shim serves (#544).
@@ -1014,12 +1026,11 @@ class EnforcementShim:
         elif (state.chat_thread_id is None and not state.read_only_turn
               and (state.mode is Mode.IMPLEMENT
                    or state.mode is Mode.AUTO and state.phase is Phase.IMPLEMENT)):
-            # Every optional section, deliberately: the grammar can now withhold `design` and
-            # `platform`, but nothing has yet been chosen to decide WHICH turn needs them, and a
-            # default of "withhold" would delete that guidance from every implement turn rather
-            # than defer it. Today's prompt is therefore unchanged in content. See #548.
+            # Chosen from the ask and the plan, recorded on this shim when the turn started.
+            # Empty facts keep both sections, which is what a caller that never set them gets.
             request, build_profile = apply_instruction_profile(
-                request, "implement", sections=IMPLEMENT_SECTIONS)
+                request, "implement",
+                sections=choose_instruction_sections(self._instruction_facts))
         if build_profile and rewrite_counts is not None:
             rewrite_counts["buildInstructionProfile"] = build_profile
         request, assembly = assemble_for_route(

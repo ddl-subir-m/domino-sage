@@ -21,6 +21,7 @@ anywhere could say why the pane was empty.
 """
 import threading
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -33,15 +34,19 @@ class _Pipe:
     def __init__(self, lines, hang=False):
         self._lines = list(lines)
         self._hang = hang
+        self._closed = threading.Event()
         self.returncode = 0
 
     def __iter__(self):
         yield from self._lines
-        while self._hang:                       # a reloader that fails the import and sits there
-            time.sleep(0.01)
+        if self._hang:                          # a reloader that fails the import and sits there
+            self._closed.wait()
 
     def wait(self):
         return 1
+
+    def close(self):
+        self._closed.set()
 
 
 class _Proc:
@@ -66,6 +71,7 @@ def _built_app(path):
     (path / "src/App.tsx").write_text("// app")
 
 
+@contextmanager
 def _read(sup, lines, hang=False):
     """Run the supervisor's own output reader over `lines`, as a spawn would.
 
@@ -79,62 +85,84 @@ def _read(sup, lines, hang=False):
     sup._entry_serves = lambda url: True  # HTTP readiness is covered by the real Uvicorn fixture
     t = threading.Thread(target=sup._read_output, args=(proc,), daemon=True)
     t.start()
-    t.join(timeout=2 if not hang else 0.3)
-    return t
+    try:
+        t.join(timeout=2 if not hang else 0.3)
+        yield t
+    finally:
+        # Stop before EOF so a healthy fake cannot restart a real preview during cleanup.
+        sup.stop()
+        proc.stdout.close()
+        t.join(2)
+        assert not t.is_alive(), "the fake preview reader outlived its test"
 
 
 def test_uvicorns_banner_alone_is_not_taken_as_ready(tmp_path):
     """Fault 1. The banner is printed before the import is even attempted."""
     sup = UvicornSupervisor(tmp_path, "")
     sup._stopped = True                          # no respawn; this is about the reading
-    _read(sup, [_UVICORN_BANNER + "\n", _IMPORT_FAILED + "\n"], hang=True)
-    assert not sup._ready.is_set(), "the banner was read as a working server"
-    with pytest.raises(RuntimeError):
-        sup.upstream()
+    with _read(sup, [_UVICORN_BANNER + "\n", _IMPORT_FAILED + "\n"], hang=True):
+        assert not sup._ready.is_set(), "the banner was read as a working server"
+        with pytest.raises(RuntimeError):
+            sup.upstream()
 
 
 def test_uvicorn_is_ready_once_it_says_it_is_serving(tmp_path):
     """The other half of fault 1: a HEALTHY app must still come up."""
     sup = UvicornSupervisor(tmp_path, "")
     sup._stopped = False
-    _read(sup, [_UVICORN_BANNER + "\n", _UVICORN_SERVING + "\n"], hang=True)
-    assert sup._ready.is_set()
-    assert sup.upstream() == "http://127.0.0.1:8771"
+    with _read(sup, [_UVICORN_BANNER + "\n", _UVICORN_SERVING + "\n"], hang=True):
+        assert sup._ready.is_set()
+        assert sup.upstream() == "http://127.0.0.1:8771"
 
 
 def test_vite_still_becomes_ready_on_its_url_line(tmp_path):
     """Vite prints its URL only when serving, so it keeps the behaviour it had. No `_READY_LINE`."""
     sup = ViteSupervisor(tmp_path, "")
     sup._stopped = False
-    _read(sup, ["  ->  Local:   http://localhost:5173/\n"], hang=True)
-    assert sup._ready.is_set()
-    assert sup.upstream() == "http://localhost:5173"
+    with _read(sup, ["  ->  Local:   http://localhost:5173/\n"], hang=True):
+        assert sup._ready.is_set()
+        assert sup.upstream() == "http://localhost:5173"
 
 
 def test_a_server_that_printed_a_url_and_then_died_leaves_no_address_behind(tmp_path):
     """`upstream()` must not hand the proxy a socket nothing is listening on."""
     sup = ViteSupervisor(tmp_path, "")
     sup._stopped = True
-    _read(sup, ["  ->  Local:   http://localhost:5173/\n"])   # pipe closes -> process exited
-    with pytest.raises(RuntimeError):
-        sup.upstream()
+    with _read(sup, ["  ->  Local:   http://localhost:5173/\n"]):  # EOF -> process exited
+        with pytest.raises(RuntimeError):
+            sup.upstream()
+
+
+def test_the_fake_reader_stops_when_the_readiness_check_fails(tmp_path):
+    sup = ViteSupervisor(tmp_path, "")
+    with pytest.raises(AssertionError, match="readiness check failed"):
+        with _read(sup, [], hang=True) as reader:
+            raise AssertionError("readiness check failed")
+    assert not reader.is_alive()
 
 
 def test_retry_start_does_not_block_the_caller(tmp_path, monkeypatch):
     """Fault 2, the one that took the session down. `start()` may block; `retry_start()` may not."""
     started = threading.Event()
+    release = threading.Event()
 
     def slow_start(self, ready_timeout_s=30.0):
         started.set()
-        time.sleep(5)                            # stands in for the 30 s timeout
+        release.wait(5)                          # stands in for the 30 s timeout
         raise RuntimeError("uvicorn failed to start (timed out)")
 
     monkeypatch.setattr(UvicornSupervisor, "start", slow_start)
     sup = UvicornSupervisor(tmp_path, "")
-    t0 = time.monotonic()
-    sup.retry_start()
-    assert time.monotonic() - t0 < 0.5, "retry_start waited for the server"
-    assert started.wait(2), "retry_start never actually tried"
+    try:
+        t0 = time.monotonic()
+        sup.retry_start()
+        assert time.monotonic() - t0 < 0.5, "retry_start waited for the server"
+        assert started.wait(2), "retry_start never actually tried"
+    finally:
+        release.set()
+        if sup._retry_thread is not None:
+            sup._retry_thread.join(2)
+            assert not sup._retry_thread.is_alive(), "the fake preview retry outlived its test"
 
 
 def test_retry_start_never_raises_even_though_start_does(tmp_path, monkeypatch):

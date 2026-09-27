@@ -156,15 +156,79 @@ def test_the_template_carries_the_design_section_as_an_optional_block(stack):
     assert report["removedStageBlocksById"]["design"]["bytes"] > 5000
 
 
-def test_only_the_fastapi_template_has_a_platform_section():
-    """The two stacks are not symmetric here, and a test that assumed they were would pin a
-    section into `react-vite` that its stack has no server for."""
+def test_both_templates_carry_the_platform_api_as_an_optional_section():
+    """The React API block moved into the same optional section FastAPI already had.
+
+    Withholding it drops the API table. The build rule under it — there is no UI kit — stays in
+    the required implement section, so a chart turn still hears that.
+    """
     fastapi = (REPO / "template" / "fastapi-antd" / "AGENTS.md").read_text()
     react = (REPO / "template" / "react-vite" / "AGENTS.md").read_text()
 
     assert "v1:platform:begin" in fastapi
-    assert "v1:platform:begin" not in react
-    assert _run(react, "implement")[1]["removedStageBlocksById"].keys() == {"design"}
+    assert "v1:platform:begin" in react
+    assert "### The {platformName} API" in react
+    withheld, report = _run(react, "implement")
+    assert "### The {platformName} API" not in withheld
+    assert "There is no UI component kit" in withheld
+    assert "platform" in report["removedStageBlocksById"]
+
+
+def test_the_shim_chooses_platform_and_design_for_the_turn():
+    """Include the platform API unless the turn is positively only about rows already here.
+
+    A chart of an attached file drops it. Naming the platform, asking what jobs ran, or asking
+    who owns something keeps it, including when a file happens to be attached. A Dataset cited
+    as itself keeps it; a file inside that Dataset does not. React always keeps the design
+    system. A FastAPI route-only turn drops design; an unclear FastAPI turn keeps it.
+    """
+    from sage.implementation_request import InstructionFacts, choose_instruction_sections
+
+    def chosen(**kwargs) -> frozenset[str]:
+        return choose_instruction_sections(InstructionFacts(**kwargs))
+
+    assert choose_instruction_sections() == frozenset({"design", "platform"})
+    attached = {"platform_name": "Domino", "local_names": ("adae.csv",)}
+    assert "platform" not in chosen(
+        stack="react-vite", ask_and_plan="Chart this attached file", **attached)
+    assert "design" in chosen(
+        stack="react-vite", ask_and_plan="Chart this attached file", **attached)
+    assert "platform" in chosen(
+        stack="react-vite", ask_and_plan="Show the Domino datasets", **attached)
+    assert "platform" in chosen(
+        stack="react-vite", ask_and_plan="what jobs ran", **attached)
+    assert "platform" in chosen(
+        stack="react-vite", ask_and_plan="who owns this", **attached)
+    assert "platform" in chosen(
+        stack="react-vite",
+        ask_and_plan="Chart this attached file @ABC123_ADAE",
+        dataset_names=("ABC123_ADAE",), **attached)
+    assert "platform" not in chosen(
+        stack="react-vite",
+        ask_and_plan="Chart this attached file @ABC123_ADAE/adae.csv",
+        dataset_names=("ABC123_ADAE",), **attached)
+    assert "design" in chosen(stack="react-vite", ask_and_plan="Add a route in app.py")
+    assert chosen(
+        stack="fastapi-antd", ask_and_plan="Add a route in app.py",
+        platform_name="Domino") == frozenset({"platform"})
+    assert "design" in chosen(stack="fastapi-antd", ask_and_plan="make it better")
+    assert "design" in chosen(
+        stack="fastapi-antd", ask_and_plan="Add a route in app.py and a chart on the page")
+
+
+def test_api_text_buried_in_an_old_implement_section_still_goes_out():
+    """An app seeded before the move has the API table inside implement, and it is never re-seeded."""
+    text = V1.replace(
+        "<!-- sage:build-profile:v1:implement:begin -->\nI\n",
+        "<!-- sage:build-profile:v1:implement:begin -->\n"
+        "I\n### The {platformName} API\nGET /api/domino\n",
+    )
+
+    kept, report = _run(text, "implement")
+
+    assert "### The {platformName} API" in kept
+    assert report["status"] == "valid"
+    assert report["removedStageBlocksById"] == {}
 
 
 @pytest.mark.parametrize("stack", TEMPLATES)
@@ -178,8 +242,8 @@ def test_the_shipped_template_still_holds_every_section_it_held_before(stack):
 
 
 @pytest.mark.parametrize("stack", TEMPLATES)
-def test_the_shim_carries_every_section_until_a_trigger_is_chosen(stack):
-    """Until something decides WHICH turn needs a section, no turn may quietly lose one."""
+def test_asking_for_every_section_removes_nothing(stack):
+    """`IMPLEMENT_SECTIONS` is still "carry all of them". The shim no longer passes it blindly."""
     text = (REPO / "template" / stack / "AGENTS.md").read_text()
 
     from sage.implementation_request import _OPTIONAL_BLOCKS
