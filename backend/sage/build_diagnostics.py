@@ -253,7 +253,7 @@ def _request_composition(value) -> dict | None:
                 }
             } if profile_implement else {},
             "removedToolSchemasByName": profile_removed_tools,
-        } if profile_name in {"plan", "implement"}
+        } if profile_name in {"plan", "implement", "direct"}
         and profile_status in {"valid", "absent"} else {},
         "implementationAssembly": {
             **{key: number(assembly.get(key)) for key in (

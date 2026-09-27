@@ -428,7 +428,8 @@ def test_red_approval_keeps_plan_request_attachment_and_control_context(
     assert first["attachments"] is recovery["attachments"] is repair["attachments"] is None
     assert recovery["session"] != first["session"]
     assert repair["session"] == recovery["session"]
-    assert first["session"] != oc.prompts[0]["session"]
+    # The first implementation send is the planning session (ADR-0070).
+    assert first["session"] == oc.prompts[0]["session"]
     assert "Build a sales dashboard with a region filter." in oc.prompts[0]["text"]
     assert "Show the selected sales data with a region filter." in recovery["text"]
     assert all("Show the selected sales data with a region filter." not in p["text"]

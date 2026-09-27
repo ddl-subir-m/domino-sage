@@ -506,13 +506,16 @@ class EnforcementShim:
             # the signal fires on real failures (a vite build exiting 2) and stays silent across
             # five healthy turns.
             signals = assess(request.get("messages"))
-            if state.mode is Mode.AUTO:
+            # Direct Auto does not follow the phase. The write would put a read on the Plan model
+            # for the whole turn, because phase starts as PLAN (ADR-0070).
+            if state.mode is Mode.AUTO and not state.direct:
                 state = replace(state, phase=signals.phase)
                 self._control.set_phase(signals.phase)
         # A rescue is a change of MODEL, so it only happened where the phase is what routes. In a
         # pinned mode the classifier can still want PLAN while the slot does not move, and a line or
         # a note that says otherwise is exactly the lie #494 rewrote this log to stop telling.
-        rescued_phase = (signals is not None and state.mode is Mode.AUTO
+        # Direct does not route by phase, so a rescue it scored is not a rescue it took.
+        rescued_phase = (signals is not None and state.mode is Mode.AUTO and not state.direct
                          and signals.phase is not signals.base_phase)
 
         # Read-only turns (Ask mode, or a plan turn held at the approval gate) get every write AND
@@ -1025,12 +1028,17 @@ class EnforcementShim:
                 request, "plan", removed_tools=plan_tools_removed)
         elif (state.chat_thread_id is None and not state.read_only_turn
               and (state.mode is Mode.IMPLEMENT
-                   or state.mode is Mode.AUTO and state.phase is Phase.IMPLEMENT)):
+                   or state.mode is Mode.AUTO and (
+                       state.phase is Phase.IMPLEMENT or state.direct))):
             # Chosen from the ask and the plan, recorded on this shim when the turn started.
             # Empty facts keep both sections, which is what a caller that never set them gets.
-            request, build_profile = apply_instruction_profile(
-                request, "implement",
-                sections=choose_instruction_sections(self._instruction_facts))
+            # Direct ignores `choose_instruction_sections`: common and implement only.
+            if state.direct:
+                request, build_profile = apply_instruction_profile(request, "direct")
+            else:
+                request, build_profile = apply_instruction_profile(
+                    request, "implement",
+                    sections=choose_instruction_sections(self._instruction_facts))
         if build_profile and rewrite_counts is not None:
             rewrite_counts["buildInstructionProfile"] = build_profile
         request, assembly = assemble_for_route(
@@ -1041,7 +1049,8 @@ class EnforcementShim:
         if (self._build_policy is not None
                 and state.chat_thread_id is None
                 and (state.mode is Mode.IMPLEMENT
-                     or state.mode is Mode.AUTO and state.phase is Phase.IMPLEMENT)
+                     or state.mode is Mode.AUTO and (
+                         state.phase is Phase.IMPLEMENT or state.direct))
                 and not state.read_only_turn):
             request, window = apply_tool_result_window(request, self._build_policy)
             if rewrite_counts is not None:

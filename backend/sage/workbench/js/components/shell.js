@@ -578,6 +578,7 @@ window.SW = window.SW || {};
   SW.SettingsDrawer = function SettingsDrawer() {
     const { settingsOpen } = SW.store.get();
     const [conversationView, setConversationView] = useState('split');
+    const [howSageWorks, setHowSageWorks] = useState('guided');
     const [appStack, setAppStack] = useState('fastapi-antd');
     const [dataAccessShown, setDataAccessShown] = useState(false);
     const [crossings, setCrossings] = useState({
@@ -591,6 +592,7 @@ window.SW = window.SW || {};
     useEffect(() => {
       if (!settingsOpen) return;
       setConversationView(SW.prefs.get('conversationView'));
+      setHowSageWorks(SW.prefs.get('howSageWorks'));
       setAppStack(SW.prefs.get('appStack'));
       // Read on open like the rest, and it has a second reason to be: the nudge on an answer
       // writes this preference too, so the drawer opened after that click must not sit on `false`.
@@ -614,6 +616,11 @@ window.SW = window.SW || {};
     const choose = (value) => {
       setConversationView(value);
       save('conversationView', value);
+    };
+
+    const chooseHow = (value) => {
+      setHowSageWorks(value);
+      save('howSageWorks', value);
     };
 
     const chooseStack = (value) => {
@@ -663,6 +670,25 @@ window.SW = window.SW || {};
         // An app keeps the stack it was born with, so a switch here changes nothing on screen now.
         h('div', { className: 'sw-setting-hint' },
           SW.brand.text('Applies to the next new app. Existing apps keep their stack. FastAPI + Ant Design starts and publishes faster.'))
+      ),
+      h(
+        'div',
+        { className: 'sw-setting' },
+        h('div', { className: 'sw-setting-label' },
+          SW.brand.text('How {assistantName} works')),
+        h(antd.Radio.Group, {
+          role: 'radiogroup',
+          'aria-label': SW.brand.text('How {assistantName} works'),
+          value: howSageWorks,
+          onChange: (e) => chooseHow(e.target.value),
+          optionType: 'button',
+          options: [
+            { label: 'Guided', value: 'guided' },
+            { label: 'Direct', value: 'direct' },
+          ],
+        }),
+        h('div', { className: 'sw-setting-hint' },
+          'Guided asks before it acts. Direct skips those cards. Ask stays read-only, and Plan still proposes.')
       ),
       h(
         'div',

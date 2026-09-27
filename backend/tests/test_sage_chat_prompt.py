@@ -6,6 +6,36 @@ from sage.driver.opencode import with_attachment_listing
 from .test_chat_turn import _orch
 
 
+def test_sage_chat_direct_prompt_is_the_short_file():
+    """The short file is what Direct Chat is sent. The full `AGENTS.md` stays the Guided prompt."""
+    root = Path(__file__).resolve().parents[2]
+    prompt = (root / "template" / "chat" / "AGENTS.direct.md").read_text()
+    cfg = json.loads((root / "opencode.json").read_text())
+    direct = cfg["agent"]["sage-chat-direct"]
+    assert direct["prompt"] == prompt
+    assert direct["permission"]["edit"] == "allow"
+    assert direct["permission"]["bash"] == "allow"
+    assert "examples/<threadId>/" in prompt
+    assert '{ "title":' in prompt
+    assert "Do not write `src/`" in prompt
+    assert "Do not read `.env`" in prompt
+    assert "Do not dump rows into a committed file." in prompt
+    assert "{assistantName}" in prompt and "{dataSource}" in prompt
+
+
+def test_sage_implement_direct_is_the_short_prompt():
+    root = Path(__file__).resolve().parents[2]
+    prompt = json.loads((root / "opencode.json").read_text())["agent"]["sage-implement-direct"]["prompt"]
+    assert "Edit the files in this turn" in prompt
+    assert "Batch those reads" in prompt
+    assert "sage_serve.py" in prompt and "static/sage/" in prompt and ".sage/" in prompt
+    assert "run the stack's check yourself" in prompt
+    assert "{assistantName}" in prompt
+    assert "Design system" not in prompt
+    guided = json.loads((root / "opencode.json").read_text())["agent"]["sage-implement"]["prompt"]
+    assert "Do not spend a model tool call running that same check yourself" in guided
+
+
 def test_sage_chat_prompt_is_the_agents_md_file():
     root = Path(__file__).resolve().parents[2]
     prompt = (root / "template" / "chat" / "AGENTS.md").read_text()

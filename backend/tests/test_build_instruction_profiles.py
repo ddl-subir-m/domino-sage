@@ -252,3 +252,57 @@ def test_one_component_owns_the_final_check_and_repair_rule():
     for duplicate in ("npx tsc", "npm run build", "python -m py_compile", "node --check"):
         assert duplicate not in prompt
     assert "Read the changed lines after editing" in prompt
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=("react-vite", "fastapi-antd"))
+def test_direct_keeps_common_and_implement_even_when_sections_name_the_rest(template):
+    """Direct drops the essay and the platform table. Naming them in `sections` does not put them back."""
+    after, report = apply_instruction_profile(
+        request_for(template), "direct", sections=IMPLEMENT_SECTIONS)
+    encoded = json.dumps(after, ensure_ascii=False)
+
+    assert COMMON in encoded
+    assert IMPLEMENT in encoded
+    assert "Design system — build a polished product, not a prototype" not in encoded
+    assert "sage:build-profile" not in encoded
+    assert report["profile"] == "direct"
+    assert set(report["removedStageBlocksById"]) == {"design", "platform"}
+
+
+def test_an_unknown_build_profile_is_still_refused():
+    with pytest.raises(BuildInstructionProfileError, match="Unknown Build instruction profile"):
+        apply_instruction_profile(request_for(TEMPLATES[0]), "bare")
+
+
+def test_a_direct_profile_report_survives_measurement():
+    before = request_for(TEMPLATES[0])
+    after, profile = apply_instruction_profile(
+        before, "direct", sections=IMPLEMENT_SECTIONS)
+    total = request_composition.wire_bytes(after)
+    measured = request_composition.measure(after, total, {"buildInstructionProfile": profile})
+    exported = build_diagnostics._request_composition(measured)
+
+    assert measured["buildInstructionProfile"]["profile"] == "direct"
+    assert exported["buildInstructionProfile"]["profile"] == "direct"
+
+
+@pytest.mark.parametrize("protocol", [Protocol.MESSAGES, Protocol.RESPONSES])
+def test_a_direct_implement_turn_sends_the_direct_profile(protocol):
+    original = native_body(protocol, opaque=False)
+    template = TEMPLATES[1].read_text()
+    if protocol is Protocol.MESSAGES:
+        original["system"] = [{"type": "text", "text": template}]
+    else:
+        original["instructions"] = template
+    enforcement, control = native_shim(protocol, mode=Mode.IMPLEMENT, effort="high")
+    control.arm_direct()
+    rewrites = {}
+
+    result, *_ = prepare_native(
+        enforcement, original, protocol, "p", "ses_direct", rewrite_counts=rewrites)
+    encoded = json.dumps(result, ensure_ascii=False)
+
+    assert COMMON in encoded and IMPLEMENT in encoded
+    assert "Design system — build a polished product, not a prototype" not in encoded
+    assert rewrites["buildInstructionProfile"]["profile"] == "direct"
+    assert set(rewrites["buildInstructionProfile"]["removedStageBlocksById"]) == {"design", "platform"}

@@ -53,8 +53,9 @@ def test_the_default_is_the_no_build_stack_and_a_choice_survives_a_reload():
 
 def test_the_drawer_offers_exactly_the_stacks_the_server_can_seed():
     drawer = _settings_drawer()
-    block = drawer[drawer.index("appStack"):]
-    offered = set(re.findall(r"value: '([a-z-]+)'", block[:block.index("Conversation view")]))
+    block = drawer[drawer.index("value: appStack"):]
+    offered = set(re.findall(
+        r"value: '([a-z-]+)'", block[:block.index("value: howSageWorks")]))
     assert offered == set(STACKS), "a stack in one list and not the other is a 400 or a dead button"
     prefs = (_JS / "prefs.js").read_text()
     listed = re.search(r"appStack: \{ fallback: '([a-z-]+)', values: \[([^\]]+)\] \}", prefs)

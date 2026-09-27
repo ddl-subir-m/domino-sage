@@ -445,7 +445,10 @@ def test_the_glossary_holds_both_kinds():
         # holding files (ADR-0054). Marked `name`, each would owe a key with nothing to put in it.
         "Data connection",
         "Delete",
+        # A way of working, not a thing on screen a pack could rename (ADR-0070).
+        "Direct",
         "File volume",
+        "Guided",
         "Incoming changes",
         "Liveness",
         "Preflight",

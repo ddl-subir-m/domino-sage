@@ -143,7 +143,10 @@ def test_nothing_in_the_template_carries_a_pack_token_into_the_model_unresolved(
     # The Chat template is not seeded: it is inlined into `opencode.json` as the sage-chat prompt
     # and voiced by `brand.apply_agent_voice`. Named here so the exemption is a decision on the page
     # rather than a gap in the scan.
-    inlined_and_voiced = {_TEMPLATE / "chat" / "AGENTS.md"}
+    inlined_and_voiced = {
+        _TEMPLATE / "chat" / "AGENTS.md",
+        _TEMPLATE / "chat" / "AGENTS.direct.md",
+    }
 
     unvoiced = []
     for path in _TEMPLATE.rglob("*.md"):

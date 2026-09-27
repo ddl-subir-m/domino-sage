@@ -124,6 +124,20 @@ def test_apply_voice_rewrites_the_speaker():
     )
 
 
+def test_apply_voice_rewrites_a_direct_prompt_token(tmp_path, monkeypatch):
+    """The short prompts name the speaker as a token, so the substitution has to see them."""
+    path = tmp_path / "brand.json"
+    path.write_text(json.dumps({"assistantName": "Ada"}))
+    monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    assert apply_voice("You are {assistantName}'s chat agent.") == "You are Ada's chat agent."
+    root = Path(__file__).resolve().parents[2]
+    cfg = json.loads((root / "opencode.json").read_text())
+    for name in ("sage-chat-direct", "sage-implement-direct"):
+        prompt = cfg["agent"][name]["prompt"]
+        assert "{assistantName}" in prompt
+        assert "Ada's" in apply_voice(prompt)
+
+
 def test_apply_agent_voice_does_not_touch_provider_keys():
     cfg = {
         "provider": {"sage-gateway": {"name": "Sage Enforcement Shim"}},

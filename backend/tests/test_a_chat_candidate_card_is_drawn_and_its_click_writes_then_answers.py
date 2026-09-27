@@ -110,7 +110,8 @@ def test_the_click_writes_the_record_first_and_then_asks_the_question_again():
     assert out["replay"] == {"prompt": PROMPT, "skipTableGate": True,
                              "skipDatasetGate": False, "datasetDismissed": "",
                              "investigationAnswered": False,
-                             "otherLaneGrant": "", "alreadyAsked": False}
+                             "otherLaneGrant": "", "alreadyAsked": False,
+                             "howSageWorks": "guided"}
 
 
 @needs_node

@@ -158,6 +158,11 @@ exempt = ["chat-nouns-as-synonyms"]
 
 [[surface]]
 kind = "agent-prompt"
+agent = "sage-chat-direct"
+shows_pack = true
+
+[[surface]]
+kind = "agent-prompt"
 agent = "sage-ask"
 shows_pack = true
 
@@ -174,6 +179,11 @@ shows_pack = true
 [[surface]]
 kind = "agent-prompt"
 agent = "sage-implement"
+shows_pack = true
+
+[[surface]]
+kind = "agent-prompt"
+agent = "sage-implement-direct"
 shows_pack = true
 
 [[surface]]

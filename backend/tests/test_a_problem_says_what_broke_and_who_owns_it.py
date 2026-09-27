@@ -158,8 +158,8 @@ def test_the_port_problem_keeps_one_id_across_two_preflights_that_read_different
 
 
 def test_a_missing_agent_is_reported_even_when_the_others_resolved():
-    # Any one of the five missing means that mode ran the default build agent, so its permission
-    # block never applied. Four out of five is not four fifths fine.
+    # Any one missing means that agent ran the default build agent, so its permission block never
+    # applied. All but one is not almost fine.
     p = agent_problem([{"name": n} for n in health.SAGE_AGENTS if n != "sage-ask"])
     assert (p.id, p.owner) == ("agents", OWNER_ADMIN)
     assert agent_problem(ALL_AGENTS) is None
@@ -167,17 +167,18 @@ def test_a_missing_agent_is_reported_even_when_the_others_resolved():
 
 def test_an_agent_row_keyed_the_other_way_still_resolves():
     # `agent_summaries` deliberately does not pin an identifier key: a `/api/agent` that answers an
-    # object keyed by agent name arrives as `key`, not `name`. Reading one key would report all five
-    # missing on a deployment where all five loaded.
+    # object keyed by agent name arrives as `key`, not `name`. Reading one key would report every
+    # agent missing on a deployment where they all loaded.
     assert agent_problem([{"key": n} for n in health.SAGE_AGENTS]) is None
     assert agent_problem([{"id": n, "mode": "subagent"} for n in health.SAGE_AGENTS]) is None
     assert agent_problem([{"key": n} for n in health.SAGE_AGENTS if n != "sage-plan"]) is not None
 
 
-def test_all_five_agents_are_checked_not_three():
-    # The list is five — chat, ask, plan, architect, implement — and /api/diag said three for a while.
+def test_every_registered_agent_is_checked():
+    # The list is the modes, the architect, and the two Direct prompts. /api/diag once said three.
     assert health.SAGE_AGENTS == (
-        "sage-chat", "sage-ask", "sage-plan", "sage-architect", "sage-implement")
+        "sage-chat", "sage-chat-direct", "sage-ask", "sage-plan", "sage-architect",
+        "sage-implement", "sage-implement-direct")
     for missing in health.SAGE_AGENTS:
         rest = [{"name": n} for n in health.SAGE_AGENTS if n != missing]
         assert agent_problem(rest) is not None, missing

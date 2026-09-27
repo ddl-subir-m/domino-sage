@@ -3150,7 +3150,7 @@ def _chat_wants_web(prompt: str, history: list | None = None) -> bool:
 
 
 def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_question: bool = False,
-                 wants_plan: bool = False) -> bool:
+                 wants_plan: bool = False, direct: bool = False) -> bool:
     """Plan gate (SPEC P6): run the read-only planner and stop for the user to approve before any
     code is written. Fires in Plan mode, when the prompt asks for a plan outright, or automatically on
     the first BUILD of a project that hasn't been built yet — unless the project opted out. Never
@@ -3176,12 +3176,16 @@ def _should_gate(*, mode: Mode, has_built: bool, skip_planning: bool, is_questio
         return True
     if skip_planning:
         return False
+    # Direct turns off only this automatic first-build gate, and only in Auto. Plan mode and a
+    # sentence that asks for a plan already returned above (ADR-0070).
+    if direct and mode is Mode.AUTO:
+        return False
     return not has_built and not is_question
 
 
 def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only: bool,
                         is_approval: bool, skip_planning: bool,
-                        prompt_names_a_file: bool = False) -> bool:
+                        prompt_names_a_file: bool = False, direct: bool = False) -> bool:
     """Whether to spend a model call asking scope.wants_a_plan about this turn.
 
     Every deterministic signal gets to decide first and for free — this only runs when none of them
@@ -3212,12 +3216,15 @@ def _scope_gate_applies(*, mode: Mode, has_built: bool, gate: bool, answer_only:
         rule and the listing can never disagree about what this app's source is. `_model_for`'s
         own docstring in scope.py says it of the whole gate — making the call cheaper is not the
         lever, not making it is."""
+    # Direct Auto and Implement do not take this automatic gate. An explicit Plan selection
+    # never reaches it: this predicate is Auto only (ADR-0070).
     return (mode is Mode.AUTO and has_built and not gate and not answer_only
-            and not is_approval and not skip_planning and not prompt_names_a_file)
+            and not is_approval and not skip_planning and not prompt_names_a_file
+            and not direct)
 
 
 def _failure_gate_applies(*, mode: Mode, is_approval: bool, is_question: bool, skip_planning: bool,
-                          prev_turn_failed: bool) -> bool:
+                          prev_turn_failed: bool, direct: bool = False) -> bool:
     """Widen the plan gate for the turn that follows a FAILED turn. Today a failure changes nothing
     about how the next turn is dispatched, so the user's next message goes straight into another blind
     build — the retry loop. Right after something broke is the one moment a plan card is worth the
@@ -3236,6 +3243,10 @@ def _failure_gate_applies(*, mode: Mode, is_approval: bool, is_question: bool, s
     to plan for me", and a project that opted out of automatic gating shouldn't get one back through
     the side door. Fails open everywhere else — prev_turn_failed is False whenever the state is
     missing or unreadable, which is exactly today's behaviour."""
+    # The automatic gate after a failure. Direct Auto and Implement do not take it. Plan mode
+    # is already excluded by the Auto test below, and its own gate stays on (ADR-0070).
+    if direct:
+        return False
     if not prev_turn_failed or mode is not Mode.AUTO:
         return False
     if is_approval or is_question:
@@ -9851,6 +9862,7 @@ class Orchestrator:
                      dismissed_dataset: str = "", dataset_pick: str = "",
                      *, turn_id: str | None = None, turn_ticket: _TurnTicket | None = None,
                      mode: Mode | None = None, user_text: str | None = None,
+                     how_sage_works: str = "guided",
                      _already_granted: bool = False):
         """Public entry: serialize this turn behind the per-project turn lock, then stream it.
 
@@ -9899,9 +9911,14 @@ class Orchestrator:
         `dataset_pick` is the row that was clicked, and it is the one choice on this door that rides
         on the request rather than being read back off a record. See `_picked_dataset_text` for why:
         an attach writes one manifest entry per file, so a folder click writes many and none of them
-        is the thing that was picked. It names the record; the record still has to confirm it."""
+        is the thing that was picked. It names the record; the record still has to confirm it.
+
+        `how_sage_works` is this turn's choice, `direct` or `guided` (ADR-0070). Anything else is
+        Guided. The cards below and `_build_stream` are what branch on it."""
         # `app=True`: a build is written for the Built App on the rail, so the rail moving under a
         # pending one is a context change like any other (see _turn_snapshot).
+        how_sage_works = "direct" if how_sage_works == "direct" else "guided"
+        direct = how_sage_works == "direct"
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         self._remember_turn_workspace(ticket)
         timing_started = (time.time(), time.monotonic())
@@ -10092,7 +10109,8 @@ class Orchestrator:
                 # `yield`, so it would read the consumer's time as the gate's and stop being
                 # comparable with what the other gates report.
                 offered = yield from self._table_offer(
-                    prompt, resources, answered, chosen_source, picked)
+                    prompt, resources, answered, chosen_source, picked,
+                    draw_card=not direct)
                 if offered:
                     return
             # And the bubble a TABLE pick writes, which is the same click one level down (#208).
@@ -10121,7 +10139,9 @@ class Orchestrator:
                 # skipped: the name arrives only from the card's own way-past button, so it is the
                 # Dataset that was asked about and nothing has to be re-derived to find it.
                 self._dataset_dismissed.add((app.app_id, dismissed_dataset))
-            if not skip_dataset_gate:
+            # Direct does not draw this card. It only asks; a Dataset with no file stays
+            # unattached and the agent says so (ADR-0070).
+            if not skip_dataset_gate and not direct:
                 # The gates already answered ride along, `skipTableGate` included. It is not in
                 # `answered` above because the Data Source card is drawn BEFORE the table search and
                 # would carry it into a store nobody has picked a table in yet; by here that search
@@ -10152,7 +10172,7 @@ class Orchestrator:
             # echoing the same sentence twice. Whether they reset first is already on the record
             # above it as an `app-reset` marker.
             yield from self._build_stream(
-                prompt, mentions, resources, mode=mode,
+                prompt, mentions, resources, mode=mode, how_sage_works=how_sage_works,
                 # The pick wins over the three skip flags, which it can arrive carrying: a turn
                 # started by choosing a Data Source says which one, whatever gate the turn before
                 # it had also answered.
@@ -11248,6 +11268,7 @@ class Orchestrator:
                     skip_investigation_gate: bool = False, declined: bool = False,
                     other_lane_grant: str = "", task_id: str = "", turn_id: str | None = None,
                     turn_ticket: _TurnTicket | None = None,
+                    how_sage_works: str = "guided",
                     _already_granted: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
@@ -11280,10 +11301,14 @@ class Orchestrator:
         would hand the decline note to the next gate that resumes a question. Only this one turn
         answers a question that was offered Build and turned down, so only this one turn gets told
         so — see `_declined_offer_note`.
+
+        `how_sage_works` is this turn's choice, `direct` or `guided` (ADR-0070). Anything else is
+        Guided. `_chat_stream` is what branches on it.
         """
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
         # was written against.
+        how_sage_works = "direct" if how_sage_works == "direct" else "guided"
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
         timing_started = (time.time(), time.monotonic())
         if _already_granted:
@@ -11350,6 +11375,7 @@ class Orchestrator:
                                         declined=declined,
                                         other_lane_grant=other_lane_grant,
                                         task_id=task_id,
+                                        how_sage_works=how_sage_works,
                                         timing_record=timing_record,
                                         turn_generation=turn_generation):
                 if ev.get("type") == "done":
@@ -15208,7 +15234,7 @@ class Orchestrator:
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                      skip_investigation_gate: bool = False, declined: bool = False,
                      other_lane_grant: str = "", task_id: str = "", timing_record=None,
-                     turn_generation: int = 0):
+                     turn_generation: int = 0, how_sage_works: str = "guided"):
         import time
 
         project = self._chat_project()
@@ -15229,6 +15255,10 @@ class Orchestrator:
             yield {"type": "done", "ok": False, "decision": "unknown thread",
                    **self._turn_id_fields()}
             return
+        # ADR-0070. Only the string "direct" is Direct; the public method already folds everything
+        # else to guided. One reading, shared by the gates and the dispatch below.
+        direct = how_sage_works == "direct"
+        chat_agent = "sage-chat-direct" if direct else "sage-chat"
         # What this turn wrote, and which of those paths already existed when it started.
         # Filled in place by `publish_chat_artifacts` from the list it builds anyway: `finish` is
         # defined above it and runs after it, and reading the tree again here would add a pass over
@@ -15511,7 +15541,8 @@ class Orchestrator:
         # what this turn did before this ticket and the ticket did not ask for it to change, so it
         # is named here rather than quietly widened. What this line stops is the new exposure: a
         # build request meeting the card one gate EARLIER than Build's own short-circuit.
-        if (not skip_investigation_gate
+        if (not direct
+                and not skip_investigation_gate
                 and self._could_offer_an_investigation(prompt, items, investigation)
                 and not chat_handoff.looks_like_build_request(prompt)):
             offer = self._chat_investigation_offer(store, thread_id, prompt, items,
@@ -15528,7 +15559,10 @@ class Orchestrator:
         # An open investigation reaches the warehouse per Data Source rather than per table, so the
         # pick has nothing to hand it; it is the BOUNDED turn the recorded position is for.
         if not skip_table_gate and not investigating:
-            offer = self._chat_table_offer(store, project, thread_id, prompt, items)
+            # Direct still runs the offer: a named table is recorded on the way through. The card
+            # itself is what `draw_card` withholds, and withholding it does not end the turn.
+            offer = self._chat_table_offer(store, project, thread_id, prompt, items,
+                                           draw_card=not direct)
             if offer is not None:
                 yield from offer
                 return
@@ -15573,7 +15607,9 @@ class Orchestrator:
         # Invisible from the suite, because every Chat test here sends "build me a daily summary of
         # calls", which the regex does not match. A test for this ordering has to assert its own
         # prompt is a build request, or it drifts back into testing nothing.
-        if not skip_dataset_gate:
+        # Direct does not draw this card. A Dataset with no file stays unreadable, and the agent
+        # says so. The offer only asks; skipping the call loses no record.
+        if not skip_dataset_gate and not direct:
             with timing.span("gate.dataset"):
                 offer = self._chat_dataset_offer(store, thread_id, prompt, items)
             if offer is not None:
@@ -15646,7 +15682,9 @@ class Orchestrator:
         # After the classifier, unlike the two above it, because "would this turn be bounded" is a
         # fact about `intent.label` and there is no cheaper way to know it. The call is already paid
         # for by the arming below.
-        if not skip_investigation_gate:
+        # The same skip as the funnel above. Direct does not write `investigation.state = open`;
+        # that write is the click on a card this turn does not draw.
+        if not direct and not skip_investigation_gate:
             offer = self._chat_investigation_offer(store, thread_id, prompt, items, intent,
                                                    investigation)
             if offer is not None:
@@ -15730,8 +15768,8 @@ class Orchestrator:
         )
         artifact_token = (
             project.control.arm_chat_artifact()
-            if intent.valid and intent.label == "data_artifact" and not unbounded
-            and not source_request else None
+            if (not direct and intent.valid and intent.label == "data_artifact" and not unbounded
+                and not source_request) else None
         )
         # The else branch scans the ask, not the binding: `items` is already bound above, and its
         # names are masked out of the text the data-ask scan reads (#421). Without that, a store
@@ -15742,6 +15780,11 @@ class Orchestrator:
             if intent.valid and intent.label != "other_chat"
             else _plain_chat_answer_only(prompt, [str(i.get("name") or "") for i in items])
         ) and not unbounded)
+        # Direct keeps the two arms that withhold every tool — a greeting, and a turn that already
+        # knows it must ask for a store — and leaves a data question its shell. `READ_ONLY_DENIED`
+        # is what takes bash, and it applies only while the token below is set (ADR-0070).
+        if direct and not source_request and not chat_intent.is_greeting(prompt):
+            answer_only = False
         plain_answer_token = (
             project.control.arm_read_only(
                 "source" if source_request
@@ -16069,7 +16112,7 @@ class Orchestrator:
             if chat_patch_note:
                 turn_prompt += "\n\n" + chat_patch_note
             with timing.span("setup.dispatch"):
-                client.send_prompt(sid, turn_prompt, model=chat_handle, agent="sage-chat",
+                client.send_prompt(sid, turn_prompt, model=chat_handle, agent=chat_agent,
                                    attachments=mentioned, chat=True)
             if owed:
                 # Discharged by a turn REACHING the model on the new session, which is not the same
@@ -16924,7 +16967,7 @@ class Orchestrator:
                                                    + (("\n\n" + chat_patch_note)
                                                       if chat_patch_note else ""),
                                                    model=chat_handle,
-                                                   agent="sage-chat", chat=True)
+                                                   agent=chat_agent, chat=True)
                         except Exception:
                             log.warning("chat: result repair request failed")
                             try:
@@ -17005,8 +17048,10 @@ class Orchestrator:
             # The investigation card must replay on both buttons because it ends the turn before the
             # model runs and therefore owes an answer either way (`answerInvestigationAndAsk`,
             # `store.js`). Here the debt is already paid. Do not make the two symmetrical.
-            if offer := self._chat_other_lane_offer(
-                    store, thread_id, prompt, claimed=asked_for_the_other_lane):
+            # The marker is already stripped in `publish_chat_artifacts`. Direct does not draw
+            # the card under it: the shell this turn kept is the lane that card would have offered.
+            if not direct and (offer := self._chat_other_lane_offer(
+                    store, thread_id, prompt, claimed=asked_for_the_other_lane)):
                 yield from offer
             if step_error and not answered:
                 # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
@@ -17743,7 +17788,8 @@ class Orchestrator:
         return f"Use {pick}." if landed else ""
 
     def _table_offer(self, prompt: str, resources: list[dict] | None, answered: dict,
-                     chosen: str = "", user_text: str = "", unbound: Binding | None = None):
+                     chosen: str = "", user_text: str = "", unbound: Binding | None = None, *,
+                     draw_card: bool = True):
         """Events for a request that names a Data Source with no table chosen (#183). True if it
         answered the turn.
 
@@ -17978,6 +18024,10 @@ class Orchestrator:
             else:
                 log.info("table gate (build): %s named outright — recorded without asking", named)
                 return False
+        # Direct still recorded a named table above. The card is what ends the turn, so returning
+        # here writes nothing and lets the build continue (ADR-0070).
+        if not draw_card:
+            return False
         yield from self._table_candidates_events(prompt, binding, ranking, answered, user_text,
                                                  skipped, bind_first=unbound is not None)
         return True
@@ -18222,7 +18272,7 @@ class Orchestrator:
                 yield ev
 
     def _chat_table_offer(self, store: ThreadStore, project: Project, thread_id: str, prompt: str,
-                          items: list[dict]):
+                          items: list[dict], *, draw_card: bool = True):
         """The same search, from Chat (#188, ADR-0038), or None to let the turn run.
 
         The mode somebody happens to be standing in must not decide whether Sage will go and look.
@@ -18323,6 +18373,10 @@ class Orchestrator:
             else:
                 log.info("table gate (chat): %s named outright — recorded without asking", named)
                 return None
+        # Direct still recorded a named table above. This is the card, and it is what appends the
+        # history, so returning here writes nothing and does not end the turn (ADR-0070).
+        if not draw_card:
+            return None
         return self._chat_table_candidates_events(store, thread_id, prompt, binding, ranking,
                                                   skipped)
 
@@ -19459,7 +19513,8 @@ class Orchestrator:
                       fresh_session: bool = False,
                       validate_page: bool | None = None,
                       continuation_note: str = "",
-                      initial_repair_objective: str = "implementation"):
+                      initial_repair_objective: str = "implementation",
+                      how_sage_works: str = "guided"):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -19479,11 +19534,15 @@ class Orchestrator:
         Bindings they @-referenced, which ride the prompt text instead (see _resource_mention_note)."""
         import time
 
+        direct = how_sage_works == "direct"
         tool_observer = timing.tool_observer()
         with timing.span("setup.seed"):
             project = self._ensure_seeded()
         project.active_build_intent = None
-        if fresh_session:
+        # An approved plan stays uninterruptible until its first send, whether or not that send
+        # opens a new session. Stop during attachment or reference preflight must not kill the
+        # planning session this turn is about to keep (ADR-0070).
+        if fresh_session or is_approval:
             project.fresh_session_preflight = True
         mode_at_start = mode or project.control.snapshot().mode
         is_question = _looks_like_question(prompt)
@@ -19497,10 +19556,10 @@ class Orchestrator:
         if not answer_only:
             with timing.span("setup.attachments"):
                 mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
-        if fresh_session and project.stop_requested:
+        if project.fresh_session_preflight and project.stop_requested:
             # Stop can land while attachment paths are being resolved. There is no active session,
             # transcript row, or filesystem baseline yet, so consume it here before the missing-input
-            # exit can leave the flag for the next turn. The fresh preflight marker keeps Stop from
+            # exit can leave the flag for the next turn. The preflight marker keeps Stop from
             # interrupting the planning session while resolution runs.
             project.stop_requested = False
             self._turn_gave_up = True
@@ -19577,7 +19636,7 @@ class Orchestrator:
                 sid = self._ensure_session(project, project.build_conversation)
                 implementation_session_created = sid != selected_before
                 implementation_session_persisted = implementation_session_created
-        if not fresh_session:
+        if not fresh_session and not is_approval:
             project.active_session_id = sid
         # The plan gate's whole decision, taken here rather than beside the first line that reads it.
         # Every input to it is a local read but one: the scope classifier is a gateway round trip, and
@@ -19615,6 +19674,7 @@ class Orchestrator:
             skip_planning=skip_planning,
             is_question=is_question,
             wants_plan=wants_plan,
+            direct=direct,
         )
         # --- failure-triggered replan (case 3), reading half -------------------------------------
         # Read here and consumed below, both before the request goes out — the gate can only be
@@ -19640,6 +19700,7 @@ class Orchestrator:
             is_question=is_question,
             skip_planning=skip_planning,
             prev_turn_failed=prev_turn_failed,
+            direct=direct,
         )
         # --- end failure-triggered replan --------------------------------------------------------
         # Nothing above gated this turn, and on a built project in Auto nothing ever will again: the
@@ -19662,7 +19723,8 @@ class Orchestrator:
         if _scope_gate_applies(mode=mode_at_start, has_built=has_built, gate=gate,
                                answer_only=answer_only, is_approval=is_approval,
                                skip_planning=skip_planning,
-                               prompt_names_a_file=prompt_names_a_file):
+                               prompt_names_a_file=prompt_names_a_file,
+                               direct=direct):
             # Started, not asked. `result()` below is where the verdict is read, where the breaker is
             # fed, and where the budget runs out — it is counted from HERE, so a classifier that hangs
             # still costs the turn scope.TIMEOUT_S however late the join happens.
@@ -19876,8 +19938,12 @@ class Orchestrator:
         if not gate and not answer_only and not arch and project.pre_edit_guard is None:
             with project.pre_edit_tree_lock:
                 baseline = project.snapshot.working_tree_hash()
+                # Direct's implement turn gets a longer pre-edit budget. The stop after a landed
+                # edit (`progress_stop_call_limit`) stays. Byte caps stay on the same policy.
+                policy = (replace(self._build_policy, pre_edit_model_call_limit=24) if direct
+                          else self._build_policy)
                 project.pre_edit_guard = PreEditGuard(
-                    self._build_policy,
+                    policy,
                     baseline,
                     project.snapshot.working_tree_hash,
                 )
@@ -20168,6 +20234,9 @@ class Orchestrator:
         # summary, so a turn that wrote nothing can say which rule stopped it.
         read_only = _read_only_reason(mode=mode_at_start, answer_only=answer_only, gate=gate, arch=arch)
         ro_token = project.control.arm_read_only(read_only) if (gate or answer_only) else None
+        # The person's mode stays where they set it. Direct is a per-turn arm, disarmed in
+        # `restore_mode` with the read-only token (ADR-0070).
+        direct_token = project.control.arm_direct() if direct else None
 
         # Internet access is default-denied; arm it for THIS turn only when the prompt asked for the
         # web (a URL or an intent verb). Token-scoped like read-only, disarmed on every exit.
@@ -20204,6 +20273,8 @@ class Orchestrator:
                 project.control.pick(original_pick, original_effort)
             if ro_token is not None:
                 project.control.disarm_read_only(ro_token)
+            if direct_token is not None:
+                project.control.disarm_direct(direct_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
             if sens_token is not None:
@@ -20677,7 +20748,7 @@ class Orchestrator:
                                            for item in prepared_references]
                 plan_reference_records = [live_reference.plan_record(item)
                                           for item in prepared_references]
-            if fresh_session and project.stop_requested:
+            if project.fresh_session_preflight and project.stop_requested:
                 self._turn_gave_up = True
                 yield handle_stop()
                 return
@@ -21181,6 +21252,8 @@ class Orchestrator:
                 agent = "sage-plan"
             elif answer_only:
                 agent = "sage-ask"
+            elif direct and project.control.snapshot().mode is not Mode.ASK:
+                agent = "sage-implement-direct"
             else:
                 agent = _agent_for_mode(project.control.snapshot().mode)
             # Which agent this turn actually asked for, and whether the plan gate was armed. OpenCode
@@ -21202,6 +21275,10 @@ class Orchestrator:
             # the one failure here that is silent: /event delivers only the events of the directory
             # the connection asks for, so a mismatched value connects, stays open, carries nothing,
             # and leaves a turn exactly as slow as it was with no error anywhere to say why.
+            # The planning session becomes interruptible at the first send, not during preflight.
+            if project.fresh_session_preflight:
+                project.active_session_id = sid
+                project.fresh_session_preflight = False
             tap = _EventTap(client, sid, directory=str(project.app_for_turn().path))
             try:
                 if not gate and not answer_only and not arch:
@@ -23111,7 +23188,10 @@ class Orchestrator:
                     build_intent=BuildIntent.for_approved(
                         source_requests, plan_md, answers,
                         chat_handoff.implement_note(project.app_for_turn().path)),
-                    fresh_session=True)
+                    # The planning session is the implement session. A fresh one dropped the
+                    # reads the plan turn already did (ADR-0070). Phased builds and the
+                    # continuation path keep a session per phase.
+                    fresh_session=False)
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs

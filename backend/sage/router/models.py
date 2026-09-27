@@ -325,6 +325,10 @@ class SessionState:
     # names no level at all, so it takes the Build-stage default like an absent one (#545).
     saved_effort_slots: frozenset[str] = frozenset()
     effort_rows_armed: bool = False
+    # This turn is Direct (ADR-0070). Per-turn, like `read_only_turn`: the orchestrator arms it
+    # for the turn and disarms it in the same `finally`. Default Guided, so a snapshot that never
+    # names it does not change which instructions go out.
+    direct: bool = False
 
 
 @dataclass(frozen=True)

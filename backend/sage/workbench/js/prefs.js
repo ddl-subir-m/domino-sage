@@ -36,6 +36,12 @@ window.SW = window.SW || {};
     // yet — this ticket only gives the answer somewhere to live.
     conversationView: { fallback: 'split', values: ['split', 'unified'] },
 
+    // How this person wants Sage to work (ADR-0070). Guided is today's path. Direct skips the
+    // automatic cards and the plan gate. The server does not read this record: the turn posts the
+    // choice, and anything other than `direct` is Guided there too. A value with no branch behind
+    // it would leave the radio on a word the next turn does not honour.
+    howSageWorks: { fallback: 'guided', values: ['guided', 'direct'] },
+
     // What kind of app a NEW app is (#490): the no-build FastAPI + Ant Design starter, or the React
     // + TypeScript + Vite one every app used to be. A stack is fixed when an app is seeded and
     // cannot be changed after, so this is only ever read at the moment New app is clicked — and

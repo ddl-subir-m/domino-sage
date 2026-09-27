@@ -4808,6 +4808,20 @@ window.SW = window.SW || {};
     }
   }
 
+  // The choice rides the turn. The server does not read localStorage (ADR-0070). A caller that
+  // already named it keeps that name; every other stream body gets the preference. The continue
+  // route refuses any key it does not list, so that body is posted as the caller wrote it.
+  function carryingHowSageWorks(payload) {
+    if (payload && Object.prototype.hasOwnProperty.call(payload, 'howSageWorks')) return payload;
+    const choice = SW.prefs.get('howSageWorks');
+    return { ...(payload || {}), howSageWorks: choice === 'direct' ? 'direct' : 'guided' };
+  }
+
+  function postedTurnBody(payload, url) {
+    if (url && url.indexOf('/turn/continue') !== -1) return payload;
+    return carryingHowSageWorks(payload);
+  }
+
   const store = {
 
     get: () => state,
@@ -7912,12 +7926,12 @@ window.SW = window.SW || {};
         const res = await fetch(url || './api/project/build/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...SW.api.appHeaders() },
-          body: JSON.stringify(body || {
+          body: JSON.stringify(postedTurnBody(body || {
             prompt: text, conversation: state.thread.id,
             skipResetGate, skipIncomingGate, skipTableGate, skipSourceGate, chosenSource,
             skipDatasetGate, datasetDismissed, datasetPick,
             mentions: refs.mentions, resources: refs.resources,
-          }),
+          }, url)),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -9205,9 +9219,9 @@ window.SW = window.SW || {};
           headers: { 'Content-Type': 'application/json' },
           // The decline route ignores this and reads the pending question off the Thread, so a
           // stale tab cannot put a turn under a question it does not match.
-          body: JSON.stringify(body || { prompt: text, skipTableGate, skipDatasetGate,
+          body: JSON.stringify(postedTurnBody(body || { prompt: text, skipTableGate, skipDatasetGate,
                                          datasetDismissed, investigationAnswered, otherLaneGrant,
-                                         alreadyAsked, ...(taskId ? { taskId } : {}) }),
+                                         alreadyAsked, ...(taskId ? { taskId } : {}) }, url)),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));

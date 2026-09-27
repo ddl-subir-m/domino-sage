@@ -152,7 +152,7 @@ def _profile(rewrites: dict | None) -> dict:
 
     profile = raw.get("profile")
     status = raw.get("status")
-    if profile not in {"plan", "implement"} or status not in {"valid", "absent"}:
+    if profile not in {"plan", "implement", "direct"} or status not in {"valid", "absent"}:
         return {}
     blocks = raw.get("removedStageBlocksById")
     tools = raw.get("removedToolSchemasByName")

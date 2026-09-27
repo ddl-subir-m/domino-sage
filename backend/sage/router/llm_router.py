@@ -304,7 +304,10 @@ def _pin_signing(
 def _resolve_build(state: SessionState, catalog: ModelCatalog) -> ModelDecision:
     # 1. Auto mode: the pipeline drives model choice by phase.
     if state.mode is Mode.AUTO:
-        if state.phase is Phase.PLAN:
+        # Direct is the Implement slot for the whole turn, including a read. Phase starts as PLAN,
+        # and the shim does not write it on a Direct turn, so looking at phase first would keep
+        # every step on the Plan model (ADR-0070).
+        if not state.direct and state.phase is Phase.PLAN:
             effort, source = _slot_effort(state, catalog, "plan", stage_default=True)
             return ModelDecision(model=catalog.plan, reason=Reason.AUTO_PLAN, locked=False,
                                  effort=effort, effort_source=source)
