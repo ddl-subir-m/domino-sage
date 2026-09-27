@@ -15,6 +15,7 @@ from sage.build_policy import BuildPolicy
 from sage.gateway.events import StreamEvents
 from sage.gateway.protocol import Protocol
 from sage.orchestrator.service import (
+    AppView,
     Orchestrator,
     PlanRecoveryBudget,
     PlanRetryInput,
@@ -86,8 +87,9 @@ def test_empty_tool_shape_is_not_action_and_output_limit_remains_visible():
 
 
 def _project() -> Project:
-    return Project(id="project", workspace=object(), record=object(), supervisor=object(),
-                   queries=object(), control=object(), shim=object())
+    view = AppView(workspace=object(), supervisor=object(), queries=object())
+    return Project(id="project", record=object(), control=object(), shim=object(),
+                   _selected_view=view)
 
 
 def test_active_call_is_token_owned_bounded_and_reconstructable():

@@ -5743,21 +5743,34 @@ def _model_active_status(elapsed_seconds: float) -> tuple[int, str]:
 
 
 @dataclass
+class AppView:
+    """One Built App as this process holds it.
+
+    What `_bind_app` swaps on a switch: the workspace, the attachment list, the OpenCode session
+    cached for this app, and the preview supervisor and query helper that serve it. `Project`
+    reads them through properties, so a later request can name a view without a parameter on
+    every call that already says `project.workspace`.
+    """
+
+    workspace: Workspace
+    supervisor: ViteSupervisor
+    queries: PreviewQueries
+    session_id: str | None = None
+    attached: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class Project:
     id: str
-    # The Built App on screen: `apps/<appId>/` on the volume, and everything inside it. The person
-    # may point this at another app while a turn is running (#77), so a turn asks `app_for_turn()` for
-    # the app it writes into rather than reading this.
-    workspace: Workspace
     # The Project's own record — Threads, plan documents, settings, sessions — at the volume root,
     # which is also the git repo root. Two surfaces, two directories (ADR-0008): ask this one for
     # what the Project owns, `workspace` for what the app owns, and neither for the other's.
     record: ProjectRecord
-    supervisor: ViteSupervisor
-    queries: PreviewQueries
     control: ModelControl
     shim: EnforcementShim
-    session_id: str | None = None
+    # The selected app. One view: `_bind_app` still switches it, including every side effect it
+    # has today. A request reads this through the properties below.
+    _selected_view: AppView = field(repr=False)
     # The session a turn is CURRENTLY streaming into. Normally session_id, but a phased build runs
     # each phase in its own throwaway session, and two things must follow the live one rather than
     # the project's: Stop (interrupting the idle project session would leave the phase generating),
@@ -5795,9 +5808,6 @@ class Project:
     # every public build entry, read by the append_history calls that persist the turn. None means
     # an unscoped caller (CLI, tests) — it still builds, it just owns no conversation.
     build_conversation: str | None = None
-    # Attached dataset FILES: [{dataset_id, dataset, file, path, size}]. `path` is the
-    # workspace-relative symlink under public/data/ (what OpenCode @mentions and the app fetches).
-    attached: list[dict] = field(default_factory=list)
     # Set by the /v1/chat/completions handler when a model call the agent made this turn fails
     # upstream (bad model id, gateway auth, etc). build()/build_stream() check + clear this so a
     # failed turn is reported as an error instead of silently falling through to "typecheck clean"
@@ -6100,6 +6110,61 @@ class Project:
             "cost": {"url": self.cost_url, "project": self.cost_project},
             "manage": self.manage_url,
         }
+
+    def _active_view(self) -> AppView:
+        """The view a read of `workspace` and its neighbours is about. One view, the selected app."""
+        return self._selected_view
+
+    @property
+    def workspace(self) -> Workspace:
+        """The Built App on screen: `apps/<appId>/`, and everything inside it.
+
+        The person may point this at another app while a turn is running (#77), so a turn asks
+        `app_for_turn()` for the app it writes into rather than reading this."""
+        return self._active_view().workspace
+
+    @workspace.setter
+    def workspace(self, value: Workspace) -> None:
+        self._active_view().workspace = value
+
+    @property
+    def attached(self) -> list[dict]:
+        """Attached dataset files for the app on screen.
+
+        `{dataset_id, dataset, file, path, size}`. `path` is the workspace-relative symlink under
+        `public/data/` (what OpenCode @mentions and the app fetches)."""
+        return self._active_view().attached
+
+    @attached.setter
+    def attached(self, value: list[dict]) -> None:
+        self._active_view().attached = value
+
+    @property
+    def session_id(self) -> str | None:
+        """The OpenCode session cached for the app on screen. None forces a re-read from disk."""
+        return self._active_view().session_id
+
+    @session_id.setter
+    def session_id(self, value: str | None) -> None:
+        self._active_view().session_id = value
+
+    @property
+    def supervisor(self) -> ViteSupervisor:
+        """The preview server for the app on screen."""
+        return self._active_view().supervisor
+
+    @supervisor.setter
+    def supervisor(self, value: ViteSupervisor) -> None:
+        self._active_view().supervisor = value
+
+    @property
+    def queries(self) -> PreviewQueries:
+        """The named-query server for the app on screen."""
+        return self._active_view().queries
+
+    @queries.setter
+    def queries(self, value: PreviewQueries) -> None:
+        self._active_view().queries = value
 
 
 def _warn_if_shapeless(where: str, plan_md: str) -> None:
@@ -7727,6 +7792,7 @@ class Orchestrator:
         shim.resolve_capability = self.route_capability
         supervisor = _supervisor_for(workspace.path, domino_base_prefix())
         queries = PreviewQueries(workspace.path, self._wm.template)
+        view = AppView(workspace=workspace, supervisor=supervisor, queries=queries)
         # Cached BEFORE the preview starts, and the start below is best-effort (#500). A preview that
         # cannot start used to raise from here with `self._project` still None, so the attach never
         # cached and every later request re-ran this whole method. Each one holds a thread from
@@ -7735,7 +7801,7 @@ class Orchestrator:
         # model-assignment drawer, /api/health. The proxy is `async` and goes on answering, so the
         # session looks alive while nothing works. Measured live 2026-09-22 against a Vite supervisor
         # started on an app that had no node_modules.
-        self._project = Project(self._project_id, workspace, record, supervisor, queries, control, shim,
+        self._project = Project(self._project_id, record, control, shim, view,
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None,
                                 manage_url=self._manage_url)
