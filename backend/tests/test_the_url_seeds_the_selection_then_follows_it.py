@@ -403,3 +403,18 @@ def test_picking_an_app_the_other_tab_selected_still_selects_it_here():
     assert picked_back["writes"] == []
     assert picked_back["view"]["app"] == "app_b"
     assert picked_back["view"]["hash"].endswith("app=app_b")
+
+
+@needs_node
+def test_deleting_the_app_on_screen_moves_the_tab_onto_one_that_is_left():
+    """The reload after a delete used to go out naming the deleted app in `X-Sage-App`, and the
+    server refuses an app it no longer has — `/apps` too. The tab read that as a Project with no
+    apps, kept pointing at the one just deleted, and New app answered `unknown app`."""
+    step = _run([{"deleteShown": True}])[-1]
+
+    after_delete = step["calls"][1:]
+    assert not [c for c in after_delete if c.endswith("app=app_a")], after_delete
+    assert step["after"]["apps"] == ["app_b", "app_c", "app_d"]
+    assert step["after"]["view"]["app"] == "app_d"
+    assert step["after"]["view"]["hash"].endswith("?app=app_d")
+    assert step["create"] == "ok"
