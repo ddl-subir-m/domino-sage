@@ -134,6 +134,14 @@ def test_only_a_current_explicit_app_open_updates_return_choice_and_new_stays_ne
         "afterChat": "thr_one", "afterStale": "thr_one", "pending": True, "thread": None}
 
 
+def test_opening_an_unrelated_conversation_does_not_replace_the_apps_return():
+    """The Build route names no app, and the selected app stays put. Remembering whichever
+    conversation is on screen made the next pick of that app open a transcript that never
+    changed it."""
+    assert run({"historyUnrelated": True}) == {
+        "before": "thr_one", "saved": "thr_one", "resolved": "thr_one"}
+
+
 def test_admitted_failed_plan_records_app_without_claiming_a_change(tmp_path, monkeypatch):
     import time
 

@@ -1266,6 +1266,24 @@ for (const step of steps) {
       thread: SW.store.get().thread && SW.store.get().thread.id });
     continue;
   }
+  if (step.historyUnrelated) {
+    // A legitimate open, then an unrelated one with this app still selected — including the
+    // Build route that names no app. Neither the open nor that render may replace the return.
+    await arrive('thr_one', 'app_a');
+    SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });
+    await SW.store.reloadThreads();
+    await SW.store.openThread('thr_one', { appId: 'app_a' });
+    const before = SW.store.conversationForApp('app_a').id;
+    await SW.store.openThread('thr_none', { appId: 'app_a' });
+    effects.length = 0;
+    SW.BuildMode({ conversationId: 'thr_none' });
+    effects.forEach((e) => e.fn());
+    await settle();
+    const saved = ((SW.prefs.get('lastAppConversations').project_one || {}).app_a) || null;
+    const resolved = SW.store.conversationForApp('app_a');
+    report.push({ before, saved, resolved: resolved && resolved.id });
+    continue;
+  }
   if (step.historyConversion) {
     await arrive('thr_one', 'app_a');
     SW.store.set({ me: { id: 'viewer' } });
@@ -1938,6 +1956,12 @@ for (const step of steps) {
     // is read here so "the header and the rail name the same app" is one step rather than two.
     await arrive(step.thread, step.select);
     await SW.store.reloadThreads();
+    // A return target already saved, including one that never touched the app being picked.
+    // Set after arrive: openThread in arrive is not itself a choice for the app.
+    if (step.saved) {
+      SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });
+      SW.prefs.set('lastAppConversations', { project_one: step.saved });
+    }
     // A chip filter set BEFORE the pick, by clicking a tag, which is the case where the two used to
     // disagree: the rail went on naming the app the tag named while the header named another.
     if (step.chip) clickTag('build', step.chip);

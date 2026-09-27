@@ -7587,7 +7587,11 @@ window.SW = window.SW || {};
 
     rememberAppConversation(appId, threadId) {
       const projectId = state.scope && state.scope.id;
-      if (!projectId || !appId || !threadId || !state.thread || state.thread.id !== threadId) return;
+      const thread = state.thread;
+      if (!projectId || !appId || !threadId || !thread || thread.id !== threadId) return;
+      // Not a choice of conversation for this app. The Build route often names no app, so the
+      // conversation on screen while an app stays selected is not, by itself, the one to return to.
+      if (!SW.util.appAssociations(thread).some((x) => x.appId === appId)) return;
       const all = SW.prefs.get('lastAppConversations');
       SW.prefs.set('lastAppConversations', { ...all,
         [projectId]: { ...(all[projectId] || {}), [appId]: threadId } });

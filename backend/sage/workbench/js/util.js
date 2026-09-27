@@ -499,6 +499,10 @@ window.SW = window.SW || {};
     // Use this viewer's last successful explicit choice for the app, then the newest associated
     // conversation. The server supplies newest-activity-first order. An attempt associates a
     // conversation even when planning failed before any file changed; touched stays a receipt.
+    //
+    // The saved choice counts only while that conversation is still associated. Opening some
+    // other conversation while this app stayed selected used to become the return target, and
+    // picking the app then opened a transcript that never mentions it.
     appAssociations(thread) {
       const changed = (thread && thread.touched) || [];
       return changed.concat(((thread && thread.attempted) || [])
@@ -507,10 +511,10 @@ window.SW = window.SW || {};
 
     threadForApp(threads, appId, preferredId) {
       const rows = (threads || []).filter(t => t && !t.deleted);
+      const associated = (t) => SW.util.appAssociations(t).some(x => x.appId === appId);
       const preferred = typeof preferredId === 'string'
-        ? rows.find(t => t.id === preferredId) : null;
-      return preferred || rows.find(t => SW.util.appAssociations(t)
-        .some(x => x.appId === appId)) || null;
+        ? rows.find(t => t.id === preferredId && associated(t)) : null;
+      return preferred || rows.find(associated) || null;
     },
 
     // What every control that offers a one-click act does with a click: mark which button is
