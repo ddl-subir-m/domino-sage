@@ -30,7 +30,10 @@ const APPS = [
 ];
 
 const THREADS = {
-  thr_many: { id: 'thr_many', title: 'Desks', artifacts: [], history: [], touched: [] },
+  thr_many: { id: 'thr_many', title: 'Desks', artifacts: [], history: [],
+    // Saved as the conversation to return to for app_a. That save is refused unless the
+    // conversation changed the app, so the tag is what makes the preference exist.
+    touched: [{ appId: 'app_a', appName: 'Desk dashboard', kind: 'built' }] },
   // A Conversation with a confirmed handoff, which is what `resolveConversationApp` reads. Its app
   // is NOT the one the server has selected, so a bare link resolving is a selection that moved.
   //
