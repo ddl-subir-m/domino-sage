@@ -151,7 +151,12 @@ function buildAwareOverlay(base: string) {
 //   - strictPort false (default) -> Vite may auto-increment; the supervisor DISCOVERS the real port
 export default defineConfig(({ command }) => {
   const prefix = (process.env.SAGE_BASE_PREFIX || "").replace(/\/$/, "");
-  const base = command === "build" ? "./" : `${prefix}/preview/`;
+  const previewApp = process.env.SAGE_PREVIEW_APP || "";
+  const base = command === "build"
+    ? "./"
+    : previewApp
+      ? `${prefix}/preview/${previewApp}/`
+      : `${prefix}/preview/`;
 
   return {
     plugins: [react(), buildAwareOverlay(base)],

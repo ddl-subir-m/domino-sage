@@ -317,7 +317,7 @@ def test_open_app_and_the_preview_control_are_two_controls_with_two_destinations
     actually opened — a control that swapped its destination would read identically otherwise."""
     step = _open("app_a")
     assert step["appOpened"] != step["previewOpened"]
-    assert step["previewOpened"] == ["./preview/"]
+    assert step["previewOpened"] == ["./preview/app_a/"]
     assert "Open preview in a new tab" in step["labels"]
 
 

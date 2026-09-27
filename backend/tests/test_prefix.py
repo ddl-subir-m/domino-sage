@@ -309,6 +309,49 @@ def test_preview_through_mount_and_middleware_no_double_prefix(monkeypatch):
     assert captured["url"] == "http://vite:5173/o/p/notebookSession/r/preview/src/main.tsx"
 
 
+def test_a_real_app_id_is_that_apps_preview_and_every_other_path_is_the_default(monkeypatch):
+    """The first segment is an app only when it is an id and a real app. The rest of the path,
+    including a segment that merely looks like one, is the default preview."""
+    from sage.preview.proxy import make_preview_app, preview_route_app
+
+    app_a = "app_" + "a" * 21
+    other = "app_" + "b" * 21
+    captured: dict = {}
+
+    class _Stop(Exception):
+        pass
+
+    class _StubClient:
+        def __init__(self, **_k):
+            pass
+
+        def build_request(self, method, url, **_k):
+            captured["url"] = url
+            raise _Stop
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("sage.preview.proxy.httpx.AsyncClient", _StubClient)
+
+    def upstream() -> str:
+        return "http://app-a" if preview_route_app.get() == app_a else "http://default"
+
+    def mount() -> str:
+        app = preview_route_app.get()
+        return f"/preview/{app}" if app else "/preview/default"
+
+    preview = make_preview_app(
+        upstream, "", get_mount_base=mount, known_app=lambda app_id: app_id == app_a)
+    client = TestClient(preview, raise_server_exceptions=False)
+    client.get(f"/{app_a}/src/main.tsx")
+    assert captured["url"] == f"http://app-a/preview/{app_a}/src/main.tsx"
+    client.get("/assets/x.js")
+    assert captured["url"] == "http://default/preview/default/assets/x.js"
+    client.get(f"/{other}/src/main.tsx")
+    assert captured["url"] == f"http://default/preview/default/{other}/src/main.tsx"
+
+
 def _app_with_internal_routes(prefix: str) -> FastAPI:
     app = FastAPI()
 

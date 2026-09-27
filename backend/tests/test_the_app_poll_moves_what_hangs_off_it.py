@@ -1,21 +1,14 @@
-"""The 30s app poll moves the selected app AND what hangs off it (#95).
+"""The 30s app poll refreshes this tab's row and does not install another tab's selection.
 
-Build arms a 30-second `loadApps` poll so a teammate's push, a build running in another app,
-and a selection made in a second tab all reach the screen without anyone clicking. It moved
-`activeApp` and nothing else, so both app-scoped lists — `bindings` and `appAttachments` —
-went on describing the app that was selected before. Two surfaces then paired one
-app's name with another app's resources: the header's scope row (#92), which heads its lists
-with the app name outright, and the resource panel's "In app" grouping.
+Build arms a 30-second `loadApps` poll so a teammate's push and a build running in another app
+reach the screen without anyone clicking. The selected flag in that answer is the process
+default. This tab already has an app — the one in `?app=` — so the poll refreshes that row's
+name and leaves `bindings` and `appAttachments` where they are. A tab with no app, or whose app
+is gone from the list, still adopts the selected row.
 
-WHAT THE FIX COSTS. The refresh is guarded on the app id actually changing. Unguarded it would
-turn a no-op tick into three requests every 30 seconds, forever, in every open Build tab — worse
-than the bug it fixes. The guard is the criterion, not a detail of it, so the tick that changes
-nothing is asserted as hard as the tick that changes everything.
-
-WHAT IT DOES NOT DO. It does not blank the lists on an app change. That is cheaper and never
-shows a wrong pairing, but it flickers the row to an empty state whose copy says "nothing yet",
-which for an app that ships two Bindings is a lie. The tests move BETWEEN two apps that both
-carry records, so an implementation that clears instead of fetching fails them.
+The tick that changes nothing costs one `GET /apps`. A tick whose selected flag names a
+different app costs the same one read: refetching the lists would be the move this poll no
+longer makes.
 
 Nothing is mounted — see `js/build_header_harness.mjs` for why.
 """
@@ -94,23 +87,22 @@ def _said(step: dict) -> str:
 
 
 @needs_node
-def test_a_poll_that_moves_the_app_moves_its_bindings_and_attachments():
-    """The whole of #95. Both lists are read per app and both were left behind."""
-    moved, _ = _ticks()
-    assert moved["activeApp"] == "app_a"
-    assert moved["activeName"] == "Desk dashboard"
-    # app_a's records, not app_c's. `qwen-2-5` was the Binding a moment ago.
-    assert moved["bindings"] == ["Claude Sonnet 4", "Market data EOD", "Churn risk"]
-    assert moved["attachments"] == ["margins.csv", "legacy.csv"]
+def test_a_poll_does_not_move_this_tabs_app_or_its_records():
+    """Another tab's selection is a different answer from `/apps`. This tab keeps the app it is
+    showing, and the lists that hang off it."""
+    stayed, _ = _ticks()
+    assert stayed["activeApp"] == "app_c"
+    assert stayed["activeName"] == "Rate curve viewer"
+    assert stayed["bindings"] == ["Qwen 2.5"]
+    assert stayed["attachments"] == []
 
 
 @needs_node
-def test_the_move_refetches_rather_than_blanking_the_lists():
-    """The empty state says "nothing yet", so clearing would make the row lie. Each list is
-    filled from a read taken after the app changed, so each read has to show up as a request."""
-    moved, _ = _ticks()
-    assert "GET /bindings" in moved["calls"]
-    assert "GET /project" in moved["calls"]
+def test_a_poll_that_does_not_change_the_app_does_not_refetch_its_lists():
+    """The lists are already this app's. Refetching them because another tab selected something
+    else would be the move this poll no longer makes."""
+    stayed, _ = _ticks()
+    assert stayed["calls"] == ["GET /apps"]
 
 
 # ---- the tick that moves nothing ---------------------------------------------------------
@@ -163,15 +155,15 @@ def test_switching_apps_by_hand_still_reads_each_record_once():
 
 
 @needs_node
-def test_the_header_row_names_the_new_app_over_the_new_apps_records():
-    """#92's row heads its lists with the app name, so a stale list is a named wrong pairing
-    rather than an ambiguous one. The name and the records have to arrive together."""
-    moved, _ = _ticks()
-    said = _said(moved)
-    assert "Desk dashboard" in said
-    assert "Market data EOD" in said
-    assert "margins.csv" in said
-    assert "Qwen 2.5" not in said
+def test_the_header_row_keeps_this_tabs_app_over_this_tabs_records():
+    """A poll that names a different selected app must not put that app's name over these lists,
+    or these lists under that name."""
+    stayed, _ = _ticks()
+    said = _said(stayed)
+    assert "Rate curve viewer" in said
+    assert "Qwen 2.5" in said
+    assert "Desk dashboard" not in said
+    assert "margins.csv" not in said
 
 
 def test_the_resource_panel_reads_the_same_assignment_the_poll_writes():

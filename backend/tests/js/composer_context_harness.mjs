@@ -49,9 +49,26 @@ const json = (body, status = 200) => ({
   text: async () => JSON.stringify(body),
 });
 
+// The app this request means. Build sends `X-Sage-App`; a missing header is the selected app,
+// which is what create, delete, and handoff still point at. A picker click does not POST select,
+// so reading `selected` for a Build request would keep answering for the app the process booted on.
+function appFor(options) {
+  const headers = (options && options.headers) || {};
+  const raw = typeof headers.get === 'function'
+    ? (headers.get('X-Sage-App') || headers.get('x-sage-app') || '')
+    : (headers['X-Sage-App'] || headers['x-sage-app'] || '');
+  const id = String(raw).trim();
+  if (id) {
+    const named = apps.find((a) => a.id === id);
+    if (named) return named;
+  }
+  return apps.find((a) => a.selected) || null;
+}
+
 function serve(url, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const path = String(url).replace(/^\.\/api/, '');
+  const app = appFor(options);
   const rows = (id) => {
     if (!contexts.has(id)) contexts.set(id, []);
     return contexts.get(id);
@@ -68,14 +85,13 @@ function serve(url, options = {}) {
       // because the mark is unreadable without it, and because `inBuild` is a membership-only
       // field the server never stores — the client must not be able to reconstruct it.
       if (posted.inBuild && posted.datasetId) {
-        const selected = apps.find((a) => a.selected);
-        if (selected) row.attachedApp = selected.id;
+        if (app) row.attachedApp = app.id;
         // And the other half of that same act, which the row does NOT record: the app now holds the
         // bytes, under `public/data/`. Served from `/project` below, because it is the list the
         // "does this app hold it" question is actually asked of (#275) — a server that skipped it
         // would have every crossed chip reading as one that never crossed.
-        if (selected) {
-          attached.push({ app: selected.id,
+        if (app) {
+          attached.push({ app: app.id,
                           path: `public/data/${posted.datasetId}/${posted.datasetRelPath}` });
         }
       }
@@ -92,28 +108,25 @@ function serve(url, options = {}) {
   if (path === '/apps') return json({ items: apps });
   // The selected app's own Attachments, the way `refreshAppScope` reads them.
   if (path === '/project') {
-    const selected = apps.find((a) => a.selected);
-    return json({ attached: attached.filter((a) => selected && a.app === selected.id) });
+    return json({ attached: attached.filter((a) => app && a.app === app.id) });
   }
   if (path === '/bindings') {
-    const selected = apps.find((a) => a.selected);
-    return json({ bindings: (selected && bindings.get(selected.id)) || [] });
+    return json({ bindings: (app && bindings.get(app.id)) || [] });
   }
   // The Build tab's crossing door (#275). It answers per chip, and a case says which name it refuses
   // — the half-failed crossing is the state the mark on a chip exists for.
   if ((m = path.match(/^\/threads\/([^/]+)\/crossing$/)) && method === 'POST') {
-    const selected = apps.find((a) => a.selected);
     const refuse = String(crossing.refuse || '');
     const chips = rows(m[1]);
     const moved = chips.filter((i) => i.name !== refuse);
     for (const row of moved) {
-      if (row.datasetId) {
-        attached.push({ app: selected.id,
+      if (row.datasetId && app) {
+        attached.push({ app: app.id,
                         path: `public/data/${row.datasetId}/${row.datasetRelPath || row.name}` });
       }
     }
     return json({
-      ok: true, appId: selected && selected.id, appName: selected && selected.name,
+      ok: true, appId: app && app.id, appName: app && app.name,
       crossed: moved.map((i) => i.name),
       refused: refuse
         ? [{ name: refuse, reason: `${refuse} stayed in Chat — no writable Dataset is mounted here` }]

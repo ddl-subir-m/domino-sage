@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 
 from sage.orchestrator import handoff
-from sage.orchestrator.service import Orchestrator, TurnBusy
+from sage.orchestrator.service import Orchestrator, TurnBusy, _request_view
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
@@ -107,6 +107,64 @@ def _two_apps(tmp_path: Path, extra: list[Turn] | None = None):
     first = _app_from_chat(orch, "build me a desk dashboard")
     second = _app_from_chat(orch, "now build me a daily P&L report")
     return orch, oc, root, first, second
+
+
+def test_chat_links_the_bound_apps_data_not_the_selected_one(tmp_path: Path):
+    """Chat has no app header. The data it can read is the app this conversation bound, even
+    when a later handoff has left a different app selected."""
+    orch, _oc, root, first, second = _two_apps(tmp_path, extra=[Turn(text="looking")])
+    tid = next(r["id"] for r in orch.list_threads() if r["boundAppId"] == first)
+    list(orch.chat_stream(tid, "what data does this conversation have"))
+    link = root / ".sage" / "chat-work" / "public" / "data"
+    assert link.resolve() == (root / "apps" / first / "public" / "data").resolve()
+    assert link.resolve() != (root / "apps" / second / "public" / "data").resolve()
+
+
+def test_a_bound_app_that_is_gone_does_not_hide_the_older_one(tmp_path: Path):
+    """The newest bound entry only counts while its app directory is still there. A later entry
+    for an app that has been removed leaves the older one, rather than the app selected now."""
+    orch, _oc, root, first, second = _two_apps(tmp_path, extra=[Turn(text="looking")])
+    tid = next(r["id"] for r in orch.list_threads() if r["boundAppId"] == first)
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    entries = store.read_handoffs(tid)
+    entries.append({"appId": "app_" + "d" * 21, "status": "bound"})
+    (store.thread_dir(tid) / "handoff.json").write_text(json.dumps({"items": entries}))
+    list(orch.chat_stream(tid, "what data does this conversation have"))
+    link = root / ".sage" / "chat-work" / "public" / "data"
+    assert link.resolve() == (root / "apps" / first / "public" / "data").resolve()
+    assert link.resolve() != (root / "apps" / second / "public" / "data").resolve()
+
+
+def test_a_chat_request_naming_another_app_still_links_the_selected_one(tmp_path: Path):
+    """Chat sends no app header. A request that arrives already aimed at another app does not
+    move the data this conversation can read: with no bound handoff, that is the selected app."""
+    orch, _oc, root, first, second = _two_apps(tmp_path, extra=[Turn(text="looking")])
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    token = _request_view.set(project._views[first])
+    try:
+        list(orch.chat_stream(tid, "hello"))
+    finally:
+        _request_view.reset(token)
+    link = root / ".sage" / "chat-work" / "public" / "data"
+    assert link.resolve() == (root / "apps" / second / "public" / "data").resolve()
+    assert link.resolve() != (root / "apps" / first / "public" / "data").resolve()
+
+
+def test_chat_names_no_data_directory_when_nothing_is_on_disk(tmp_path: Path):
+    """No bound app on disk, and no selected app on disk, is nothing to link."""
+    orch, _oc, root = _orch(tmp_path, [Turn(text="ok")])
+    project = orch.project(start_preview=False)
+    store = ThreadStore(project.record.path)
+    tid = orch.create_thread()["id"]
+    (store.thread_dir(tid) / "handoff.json").write_text(json.dumps(
+        {"items": [{"appId": "app_" + "e" * 21, "status": "bound"}]}))
+    selected = project._selected_view.workspace.path
+    selected.rename(selected.with_name(selected.name + ".gone"))
+    list(orch.chat_stream(tid, "hello"))
+    link = root / ".sage" / "chat-work" / "public" / "data"
+    assert not link.is_symlink()
+    assert not link.exists()
 
 
 def test_a_second_confirmed_handoff_leaves_two_built_apps_side_by_side(tmp_path: Path):

@@ -126,6 +126,12 @@ def test_the_spinner_names_the_slow_work_instead_of_just_spinning():
         {"type": "agent", "kind": "tool", "tool": "bash", "doing": "query",
          "detail": "BigQuery_Demo"},
         {"type": "agent", "kind": "tool", "doing": "idle"},
+        {"type": "agent", "kind": "tool", "tool": "live_read_table", "doing": "analyze",
+         "detail": "Warehouse"},
+        {"type": "agent", "kind": "tool", "doing": "idle"},
+        {"type": "agent", "kind": "tool", "tool": "live_read_files", "doing": "analyze",
+         "detail": ""},
+        {"type": "agent", "kind": "tool", "doing": "idle"},
         {"type": "agent", "kind": "tool", "tool": "write", "doing": "write",
          "detail": "examples/thr_1/revenue.png"},
         {"type": "delta", "text": "Revenue rose.", "final": True},
@@ -137,6 +143,10 @@ def test_the_spinner_names_the_slow_work_instead_of_just_spinning():
         "Reading price_data.csv…",
         "Thinking…",                 # the read finished; the label stops claiming it has not
         "Querying BigQuery_Demo…",
+        "Thinking…",
+        "Analyzing Warehouse…",
+        "Thinking…",
+        "Analyzing text…",           # an analyze call that named no source
         "Thinking…",
         "Saving revenue.png…",       # the path is the server's; the file name is the reader's
     ]

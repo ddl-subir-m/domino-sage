@@ -14,6 +14,7 @@ import asyncio
 import collections
 import concurrent.futures
 import contextlib
+import contextvars
 import functools
 import logging
 import os
@@ -116,6 +117,8 @@ from .service import (
     TurnBusy,
     UploadUnavailable,
     _chat_save_landed,
+    _request_view,
+    _request_workspace,
 )
 
 _feedback = FeedbackRunner()
@@ -810,7 +813,8 @@ class _ViewerIdentityMiddleware:
 control_app.add_middleware(_ViewerIdentityMiddleware)
 
 
-# Added last, so it sits OUTSIDE the two above and sees every response they let through.
+# Outside the two above, so it sees every response they let through. The app-view
+# middleware sits outside this one and names the app before anything else reads it.
 #
 # The JSON here is mostly prose and source: the Build log answers a single read at megabytes and
 # gzips ~6x, and nothing on the Workbench was compressed before, because Domino's nginx gzips
@@ -822,6 +826,60 @@ control_app.add_middleware(_ViewerIdentityMiddleware)
 # Level 6 rather than the library's 9: on a megabyte of log the last three levels cost more CPU
 # than the bytes they save are worth over a proxy on the same host.
 control_app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+
+
+class _AppViewMiddleware:
+    """Bind `X-Sage-App` to that app's view for this request, and clear it when the request ends.
+
+    A header selects the view and never calls `_bind_app`. It does not stop a preview and it does
+    not change which app is selected. A missing header leaves the view unset, so reads stay on the
+    selected app, and still stashes that app's workspace so a turn can pin it after the lock. An
+    id that is not an app answers 404 and does not fall through onto the selected app.
+
+    The `finally` clears the binding. A ContextVar left set on a pooled worker would hand the next
+    request an app it did not name.
+    """
+
+    def __init__(self, app) -> None:
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        headers = {k.decode("latin1").lower(): v.decode("latin1") for k, v in scope.get("headers", [])}
+        app_id = (headers.get("x-sage-app") or "").strip()
+        view_token = None
+        workspace_token = None
+        try:
+            # A route test stubs `orchestrator` with something that has no project. That request
+            # names no app, and there is no selected view to stash, so the bind is a no-op — the
+            # same as a process that has not opened a project yet.
+            project = getattr(orchestrator, "_project", None)
+            if app_id:
+                wm = getattr(orchestrator, "_wm", None)
+                known = wm.app_ids() if wm is not None else []
+                if app_id not in known:
+                    response = JSONResponse({"error": "unknown app"}, status_code=404)
+                    await response(scope, receive, send)
+                    return
+                project = orchestrator.project(start_preview=False, seed_app=False)
+                view = orchestrator._view_for(project, app_id)
+                view_token = _request_view.set(view)
+                workspace_token = _request_workspace.set(view.workspace)
+            else:
+                selected = getattr(project, "_selected_view", None) if project is not None else None
+                if selected is not None:
+                    workspace_token = _request_workspace.set(selected.workspace)
+            await self._app(scope, receive, send)
+        finally:
+            if workspace_token is not None:
+                _request_workspace.reset(workspace_token)
+            if view_token is not None:
+                _request_view.reset(view_token)
+
+
+control_app.add_middleware(_AppViewMiddleware)
 
 
 @control_app.get("/")
@@ -3334,7 +3392,8 @@ def _turn_sse(events, what: str):
     import json as _json
 
     q: queue.Queue = queue.Queue()
-    threading.Thread(target=_pump_events, args=(events, q),
+    ctx = contextvars.copy_context()
+    threading.Thread(target=ctx.run, args=(_pump_events, events, q),
                      name=f"sage-{what}", daemon=True).start()
     while True:
         item = ka.get(q, ka.KEEPALIVE_INTERVAL_S)
@@ -4782,15 +4841,32 @@ _install_native_routes(control_app, lambda: orchestrator)
 # Preview proxy for the bound project, mounted under /preview on the one control port. Vite bakes
 # base=<prefix>/preview/, so the proxy re-adds that when forwarding upstream (see make_preview_app).
 # Chat may have attached an empty volume; seeding + Vite start happen here, not on Thread open.
+def _preview_known_app(app_id: str) -> bool:
+    try:
+        return app_id in orchestrator._wm.app_ids()
+    except Exception:
+        return False
+
+
 def _preview_upstream() -> str:
     project = orchestrator._ensure_seeded()
-    orchestrator._ensure_preview_running(project)
-    return project.supervisor.upstream()
+    view = orchestrator.view_for_preview(project)
+    orchestrator._account_preview_traffic(project, view)
+    orchestrator._ensure_preview_running(project, view)
+    return view.supervisor.upstream()
+
+
+def _preview_status_snapshot() -> dict:
+    if orchestrator._project is None:
+        return {}
+    project = orchestrator.project(start_preview=False, seed_app=False)
+    return orchestrator.view_for_preview(project).supervisor.status()
 
 
 @control_app.get("/api/preview/status")
 def _preview_status() -> dict:
     project = orchestrator.project(start_preview=False, seed_app=False)
+    orchestrator._account_preview_traffic(project)
     return project.supervisor.status()
 
 
@@ -4798,13 +4874,16 @@ def _preview_status() -> dict:
 def _preview_retry(appId: str | None = None) -> dict:
     with orchestrator._app_lock:
         project = orchestrator.project(start_preview=False, seed_app=False)
-        if appId is not None and appId != project.workspace.app_id:
-            return JSONResponse(status_code=409, content={
-                "error": "The selected app changed. Retry its preview again.",
-            })
-        project = orchestrator._ensure_seeded()
-        project.supervisor.retry_start(explicit=True)
-        return project.supervisor.status()
+        if appId is not None:
+            if appId not in orchestrator._wm.app_ids():
+                return JSONResponse(status_code=404, content={"error": "unknown app"})
+            view = orchestrator._view_for(project, appId)
+        else:
+            view = project._active_view()
+        orchestrator._account_preview_traffic(project, view)
+        orchestrator._ensure_seeded()
+        view.supervisor.retry_start(explicit=True)
+        return view.supervisor.status()
 
 
 # The previewed app's own named queries (#24). Answered by `serve.py` on loopback rather than 404'd
@@ -4812,7 +4891,9 @@ def _preview_retry(appId: str | None = None) -> dict:
 # here — `_preview_upstream` above is what seeds the project, and a query arriving before the page
 # that would ask it means something is wrong rather than something to boot a project for.
 def _preview_queries():
-    return orchestrator._project.queries if orchestrator._project is not None else None
+    if orchestrator._project is None:
+        return None
+    return orchestrator.view_for_preview(orchestrator._project).queries
 
 
 # The previewed app's platform reads (#489): the template's own `sage_domino.py`, called by the proxy
@@ -4896,10 +4977,10 @@ def _preview_approve_model(model: str) -> str | None:
 
 
 def _preview_mount_base() -> str:
-    """What the selected app's preview server serves at (#490). Asked of the supervisor the
-    orchestrator holds rather than worked out here, so a switch of app is a switch of answer."""
+    """What this request's preview server serves at. An app id in the path is that app;
+    anything else is the process default."""
     project = orchestrator._ensure_seeded()
-    return project.supervisor.mount_base()
+    return orchestrator.view_for_preview(project).supervisor.mount_base()
 
 
 control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _preview_queries,
@@ -4908,7 +4989,8 @@ control_app.mount("/preview", make_preview_app(_preview_upstream, BASE_PREFIX, _
                                                get_mount_base=_preview_mount_base,
                                                on_platform_read=_preview_platform_read,
                                                get_read_context=_preview_read_context,
-                                               get_status=_preview_status))
+                                               get_status=_preview_status_snapshot,
+                                               known_app=_preview_known_app))
 class _RevalidatingStatic(StaticFiles):
     """The shell's own assets carry no version in their filenames, and StaticFiles sends no
     Cache-Control at all. A browser then falls back to heuristic freshness — roughly a tenth of

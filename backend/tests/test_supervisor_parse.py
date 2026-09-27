@@ -67,17 +67,25 @@ def test_the_port_reaches_vite_on_the_command_line(monkeypatch, tmp_path):
 
     def fake_popen(argv, **kw):
         seen["argv"] = argv
+        seen["env"] = kw.get("env") or {}
         return type("P", (), {"stdout": None, "pid": 1, "wait": lambda self: 0})()
 
     monkeypatch.setattr(ViteSupervisor, "_clear_stale_port", lambda self, port: seen.setdefault("reaped", port))
+    monkeypatch.setattr("sage.preview.supervisor._free_port", lambda: 5999)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(threading, "Thread", lambda **kw: type("T", (), {"start": lambda self: None})())
 
-    ViteSupervisor(tmp_path)._spawn()
+    ViteSupervisor(tmp_path, pinned_port=True)._spawn()
 
     assert seen["argv"] == ["npm", "run", "dev", "--", "--port", "5401"]
+    assert seen["env"]["SAGE_PREVIEW_APP"] == tmp_path.name
     # and the reaping is aimed at the port we actually asked for, not at 5173
     assert seen["reaped"] == 5401
+
+    seen.clear()
+    ViteSupervisor(tmp_path)._spawn()
+    assert seen["argv"] == ["npm", "run", "dev", "--", "--port", "5999"]
+    assert seen["reaped"] == 5999
 
 
 def test_vite_supervisor_does_not_spawn_without_the_vite_binary(monkeypatch, tmp_path):
@@ -128,7 +136,7 @@ def test_a_no_build_app_is_served_by_its_own_uvicorn(monkeypatch, tmp_path):
 
     (tmp_path / ".sage").mkdir()
     (tmp_path / ".sage" / "settings.json").write_text('{"stack": "fastapi-antd"}')
-    sup = make_supervisor(tmp_path, "/u/o/p/notebookSession/r")
+    sup = make_supervisor(tmp_path, "/u/o/p/notebookSession/r", pinned_port=True)
     assert isinstance(sup, UvicornSupervisor)
     assert sup.mount_base() == ""
     sup._spawn()
@@ -147,4 +155,4 @@ def test_an_app_with_no_record_keeps_its_vite_preview(tmp_path):
 
     sup = make_supervisor(tmp_path, "/p")
     assert isinstance(sup, ViteSupervisor) and not isinstance(sup, UvicornSupervisor)
-    assert sup.mount_base() == "/p/preview"
+    assert sup.mount_base() == f"/p/preview/{tmp_path.name}"

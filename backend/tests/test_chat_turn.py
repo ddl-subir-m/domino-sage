@@ -2502,6 +2502,51 @@ def test_chat_names_the_two_slow_things_that_arrive_as_bash():
     assert _chat_live_event(plain) == {"type": "agent", "kind": "tool", "tool": "bash",
                                        "doing": "bash", "detail": ""}
 
+    # A live read is a tool of its own. OpenCode offers the MCP name and the call can
+    # arrive under either spelling; both are the same work. The spinner names the
+    # source, never the statement or a row.
+    sql = "SELECT note FROM orders WHERE id = 1"
+    for tool in ("live_read_query", "sage-live-read_live_read_query"):
+        query_tool = _live("tool_run", tool=tool, status="called", input={
+            "source": "Warehouse", "sql": sql, "token": "tok"})
+        got = _chat_live_event(query_tool)
+        assert got == {"type": "agent", "kind": "tool", "tool": tool,
+                       "doing": "query", "detail": "Warehouse"}
+        assert sql not in json.dumps(got)
+
+    analyze = _live("tool_run", tool="sage-live-read_live_read_table", status="called", input={
+        "operation": "analyze_text", "source": "Warehouse", "table": "orders",
+        "text_column": "note", "purpose": "what the buyer wrote"})
+    got = _chat_live_event(analyze)
+    assert got == {"type": "agent", "kind": "tool", "tool": "sage-live-read_live_read_table",
+                   "doing": "analyze", "detail": "Warehouse"}
+    assert "note" not in got["detail"]
+    assert "buyer" not in got["detail"]
+
+    files = _live("tool_run", tool="live_read_files", status="called", input={
+        "operation": "analyze_text", "dataset": "notes", "path": "notes.csv",
+        "text_column": "utterance"})
+    assert _chat_live_event(files) == {
+        "type": "agent", "kind": "tool", "tool": "live_read_files",
+        "doing": "analyze", "detail": "notes"}
+
+    looked = _live("tool_run", tool="live_read_table", status="called", input={
+        "source": "Warehouse", "table": "orders", "limit": 5})
+    assert _chat_live_event(looked) == {
+        "type": "agent", "kind": "tool", "tool": "live_read_table",
+        "doing": "read", "detail": "orders"}
+
+    listing = _live("tool_run", tool="sage-live-read_live_read_files", status="called", input={
+        "dataset": "notes", "path": "notes.csv"})
+    assert _chat_live_event(listing) == {
+        "type": "agent", "kind": "tool", "tool": "sage-live-read_live_read_files",
+        "doing": "read", "detail": "notes"}
+
+    # table, else dataset, else source — and nothing else the call was holding.
+    only_source = _live("tool_run", tool="live_read_table", status="called", input={
+        "source": "Warehouse"})
+    assert _chat_live_event(only_source)["detail"] == "Warehouse"
+
 
 def test_a_local_file_is_named_by_the_tool_that_touches_it():
     from sage.orchestrator.service import _chat_live_event
@@ -2609,6 +2654,80 @@ def test_an_open_call_with_no_name_is_reported_without_one(tmp_path: Path, monke
     assert oc.interrupted == 1
     message = next(e for e in out if e["type"] == "error")["message"]
     assert message == "That step didn't finish in time."
+
+
+def test_an_open_live_read_reaches_the_ceiling_while_bash_still_dies_on_its_window(
+        tmp_path: Path, monkeypatch):
+    """A silent live read is the server judging row text. The tool-quiet window is shorter
+    than that work, so an open live read — bare or MCP-prefixed — waits out the ceiling.
+    A shell whose command merely mentions the tool is still a shell, and still dies on
+    the tool window. No caller timeout: a supplied one would override both."""
+    from sage.orchestrator import service
+    from sage.orchestrator.service import _EventTap
+
+    monkeypatch.setattr(service, "_CHAT_QUIET_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(service, "_CHAT_TOOL_QUIET_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(service, "_CHAT_TURN_MAX_S", 1.0)
+    # The loop waits up to a second between checks, and a second is this test's ceiling.
+    # Left alone, a 0.2s tool window is not looked at until the ceiling has passed too,
+    # so "still running past 0.5s" would be true of either window. A shorter wait makes
+    # the 0.2s window able to fire on its own.
+    original = _EventTap.wait_any
+
+    def sooner(self, timeout, floor=0.0):
+        return original(self, min(timeout, 0.12), floor=0)
+
+    monkeypatch.setattr(_EventTap, "wait_any", sooner)
+
+    def run(root: Path, tool: str, tool_input: dict):
+        started_only = [
+            _live("tool_run", tool=tool, call_id="c1", status="called", input=tool_input),
+        ]
+        orch, oc = _streamed(root, started_only, gap=0.05)
+        oc.stay_running = True
+        tid = orch.create_thread()["id"]
+        started = time.monotonic()
+        out = list(orch.chat_stream(tid, "what do the notes say"))
+        return time.monotonic() - started, oc, next(e for e in out if e["type"] == "error")
+
+    for tool in ("live_read_query", "sage-live-read_live_read_query"):
+        elapsed, oc, err = run(tmp_path / tool, tool, {
+            "source": "Warehouse", "sql": "SELECT note FROM orders"})
+        assert elapsed > 0.5, f"{tool} died on the window it is not subject to"
+        assert oc.interrupted == 1
+        assert "ran out of time" in err["message"]
+        assert "didn't finish in time" not in err["message"]
+        assert "stopped making progress" not in err["message"]
+        assert "SELECT" not in err["message"]
+
+    elapsed, oc, err = run(tmp_path / "bash", "bash", {
+        "command": "python -c 'live_read_query(\"Warehouse\")'"})
+    assert oc.interrupted == 1
+    assert "didn't finish in time" in err["message"]
+    assert "ran out of time" not in err["message"]
+    # Died on the 0.2s window, not after waiting out the ceiling.
+    assert elapsed < 0.8
+
+
+def test_a_supplied_timeout_still_ends_an_open_live_read(tmp_path: Path, monkeypatch):
+    """The ceiling is the default for a live read. A caller who passed `timeout_s` is
+    asking for that number, and it still wins."""
+    from sage.orchestrator import service
+
+    monkeypatch.setattr(service, "_CHAT_TURN_MAX_S", 1.0)
+    started_only = [
+        _live("tool_run", tool="live_read_query", call_id="c1", status="called",
+              input={"source": "Warehouse", "sql": "SELECT note FROM orders"}),
+    ]
+    orch, oc = _streamed(tmp_path, started_only, gap=0.05)
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "what do the notes say", timeout_s=0.3))
+    err = next(e for e in out if e["type"] == "error")
+    assert oc.interrupted == 1
+    assert "didn't finish in time" in err["message"]
+    assert "ran out of time" not in err["message"]
+    assert "SELECT" not in err["message"]
 
 
 def test_a_slow_tool_outlives_the_window_that_ends_a_stalled_model(tmp_path: Path, monkeypatch,

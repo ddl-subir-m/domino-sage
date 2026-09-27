@@ -249,13 +249,13 @@ def test_a_chip_filter_set_earlier_does_not_outlive_the_app_it_named():
 
 @needs_node
 def test_the_filter_moves_on_a_click_and_never_on_the_poll():
-    """Why the write is in `pick` and not in an effect on `activeApp`. The selection is per-Project
-    on the server and shared across tabs, and the 30s poll moves it under you — so an effect would
-    let a second tab silently re-filter this tab's rail. Only a person's own click may move it."""
+    """Why the write is in `pick` and not in an effect on `activeApp`. The 30s poll reports another
+    tab's selection and must not move this tab's app, so it must not re-filter this tab's rail.
+    Only a person's own click may move the filter."""
     step = _run(
         [{"poll": "app_b", "thread": "thr_many", "select": "app_a", "pickFirst": "app_a"}]
     )[-1]
-    assert step["activeApp"] == "app_b"
+    assert step["activeApp"] == "app_a"
     assert step["railFilterBefore"] == step["railFilter"] == "app_a"
     assert step["rail"]["chip"] == "Only Desk dashboard"
 

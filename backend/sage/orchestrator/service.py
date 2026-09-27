@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import concurrent.futures
 import contextlib
+import contextvars
 import filecmp
 import functools
 import hashlib
@@ -530,11 +531,18 @@ _ENTRY_POINT = "app.sh"
 # none.
 
 
-def _supervisor_for(workspace: Path, base_prefix: str):
+def _supervisor_for(workspace: Path, base_prefix: str, *, pinned_port: bool = False):
     """The preview server for the app at `workspace`, by its stack (#490): the template's Vite dev
     server for a react-vite app, the app's own uvicorn for a fastapi-antd one. Reads the two classes
-    off this module at call time, so a test that stands in for `ViteSupervisor` still does."""
-    return _supervisor_class(workspace)(workspace, base_prefix)
+    off this module at call time, so a test that stands in for `ViteSupervisor` still does.
+
+    `pinned_port` is the process default app: when `SAGE_PREVIEW_PORT` is set, that one preview
+    takes it. Every other app takes a free port.
+    """
+    return _supervisor_class(workspace)(workspace, base_prefix, pinned_port=pinned_port)
+
+
+_PREVIEW_IDLE_S = 180
 
 
 def _supervisor_class(workspace: Path):
@@ -659,7 +667,8 @@ class _TurnTicket:
     in the same call."""
 
     __slots__ = ("admitted", "app", "claimed", "conversation", "epoch", "granted", "id",
-                 "kind", "outcome", "queued", "sequence", "snapshot", "timing_record")
+                 "kind", "outcome", "queued", "sequence", "snapshot", "timing_record",
+                 "turn_workspace")
 
     def __init__(self, ticket_id: str) -> None:
         self.id = ticket_id
@@ -680,6 +689,10 @@ class _TurnTicket:
         # which writes Artifacts under the Thread rather than into an app.
         self.app = ""
         self.timing_record = None
+        # The Built App this request meant, copied off the request before the turn waits for the
+        # lock. `_pin_turn_app` assigns `turn_app` from it only after the lock is held. None until
+        # a build turn stashes one; Chat leaves it None.
+        self.turn_workspace: Workspace | None = None
 
 
 # How often `_acquire_for_door` re-reads `_chat_saving` while waiting out a save. Matches
@@ -3499,11 +3512,42 @@ _CHAT_QUERY = re.compile(r"""get_datasource\(\s*['"]([^'"]+)['"]""")
 _CHAT_DATASET_READ = re.compile(r"""download_file\(\s*['"]([^'"]+)['"]""")
 
 
-def _chat_activity(tool: str, subject: str) -> tuple[str, str]:
+# OpenCode namespaces an MCP tool with its server key. The model is offered
+# `sage-live-read_live_read_query`; the server is called as `live_read_query`. One name here.
+_LIVE_READ_PREFIX = "sage-live-read_"
+_LIVE_READ_TOOLS = frozenset({"live_read_query", "live_read_table", "live_read_files"})
+
+
+def _bare_tool_name(tool: str) -> str:
+    return str(tool or "").strip().lower().removeprefix(_LIVE_READ_PREFIX)
+
+
+def _chat_named(inp: dict | None, *keys: str) -> str:
+    """The first of `keys` whose value is a non-empty string."""
+    if not isinstance(inp, dict):
+        return ""
+    for key in keys:
+        value = inp.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _chat_label_is_live_read(label: str) -> bool:
+    """True when a `_tool_label` string names a live read.
+
+    The label is the tool name, or `name (detail)`. The detail of a bash call is the command,
+    and a command that mentions a live read is still bash.
+    """
+    return _bare_tool_name(str(label).split(" (", 1)[0]) in _LIVE_READ_TOOLS
+
+
+def _chat_activity(tool: str, subject: str, inp: dict | None = None) -> tuple[str, str]:
     """(the kind of work, the thing it is working on) for a tool call Chat should name."""
-    if tool in ("read", "write"):
-        return tool, subject
-    if tool == "bash":
+    name = _bare_tool_name(tool)
+    if name in ("read", "write"):
+        return name, subject
+    if name == "bash":
         found = _CHAT_QUERY.search(subject)
         if found:
             return "query", found.group(1)
@@ -3511,6 +3555,12 @@ def _chat_activity(tool: str, subject: str) -> tuple[str, str]:
         if found:
             return "read", found.group(1)
         return "bash", ""
+    if name == "live_read_query":
+        return "query", _chat_named(inp, "source")
+    if name in ("live_read_table", "live_read_files"):
+        if isinstance(inp, dict) and inp.get("operation") == "analyze_text":
+            return "analyze", _chat_named(inp, "source", "dataset")
+        return "read", _chat_named(inp, "table", "dataset", "source")
     return "", ""
 
 
@@ -4424,7 +4474,7 @@ def _chat_live_event(ev) -> dict | None:
             # Measured live: read and write both send `path`. `filePath` is kept because the
             # transcript's own parts use it (see _tool_detail) and this has to agree with them.
             subject = str(inp.get("path") or inp.get("filePath") or "")
-        doing, subject = _chat_activity(tool, subject)
+        doing, subject = _chat_activity(tool, subject, inp)
         if not doing:
             return {"type": "agent", "kind": "tool", "doing": "idle"}
         return {"type": "agent", "kind": "tool", "tool": tool, "doing": doing, "detail": subject}
@@ -5753,22 +5803,48 @@ def _model_active_status(elapsed_seconds: float) -> tuple[int, str]:
     return bucket, "Still working…"
 
 
+# The app a request named, and the workspace it meant at the moment the request arrived. A missing
+# header leaves the view unset, so reads fall through to the selected app. The workspace is stashed
+# even then, because a select that arrives while this request waits for the turn lock must not
+# change the app the turn pins.
+_request_view: contextvars.ContextVar[AppView | None] = contextvars.ContextVar(
+    "sage_request_app_view", default=None)
+_request_workspace: contextvars.ContextVar[Workspace | None] = contextvars.ContextVar(
+    "sage_request_workspace", default=None)
+
+
+@dataclass
+class AppView:
+    """One Built App as this process holds it.
+
+    What `_bind_app` swaps on a switch: the workspace, the attachment list, the OpenCode session
+    cached for this app, and the preview supervisor and query helper that serve it. `Project`
+    reads them through properties, so a later request can name a view without a parameter on
+    every call that already says `project.workspace`.
+    """
+
+    workspace: Workspace
+    supervisor: ViteSupervisor
+    queries: PreviewQueries
+    session_id: str | None = None
+    attached: list[dict] = field(default_factory=list)
+
+
 @dataclass
 class Project:
     id: str
-    # The Built App on screen: `apps/<appId>/` on the volume, and everything inside it. The person
-    # may point this at another app while a turn is running (#77), so a turn asks `app_for_turn()` for
-    # the app it writes into rather than reading this.
-    workspace: Workspace
     # The Project's own record — Threads, plan documents, settings, sessions — at the volume root,
     # which is also the git repo root. Two surfaces, two directories (ADR-0008): ask this one for
     # what the Project owns, `workspace` for what the app owns, and neither for the other's.
     record: ProjectRecord
-    supervisor: ViteSupervisor
-    queries: PreviewQueries
     control: ModelControl
     shim: EnforcementShim
-    session_id: str | None = None
+    # The selected app. `_bind_app` switches this pointer. A request that names an app reads a
+    # different view through the properties below, and that does not move this one.
+    _selected_view: AppView = field(repr=False)
+    # Every app this process has opened a view for, keyed by app id. The selected app's view is
+    # also `_selected_view`.
+    _views: dict[str, AppView] = field(default_factory=dict, repr=False)
     # The session a turn is CURRENTLY streaming into. Normally session_id, but a phased build runs
     # each phase in its own throwaway session, and two things must follow the live one rather than
     # the project's: Stop (interrupting the idle project session would leave the phase generating),
@@ -5806,9 +5882,6 @@ class Project:
     # every public build entry, read by the append_history calls that persist the turn. None means
     # an unscoped caller (CLI, tests) — it still builds, it just owns no conversation.
     build_conversation: str | None = None
-    # Attached dataset FILES: [{dataset_id, dataset, file, path, size}]. `path` is the
-    # workspace-relative symlink under public/data/ (what OpenCode @mentions and the app fetches).
-    attached: list[dict] = field(default_factory=list)
     # Set by the /v1/chat/completions handler when a model call the agent made this turn fails
     # upstream (bad model id, gateway auth, etc). build()/build_stream() check + clear this so a
     # failed turn is reported as an error instead of silently falling through to "typecheck clean"
@@ -6111,6 +6184,68 @@ class Project:
             "cost": {"url": self.cost_url, "project": self.cost_project},
             "manage": self.manage_url,
         }
+
+    def _active_view(self) -> AppView:
+        """The view a read of `workspace` and its neighbours is about.
+
+        A request that sent `X-Sage-App` bound a view here for its own duration. A request that did
+        not leaves the variable unset, and the read is the selected app.
+        """
+        bound = _request_view.get()
+        if bound is not None:
+            return bound
+        return self._selected_view
+
+    @property
+    def workspace(self) -> Workspace:
+        """The Built App on screen: `apps/<appId>/`, and everything inside it.
+
+        The person may point this at another app while a turn is running (#77), so a turn asks
+        `app_for_turn()` for the app it writes into rather than reading this."""
+        return self._active_view().workspace
+
+    @workspace.setter
+    def workspace(self, value: Workspace) -> None:
+        self._active_view().workspace = value
+
+    @property
+    def attached(self) -> list[dict]:
+        """Attached dataset files for the app on screen.
+
+        `{dataset_id, dataset, file, path, size}`. `path` is the workspace-relative symlink under
+        `public/data/` (what OpenCode @mentions and the app fetches)."""
+        return self._active_view().attached
+
+    @attached.setter
+    def attached(self, value: list[dict]) -> None:
+        self._active_view().attached = value
+
+    @property
+    def session_id(self) -> str | None:
+        """The OpenCode session cached for the app on screen. None forces a re-read from disk."""
+        return self._active_view().session_id
+
+    @session_id.setter
+    def session_id(self, value: str | None) -> None:
+        self._active_view().session_id = value
+
+    @property
+    def supervisor(self) -> ViteSupervisor:
+        """The preview server for the app on screen."""
+        return self._active_view().supervisor
+
+    @supervisor.setter
+    def supervisor(self, value: ViteSupervisor) -> None:
+        self._active_view().supervisor = value
+
+    @property
+    def queries(self) -> PreviewQueries:
+        """The named-query server for the app on screen."""
+        return self._active_view().queries
+
+    @queries.setter
+    def queries(self, value: PreviewQueries) -> None:
+        self._active_view().queries = value
 
 
 def _warn_if_shapeless(where: str, plan_md: str) -> None:
@@ -7168,13 +7303,36 @@ class Orchestrator:
         interrupted the running turn would throw away work in progress."""
         return self._turns.cancel(ticket_id)
 
+    def _remember_turn_workspace(self, ticket: _TurnTicket) -> None:
+        """Copy this request's workspace onto the ticket, once, before the turn waits.
+
+        A later select changes the selected app. It must not change the workspace this ticket
+        already named. A ticket that arrived with one keeps it.
+        """
+        if ticket.turn_workspace is not None:
+            return
+        stashed = _request_workspace.get()
+        if stashed is None and self._project is not None:
+            stashed = self._project._selected_view.workspace
+        elif stashed is None:
+            try:
+                stashed = self.project(start_preview=False, seed_app=False).workspace
+            except Exception:
+                log.exception("turn identity: could not read the app this turn is aimed at")
+                stashed = None
+        ticket.turn_workspace = stashed
+
     def prepare_stream_turn(self, turn_id: str, *, kind: str, conversation: str = "",
                             app: bool = False) -> tuple[_TurnTicket, str]:
         """Admit a route ticket before headers; return it and `running|pending|refused`."""
         ticket = _TurnTicket(turn_id)
         ticket.kind = kind
         ticket.conversation = conversation
-        ticket.app = self._turn_app_id() if app else ""
+        if app:
+            self._remember_turn_workspace(ticket)
+            ticket.app = ticket.turn_workspace.app_id if ticket.turn_workspace is not None else ""
+        else:
+            ticket.app = ""
         if self._turn_wedged:
             return ticket, "refused"
         running = self._turns.admit(ticket)
@@ -7736,8 +7894,9 @@ class Orchestrator:
                                project_name=self._cost_project_label,
                                build_policy=self._build_policy)
         shim.resolve_capability = self.route_capability
-        supervisor = _supervisor_for(workspace.path, domino_base_prefix())
+        supervisor = _supervisor_for(workspace.path, domino_base_prefix(), pinned_port=True)
         queries = PreviewQueries(workspace.path, self._wm.template)
+        view = AppView(workspace=workspace, supervisor=supervisor, queries=queries)
         # Cached BEFORE the preview starts, and the start below is best-effort (#500). A preview that
         # cannot start used to raise from here with `self._project` still None, so the attach never
         # cached and every later request re-ran this whole method. Each one holds a thread from
@@ -7746,10 +7905,11 @@ class Orchestrator:
         # model-assignment drawer, /api/health. The proxy is `async` and goes on answering, so the
         # session looks alive while nothing works. Measured live 2026-09-22 against a Vite supervisor
         # started on an app that had no node_modules.
-        self._project = Project(self._project_id, workspace, record, supervisor, queries, control, shim,
+        self._project = Project(self._project_id, record, control, shim, view,
                                 cost_url=self._gateway_ui_url,
                                 cost_project=self._cost_project_label if self._gateway_ui_url else None,
                                 manage_url=self._manage_url)
+        self._project._views[workspace.app_id] = view
         self._project.context_continuations = ContextContinuationRegistry(self._build_policy)
         if start_preview:
             # Separately, because the dev server and the data-preview server fail for unrelated
@@ -7847,7 +8007,8 @@ class Orchestrator:
         # same filter the plan pin is answered from everywhere else (#171).
         app_ids = self._wm.app_ids()
         plans = self._plan_pins(project, app_ids)
-        return [self._app_row(app_id, project.workspace.app_id, plans, self._building_app_id())
+        return [self._app_row(app_id, project._selected_view.workspace.app_id, plans,
+                              self._building_app_id())
                 for app_id in app_ids]
 
     # ---- what the remote has that we don't (#78) ----
@@ -8094,7 +8255,7 @@ class Orchestrator:
     def _one_app(self, app_id: str) -> dict:
         """The rail row for one app, for the two callers that just changed it."""
         project = self.project(start_preview=False, seed_app=False)
-        return self._app_row(app_id, project.workspace.app_id,
+        return self._app_row(app_id, project._selected_view.workspace.app_id,
                              self._plan_pins(project, [app_id]), self._building_app_id())
 
     def create_app(self, stack: str | None = None) -> dict:
@@ -8139,7 +8300,7 @@ class Orchestrator:
         if app_id not in self._wm.app_ids():
             raise KeyError(app_id)
         with self._app_lock:
-            if app_id != project.workspace.app_id:
+            if app_id != project._selected_view.workspace.app_id:
                 self._wm.select(app_id)
                 self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
         return self._one_app(app_id)
@@ -8306,6 +8467,9 @@ class Orchestrator:
             # minute, and holding the rail's own lock across that would make every click in the
             # rail wait for Domino.
             with self._app_lock:
+                gone = project._views.get(app_id)
+                if gone is not None:
+                    gone.supervisor.stop()
                 self._wm.delete_app(app_id)
                 project.record.clear_plan_docs(app_id)
                 # And the rail's tags, on the same rule as the plan documents: they name an app that
@@ -8316,8 +8480,11 @@ class Orchestrator:
                 # `ensure` answers with the newest app left, or seeds one for a Project that now has
                 # none — the same not-yet-built app a Project starts with, rather than a Build mode
                 # pointed at a directory that is not there.
-                if project.workspace.app_id == app_id:
+                if project._selected_view.workspace.app_id == app_id:
                     self._bind_app(project, self._wm.ensure(self._project_id, seed_app=True))
+                # `_bind_app` remembers the view it left. The deleted app is gone; its preview
+                # was stopped above and must not stay reachable.
+                project._views.pop(app_id, None)
         finally:
             self._release_turn()
         return {
@@ -8328,6 +8495,29 @@ class Orchestrator:
             "dominoApp": "deleted" if deleted_domino_app else ("running" if deployed else "none"),
             "selected": self._wm.selected_app_id(),
         }
+
+    def _view_for(self, project: Project, app_id: str) -> AppView:
+        """The view for one app, created if this process has not opened it yet.
+
+        This does not select the app, stop a preview, or call `_bind_app`. A request names an app
+        by reading the view this returns.
+        """
+        selected = project._selected_view
+        if getattr(selected.workspace, "app_id", None) == app_id:
+            project._views[app_id] = selected
+            return selected
+        found = project._views.get(app_id)
+        if found is not None and getattr(found.workspace, "app_id", None) == app_id:
+            return found
+        workspace = self._wm.app_workspace(self._project_id, app_id)
+        view = AppView(
+            workspace=workspace,
+            supervisor=_supervisor_for(workspace.path, domino_base_prefix()),
+            queries=PreviewQueries(workspace.path, self._wm.template),
+            attached=list(workspace.read_attachments()),
+        )
+        project._views[app_id] = view
+        return view
 
     def _bind_app(self, project: Project, workspace: Workspace) -> Project:
         """Point the attached Project at a different Built App.
@@ -8340,38 +8530,52 @@ class Orchestrator:
         turn. A turn asks `project.app_for_turn()` for its app and pinned its attachments at its start,
         so what changes here is only what the person is looking at.
 
-        The preview is STOPPED rather than restarted here. It serves whichever directory it was
-        started in, so one left running would go on serving the app the person just left;
-        `_preview_upstream` starts it again in the new directory the next time a preview is asked
-        for. The Build session goes with it — a session is opened on one directory, and the one
-        cached here belongs to the app being left.
+        The preview of the app being left keeps running. Another tab may still have it open, and
+        selecting this app is not what stops that one. Delete stops the deleted app's supervisor
+        and nothing else. The view that was left keeps its own workspace, so a request that already
+        named that app still reads it.
+
+        Assignments in here are the selected app's. A request that named a different app must not
+        have that view overwritten by the switch, so the request binding is unset for the duration.
         """
-        if project.workspace.path != workspace.path:
-            project.supervisor.stop()
-            project.queries.stop()
-            project.supervisor = _supervisor_for(workspace.path, domino_base_prefix())
-            project.queries = PreviewQueries(workspace.path, self._wm.template)
-        with project.pre_edit_tree_lock:
-            project.workspace = workspace
-            project.session_id = None
-            # A NEW list rather than a clear: a turn in flight pinned the one it started with, and
-            # emptying that one under it would leave its end-of-turn repairs with nothing to restore
-            # from (see Project.turn_attached and _restore_attachments).
-            project.attached = []
-            if resolve_stack(workspace.path).ready:
-                if self._prepare_app_files():
-                    self._restart_preview_for_config_change(project)
-                self._voice_agents_md(project)
-                self._splice_instructions(project)
-                # The third door onto an app, and the one `create_app` takes: what Chat bound
-                # before the app existed is derived here too (`_write_app_resources`).
-                self._write_app_resources(project)
-            self._rehydrate_attached(project)
-            # A switch to another app must not move the Build's pinned baseline. Switching back can
-            # repair that pinned app, so include those user-side writes before releasing the witness.
-            if workspace.path == project.app_for_turn().path:
-                self._rebaseline_turn(project)
-        return project
+        token = _request_view.set(None)
+        try:
+            leaving = project._selected_view
+            if leaving.workspace.path != workspace.path:
+                left_id = getattr(leaving.workspace, "app_id", None)
+                if left_id:
+                    project._views[left_id] = leaving
+                leaving.queries.stop()
+                dest = self._view_for(project, workspace.app_id)
+                dest.queries.stop()
+                dest.queries = PreviewQueries(workspace.path, self._wm.template)
+                project._selected_view = dest
+            with project.pre_edit_tree_lock:
+                project.workspace = workspace
+                project.session_id = None
+                # A NEW list rather than a clear: a turn in flight pinned the one it started with, and
+                # emptying that one under it would leave its end-of-turn repairs with nothing to restore
+                # from (see Project.turn_attached and _restore_attachments).
+                project.attached = []
+                bound_id = getattr(workspace, "app_id", None)
+                if bound_id:
+                    project._views[bound_id] = project._selected_view
+                if resolve_stack(workspace.path).ready:
+                    if self._prepare_app_files():
+                        self._restart_preview_for_config_change(project)
+                    self._voice_agents_md(project)
+                    self._splice_instructions(project)
+                    # The third door onto an app, and the one `create_app` takes: what Chat bound
+                    # before the app existed is derived here too (`_write_app_resources`).
+                    self._write_app_resources(project)
+                self._rehydrate_attached(project)
+                # A switch to another app must not move the Build's pinned baseline. Switching back can
+                # repair that pinned app, so include those user-side writes before releasing the witness.
+                if workspace.path == project.app_for_turn().path:
+                    self._rebaseline_turn(project)
+            return project
+        finally:
+            _request_view.reset(token)
 
     @staticmethod
     def _plan_docs_naming_app(docs: list[dict], app_id: str) -> list[dict]:
@@ -8470,9 +8674,43 @@ class Orchestrator:
 
     def _restart_preview_for_config_change(self, project: Project) -> None:
         project.supervisor.stop()
-        project.supervisor = _supervisor_for(project.workspace.path, domino_base_prefix())
+        app_id = getattr(project.workspace, "app_id", None)
+        pinned = bool(app_id) and app_id == self._wm.selected_app_id()
+        project.supervisor = _supervisor_for(
+            project.workspace.path, domino_base_prefix(), pinned_port=pinned)
 
-    def _ensure_preview_running(self, project: Project) -> None:
+    def view_for_preview(self, project: Project) -> AppView:
+        """The preview a `/preview/...` request is for. An app id in the path is that app.
+        Anything else is the process default, not whichever tab last sent a header."""
+        from ..preview.proxy import preview_route_app
+        app_id = preview_route_app.get()
+        if app_id:
+            return self._view_for(project, app_id)
+        return project._selected_view
+
+    def _account_preview_traffic(self, project: Project, view: AppView | None = None) -> None:
+        """Mark `view` as just used, and stop any preview nobody has asked for in 180 seconds.
+
+        Called from the proxy and from preview status/retry. The open tab polls status every
+        1.5 seconds, which keeps its supervisor alive. No thread waits on the clock.
+        """
+        now = time.monotonic()
+        for other in list(project._views.values()):
+            sup = other.supervisor
+            last = getattr(sup, "last_traffic", None)
+            if last is None or now - last < _PREVIEW_IDLE_S:
+                continue
+            idle = getattr(sup, "idle_stop", None)
+            if idle is not None:
+                idle()
+            else:
+                sup.stop()
+        target = view if view is not None else project._active_view()
+        note = getattr(target.supervisor, "note_traffic", None)
+        if note is not None:
+            note(now)
+
+    def _ensure_preview_running(self, project: Project, view: AppView | None = None) -> None:
         """Nudge a dead preview back up, WITHOUT making this request wait or fail.
 
         Every preview request reaches here, and a pane showing a broken app re-polls about once a
@@ -8483,12 +8721,13 @@ class Orchestrator:
         the session a thread or a turn.
         """
         try:
-            project.supervisor.upstream()
+            target = view if view is not None else project._active_view()
+            target.supervisor.upstream()
         except RuntimeError:
-            project.supervisor.retry_start()
-        if project.queries.port is None:
+            target.supervisor.retry_start()
+        if target.queries.port is None:
             try:
-                project.queries.start()
+                target.queries.start()
             except Exception:
                 log.exception("preview: the queries server could not start")
 
@@ -8700,7 +8939,7 @@ class Orchestrator:
         conversation's own session."""
         project = self.project()
         self._switch_conversation(project, conversation)
-        self._adopt_legacy_build_history(project.workspace, project.record)
+        self._adopt_legacy_build_history(project.app_for_turn(), project.record)
 
     @staticmethod
     def _name_conversation(project: Project, conversation: str | None, prompt: str) -> str:
@@ -8893,7 +9132,7 @@ class Orchestrator:
             ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
         try:
             project = self._ensure_seeded()
-            self._pin_turn_app(project)
+            self._pin_turn_app(project, ticket.turn_workspace)
             timing.bind_context(
                 ticket.id, app_id=project.app_for_turn().app_id,
                 conversation_id=conversation, record=ticket.timing_record)
@@ -9681,6 +9920,7 @@ class Orchestrator:
         how_sage_works = "direct" if how_sage_works == "direct" else "guided"
         direct = how_sage_works == "direct"
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
+        self._remember_turn_workspace(ticket)
         timing_started = (time.time(), time.monotonic())
         if _already_granted:
             self._begin_model_record()
@@ -9700,8 +9940,9 @@ class Orchestrator:
             # stamp this turn's quiet window reads has to start empty (#466).
             self.project().last_stream_chunk_at = 0.0
             self._turn_gave_up = False
-            self._begin_conversation(conversation)
             project = self.project()
+            self._pin_turn_app(project, ticket.turn_workspace)
+            self._begin_conversation(conversation)
             # Name the Conversation off the first thing typed into it, exactly as Chat does at the
             # top of _chat_stream. Build shared the record all along and never wrote the one field
             # the rail draws, so a Conversation opened in Build read "New conversation" for the rest
@@ -9730,7 +9971,6 @@ class Orchestrator:
             # neither. A reload reads the name off the Thread row, where it has always been.
             if named:
                 yield {"type": "conversation_named", "conversation": conversation, "title": named}
-            self._pin_turn_app(project)
             project.context_continuations.invalidate_available()
             timing.bind_context(
                 ticket.id, app_id=project.app_for_turn().app_id,
@@ -10163,6 +10403,7 @@ class Orchestrator:
         *, turn_ticket: _TurnTicket,
     ):
         """Run one claimed Continue as a new top-level implementation Build."""
+        self._remember_turn_workspace(turn_ticket)
         timing_started = (time.time(), time.monotonic())
         yield from self._acquire_turn(
             turn_ticket, kind="build", conversation=continuation.conversation,
@@ -10179,9 +10420,9 @@ class Orchestrator:
             turn_ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
         try:
             self._turn_gave_up = False
-            self._begin_conversation(continuation.conversation)
             project = self.project()
-            self._pin_turn_app(project)
+            self._pin_turn_app(project, turn_ticket.turn_workspace)
+            self._begin_conversation(continuation.conversation)
             if project.app_for_turn().app_id != continuation.app_id:
                 yield {"type": "error", "message": "This continuation belongs to another app."}
                 yield {"type": "done", "ok": False, "decision": "invalid continuation",
@@ -12631,6 +12872,27 @@ class Orchestrator:
             })
         return out or None
 
+    def _chat_data_dir(self, store: ThreadStore, thread_id: str) -> Path | None:
+        """The `public/data` Chat may read for this thread.
+
+        The newest bound handoff whose app directory is still there. Otherwise the selected
+        app, when that directory is there. Otherwise nothing to link. Chat sends no app header,
+        so this does not follow another tab.
+        """
+        for entry in reversed(store.read_handoffs(thread_id)):
+            if str(entry.get("status") or "") != "bound":
+                continue
+            app_id = str(entry.get("appId") or "")
+            if not app_id:
+                continue
+            app_dir = self._wm.apps_dir / app_id
+            if app_dir.is_dir():
+                return app_dir / "public" / "data"
+        selected_dir = self._wm.apps_dir / self._wm.selected_app_id()
+        if selected_dir.is_dir():
+            return selected_dir / "public" / "data"
+        return None
+
     def _ensure_thread_session(self, store: ThreadStore, thread_id: str, project: Project,
                                client: OpenCodeClient) -> tuple[str, bool]:
         """This Thread's OpenCode session, and whether a turn still owes it a rebuild.
@@ -12654,19 +12916,18 @@ class Orchestrator:
         talked to. Doing it in silence was the defect.
         """
         # Chat stands at the Project root, where its Threads, Artifacts and scratch live. The one
-        # thing it borrows from the app is `public/data/`, and only once an app exists to borrow
-        # from: linking it would otherwise create the app directory a confirmed handoff is what
-        # creates (ADR-0008).
-        has_app = project.workspace.exists()
+        # thing it borrows from the app is `public/data/`. That app is the conversation's newest
+        # bound handoff, not whichever app a Build tab selected last.
+        data_dir = self._chat_data_dir(store, thread_id)
         work = str(ensure_chat_workdir(
             project.record.path, self._chat_agents_md(),
-            data_dir=project.workspace.path / "public" / "data" if has_app else None,
+            data_dir=data_dir,
             thread_id=thread_id))
         # That link creates `public/data/` in order to point at it, so the tree can now exist
         # before anything has been attached. It must be out of git either way: the gitignore line
         # is what keeps Dataset bytes from ever reaching the app's repo.
-        if has_app:
-            self._ensure_gitignored(project.workspace.path, "public/data/")
+        if data_dir is not None:
+            self._ensure_gitignored(data_dir.parent.parent, "public/data/")
         rec = store.read_session(thread_id) or {}
         # A debt an EARLIER call recorded and no turn has paid yet. Read on the reuse path too, and
         # that is the whole point of storing it: the planner (`draft_handoff_plan`) mints in this
@@ -15974,7 +16235,18 @@ class Orchestrator:
                     yield done
                     return
                 now = time.monotonic()
-                quiet_limit = tool_quiet if running_tools else idle_quiet
+                # A live read stays quiet for as long as the server is judging row text. That
+                # silence is the ceiling's, not the 240s tool window's — a bash call, including
+                # one whose command mentions a live read, still uses the tool window. A caller
+                # who passed timeout_s already set both windows to that number.
+                live_read_open = (
+                    timeout_s is None
+                    and any(_chat_label_is_live_read(label) for label in running_tools.values())
+                )
+                quiet_limit = (
+                    _CHAT_TURN_MAX_S if live_read_open
+                    else tool_quiet if running_tools else idle_quiet
+                )
                 # Two witnesses to a turn being alive, not one (#466). `last_activity` is what
                 # OpenCode says, and OpenCode says nothing at all during a model call — so a single
                 # call slower than this window read as a stopped turn and was killed mid-answer.
@@ -15993,6 +16265,12 @@ class Orchestrator:
                 alive = max(last_activity, chunk_at if chunk_at >= started else 0.0)
                 quiet = now - alive >= quiet_limit
                 ceiling = now - started >= _CHAT_TURN_MAX_S
+                # A live read's quiet window is the ceiling's length, counted from the last thing
+                # the turn said. A read that opened as the turn opened has both true on the poll
+                # that notices the ceiling, and the quiet sentence would say a step didn't finish.
+                # The ceiling's sentence is the one that is true.
+                if live_read_open and ceiling:
+                    quiet = False
                 # When the work stops and the writing starts. A ceiling no longer than the slice
                 # reserves nothing at all rather than reserving everything: the tail is carved OUT
                 # of the ceiling, so `<= 0` is a ceiling with no work in front of it, and opening
@@ -17178,14 +17456,18 @@ class Orchestrator:
                 pass
 
     @staticmethod
-    def _pin_turn_app(project: Project) -> None:
+    def _pin_turn_app(project: Project, workspace: Workspace | None = None) -> None:
         """Name the Built App this turn writes into, for as long as it runs (#77).
 
         Taken at the top of every turn, under the turn lock. The person may point the rail at
         another app while the turn streams, and everything after this — the session's directory,
         the log, the revert, the `built` latch, the end-of-turn repairs — has to mean the app the
-        turn began in rather than whichever one is on screen when it gets there."""
-        project.turn_app = project.workspace
+        turn began in rather than whichever one is on screen when it gets there.
+
+        `workspace` is the one the request stashed before it waited for the lock. A caller that
+        has no ticket (a test that pins by hand) falls through to the app on screen.
+        """
+        project.turn_app = workspace if workspace is not None else project.workspace
         project.page_validation = None
         project.phase_verification = None
         project.turn_attached = project.attached
@@ -18841,7 +19123,12 @@ class Orchestrator:
         if not ticket.admitted:
             ticket.kind = kind
             ticket.conversation = conversation or ""
-            ticket.app = self._turn_app_id() if app else ""
+            if app:
+                self._remember_turn_workspace(ticket)
+                ticket.app = (ticket.turn_workspace.app_id
+                              if ticket.turn_workspace is not None else "")
+            else:
+                ticket.app = ""
             self._turns.admit(ticket)
             if ticket.queued:
                 ticket.snapshot = self._turn_snapshot(conversation, app=app)
@@ -22627,6 +22914,7 @@ class Orchestrator:
         # approve IS a build turn and a Workbench that queued one and refused the other is a rule
         # people would have to learn instead of guess.
         ticket = turn_ticket or _TurnTicket(turn_id or new_id("turn"))
+        self._remember_turn_workspace(ticket)
         timing_started = (time.time(), time.monotonic())
         # `_already_granted` and `user_text` are the Continue-with-another-model click's (#569),
         # which resumes a failed approved build through this door after taking the lock and
@@ -22646,9 +22934,9 @@ class Orchestrator:
             ticket.timing_record, "turn.acquire", timing_started[1], acquired_at)
         try:
             self._turn_gave_up = False
-            self._begin_conversation(conversation)
             project = self.project()
-            self._pin_turn_app(project)
+            self._pin_turn_app(project, ticket.turn_workspace)
+            self._begin_conversation(conversation)
             project.context_continuations.invalidate_available()
             timing.bind_context(
                 ticket.id, app_id=project.app_for_turn().app_id,

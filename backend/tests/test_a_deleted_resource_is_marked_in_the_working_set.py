@@ -261,7 +261,7 @@ def test_the_stuck_rows_door_says_where_it_took_you():
 
 
 def test_a_door_onto_an_app_that_is_gone_does_not_open():
-    """`selectApp` swallows its own failure: it warns and hands back the app already selected.
+    """The loaded list does not contain the app the door names, so `selectApp` warns and stays.
 
     Routing anyway would put a dead id in `?app=`, and BuildMode's effect would ask for it again and
     warn a second time over a page still showing the old app. One warning, and no move.

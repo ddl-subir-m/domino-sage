@@ -1,29 +1,10 @@
-"""The URL seeds the selected app once, then follows the server (#100).
+"""A Build tab's app is the one its URL names.
 
-WHAT WAS WRONG. `builder.js` re-asserted `?app=` whenever `activeApp` drifted away from it. That
-reads as a tab holding its deep link, but `selectApp` WRITES: it posts the per-Project selection —
-the one `WorkspaceManager.selected_app_id` resolves and `Project.app_for_turn` reads — and reloads
-the whole of Build. So a tab was not holding a view, it was overwriting the app every other tab is
-looking at, on the 30-second poll, for as long as it stayed open. Two tabs naming two apps traded
-the selection back and forth for ever, each one's poll reading the other's write as drift.
-
-WHAT WAS DECIDED. The server is authoritative; the URL seeds it and then follows it. The same
-shape the resolution effect below it already had for the same reason — it leaves `activeApp` out of
-its dependencies so that selecting the app it resolved cannot make it ask again.
-
-WHY THE REWRITE IS HALF THE FIX. Server-wins on its own picks a winner and leaves the address bar
-naming the loser, which is the disagreement this ticket is named after rather than a fix for it. So
-a selection that moves under a tab takes the URL with it, through `replaceState` — following
-somebody else's choice is not a place the Back button should return to. And the rewrite must not
-come back round as a request: the tab notes the app it wrote itself, and the seed skips it.
-
-WHAT IS DELIBERATELY NOT REWRITTEN. A link naming NO app. It disagrees with nothing, and pinning
-the resolved app into it would take the resolution away from whoever opens the link next.
-
-TWO STORES, NOT ONE. `js/route_selection_harness.mjs` runs each tab in its own vm context, because
-the claim is about what two tabs do to each other THROUGH the server and one store cannot show it.
-Its React shim honours effect dependencies, which is the one thing this fix turns on: "seeds once"
-and "re-asserts for ever" are the same code with different dependency lists.
+Two tabs naming two apps used to trade the project selection: each poll read the other tab's
+`POST /apps/{id}/select` as drift and wrote it back. A tab now keeps the app in `?app=`. `selectApp`
+sets that app in this tab and does not post select. Create, delete, and handoff still select, and
+that remains the default a URL with no app lands on. A poll refreshes the row; it does not install
+the other tab's app, and it does not rewrite this tab's `?app=`.
 """
 
 from __future__ import annotations
@@ -74,8 +55,10 @@ def test_pending_app_selection_cannot_rewrite_the_route_or_old_app_preference(ou
     if outcome == "success":
         assert result["after"]["view"]["app"] == "app_d"
     else:
-        assert result["after"]["view"]["app"] == "app_a"
-        assert result["after"]["view"]["hash"].endswith("?app=app_a")
+        # The URL already names the app the click asked for. A reload that fails does not put the
+        # address bar back on the app this tab left.
+        assert result["after"]["view"]["app"] == "app_d"
+        assert result["after"]["view"]["hash"].endswith("?app=app_d")
 
 
 @needs_node
@@ -122,14 +105,25 @@ def _effect_calling(needle: str) -> tuple[str, str]:
 
 
 @needs_node
-def test_each_tab_seeds_the_selection_once_when_it_arrives():
-    """A deep link still means what it meant: the app it names is the app you land on. One write
-    each, because that is the arrival — the ticks after it are the part that must be free."""
+def test_two_tabs_keep_the_app_their_url_names():
+    """Tab A is on app A. Tab B's next bindings read still names app B, and neither poll rewrites
+    the other's `?app=`."""
     step = _two_tabs()
-    assert step["seeded"]["writes"] == [
-        "t1 POST /apps/app_a/select",
-        "t2 POST /apps/app_b/select",
+    assert [v["hash"] for v in step["views"]] == [
+        "#/build/thr_many?app=app_a",
+        "#/build/thr_many?app=app_b",
     ]
+    named = [c for c in step["calls"] if c.startswith("t2 ") and "GET /bindings" in c]
+    assert named, step["calls"]
+    assert named[-1].endswith(" app=app_b"), named
+
+
+@needs_node
+def test_each_tab_seeds_the_selection_once_when_it_arrives():
+    """A deep link still means what it meant: the app it names is the app you land on. It does not
+    post the project selection — that write is what the other tab's poll used to follow."""
+    step = _two_tabs()
+    assert step["seeded"]["writes"] == []
     assert [v["app"] for v in step["seeded"]["views"]] == ["app_a", "app_b"]
 
 
@@ -143,31 +137,28 @@ def test_the_ticks_write_nothing_at_all():
 
 @needs_node
 def test_two_tabs_reach_a_steady_state_rather_than_trading_the_selection():
-    """Asserted as a steady state rather than as an outcome: it is not enough that the selection
-    stops moving on the tick this test happens to look at, because the ping-pong took a full round
-    trip to show and any single tick could be caught mid-swap."""
+    """Each tab stays on the app its URL names. The project selection does not move, because neither
+    tab posted one."""
     step = _two_tabs()
-    assert [r["selected"] for r in step["rounds"]] == ["app_b", "app_b", "app_b"]
+    assert [r["selected"] for r in step["rounds"]] == ["app_a", "app_a", "app_a"]
     for one in step["rounds"]:
-        assert [v["app"] for v in one["views"]] == ["app_b", "app_b"]
+        assert [v["app"] for v in one["views"]] == ["app_a", "app_b"]
 
 
 @needs_node
 def test_the_tab_that_lost_follows_the_server_rather_than_reverting_it():
-    """`t1`'s URL names `app_a` and `t2` selected `app_b` after it. The server is authoritative,
-    so `t1` shows `app_b` — the app whose transcript, Bindings and preview every other surface in
-    that tab is already reading."""
+    """`t1`'s URL names `app_a` and `t2` is showing `app_b`. `t1` keeps `app_a` — the app its
+    transcript, Bindings and preview are reading."""
     last = _two_tabs()["rounds"][-1]["views"][0]
-    assert last["app"] == "app_b"
-    assert last["name"] == "P&L report"
+    assert last["app"] == "app_a"
+    assert last["name"] == "Desk dashboard"
 
 
 @needs_node
 def test_the_address_bar_stops_naming_an_app_the_tab_is_not_showing():
-    """The other half. Picking a winner and leaving the URL naming the loser is the disagreement
-    this ticket is named after, not a fix for it."""
+    """Neither poll rewrites the other's `?app=`."""
     assert [v["hash"] for v in _two_tabs()["views"]] == [
-        "#/build/thr_many?app=app_b",
+        "#/build/thr_many?app=app_a",
         "#/build/thr_many?app=app_b",
     ]
 
@@ -183,23 +174,20 @@ def _moved() -> dict:
 
 
 @needs_node
-def test_a_selection_moved_elsewhere_is_followed_and_the_url_goes_with_it():
+def test_a_selection_moved_elsewhere_leaves_this_tab_where_it_is():
     step = _moved()
     assert step["before"]["app"] == "app_a"
-    assert step["after"]["app"] == "app_c"
-    assert step["after"]["hash"] == "#/build/thr_many?app=app_c"
+    assert step["after"]["app"] == "app_a"
+    assert step["after"]["hash"] == "#/build/thr_many?app=app_a"
 
 
 @needs_node
-def test_the_rewritten_url_does_not_ask_for_the_old_app_back():
-    """The rewrite hands the seed effect a new `?app=`, which is the one way this fix could have
-    re-entered itself. The tab knows it wrote that one, so nothing is selected on the way through
-    and the second tick has nothing left to undo."""
+def test_a_poll_after_somebody_else_moved_does_not_ask_for_the_old_app_back():
+    """The tab did not follow, so it has nothing to undo. The reads a tick has always cost, and no
+    `loadBuild` behind them."""
     step = _moved()
     assert step["tickWrites"] == []
-    # The reads a tick has always cost, and no `loadBuild` cascade behind them: following is not
-    # an app switch, and the app-scoped lists moved with the selection under #95 already.
-    assert step["calls"].count("t1 GET /apps") == 2
+    assert sum(c.startswith("t1 GET /apps") for c in step["calls"]) == 2
 
 
 # ---- the paths that still write --------------------------------------------------------------
@@ -207,15 +195,14 @@ def test_the_rewritten_url_does_not_ask_for_the_old_app_back():
 
 @needs_node
 def test_picking_an_app_still_goes_through_the_route():
-    """The one-writer rule (#78). The header's app list writes the ROUTE, and this effect is what
-    turns that into a selection — a seed that stopped reading the URL would leave the control lit
-    up over an app nobody had switched to."""
+    """The header's app list writes the ROUTE, and the seed effect turns that into this tab's app.
+    It does not post the project selection."""
     step = _run(
         [{"at": "#/build/thr_many?app=app_a", "pick": "#/build/thr_many?app=app_d"}]
     )[-1]
-    assert step["writes"] == ["t1 POST /apps/app_d/select"]
+    assert step["writes"] == []
     assert step["after"]["app"] == "app_d"
-    assert step["selected"] == "app_d"
+    assert step["selected"] == "app_a"
 
 
 @needs_node
@@ -227,8 +214,7 @@ def test_a_link_naming_no_app_resolves_one_and_is_not_pinned_to_it():
     assert step["settled"]["app"] == "app_c"
     assert step["settled"]["hash"] == "#/build/thr_bound"
     assert step["after"]["hash"] == "#/build/thr_bound"
-    # Resolved once and selected once, and the ticks behind it ask for nothing.
-    assert step["writes"] == ["t1 POST /apps/app_c/select"]
+    assert step["writes"] == []
     assert step["tickWrites"] == []
 
 
@@ -267,7 +253,7 @@ def test_clicking_a_conversation_moves_build_to_the_app_it_bound():
     assert clicked["view"]["app"] == "app_c"
     assert clicked["view"]["thread"] == "thr_bound"
     assert clicked["view"]["hash"] == "#/build/thr_bound"
-    assert clicked["writes"] == ["t1 POST /apps/app_c/select"]
+    assert clicked["writes"] == []
 
 
 @needs_node
@@ -277,7 +263,7 @@ def test_a_conversation_that_bound_several_lands_on_the_one_it_bound_last():
     record, which the server has already reduced to the newest bound entry."""
     (clicked,) = _acts({"click": "thr_twice"})
     assert clicked["view"]["app"] == "app_d"
-    assert clicked["writes"] == ["t1 POST /apps/app_d/select"]
+    assert clicked["writes"] == []
 
 
 @needs_node
@@ -309,7 +295,8 @@ def test_the_conversation_is_never_drawn_beside_an_app_it_did_not_bind():
         assert frame["app"] == "app_c", clicked["trail"]
     # And the first thing the click asked the server for is the selection itself: a lookup ahead
     # of it would be the round trip the frame above is spent waiting for.
-    assert clicked["calls"][0] == "t1 POST /apps/app_c/select", clicked["calls"]
+    assert clicked["calls"][0].startswith("t1 GET /project"), clicked["calls"]
+    assert not any(c.endswith("/select") for c in clicked["calls"])
 
 
 @needs_node
@@ -343,8 +330,8 @@ def test_an_app_started_inside_build_is_still_resolved_the_slow_way():
     costs the round trip the common path no longer pays."""
     (clicked,) = _acts({"click": "thr_infield"})
     assert clicked["view"]["app"] == "app_d"
-    assert clicked["writes"] == ["t1 POST /apps/app_d/select"]
-    assert "t1 GET /threads/thr_infield/conversation" in clicked["calls"]
+    assert clicked["writes"] == []
+    assert any(c.startswith("t1 GET /threads/thr_infield/conversation") for c in clicked["calls"])
 
 
 def test_the_rail_stops_stamping_the_selected_app_into_its_links():
@@ -389,31 +376,19 @@ def test_the_resolution_effect_still_fires_once():
     assert deps.strip() == ", [appId, conversationId]", deps
 
 
-def test_the_url_follows_through_replace_state_rather_than_a_push():
-    """Following somebody else's selection is not a place the Back button should return to, and
-    `SW.router.replace` is the only thing in the Workbench that writes a URL without one."""
-    body, _ = _effect_calling("followed.current = shown")
-    assert "SW.router.go" not in body
-    assert "replaceState" in (_JS / "router.js").read_text()
+def test_the_tab_does_not_rewrite_its_url_to_follow_another_app():
+    """The effect that rewrote `?app=` when `activeApp` drifted is gone. The seed effect remains."""
+    src = (_JS / "modes" / "builder.js").read_text()
+    body = src[src.index("SW.BuildMode = function BuildMode("):]
+    assert "followed.current" not in body
+    assert "SW.router.replace(SW.appRoute(activeApp))" not in body
+    _, deps = _effect_calling("SW.store.selectApp(appId)")
+    assert deps.strip() == ", [appId]", deps
 
 
-def test_the_rewrite_uses_the_one_route_grammar():
-    """`SW.appRoute` is Build's route grammar and lives beside the router that reads it. A second
-    copy of the template here would be a second place for `#/build?app=` to lose its conversation."""
-    body, _ = _effect_calling("followed.current = shown")
-    assert "SW.appRoute(" in body
-    assert "#/build" not in body
-
-
-def test_picking_the_app_a_rewrite_once_named_still_selects_it():
-    """The guard that stops a followed rewrite asking for its own app back is a ref, and a ref
-    survives renders. Every other test here mounts its own tab, so each gets a fresh one.
-
-    Drive three acts against ONE tab: follow the server to `app_b`, which records `app_b`; pick
-    `app_a`; then pick `app_b` back. If that record were still `app_b` the last click would be
-    swallowed as the rewrite it is not, the selection would never move, and the URL would snap back
-    to the app the server still has — a picker click doing nothing, which is #100's disagreement
-    reached from the other side."""
+def test_picking_an_app_the_other_tab_selected_still_selects_it_here():
+    """Another tab's selection does not move this one. Picking the app that tab selected still
+    shows it here, and still does not post the project selection."""
     step = _run([{"at": "#/build/thr_many?app=app_a", "sequence": [
         {"moveTo": "app_b"},
         {"pick": "#/build/thr_many?app=app_a"},
@@ -421,7 +396,10 @@ def test_picking_the_app_a_rewrite_once_named_still_selects_it():
     ]}])[-1]
 
     followed, picked_away, picked_back = step["acts"]
-    assert followed["writes"] == [], "following the server must not write the selection back"
-    assert picked_away["writes"] == ["t1 POST /apps/app_a/select"]
-    assert picked_back["writes"] == ["t1 POST /apps/app_b/select"], step["acts"]
+    assert followed["writes"] == []
+    assert followed["view"]["app"] == "app_a"
+    assert followed["view"]["hash"].endswith("app=app_a")
+    assert picked_away["writes"] == []
+    assert picked_back["writes"] == []
+    assert picked_back["view"]["app"] == "app_b"
     assert picked_back["view"]["hash"].endswith("app=app_b")

@@ -4,10 +4,19 @@ window.SW = window.SW || {};
 // slash would escape the app's mount path.
 const BASE = './api';
 
+// The app this Build tab is showing. A missing header is the selected app, so a Build request that
+// forgot this one would land on whichever tab selected last. Chat has no app picker and sends none.
+function appHeaders() {
+  const route = SW.router && SW.router.get && SW.router.get();
+  const app = SW.store && SW.store.get && SW.store.get().activeApp;
+  if (route && route.mode === 'build' && app && app.id) return { 'X-Sage-App': app.id };
+  return {};
+}
+
 async function request(path, options = {}) {
   const url = `${BASE}${path}`;
   try {
-    const headers = { ...(options.headers || {}) };
+    const headers = { ...appHeaders(), ...(options.headers || {}) };
     if (options.body && !(options.body instanceof Blob) && typeof options.body !== 'string') {
       headers['Content-Type'] = headers['Content-Type'] || 'application/json';
     }
@@ -337,6 +346,7 @@ SW.api = {
   // it.
   throughStartup,
   stillStarting,
+  appHeaders,
 
   me: () => request('/me'),
   brand: () => request('/brand'),

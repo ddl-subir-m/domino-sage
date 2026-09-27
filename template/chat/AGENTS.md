@@ -237,8 +237,10 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
 - For a CSV or similar file, read it with pandas (or the stdlib csv module) from the path given
   in context. For a {dataSource}, use `live_read_query` when it is in your tool list. A count
   comes back, and so does a name you group by. The text of a row does not. Do not import
-  `DataSourceClient` to discover how to query. Use it, in one script, only when that tool is
-  absent or when you need row text `live_read_query` will not return:
+  `DataSourceClient` to discover how to query. Do not import `DataSourceClient` to read row text.
+  Row text is one `analyze_text` call, after the catalog lookup this prompt already describes.
+  What a script prints is withheld on the next step, and that withhold is not a failed connection.
+  Use `DataSourceClient`, in one script, only when `live_read_query` is absent from the tool list:
   `from domino_data.data_sources import DataSourceClient` then
   `DataSourceClient().get_datasource("<name from context>").query("<sql>").to_pandas()` — against
   the table the context names. In an open investigation, other relevant tables in that attached

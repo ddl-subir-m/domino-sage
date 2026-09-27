@@ -136,6 +136,14 @@ def test_the_prompt_never_promises_python_it_may_not_have():
     says("what you would do once it is there")
     assert "say what you cannot do" not in md
 
+    # Row text is a live read, not a client import. The withhold that replaces a script's
+    # print is not a dead connection, and the client is only for a turn whose tool list
+    # has no live_read_query.
+    says("Do not import `DataSourceClient` to read row text.")
+    says("that withhold is not a failed connection")
+    says("only when `live_read_query` is absent from the tool list")
+    assert "when you need row text `live_read_query` will not return" not in md
+
     # No route back to any of the four claims, in the copy the model is actually sent.
     # `test_sage_chat_prompt_is_the_agents_md_file` pins the two equal; asserting here as well
     # means a future split cannot land this bug on the live side alone. The THIRD copy — the

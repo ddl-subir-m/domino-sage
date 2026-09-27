@@ -238,7 +238,7 @@ def test_pending_start_does_not_block_control_requests(tmp_path, monkeypatch):
             sup._retry_thread.join(1)
 
 
-def test_status_does_not_seed_and_retry_refuses_a_stale_app(tmp_path, monkeypatch):
+def test_status_does_not_seed_and_an_unknown_app_is_not_retried(tmp_path, monkeypatch):
     from sage.orchestrator import app as appmod
 
     from .test_switch_app import _orch
@@ -252,7 +252,7 @@ def test_status_does_not_seed_and_retry_refuses_a_stale_app(tmp_path, monkeypatc
     assert not orch._wm.app_path.exists()
     assert appmod._preview_platform() is None
     retry = client.post("/api/preview/retry?appId=not-the-selected-app")
-    assert retry.status_code == 409
+    assert retry.status_code == 404
     assert not orch._wm.app_path.exists()
 
 
@@ -366,7 +366,7 @@ async def slow():
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
     monkeypatch.setenv('SAGE_PREVIEW_PORT', str(port))
-    sup = UvicornSupervisor(tmp_path)
+    sup = UvicornSupervisor(tmp_path, pinned_port=True)
     requests = []
     old_processes = []
     def slow_request():

@@ -190,7 +190,9 @@ function makeTab(name, hash) {
     icons: new Proxy({}, { get: (_, key) => String(key) }),
     fetch: async (url, init) => {
       const path = String(url).replace(/^\.\/api/, '');
-      calls.push(`${name} ${(init && init.method) || 'GET'} ${path}`);
+      const headers = (init && init.headers) || {};
+      const named = headers['X-Sage-App'] || '';
+      calls.push(`${name} ${(init && init.method) || 'GET'} ${path}${named ? ` app=${named}` : ''}`);
       return route(path, init);
     },
   };
@@ -317,17 +319,17 @@ for (const step of steps) {
     const tab = makeTab('t1', '#/build/thr_many?app=app_a');
     await tab.settle();
     const release = [];
-    tab.SW.api.selectApp = () => new Promise(resolve => release.push(resolve));
+    tab.SW.store.loadBuild = () => new Promise((resolve) => release.push(resolve));
     const first = tab.SW.store.selectApp('app_b');
     const middle = tab.SW.store.selectApp('app_c');
     const last = tab.SW.store.selectApp('app_b');
-    release[0]({});
+    release[0]();
     await first;
     const afterFirst = tab.SW.store.get().selectingAppId;
-    release[1]({});
+    release[1]();
     await middle;
     const afterMiddle = tab.SW.store.get().selectingAppId;
-    release[2]({});
+    release[2]();
     await last;
     report.push({ afterFirst, afterMiddle, final: tab.SW.store.get().selectingAppId });
     tab.unmount();
@@ -338,12 +340,23 @@ for (const step of steps) {
     await tab.settle();
     tab.SW.store.set({ scope: { id: 'project' }, me: { id: 'viewer' } });
     tab.SW.store.rememberAppConversation('app_a', 'thr_many');
-    const select = tab.SW.api.selectApp;
-    let release;
-    tab.SW.api.selectApp = (id) => new Promise((resolve, reject) => {
-      release = () => step.delayedSelection === 'failure'
-        ? reject(new Error('selection unavailable')) : resolve(select(id));
-    });
+    const load = tab.SW.store.loadBuild.bind(tab.SW.store);
+    const waiting = [];
+    tab.SW.store.loadBuild = (...args) => {
+      let settle;
+      const gated = new Promise((resolve, reject) => { settle = { resolve, reject, args }; });
+      // The transcript effect calls this and does not await it. A rejection still has to reject
+      // the selection's own await, and must not become an unhandled rejection from the other call.
+      gated.catch(() => {});
+      waiting.push(settle);
+      return gated;
+    };
+    const release = () => {
+      for (const item of waiting.splice(0)) {
+        if (step.delayedSelection === 'failure') item.reject(new Error('selection unavailable'));
+        else item.resolve(load(...item.args));
+      }
+    };
     tab.go('#/build/thr_twice?app=app_d');
     await tab.settle();
     const pending = { view: tab.view(), prefs: tab.SW.prefs.get('lastAppConversations') };
@@ -377,6 +390,7 @@ for (const step of steps) {
       rounds,
       // The whole claim, in one number: what the ticks WROTE. A settled pair writes nothing.
       tickWrites: writes(mark),
+      calls: calls.slice(),
       selected,
       views: tabs.map((t) => t.view()),
     });
