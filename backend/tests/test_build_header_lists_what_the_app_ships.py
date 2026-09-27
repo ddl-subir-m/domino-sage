@@ -237,9 +237,9 @@ def test_the_tooltip_says_what_the_mark_means_and_that_it_blocks_nothing():
     and truncated it — so the tooltip was also where a narrow reader found which name the mark was
     on. Neither is true of a list with a row per record: the mark sits on the row it qualifies, so
     the tooltip has only the one job left."""
-    title = next(t for t in _build(select="app_a")["titles"] if "not used" in t)
+    title = next(t for t in _build(select="app_a")["titles"] if "not used" in t.lower())
     assert "last build" in title
-    assert "still publishes" in title
+    assert "included when you publish" in title
     # No pointer any more: the act is on this row's own menu, which is the half the reader can act
     # on and no longer somewhere else.
     assert "Project resources" not in title

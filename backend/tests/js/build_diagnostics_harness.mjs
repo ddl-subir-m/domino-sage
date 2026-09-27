@@ -71,7 +71,7 @@ assert.deepEqual(labels.slice(0, 3), [
 const buttons = nodes.filter((n) => n.t === 'Button'
   && n.c.some((value) => typeof value === 'string' && value.startsWith('Download')));
 assert.equal(buttons.length, 4);
-assert.equal(buttons[0].c[0], 'Download implementation diagnostics');
+assert.equal(buttons[0].c[0], 'Download implementation JSON');
 assert.equal(buttons[0].p.disabled, undefined);
 assert.equal(buttons[3].p.disabled, true); // the transcript-only legacy row remains explicit
 await buttons[2].p.onClick(); // select the older failed turn, not the newest or active conversation

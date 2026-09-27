@@ -401,7 +401,7 @@ def test_a_pin_and_a_stranded_level_are_both_accounted_for():
                       {"mode": "plan", "signing": "implement",
                        "narrow": {"alias": SIGNING_MODEL, "efforts": ["low"]}}])
 
-    assert "required for this session" in row["why"]
+    assert "for every build" in row["why"]
     assert "doesn't accept Max" in row["why"]
 
 
@@ -565,7 +565,7 @@ def test_a_stranded_level_is_still_accounted_for_while_a_turn_runs():
 
     assert row["disabled"] is True
     assert "doesn't accept High" in row["why"]
-    assert "This turn is running on" in row["why"]
+    assert "This build is using" in row["why"]
 
 
 def test_a_stranded_level_on_a_real_override_is_accounted_for_mid_turn_too():
@@ -753,7 +753,7 @@ def test_the_running_chip_describes_the_turn_not_the_picker():
 
     # The turn is pinned to Plan and running the pick, so the chip says so — not Auto's slot.
     assert row["label"] == "deepseek/deepseek-v3 · High"
-    assert "This turn is running on deepseek/deepseek-v3" in row["why"]
+    assert "This build is using deepseek/deepseek-v3" in row["why"]
 
 
 def test_the_running_chip_honours_no_pick_a_turn_in_auto_never_read():
@@ -833,7 +833,7 @@ def test_a_pin_does_not_swallow_the_accepted_level_sentence():
                       "seedPick": {"model": SIGNING_MODEL, "effort": "max"}}])
 
     assert row["label"] == f"{SIGNING_MODEL} · Max"
-    assert "required for this session" in row["why"]
+    assert "for every build" in row["why"]
     assert "Clear the pick to use the assignment's." in row["why"]
 
 
@@ -940,7 +940,7 @@ def test_the_picker_closes_while_a_build_is_running():
     (row,) = _drawn([{"mode": "plan", "running": True}])
     assert row["offered"] is False
     assert row["disabled"] is True
-    assert "This turn is running on" in row["why"]
+    assert "This build is using" in row["why"]
 
 
 def test_the_one_closed_state_left_can_actually_be_hovered():
@@ -1073,8 +1073,7 @@ def test_a_pinned_session_says_why_it_is_not_running_the_slot_you_assigned():
     """Q4 of ADR-0032: a guarantee the person cannot see is one they file as a bug. Plan and
     Implement carry no tooltip normally, so this is the only place the reason can land."""
     (row,) = _drawn([{"mode": "plan", "signing": "implement"}])
-    assert "required for this session" in row["why"]
-    assert "every Build turn uses it" in row["why"]
+    assert f"This session uses {SIGNING_MODEL} for every build." in row["why"]
 
 
 def test_a_pinned_session_still_offers_the_override_that_beats_the_pin():
@@ -1102,7 +1101,7 @@ def test_auto_stops_claiming_two_models_when_only_one_can_run():
     (row,) = _drawn([{"mode": "auto", "signing": "implement"}])
     assert row["label"] == f"{SIGNING_MODEL} · planning"
     assert "to plan and" not in row["why"]
-    assert "required for this session" in row["why"]
+    assert "for every build" in row["why"]
 
 
 def test_ask_under_the_pin_names_the_pinned_model_too():
@@ -1110,7 +1109,7 @@ def test_ask_under_the_pin_names_the_pinned_model_too():
     # Ask turn signs history like any other.
     (row,) = _drawn([{"mode": "ask", "signing": "implement"}])
     assert row["label"] == SIGNING_MODEL
-    assert "required for this session" in row["why"]
+    assert "for every build" in row["why"]
 
 
 def test_a_running_turn_still_accounts_for_the_pin():
@@ -1119,8 +1118,8 @@ def test_a_running_turn_still_accounts_for_the_pin():
     of the pin at all (#276). The closed control still explains itself; it now explains both."""
     (row,) = _drawn([{"mode": "plan", "signing": "implement", "running": True}])
     assert row["disabled"] is True
-    assert "required for this session" in row["why"]
-    assert "This turn is running on" in row["why"]
+    assert "for every build" in row["why"]
+    assert "This build is using" in row["why"]
 
 
 def test_an_override_that_beat_the_pin_takes_the_pin_s_sentence_with_it():
@@ -1131,8 +1130,8 @@ def test_an_override_that_beat_the_pin_takes_the_pin_s_sentence_with_it():
                         "pick": "deepseek/deepseek-v3::"},
                        {"mode": "plan", "running": True}])
     assert after["label"] == "deepseek/deepseek-v3"
-    assert "required for this session" not in (after["why"] or "")
-    assert "This turn is running on deepseek/deepseek-v3" in after["why"]
+    assert "for every build" not in (after["why"] or "")
+    assert "This build is using deepseek/deepseek-v3" in after["why"]
 
 
 def test_a_barred_pick_mid_turn_leaves_the_pin_unnamed():
@@ -1147,8 +1146,8 @@ def test_a_barred_pick_mid_turn_leaves_the_pin_unnamed():
                         "slot_models": {}, "reason": ""},
         "app": "Claims app", "declaredIn": "binding",
     }])
-    assert "required for this session" not in row["why"]
-    assert "This turn is running on" in row["why"]
+    assert "for every build" not in row["why"]
+    assert "This build is using" in row["why"]
 
 
 def test_no_signing_slot_leaves_every_word_of_the_picker_alone():
