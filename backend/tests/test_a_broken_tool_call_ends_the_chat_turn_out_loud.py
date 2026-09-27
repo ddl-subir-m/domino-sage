@@ -150,6 +150,7 @@ def test_the_intended_tool_landing_later_is_a_proven_recovery(tmp_path: Path):
     assert len(oc.prompts) == 1
     done = _done(events)
     assert done["ok"] is True and "recoveries" not in done and "cause" not in done
+    assert oc.interrupted == 0, "a retry that already landed is not a reason to stop the session"
 
 
 def test_an_unrelated_completion_does_not_retire_the_fault(tmp_path: Path):
@@ -164,6 +165,33 @@ def test_an_unrelated_completion_does_not_retire_the_fault(tmp_path: Path):
     assert len(oc.prompts) == 2
     assert _done(events)["recoveries"] == 1
     assert [e["text"] for e in events if e.get("kind") == "text"] == ["There are three columns."]
+
+
+def test_a_session_that_keeps_running_is_stopped_and_corrected_once(tmp_path: Path, monkeypatch):
+    """The wrapper completing is not the turn ending (#579).
+
+    The correction is sent only once the session reads idle. A session that
+    keeps running never reads idle, and every later frame moves the quiet
+    window, so the person waits out the ceiling. Stopping it is what lets the
+    one correction go out. No event stream: a stream's reader blocks on a
+    real wait, and the stop below is the one both witnesses reach.
+    """
+    monkeypatch.setattr(service, "_CHAT_QUIET_TIMEOUT_S", 5)
+    monkeypatch.setattr(service, "_CHAT_TOOL_QUIET_TIMEOUT_S", 5)
+    orch, oc = _orch(tmp_path, [Turn(invalid_calls=["live_read_query"]),
+                                Turn(text="There are three columns.")])
+    oc.stay_running = True
+    tid = orch.create_thread()["id"]
+
+    events = list(orch.chat_stream(tid, "summarize the file"))
+
+    assert len(oc.prompts) == 2 and len(oc.sessions) == 1
+    assert oc.prompts[1]["session"] == oc.prompts[0]["session"]
+    assert "Your last live_read_query call arrived with arguments that did not validate" \
+        in oc.prompts[1]["text"]
+    assert oc.interrupted >= 1 and oc.stay_running is False
+    assert _done(events)["ok"] is True and _done(events)["recoveries"] == 1
+    assert not any(t.name == "sage-events" and t.is_alive() for t in __import__("threading").enumerate())
 
 
 # --- Criterion 1: the stream path and the transcript path, one fault between them ----------------

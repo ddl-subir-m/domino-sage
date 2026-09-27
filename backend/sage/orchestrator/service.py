@@ -5335,13 +5335,29 @@ def _unparsed_tool_evidence(part: dict) -> str:
 # Tool names a correction may say back to the model (#565). The intended name inside an `invalid`
 # wrapper is whatever the model emitted, and a model that produced arguments the SDK could not
 # parse has no better claim on the name beside them — so a name outside this set is said as
-# "tool" and never repeated. OpenCode's own tools plus the three Live read tools as OpenCode
-# offers them (namespaced by the `mcp` key, see liveread/mcp.py).
+# "tool" and never repeated. OpenCode's own tools plus the three Live read tools, both as OpenCode
+# offers them (namespaced by the `mcp` key, see liveread/mcp.py) and as the model emits them.
+# Measured 2026-09-27: the wrapper's `tool` was `live_read_query`, and the correction said "tool".
 _CORRECTABLE_TOOLS = frozenset(WRITE_TOOLS | SHELL_TOOLS | {
     "read", "grep", "glob", "list", "todowrite", "todoread", "webfetch", "websearch", "task",
     "skill", "question", "sage-live-read_live_read_table", "sage-live-read_live_read_files",
     "sage-live-read_live_read_query",
+    "live_read_table", "live_read_files", "live_read_query",
 })
+
+
+def _ask_session_to_stop(client, sid: str) -> None:
+    """One interrupt, and no wait, after a completed invalid tool call (#579).
+
+    The correction runs only once the session reads idle. The wrapper completing is not that
+    reading: OpenCode keeps the turn going, and every later frame moves the quiet window, so the
+    correction never starts. The next poll reads whether the stop landed. Waiting here would be
+    the grace loop, which sleeps, and which the recovery already runs when the session is still busy.
+    """
+    try:
+        client.interrupt(sid)
+    except Exception:
+        log.exception("invalid tool call: interrupt failed")
 
 # The closed vocabulary a correction and a give-up draw their sentence from. Keyed by category,
 # never by the SDK's message, so nothing the model emitted can reach a person or the next prompt.
@@ -16039,6 +16055,11 @@ class Orchestrator:
             broken_call: str | None = None
             broken_intended = ""
             broken_category = ""
+            # The call id of `broken_call`, so the stop below is asked once per fault. A later
+            # poll of a session that ignored it must not ask again: that poll is the quiet
+            # window's, and a second interrupt is not a new fact.
+            broken_id = ""
+            stopped_invalid: set[str] = set()
             # Resolved against the chat workdir, which is where the agent stands and the only place
             # every path in the prompt resolves: `examples/` and `.sage/scratch/` are the Project's
             # and `public/data/` is the app's, and all three are linked in there.
@@ -16602,6 +16623,7 @@ class Orchestrator:
                                     broken_call = fault.named
                                     broken_intended = fault.tool
                                     broken_category = fault.category
+                                    broken_id = fault.call_id
                                     log.warning("chat: a %s call was rewritten to OpenCode's "
                                                 "invalid tool (%s) — it did not run",
                                                 fault.named, fault.category)
@@ -16803,6 +16825,7 @@ class Orchestrator:
                                     broken_call = fault.named
                                     broken_intended = fault.tool
                                     broken_category = fault.category
+                                    broken_id = fault.call_id
                                     log.warning("chat: a %s call was rewritten to OpenCode's "
                                                 "invalid tool (%s) — it did not run",
                                                 fault.named, fault.category)
@@ -16865,6 +16888,13 @@ class Orchestrator:
                 if pending_text and pending_text != last_text:
                     last_text = pending_text
                     last_activity = time.monotonic()
+                # After both witnesses. A wrapper the stream saw and one the transcript saw are
+                # the same `broken_call`, and a retry that landed later in this same read has
+                # already cleared it. The session is still the one `running` just reported: the
+                # stop is what makes the next poll the idle reading the correction waits on.
+                if broken_call is not None and running and broken_id not in stopped_invalid:
+                    stopped_invalid.add(broken_id)
+                    _ask_session_to_stop(client, sid)
                 if finished:
                     # NO_BUILD_MARKER is Build's signal to Sage — a Chat turn has nothing to build
                     # by definition. It reaches here because OpenCode reads the app's AGENTS.md as
@@ -21390,6 +21420,11 @@ class Orchestrator:
             broken_call: str | None = None
             # The intended tool as the model spelled it, for the recovery match above only.
             broken_intended = ""
+            # Call id of the completed wrapper, and the ids already asked to stop (#579).
+            # One ask per fault: a session that ignores it meets the quiet window next,
+            # not another interrupt.
+            broken_id = ""
+            stopped_invalid: set[str] = set()
             # Which closed category the fault fell in; the correction's sentence comes from it.
             broken_category = "unparsed"
             # Captured with it, reported only if the turn ends on it. Held rather than logged at
@@ -21443,6 +21478,10 @@ class Orchestrator:
             looped = ""
             poll_failures = 0
             while True:
+                # Set by a completed wrapper still unresolved at the end of this poll, and
+                # only then. An in-flight unparsed call is the other shape of `broken_call`,
+                # and stopping it would cut a call that may still complete.
+                stop_for_invalid = False
                 if project.stop_requested:
                     client.interrupt(sid)
                     tap.close()
@@ -21547,7 +21586,9 @@ class Orchestrator:
                                     broken_call = fault.named
                                     broken_intended = fault.tool
                                     broken_category = fault.category
+                                    broken_id = fault.call_id
                                     broken_evidence = f"{fault.category} tool={fault.named}"
+                                    stop_for_invalid = True
                                     log.warning("build: a %s call was rewritten to OpenCode's "
                                                 "invalid tool (%s) — it did not run",
                                                 fault.named, fault.category)
@@ -21607,6 +21648,7 @@ class Orchestrator:
                                     and tool == broken_intended):
                                 broken_call = None
                                 broken_evidence = ""
+                                stop_for_invalid = False
                             last_active = None  # completed: let the next running tool re-announce
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
                             args = (part.get("state") or {}).get("input") \
@@ -21800,6 +21842,14 @@ class Orchestrator:
                     break
                 if appeared and not running:
                     break
+                if stop_for_invalid and broken_id not in stopped_invalid:
+                    # The wrapper is done and the session is not. Ask it to stop and read
+                    # again now. The wait at the bottom of this loop is a wall-clock second
+                    # when nothing is streaming, and the correction below cannot start until
+                    # a poll sees the session idle (#579).
+                    stopped_invalid.add(broken_id)
+                    _ask_session_to_stop(client, sid)
+                    continue
                 # AFTER that break, and the placement is the rule rather than a tidy-up. The poll
                 # that ends a turn is also the one that delivers the last of its parts, so a
                 # finished turn whose final batch happens to hold three identical calls would be

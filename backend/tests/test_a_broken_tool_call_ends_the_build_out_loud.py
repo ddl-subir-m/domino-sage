@@ -281,6 +281,11 @@ def test_the_classifier_reads_both_shapes_by_tool_and_part_identity():
     assert InvalidToolCall('write"; rm -rf /', "c", "invalid_arguments", True).named == "tool"
     assert InvalidToolCall("sage-live-read_live_read_table", "c", "unknown_tool", True).named \
         == "sage-live-read_live_read_table"
+    # The wrapper records the name the model emitted. A Live read is offered to the model
+    # namespaced, and the model emits the short name. Both may be said; the measured miss
+    # was the short one (#579).
+    for name in ("live_read_query", "live_read_files", "live_read_table"):
+        assert InvalidToolCall(name, "c", "invalid_arguments", True).named == name
 
 
 def test_shapes_that_are_not_a_missed_execution_are_not_one():
@@ -417,6 +422,7 @@ def test_the_intended_tool_landing_later_is_a_proven_recovery(tmp_path: Path):
     done = _of(events, "done")[0]
     assert done["ok"] is True and "recoveries" not in done
     assert len(oc.sessions) == 1 and not _of(events, "iterate")
+    assert oc.interrupted == 0, "a retry that already landed is not a reason to stop the session"
 
 
 def test_a_replaced_session_does_not_bring_a_second_allowance(tmp_path: Path):
@@ -458,26 +464,64 @@ def test_a_user_stop_beats_the_recovery(tmp_path: Path):
     assert not orch._turn_lock.locked()
 
 
-def test_an_exhausted_quiet_window_beats_the_recovery(tmp_path: Path):
+def test_a_session_that_keeps_running_is_stopped_and_the_turn_is_sent_again(tmp_path: Path):
+    """The wrapper completing is not the turn ending (#579).
+
+    OpenCode keeps running, so the poll never reaches the correction that waits
+    for an idle session. Asking it to stop is what lets that correction run.
+    The re-poll after the stop does not pay the streamless poll's wall-clock
+    second. The retry's own turn still does, the same as any other build.
+    """
+    orch, oc = _orch(tmp_path, [Turn(invalid_calls=["live_read_query"]),
+                                Turn(text="Added.", writes={"src/App.tsx": "app\n"})])
+    # Long enough that the stop is what ends the turn, short enough that a
+    # regression pays seconds and not the default two minutes.
+    orch._build_policy = replace(orch._build_policy, quiet_timeout_seconds=5,
+                                 open_tool_quiet_timeout_seconds=5)
+    oc.stay_running = True
+
+    events = list(orch.build_stream("build me a dashboard"))
+
+    assert _of(events, "done")[0]["ok"] is True
+    assert len(oc.sessions) == 2 and oc.prompts[1]["session"] != oc.prompts[0]["session"]
+    assert "live_read_query call arrived with arguments that did not validate" in oc.prompts[1]["text"]
+    assert oc.interrupted >= 1
+    assert oc.stay_running is False
+    assert not any(t.name == "sage-events" and t.is_alive() for t in __import__("threading").enumerate())
+
+
+def test_a_session_that_ignores_the_stop_does_not_open_another(tmp_path: Path):
+    """A stop that does not land leaves one writer. No fresh session, no cause.
+
+    The grace is zero. `_stop_wedged_session` sleeps a second at a time until
+    the grace passes, and the default grace is thirty of those; this test is
+    about the refusal, not the wait.
+    """
     orch, oc = _orch(tmp_path, [Turn(invalid_calls=["write"]),
                                 Turn(text="Added.", writes={"src/App.tsx": "app\n"})])
-    orch._build_policy = replace(orch._build_policy, quiet_timeout_seconds=0.01,
-                                 open_tool_quiet_timeout_seconds=0.01)
+    orch._build_policy = replace(orch._build_policy, quiet_timeout_seconds=0,
+                                 open_tool_quiet_timeout_seconds=0,
+                                 stop_grace_seconds=0)
     send_prompt = oc.send_prompt
 
     def send_then_hang(*args, **kwargs):
         send_prompt(*args, **kwargs)
         oc.stay_running = True
 
+    def ignore_stop(session_id):
+        oc.interrupted += 1
+
     oc.send_prompt = send_then_hang
+    oc.interrupt = ignore_stop
 
     events = list(orch.build_stream("build me a dashboard"))
 
     done = _of(events, "done")[0]
-    assert done["decision"] == "stalled" and done["turnId"]
+    assert done["decision"] == "wedged" and done["turnId"]
     _no_cause(events)
-    assert len(oc.sessions) == 1
-    assert not orch._turn_lock.locked()
+    assert len(oc.sessions) == 1 and len(oc.prompts) == 1
+    assert orch._turn_wedged is True
+    assert not any(t.name == "sage-events" and t.is_alive() for t in __import__("threading").enumerate())
 
 
 def test_a_provider_terminal_error_beats_the_recovery(tmp_path: Path):
@@ -524,14 +568,17 @@ def test_a_refused_session_stop_keeps_the_lock_and_writes_no_cause(tmp_path: Pat
                                              sovereign_ask="s", plan="p", implement="i", ask="a"),
                         project_id="Sage", feedback=OkFeedback(), opencode_client=oc)
     orch.project(start_preview=False).record.write_settings({"skip_planning": True})
-    orch._build_policy = replace(orch._build_policy, stop_grace_seconds=0.01)
+    # Zero, not a fraction. The confirm sleeps whole seconds until the grace
+    # passes, and the only fact this test needs is that the session never
+    # reads idle.
+    orch._build_policy = replace(orch._build_policy, stop_grace_seconds=0)
 
     events = list(orch.build_stream("build me a dashboard"))
 
     done = _of(events, "done")[0]
     assert done["decision"] == "wedged" and done["ok"] is False and done["turnId"]
     _no_cause(events)
-    assert oc.interrupted == 1
+    assert oc.interrupted == 2
     assert len(oc.sessions) == 1 and len(oc.prompts) == 1, "no fresh session over a session that may still write"
     assert orch._turn_wedged is True
     assert orch._turn_lock.locked() is True
