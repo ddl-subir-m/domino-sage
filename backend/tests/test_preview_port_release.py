@@ -1,6 +1,10 @@
 """A retiring preview listener must settle before its replacement process starts."""
 import errno
+import os
+import signal
 import socket
+import subprocess
+import sys
 import threading
 import time
 
@@ -9,6 +13,18 @@ import pytest
 from sage.preview import supervisor as preview
 
 from .test_preview_reload_status import _generation_fixture
+
+# Holds its listen socket until SIGKILL. SIGTERM is ignored, which is what uvicorn's reloader
+# does in effect: it catches the signal and keeps the socket until a request finishes draining.
+_LISTENER_THAT_IGNORES_SIGTERM = """
+import os, signal, socket
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(os.environ["PORT"])))
+s.listen(1)
+signal.pause()
+"""
 
 
 @pytest.mark.parametrize('supervisor', [preview.ViteSupervisor, preview.UvicornSupervisor])
@@ -42,6 +58,38 @@ def test_stop_during_port_wait_cancels_launch_without_blocking(tmp_path, monkeyp
         release.set()
         sup.stop()
         sup._retry_thread.join(2)
+
+
+def test_a_listener_that_ignores_sigterm_is_killed_so_its_port_can_be_taken(tmp_path):
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    holder = subprocess.Popen(
+        [sys.executable, '-c', _LISTENER_THAT_IGNORES_SIGTERM],
+        env={**os.environ, 'PORT': str(port)},
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                preview._probe_port(port)
+            except OSError as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    break
+            time.sleep(0.02)
+        else:
+            raise AssertionError('listener did not bind')
+        sup = preview.ViteSupervisor(tmp_path)
+        before = time.monotonic()
+        assert sup._wait_for_port_release(port, sup._generation)
+        assert time.monotonic() - before < 2
+        holder.wait(timeout=2)
+        assert holder.returncode is not None
+    finally:
+        if holder.poll() is None:
+            os.killpg(os.getpgid(holder.pid), signal.SIGKILL)
+            holder.wait(timeout=2)
 
 
 def test_busy_port_has_a_bounded_explicit_startup_failure(tmp_path, monkeypatch):

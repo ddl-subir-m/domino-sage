@@ -41,6 +41,10 @@ _UVICORN_RE = re.compile(r"Uvicorn running on (https?://[^\s/]+)")
 # resolves to the stale one. Clearing it before every spawn keeps that from happening.
 _DEFAULT_PORT = 5173
 _PORT_RELEASE_TIMEOUT_S = 3.0
+# uvicorn --reload owns the listen socket in the parent and closes it only after the child
+# finishes draining. SIGTERM is caught, so an in-flight request holds the port for the client's
+# whole timeout — longer than the budget above. SIGKILL is not caught, and the kernel drops it.
+_PORT_SIGKILL_AFTER_S = 0.5
 
 
 def _probe_port(port: int) -> None:
@@ -372,7 +376,10 @@ class ViteSupervisor:
 
     def _wait_for_port_release(self, port: int, generation: int) -> bool:
         # SIGTERM is asynchronous. Wait on the background launch path, never in Stop or Retry.
+        # A listener that survives the grace period is SIGKILLed here, still off the caller's thread.
         deadline = time.monotonic() + _PORT_RELEASE_TIMEOUT_S
+        force_at = time.monotonic() + _PORT_SIGKILL_AFTER_S
+        forced = False
         while True:
             with self._state_lock:
                 if self._stopped or generation != self._generation:
@@ -383,7 +390,14 @@ class ViteSupervisor:
             except OSError as exc:
                 if exc.errno != errno.EADDRINUSE:
                     raise
-                if time.monotonic() >= deadline:
+                now = time.monotonic()
+                if not forced and now >= force_at:
+                    with self._state_lock:
+                        if self._stopped or generation != self._generation:
+                            return False
+                    self._signal_listeners(port, signal.SIGKILL)
+                    forced = True
+                if now >= deadline:
                     raise OSError(
                         errno.EADDRINUSE,
                         f"Preview port {port} is still in use after {_PORT_RELEASE_TIMEOUT_S:g}s",
@@ -523,6 +537,9 @@ class ViteSupervisor:
 
     def _clear_stale_port(self, port: int) -> None:
         """Reap any leftover process still listening on `port` from an unclean prior shutdown."""
+        self._signal_listeners(port, signal.SIGTERM)
+
+    def _signal_listeners(self, port: int, sig: int) -> None:
         import os
 
         try:
@@ -537,11 +554,14 @@ class ViteSupervisor:
             return
         for pid in pids:
             try:
-                os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+                os.killpg(os.getpgid(int(pid)), sig)
             except (ProcessLookupError, PermissionError, ValueError):
                 continue
             else:
-                log.warning("preview: killed stale process %s squatting on port %d", pid, port)
+                log.warning(
+                    "preview: killed stale process %s squatting on port %d (%s)",
+                    pid, port, signal.Signals(sig).name,
+                )
 
 
 def _free_port() -> int:
