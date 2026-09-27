@@ -1959,7 +1959,7 @@ for (const step of steps) {
     // A return target already saved, including one that never touched the app being picked.
     // Set after arrive: openThread in arrive is not itself a choice for the app.
     if (step.saved) {
-      SW.store.set({ scope: { id: 'project_one' } });
+      SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });
       SW.prefs.set('lastAppConversations', { project_one: step.saved });
     }
     // A chip filter set BEFORE the pick, by clicking a tag, which is the case where the two used to
