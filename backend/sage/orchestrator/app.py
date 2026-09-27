@@ -852,8 +852,14 @@ class _AppViewMiddleware:
         view_token = None
         workspace_token = None
         try:
+            # A route test stubs `orchestrator` with something that has no project. That request
+            # names no app, and there is no selected view to stash, so the bind is a no-op — the
+            # same as a process that has not opened a project yet.
+            project = getattr(orchestrator, "_project", None)
             if app_id:
-                if app_id not in orchestrator._wm.app_ids():
+                wm = getattr(orchestrator, "_wm", None)
+                known = wm.app_ids() if wm is not None else []
+                if app_id not in known:
                     response = JSONResponse({"error": "unknown app"}, status_code=404)
                     await response(scope, receive, send)
                     return
@@ -861,9 +867,10 @@ class _AppViewMiddleware:
                 view = orchestrator._view_for(project, app_id)
                 view_token = _request_view.set(view)
                 workspace_token = _request_workspace.set(view.workspace)
-            elif orchestrator._project is not None:
-                workspace_token = _request_workspace.set(
-                    orchestrator._project._selected_view.workspace)
+            else:
+                selected = getattr(project, "_selected_view", None) if project is not None else None
+                if selected is not None:
+                    workspace_token = _request_workspace.set(selected.workspace)
             await self._app(scope, receive, send)
         finally:
             if workspace_token is not None:

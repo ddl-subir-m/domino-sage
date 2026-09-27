@@ -534,6 +534,7 @@ def test_public_turn_starts_timing_after_admission_and_binds_its_actual_context(
     orch = _orch(tmp_path, [Turn(text="Built", writes={"src/App.tsx": "export default () => null\n"})])
     if approve:
         orch._project.workspace.write_plan("Add a chart")
+    around_admission = []
     project_reads = []
     tickets = []
     original_project = orch.project
@@ -542,16 +543,21 @@ def test_public_turn_starts_timing_after_admission_and_binds_its_actual_context(
         project_reads.append(timing.current())
         return original_project(*args, **kwargs)
     def acquire(ticket, **kwargs):
+        # Admission no longer calls `project()`: the workspace was stashed on the ticket before
+        # the wait, and the app id is read off that. Timing is still not allowed to be running
+        # for any of that wait, on the way in or on the way out.
+        around_admission.append(timing.current())
         tickets.append(ticket)
         yield from original_acquire(ticket, **kwargs)
+        around_admission.append(timing.current())
     monkeypatch.setattr(orch, "project", project)
     monkeypatch.setattr(orch, "_acquire_turn", acquire)
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *args, **kwargs: None)
     list(orch.approve_stream(conversation="thread_fixture") if approve else
          orch.build_stream("add a chart", conversation="thread_fixture"))
     record = timing.last_finished()
-    assert project_reads[0] is None, "queue admission must not start or replace timing"
-    assert record in project_reads[1:]
+    assert around_admission == [None, None], "queue admission must not start or replace timing"
+    assert record in project_reads
     assert tickets[0].timing_record is record
     assert record.turn_id == tickets[0].id
     assert record.app_id == orch._project.workspace.app_id
