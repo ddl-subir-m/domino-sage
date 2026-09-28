@@ -2035,6 +2035,7 @@ window.SW = window.SW || {};
     investigation_offer: shown,
     other_lane_offer: shown,
     continue_offer: shown,
+    keep_going: shown,
     // The way back into a failed turn (#570) is an act, not a disclosure of what was read.
     continue_model: shown,
     build_context_limit: shown,
@@ -2390,6 +2391,16 @@ window.SW = window.SW || {};
         // to mint, so there is none to spend.
         ensureAssistant().blocks.push({
           type: 'continue_offer',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          threadId: ev.threadId || '',
+          live: !!ev.live,
+        });
+      } else if (ev.type === 'keep-going' && ev.message) {
+        // Direct's card under a turn a volume cap paused (#585). Same `live` rule as Continue: a
+        // replayed row is the sentence alone, because the button sends the agent back to work.
+        ensureAssistant().blocks.push({
+          type: 'keep_going',
           message: ev.message,
           prompt: ev.prompt || '',
           threadId: ev.threadId || '',
@@ -3630,6 +3641,14 @@ window.SW = window.SW || {};
           prompt: ev.prompt || '',
           live: cardIsLive(ev),
         });
+      } else if (ev.type === 'keep-going' && ev.message) {
+        // The Build half of Direct's card (#585). No thread id: the button sends into Build.
+        ensureAssistant().blocks.push({
+          type: 'keep_going',
+          message: ev.message,
+          prompt: ev.prompt || '',
+          live: cardIsLive(ev),
+        });
       } else if (ev.type === 'app-reset') {
         ensureAssistant().blocks.push({
           type: 'status',
@@ -4544,7 +4563,8 @@ window.SW = window.SW || {};
     // app selected NOW, while the refusal names the app that was selected then, and a gap reported
     // six weeks ago has probably been closed since.
     if (ev.type === 'reset-offer' || ev.type === 'incoming-changes'
-        || ev.type === 'build-stalled' || ev.type === 'mentions-unresolved'
+        || ev.type === 'build-stalled' || ev.type === 'keep-going'
+        || ev.type === 'mentions-unresolved'
         || ev.type === 'table-candidates' || ev.type === 'source-candidates'
         || ev.type === 'dataset-files' || ev.type === 'withhold-found'
         || ev.type === 'build-context-limit') {
@@ -8424,6 +8444,19 @@ window.SW = window.SW || {};
       return store.sendMessage(prompt, { echo: false, alreadyAsked: true });
     },
 
+    // Direct's Keep going (#585). The server's sentence, sent as a new message the person can see,
+    // into the conversation the card belongs to: Chat when it names a Thread, Build otherwise.
+    // Nothing is skipped — the session the cap paused is what carries the work forward.
+    async keepGoing(block) {
+      if (!block.threadId) {
+        await store.loadBuild({ keepPreview: true });
+        return store.sendBuildPrompt(block.prompt);
+      }
+      const opened = await store.openThread(block.threadId);
+      if (!opened || !state.thread || state.thread.id !== block.threadId) return null;
+      return store.sendMessage(block.prompt);
+    },
+
     // The failure card's picker (#570). Open with the failed turn's id, filled by
     // `pickContinueModel`, closed with null. A cancelled picker sends nothing.
     openContinuePicker(turnId) {
@@ -9591,6 +9624,11 @@ window.SW = window.SW || {};
             ensurePushed();
             assistant.blocks = [...assistant.blocks,
                                 { ...ev, type: 'continue_offer', live: true }];
+            notify();
+          } else if (ev.type === 'keep-going') {
+            // Direct's card (#585), arriving after `done` exactly as Continue does.
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks, { ...ev, type: 'keep_going', live: true }];
             notify();
           }
         });

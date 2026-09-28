@@ -1468,6 +1468,37 @@ window.SW = window.SW || {};
     );
   }
 
+  // Direct's way on past a volume cap (#585): Chat's ceiling, Build's shell cap, Build's progress
+  // budget. One button, for the reason Continue has one. `live` is what keeps a replayed card from
+  // sending the agent back to work on a page load.
+  function KeepGoing({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.prompt
+          ? h(
+              'div',
+              { style: { marginTop: 8 } },
+              h(Button, {
+                type: 'primary',
+                size: 'small',
+                loading: busy === 'keep',
+                disabled: !!busy,
+                onClick: run('keep', () => SW.store.keepGoing(block)),
+              }, 'Keep going')
+            )
+          : null
+      )
+    );
+  }
+
   // What a failed turn's `cause` says, in words that name what happened to the turn and not whose
   // fault it was (ADR-0069, #570). The `error` row above the card carries the detailed failure;
   // this is the way back in.
@@ -2567,6 +2598,8 @@ window.SW = window.SW || {};
         return h(OtherLaneOffer, { block });
       case 'continue_offer':
         return h(ContinueAfterTheCeiling, { block });
+      case 'keep_going':
+        return h(KeepGoing, { block });
       case 'continue_model':
         return h(ContinueWithAnotherModel, { block });
       case 'build_context_limit':
