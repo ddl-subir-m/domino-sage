@@ -3772,6 +3772,16 @@ async def decide_thread_investigation(thread_id: str, request: Request) -> JSONR
         return JSONResponse(status_code=400, content={"error": str(e)})
 
 
+# How many Live read calls may be in the threadpool at once, held on the event loop before the
+# offload for the reason `_DELEGATED_SLOTS` gives below. `_turn_lock` admits one streaming turn at a
+# time, and `live_read_call` runs one read per Conversation at a time, so past the read that is
+# running the slots go to that turn's parallel calls waiting their turn (each holding a worker while
+# it waits), stale-token callers, and `/api/diag`'s probe. Eight, so a step of several parallel
+# reads leaves room for the probe, and 8 + 4 delegated of Starlette's ~40 threads still leaves the
+# `/api/chat/stream` generator and every other sync route theirs.
+_LIVE_READ_SLOTS = asyncio.Semaphore(8)
+
+
 @control_app.post("/mcp/live-read")
 async def live_read_mcp(request: Request) -> Response:
     """The Live read tools, as an MCP server OpenCode connects to (ADR-0041).
@@ -3786,6 +3796,12 @@ async def live_read_mcp(request: Request) -> Response:
     `Accept: text/event-stream`, the optional server-to-client channel. There is no route for that,
     so it gets a 405 and the connection stands anyway. Do not "fix" that into a stream nothing sends
     anything down.
+
+    OFF THE EVENT LOOP, like `/mcp/delegated-model` below (#604). It once ran on the loop on the
+    grounds that a Live read is one query; `live_read_query` (#408) made that a statement of up to
+    `STATEMENT_TIMEOUT_S`, and `analyze_text` (#574) a pass of many Gateway generations, and each
+    froze the Chat SSE writes, `/api/diag` and the Workbench for its whole length. Off the loop, two
+    reads from one turn can overlap, so `live_read_call` serializes them per Conversation.
     """
     try:
         body = await request.json()
@@ -3796,8 +3812,10 @@ async def live_read_mcp(request: Request) -> Response:
         )
     batch = isinstance(body, list)
     probe = request.headers.get("x-sage-diag-probe") == "1"
-    out = [r for r in (orchestrator.live_read_call(m, probe=probe) for m in (body if batch else [body]))
-           if r is not None]
+    async with _LIVE_READ_SLOTS:
+        served = await run_in_threadpool(
+            lambda: [orchestrator.live_read_call(m, probe=probe) for m in (body if batch else [body])])
+    out = [r for r in served if r is not None]
     if not out:
         # Every message was a notification. 202 with no body is what the transport expects.
         return Response(status_code=202)
@@ -3825,12 +3843,11 @@ async def delegated_model_mcp(request: Request) -> Response:
 
     Nothing here streams: a Delegated model call returns once, with the answer already collected.
 
-    OFF THE EVENT LOOP, unlike `/mcp/live-read` above, which this is otherwise a copy of. What
+    OFF THE EVENT LOOP, like `/mcp/live-read` above, which this is otherwise a copy of. What
     happens inside is a whole model generation iterated to completion — up to 25 of them in one
     turn. Left on the loop it would freeze the control app for the length of each: the Chat SSE
-    writes, `/api/diag`, the Workbench. A Live read is one query and gets away with it; this does
-    not, and the shape it was copied from is the reason to say so here rather than leave the
-    difference to be found.
+    writes, `/api/diag`, the Workbench. `/mcp/live-read` once stayed on the loop on the grounds that
+    a Live read is one query, and stopped getting away with it (#604).
     """
     try:
         body = await request.json()

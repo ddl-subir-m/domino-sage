@@ -56,9 +56,9 @@ const ROUTE = `http://127.0.0.1:${PORT}/mcp/live-read`
 // in the same silence. The bound buys the sentence when there is still turn left to spend it on.
 //
 // And it bounds the CLIENT, not the work. Aborting the fetch does not cancel the Python handler:
-// `/mcp/live-read` runs `live_read_call` directly on the control app's event loop (unlike
-// `/mcp/delegated-model`, which hands off to a threadpool), so an abandoned read goes on holding
-// that loop after this tool has already reported failure, and a second read queues behind it.
+// `/mcp/live-read` hands `live_read_call` to a threadpool (#604), so the control app's event loop
+// stays free, but an abandoned read goes on running there after this tool has already reported
+// failure — and reads for one Conversation run one at a time, so a second read queues behind it.
 //
 // The same number as `delegated/tools/delegated_model_call.ts`, and NOT because one number was
 // easier. These two look like different shapes — a model call and a data read — and the read looks
