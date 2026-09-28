@@ -11935,6 +11935,7 @@ class Orchestrator:
                 session=project.session_id,
                 version=project.shim.version,
                 timing_record=timing_record,
+                capability=self.route_capability,
             )
             if not hit:
                 return None
@@ -15660,7 +15661,7 @@ class Orchestrator:
                 intent_box.append(chat_intent.start(
                     prompt, context=intent_context, has_bound_context=bool(intent_context),
                     gateway=project.shim.gateway, catalog=project.shim.catalog,
-                    version=project.shim.version,
+                    version=project.shim.version, capability=self.route_capability,
                 ).result())
             return intent_box[0]
 

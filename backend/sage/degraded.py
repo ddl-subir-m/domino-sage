@@ -52,12 +52,15 @@ import threading
 
 _lock = threading.Lock()
 _count = 0
+_last = 0
 
 
 def reset() -> None:
-    """Start a turn's count at zero."""
-    global _count
+    """Start a turn's count at zero, keeping the outgoing turn's count if it lost any (#593)."""
+    global _count, _last
     with _lock:
+        if _count:
+            _last = _count
         _count = 0
 
 
@@ -77,3 +80,13 @@ def count() -> int:
     """How many judgements this turn has lost so far."""
     with _lock:
         return _count
+
+
+def last() -> int:
+    """How many judgements the most recent EARLIER turn that lost any lost (#593).
+
+    An offer card ends its turn and the replay's grant resets the count, so a diag read after the
+    replay began would show 0 for the turn that actually degraded.
+    """
+    with _lock:
+        return _last

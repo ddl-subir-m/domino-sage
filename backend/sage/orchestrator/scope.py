@@ -56,7 +56,9 @@ from pathlib import Path
 from typing import Any
 
 from .. import degraded, timing
+from ..gateway.capabilities import RouteCapability
 from ..gateway.client import CostLabels, GatewayClient
+from ..gateway.protocol import Protocol
 from ..router.models import ModelCatalog
 from ..workspace.stack import stack_of
 
@@ -277,6 +279,31 @@ def _model_for(catalog: ModelCatalog) -> str:
     already do, and widening those is where any further saving has to come from."""
     return catalog.ask
 
+
+def _classifier_effort(capability: RouteCapability, picked: str | None) -> str | None:
+    """The reasoning level a short classifier call sends on this route (#593).
+
+    An explicit pick is honoured exactly when the route accepts it (#417). Model default sends the
+    LOWEST level a VERIFIED route accepts without tools — the evidence lists levels lowest first — so
+    a reasoning model cannot spend the classifier's small cap before it answers. An unverified route
+    sends nothing: its level list, if any, is the development table and not a measurement.
+    """
+    if picked is not None:
+        return picked if picked in capability.efforts else None
+    return capability.efforts[0] if capability.verified and capability.efforts else None
+
+
+def _classifier_route(gateway: GatewayClient, request: dict, labels: CostLabels,
+                      capability: RouteCapability):
+    """Stream a chat-shaped classifier request over the route's verified protocol (#593).
+
+    A native route goes through the same text adapter the shim uses for internal text calls, which
+    renders the protocol's own effort field and answers in chat-shaped deltas `_extract` reads.
+    """
+    if capability.protocol is Protocol.CHAT:
+        return gateway.route(request, labels)
+    from ..shim.native import text_stream
+    return text_stream(gateway, request, labels, capability)
 
 
 class Pending:
