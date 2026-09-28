@@ -25,9 +25,13 @@ from ..shim.enforcement import _capture_refusal
 from ..shim.native import (
     NativeCheckpointRequired,
     NativePolicyError,
+    gemini_thought_as_reasoning,
+    gemini_thoughts,
     prepare_native,
+    readable_reasoning_as_summary,
     sdk_view,
     session_policy,
+    without_readable_reasoning,
 )
 from ..shim.tool_json import ArgumentRepair
 from ..shim.tool_repeat import RepeatedToolCall
@@ -241,6 +245,8 @@ def install(app, get_orchestrator):
             if body.get("stream") is not True:
                 return _error("This scoped harness endpoint requires streaming. Other calls keep their existing gateway path.")
             call.request(len(raw))
+            if protocol is Protocol.RESPONSES:
+                body = without_readable_reasoning(body)
 
             intent = project.active_build_intent
             if intent is not None:
@@ -281,6 +287,7 @@ def install(app, get_orchestrator):
                     rewrite_counts=rewrite_counts)
                 if outbound["model"] != body.get("model") or capability.protocol is not protocol:
                     raise NativePolicyError("The resolved model route changed. Retry this turn.")
+                outbound = gemini_thoughts(outbound, capability)
                 view = outbound
             else:
                 native_preparation = prepare_native(
@@ -496,6 +503,10 @@ def install(app, get_orchestrator):
                     if events.tool_input_lines:
                         project.tool_input_lines = dict(events.tool_input_lines)
                     forwarded = repair.push_frames(frames)
+                    if protocol is Protocol.RESPONSES:
+                        forwarded = [readable_reasoning_as_summary(f) for f in forwarded]
+                    elif protocol is Protocol.CHAT:
+                        forwarded = [gemini_thought_as_reasoning(f) for f in forwarded]
                     # Before OpenCode sees the frame that would run the repeated call.
                     if repeats is not None and repeats.repeats(forwarded):
                         with project.pre_edit_tree_lock:

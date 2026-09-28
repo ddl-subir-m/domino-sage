@@ -90,14 +90,16 @@ def test_native_setting_is_authoritative_and_default_does_not_inherit_a_hidden_v
                     reasoning={"effort": "high"}, reasoning_effort="high")
     enforcement, _ = shim(protocol)
     result, *_ = prepare_native(enforcement, original, protocol, "p", "ses_test")
-    assert all(key not in result for key in ("thinking", "output_config", "reasoning", "reasoning_effort"))
+    assert all(key not in result for key in ("thinking", "output_config", "reasoning_effort"))
+    # A summary request is not a level: the default still sends no effort (#599).
+    assert result.get("reasoning") == (None if protocol is Protocol.MESSAGES else {"summary": "auto"})
     enforcement, _ = shim(protocol, effort="high")
     result, *_ = prepare_native(enforcement, original, protocol, "p", "ses_test")
     if protocol is Protocol.MESSAGES:
-        assert result["thinking"] == {"type": "adaptive"}
+        assert result["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert result["output_config"] == {"effort": "high"}
     else:
-        assert result["reasoning"] == {"effort": "high"}
+        assert result["reasoning"] == {"effort": "high", "summary": "auto"}
         assert result["store"] is False and "reasoning.encrypted_content" in result["include"]
 
 
@@ -179,7 +181,7 @@ def test_native_text_analysis_keeps_the_shared_policy_and_existing_text_consumer
     parser = StreamEvents(Protocol.CHAT)
     parser.feed(wire)
     parser.finish()
-    assert enforcement.gateway.seen[0][0]["thinking"] == {"type": "adaptive"}
+    assert enforcement.gateway.seen[0][0]["thinking"] == {"type": "adaptive", "display": "summarized"}
 
 
 def test_a_title_call_cannot_relabel_old_opaque_state_after_policy_changes(tmp_path):

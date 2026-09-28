@@ -382,7 +382,7 @@ def test_real_opencode_runs_two_interleaved_fragmented_calls_exactly_once_each(r
                 assert private not in dumped, private
 
             # A second user turn: the same tool twice more, with NEW call ids and a different split.
-            rig.gateway.expect(_two_interleaved_calls(rig, "resp_3", ("call_c", "call_d"), byte_size=3))
+            rig.gateway.expect(_two_interleaved_calls(rig, "resp_3", ("call_c", "call_d"), byte_size=5))
             rig.gateway.expect(lambda request: text_reply(request, response_id="resp_4", text="Again."))
             with rig.turn():
                 rig.prompt("Do it again.", inferences=2)

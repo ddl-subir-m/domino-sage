@@ -30,8 +30,11 @@ class RouteCapability:
         if effort not in choices:
             raise ValueError(f"Reasoning setting {effort!r} is unavailable. {self.reason}")
         if self.protocol is Protocol.MESSAGES:
+            # `display` defaults to omitted on sonnet: its thinking streams empty, so the progress
+            # line has nothing to narrate (#599, measured 2026-09-28).
             return ({"thinking": {"type": "disabled"}} if effort == "none" else
-                    {"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}})
+                    {"thinking": {"type": "adaptive", "display": "summarized"},
+                     "output_config": {"effort": effort}})
         if self.protocol is Protocol.RESPONSES:
             return {"reasoning": {"effort": effort}}
         return {"reasoning_effort": effort}

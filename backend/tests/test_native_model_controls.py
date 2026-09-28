@@ -128,6 +128,8 @@ def test_saved_choices_reach_the_gateway_through_each_existing_control(running, 
     assert gateway.seen_protocols == [protocol]
     proof = next(row for row in evidence() if row["name"] == model)
     settings = resolve(proof["gateway"], proof, evidence()).settings(effort, tools=True)
+    if protocol is Protocol.RESPONSES:
+        settings = {"reasoning": {**settings.get("reasoning", {}), "summary": "auto"}}
     assert {k: outbound[k] for k in ("reasoning", "thinking", "output_config", "reasoning_effort") if k in outbound} == settings
     assert labels.session == "ses_native"
     assert orch._project.resolved_model.model == model
@@ -221,7 +223,7 @@ def test_auto_write_transition_and_rescue_use_one_decision_before_and_after_seri
             assert orch._project.resolved_model.model == expected
     assert gateway.seen_protocols == [Protocol.MESSAGES, Protocol.RESPONSES, Protocol.MESSAGES]
     assert [request.get('reasoning', request.get('output_config')) for request, _ in gateway.seen] == [
-        {"effort": "high"}, {"effort": "low"}, {"effort": "high"}]
+        {"effort": "high"}, {"effort": "low", "summary": "auto"}, {"effort": "high"}]
 
 
 def test_downstream_disconnect_stops_a_bounded_producer_and_closes_its_upstream(running):
@@ -368,6 +370,7 @@ def test_installed_native_config_keeps_one_handle_and_local_codecs(running, tmp_
         assert list(provider['models']) == ['gpt-5.4', 'sage-model']
         assert all(m['reasoning'] is True for m in provider['models'].values())
         assert installed['model'] == installed['small_model'] == 'sage-gateway/sage-model'
+        assert installed['enabled_providers'] == ['sage-gateway']
         assert provider['options']['baseURL'] == 'http://localhost:9876/v1'
         assert provider['options']['name'] == 'google'
     assert json.loads((source / 'opencode.json').read_text()) == config
@@ -401,12 +404,15 @@ def test_a_codec_that_will_not_load_leaves_the_config_on_the_shims_protocol(
         provider = installed['provider']['sage-gateway']
         # `npm` is not the discriminator — the checked-in config has one already, naming a
         # published package OpenCode resolves itself. What the native branch does is swap that
-        # name for a file URI, cut ten models to one, add `reasoning`, and pin `small_model`.
+        # name for a file URI, cut ten models to one, and add `reasoning`.
         assert provider['npm'] == source_provider['npm'] == '@ai-sdk/openai-compatible'
         assert list(provider['models']) == list(source_provider['models'])
         assert 'reasoning' not in provider['models']['gpt-5.4']
-        assert 'small_model' not in installed and 'small_model' not in config
         assert installed['model'] == config['model']
+        # No other provider, and no side call left to pick one: OpenCode reaches models only
+        # through Sage's shim and the gateway, on this path as on the native one (#599).
+        assert installed['small_model'] == 'sage-gateway/sage-model'
+        assert installed['enabled_providers'] == ['sage-gateway']
         # The port rewrite is not the native branch's and still has to happen.
         assert provider['options']['baseURL'] == 'http://localhost:9876/v1'
     assert "Cannot find package '@ai-sdk/anthropic'" in caplog.text
