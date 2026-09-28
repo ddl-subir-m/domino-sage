@@ -97,14 +97,14 @@ def test_a_stored_value_stays_on_the_card_and_the_model_is_told_which_column(tmp
     assert recorded[0][1]["selected"] == {}, "nothing selected reaches the model"
 
 
-def test_a_result_too_large_to_read_is_refused_with_the_repair(tmp_path):
-    """The same budget and the same advice `calculate` gives, because it is the same problem: a
-    grouped answer with too many groups."""
+def test_a_result_too_large_to_read_hands_over_what_fits_with_the_repair(tmp_path):
+    """Over the budget the model gets the first rows that fit, said as a slice, and how to ask
+    for less (#603). The whole result is `test_an_over_budget_query_hands_the_model_what_fits`."""
     rows = [[f"account-{i}", i] for i in range(500)]
     turn, _ = turn_for(tmp_path, answer=FakeAnswer(["ACCOUNT", "N"], rows))
     said = _run(turn, "SELECT ACCOUNT, COUNT(*) AS N FROM E GROUP BY 1")
-    assert "too large to read here" in said
-    assert "account-0" not in said
+    assert "of 500 rows; the card has all 500" in said
+    assert "'account-0'" in said and "'account-499'" not in said
 
 
 # --- the statement is never written down --------------------------------------------------------

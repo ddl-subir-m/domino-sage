@@ -263,3 +263,5 @@ receipt names the metadata fields sent and classifies the read as working materi
 SQL text or metadata values in saved history. Ordinary stored row values remain under the existing
 disclosure rule. The replay used real models with synthetic local tables, so it does not establish
 production warehouse access.
+
+**Diagnostics (#603, 2026-09-28):** the composed statement is logged, capped at 2,000 characters, to the `sage.liveread` server log beside its `source_sha256`; it still never enters Thread history, a committed file, the data-use event or Recall (ADR-0041).

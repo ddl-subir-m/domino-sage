@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from ..orchestrator import brand
 from ..resources.provider import ResourceUnavailable, ScopeIncomplete
-from . import disclosure, grant, reference, result
+from . import disclosure, grant, reference, result, sql_hints
 
 log = logging.getLogger("sage.liveread")
 
@@ -584,12 +584,16 @@ def _statement(args: dict, turn: Turn) -> str:
     a model does when it is asked for a number and has no way to produce one, which is why the fix
     is a tool rather than more prompt.
 
-    THE STATEMENT IS NOT WRITTEN DOWN ANYWHERE. Not in the card's `.sql` sidecar, not in the
-    `data_use` event, not in the sentence returned here — only its hash. `result.record`'s sidecar
-    is committed in both Kept-rows states, and a statement with a `WHERE EMAIL = '…'` in it is a row
-    value; putting it in the Project's git history is precisely what ADR-0041 refuses. Kept rows
-    does not govern this and must not be made to: that setting is about ROWS, and a literal in a
-    predicate is disclosed by the statement whatever it says.
+    THE STATEMENT IS NOT WRITTEN DOWN ANYWHERE THE PROJECT KEEPS. Not in the card's `.sql`
+    sidecar, not in the `data_use` event, not in the sentence returned here — only its hash.
+    `result.record`'s sidecar is committed in both Kept-rows states, and a statement with a
+    `WHERE EMAIL = '…'` in it is a row value; putting it in the Project's git history is precisely
+    what ADR-0041 refuses. Kept rows does not govern this and must not be made to: that setting is
+    about ROWS, and a literal in a predicate is disclosed by the statement whatever it says.
+
+    It IS logged, capped, to the `sage.liveread` server log, beside the same hash (#603). That log
+    is the operator's diagnostics ring, not the Project, the Thread or Recall, and nothing commits
+    it; without it nobody could say afterwards why a count came back 0 (#600).
     """
     name = str(args.get("source") or "")
     sql = str(args.get("sql") or "").strip()
@@ -620,10 +624,12 @@ def _statement(args: dict, turn: Turn) -> str:
         #
         # One objection is replaced, because the store's own words are the wrong next step.
         # "Call 'USE DATABASE'" cannot apply to the following statement on this client.
+        log.info("live query refused, sha256=%s: %s",
+                 hashlib.sha256(sql.encode()).hexdigest(), _logged(sql))
         return _no_card(_session_database(str(e)))
 
-    verdict = disclosure.decide(sql, answer.rows,
-                                connector_type=getattr(source, "connector_type", ""))
+    connector_type = getattr(source, "connector_type", "")
+    verdict = disclosure.decide(sql, answer.rows, connector_type=connector_type)
     title = str(args.get("title") or "Query result")
     receipt = result.record(
         turn.examples_dir,
@@ -643,7 +649,34 @@ def _statement(args: dict, turn: Turn) -> str:
         # computed answer is neither. A card with no button beats a button whose press can only come
         # back with a failure (#258).
     )
-    return _computed_text(receipt, verdict, answer, sql, args, turn)
+    said = _computed_text(receipt, verdict, answer, sql, args, turn)
+    hint = sql_hints.regex_hint(sql, connector_type)
+    return f"{said}\n{hint}" if hint else said
+
+
+# The server log's share of one statement. Enough to read any statement a person would diagnose,
+# and short enough that one pasted list of ten thousand ids does not roll the diagnostics ring.
+_LOGGED_SQL_CHARS = 2000
+
+
+def _logged(sql: str) -> str:
+    if len(sql) <= _LOGGED_SQL_CHARS:
+        return sql
+    return f"{sql[:_LOGGED_SQL_CHARS]}…(+{len(sql) - _LOGGED_SQL_CHARS} chars)"
+
+
+def _fits(values: list[list]) -> list[list]:
+    """The leading rows whose JSON fits the model's budget, measured as `_computed_text` measures.
+
+    Unlike `result._within_budget` this can be none: the caller's check is over `json.dumps`, and
+    a single row over it is withheld there as it always was.
+    """
+    spent = 2  # the list's brackets
+    for i, row in enumerate(values):
+        spent += len(json.dumps(row, default=str)) + (2 if i else 0)  # and ", " between rows
+        if spent > result.VALUES_BUDGET_CHARS:
+            return values[:i]
+    return values
 
 
 # The schemas a store keeps its own catalogue in. A read of one is finding the way by definition
@@ -749,16 +782,25 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
     # own repro used to compute its answer. A model handed a token it cannot re-serialise writes it
     # into the next table it composes, and that table fails validation exactly as this one did.
     values = [result.json_safe(list(row)) for row in answer.rows] if verdict.discloses else []
+    total = len(values)
+    finding_the_way = bool(verdict.catalogue) or catalogue_read(sql)
+    # Never "group by" on a catalogue read: #600 measured that advice turning into `ORDINAL_POSITION`
+    # paging and a `GROUP BY TABLE_NAME` with `N = 1` on every row.
+    narrower = ("Narrow it with a WHERE on TABLE_NAME or TABLE_SCHEMA, or select fewer columns."
+                if finding_the_way else
+                "Add a tighter filter, or ORDER BY what matters and LIMIT to the rows you need.")
     if verdict.discloses and len(json.dumps(values, default=str)) > result.VALUES_BUDGET_CHARS:
-        # The same sentence `calculate` gives over the same budget, and the same repair: ask for
-        # less. A result this wide is a grouped answer with too many groups, and the model can say
-        # so or narrow it.
-        verdict = replace(verdict, discloses=False, reason=(
-            "That result is too large to read here, so only the card has it. Group by fewer things "
-            "or add a tighter filter."))
-        values = []
+        # What fits, said as a slice (#603). Withholding the whole result sent turns paging.
+        values = _fits(values)
+        if not values:
+            verdict = replace(verdict, discloses=False, reason=(
+                "That result is too large to read here, so only the card has it. " + narrower))
 
-    if verdict.discloses:
+    if verdict.discloses and len(values) < total:
+        lines.append(f"Result (first {len(values)} of {total} rows; the card has all {total}): "
+                     f"{values}")
+        lines.append(f"The rest did not fit here. {narrower}")
+    elif verdict.discloses:
         lines.append(f"Result: {values}")
     else:
         lines.append(verdict.reason)
@@ -768,6 +810,9 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
     log.info("live query: %s — %s, %d columns, discloses=%s -> %s",
              receipt.columns and receipt.columns[0] or "(none)", shape, len(receipt.columns),
              verdict.discloses, receipt.path)
+    source_sha256 = hashlib.sha256(sql.encode()).hexdigest()
+    log.info("live query sql, sha256=%s rows=%d discloses=%s: %s",
+             source_sha256, receipt.rows, verdict.discloses, _logged(sql))
 
     if turn.record_data_use:
         operation = "du_" + uuid4().hex
@@ -777,7 +822,7 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
             # The HASH, never the statement. The event is persisted into the Thread's history, which
             # is committed, and a statement carries literals — see `_statement`'s docstring. This is
             # the same thing `calculate` does with the CSV bytes it read, for the same reason.
-            "source_sha256": hashlib.sha256(sql.encode()).hexdigest(),
+            "source_sha256": source_sha256,
             # Whether this read was finding the way or answering the question (ADR-0063). The
             # VERDICT and never the statement, decided here because here is the only place the
             # statement is still in hand: by the time `new_artifact_paths` discovers the file this
@@ -789,20 +834,23 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
             # `SELECT COUNT(*) FROM GONG_CALLS` is a step when the question is which customers use
             # monitoring and is the answer when the question is how many calls there are — the same
             # statement, and only the caller knows which it is. An absent flag is `'answer'`.
-            "role": "working" if (verdict.catalogue or catalogue_read(sql)
-                                  or declared_step(args)) else "answer",
+            "role": "working" if finding_the_way or declared_step(args) else "answer",
             "artifact": receipt.path,
             "columns": list(receipt.columns),
             "selected_fields": [receipt.columns[i] for i in (*verdict.derived, *verdict.catalogue)
                                 if i < len(receipt.columns)] if verdict.discloses else [],
             "result_rows": receipt.rows,
+            # How many of those rows reached the model. Not in `coverage`: a slice cut for the
+            # model's budget is not a read that fell short (`data_use.FELL_SHORT`).
+            "disclosed_rows": len(values),
             "coverage": {"total": receipt.rows, "processed": receipt.rows, "excluded": 0,
                          "failed": 0, "unfinished": 1 if receipt.truncated else 0},
             "purpose": str(args.get("purpose") or "Run a query against a bound data source"),
             "requests": [], "delivery": "unknown",
         }
         reply = {"data_use": operation, "columns": list(receipt.columns),
-                 "result_rows": receipt.rows, "local_reference": receipt.path,
+                 "result_rows": receipt.rows, "disclosed_rows": len(values),
+                 "local_reference": receipt.path,
                  "coverage": event["coverage"], "selected_fields": event["selected_fields"],
                  "selected": {"rows": values} if verdict.discloses else {},
                  "kept_rows": receipt.kept}
