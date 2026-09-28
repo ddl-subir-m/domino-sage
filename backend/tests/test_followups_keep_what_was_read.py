@@ -13,7 +13,7 @@ import httpx
 
 from sage.liveread.disclosure import decide
 from sage.orchestrator.service import _PLAN_SHAPE
-from sage.workspace.threads import findings_file
+from sage.workspace.threads import FINDINGS_MAX, findings_file
 
 from .test_a_number_reaches_the_model_and_a_stored_value_does_not import _rows
 from .test_chat_turn import _orch
@@ -49,28 +49,108 @@ def test_a_plan_does_not_take_an_apps_name(tmp_path: Path):
     assert doc["title"] == "Support Ticket Explorer 2"
 
 
+def _arm_read(operation_id: str = "op-arm", *, total: int = 43026, requests: int = 40) -> dict:
+    return {
+        "operation_id": operation_id,
+        "operation": "text_analysis",
+        "source": "Snowflake-Data-Warehouse",
+        "columns": ["CASE_ID", "DESCRIPTION"],
+        "coverage": {"total": total, "processed": 12, "excluded": 0, "failed": 0,
+                     "unfinished": 0},
+        "artifact": "examples/thr/arm-mentions.table.json",
+        "purpose": "ARM mentions for Verizon and Seer Biosciences",
+        "selected": [{"account": "Verizon"}],
+        "requests": [{
+            "requested_alias": "sonnet",
+            "state": "response_completed",
+            "serving_model": "claude",
+            "provider_receipt": "unknown",
+            "decision_stage": "unknown",
+            "cache": "unknown",
+            "fallback": "unknown",
+        } for _ in range(requests)],
+        "batches": [{"error": "x" * 4000}],
+    }
+
+
 def test_a_finished_turn_writes_the_read_into_findings(tmp_path: Path):
     orch, _oc = _orch(tmp_path)
     tid = orch.create_thread()["id"]
     root = orch.project(start_preview=False).record.path
     history = [
         {"type": "user", "text": "how many customers asked for ARM?"},
-        {"type": "data_used", "dataUsed": [{
-            "operation_id": "op-arm",
-            "operation": "query",
-            "source": "Snowflake-Data-Warehouse",
-            "columns": ["N"],
-            "coverage": {"total": 1, "processed": 1},
-        }]},
+        {"type": "data_used", "dataUsed": [_arm_read()]},
         {"type": "agent", "kind": "text", "text": "Forty customers."},
     ]
     orch._record_chat_findings(root, tid, history)
     text = findings_file(root, tid).read_text()
     assert "Snowflake-Data-Warehouse" in text
+    assert "43026 total, 12 processed" in text
+    assert "examples/thr/arm-mentions.table.json" in text
+    assert "0 excluded" not in text
+    assert "Model requests" not in text
+    assert "response_completed" not in text
+    assert "Verizon" not in text
     assert "a@b" not in text
     orch._record_chat_findings(root, tid, history)
-    assert text.count("Snowflake-Data-Warehouse") == findings_file(root, tid).read_text().count(
-        "Snowflake-Data-Warehouse")
+    assert text == findings_file(root, tid).read_text()
+
+
+def test_a_reread_with_a_longer_request_log_is_not_appended(tmp_path: Path):
+    """The same measurement on the next turn gets a new operation id and more request evidence.
+    The old writer treated that as a new block and appended the read again."""
+    orch, _oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    root = orch.project(start_preview=False).record.path
+    first = [
+        {"type": "user", "text": "how many customers asked for ARM?"},
+        {"type": "data_used", "dataUsed": [_arm_read()]},
+    ]
+    orch._record_chat_findings(root, tid, first)
+    again = [
+        *first,
+        {"type": "user", "text": "and the Gong calls?"},
+        {"type": "data_used", "dataUsed": [_arm_read("op-arm-2", requests=80)]},
+    ]
+    orch._record_chat_findings(root, tid, again)
+    text = findings_file(root, tid).read_text()
+    assert text.count("Snowflake-Data-Warehouse") == 1
+    assert "response_completed" not in text
+
+
+def test_a_changed_count_is_appended_once(tmp_path: Path):
+    orch, _oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    root = orch.project(start_preview=False).record.path
+    first = [
+        {"type": "user", "text": "how many customers asked for ARM?"},
+        {"type": "data_used", "dataUsed": [_arm_read(total=43026)]},
+    ]
+    orch._record_chat_findings(root, tid, first)
+    again = [
+        *first,
+        {"type": "user", "text": "recheck the denominator"},
+        {"type": "data_used", "dataUsed": [_arm_read("op-arm-2", total=43020)]},
+    ]
+    orch._record_chat_findings(root, tid, again)
+    text = findings_file(root, tid).read_text()
+    assert text.count("43026 total") == 1
+    assert text.count("43020 total") == 1
+
+
+def test_a_findings_file_at_the_ceiling_does_not_take_another_receipt(tmp_path: Path):
+    orch, _oc = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    root = orch.project(start_preview=False).record.path
+    path = findings_file(root, tid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x" * FINDINGS_MAX)
+    history = [
+        {"type": "user", "text": "how many customers asked for ARM?"},
+        {"type": "data_used", "dataUsed": [_arm_read()]},
+    ]
+    orch._record_chat_findings(root, tid, history)
+    assert path.read_text() == "x" * FINDINGS_MAX
 
 
 def _dead(status: int = 404):

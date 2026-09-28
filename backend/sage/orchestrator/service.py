@@ -14872,10 +14872,12 @@ class Orchestrator:
             return (lead + "These are measurements from earlier turns. Use them when this question "
                     "depends on them. Do not answer by restating this file or an earlier reply. "
                     "Append what this turn measures: the statement that produced it, the time, and "
-                    "the numbers with their denominators.")
+                    "the numbers with their denominators. If that number is already in the file, "
+                    "leave it. Do not record a model-request log.")
         return (lead + "Read it before you plan this turn — it records what has already been "
                 "measured and what is still open. Append what you measure: the statement that "
-                "produced it, the time, and the numbers with their denominators.")
+                "produced it, the time, and the numbers with their denominators. If that number "
+                "is already in the file, leave it. Do not record a model-request log.")
 
     def _flush_findings(self, client, sid: str, *, root: Path, thread_id: str,
                         deadline: float, stop: Callable[[], bool]) -> str:
@@ -14977,8 +14979,9 @@ class Orchestrator:
         ask = (f"This turn has reached its time limit and is being stopped now. Before it is, "
                f"append what you have already measured to {rel}: the statement or command that "
                "produced each number, the numbers with their denominators, and what is still "
-               "open. Write that file and nothing else — start no new work, read nothing further, "
-               "and do not try to answer the question.")
+               "open. Do not repeat a measurement the file already holds, and do not record a "
+               "model-request log. Write that file and nothing else — start no new work, read "
+               "nothing further, and do not try to answer the question.")
         sent: list[bool] = []
 
         def dispatch() -> None:
@@ -15013,12 +15016,22 @@ class Orchestrator:
         return rel
 
     def _record_chat_findings(self, root: Path, thread_id: str, history) -> None:
-        """Write this turn's data-read receipt into `findings.md`.
+        """Append this turn's new measurements to `findings.md`.
 
-        The ceiling flush asks the model to do this, and only a turn that is still going at
-        ten minutes reaches it. A turn that finishes normally leaves the file empty, so the
-        next question is told to read findings that were never written. The receipt is the
-        safe ledger line — source, columns, coverage — and not the rows.
+        A turn that finishes normally never reaches the ceiling flush, so without this the next
+        question is told to read findings that were never written. The line is the measurement —
+        source, the counts that are not zero, the artifact — and not the request log
+        `data_use_summaries` builds for the Build handoff. That log is what grew a findings file
+        past 200 KB: the same read, re-saved once per model batch, each copy carrying the batch's
+        request boilerplate, and the whole block appended again because the boilerplate had grown.
+
+        A line already in the file is not written again. The same statement on a later turn gets
+        a new operation id and the same numbers; appending it again is the duplicate the ceiling
+        then has to refuse.
+
+        Growth past `FINDINGS_MAX` is not written. The model's own writes are refused there, and
+        this pass runs after that refusal, so without the same bound the receipt is how the file
+        gets past the ceiling. A file already over it stays as it is until something compacts it.
         """
         rows = [r for r in list(history or []) if isinstance(r, dict)]
         start = 0
@@ -15026,17 +15039,22 @@ class Orchestrator:
             if rows[i].get("type") == "user":
                 start = i
                 break
-        lines = chat_handoff.data_use_summaries(rows[start:])
-        if not lines:
-            return
-        block = "\n".join(f"- {line}" for line in lines)
+        lines = chat_handoff.findings_measurements(rows[start:])
         path = findings_file(root, thread_id)
         existing = path.read_text() if path.is_file() else ""
-        if block in existing:
+        held = {row.strip() for row in existing.splitlines()}
+        fresh = [line for line in lines if f"- {line}" not in held]
+        if not fresh:
+            return
+        stamp = datetime.now(UTC).isoformat(timespec="seconds")
+        addition = f"\n\n## Read {stamp}\n" + "\n".join(f"- {line}" for line in fresh) + "\n"
+        if len(existing.encode()) + len(addition.encode()) > FINDINGS_MAX:
+            log.warning(
+                "chat: findings already hold %s bytes; this turn's measurements were not appended",
+                len(existing.encode()))
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(UTC).isoformat(timespec="seconds")
-        path.write_text(existing + f"\n\n## Read {stamp}\n{block}\n")
+        path.write_text(existing + addition)
 
     def _already_read_note(self, history: list[dict] | None) -> str:
         """The sources earlier turns in this Thread already read, and where each result landed.

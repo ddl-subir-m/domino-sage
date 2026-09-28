@@ -139,9 +139,10 @@ join is broken" is not an entry; "SFDC_CONTACT_ID is populated 16,756/89,399 (18
 Aggregates and column facts only — counts, rates, ranges, distinct-counts, column names. Never a
 value copied out of a row: no identifiers, no names, no exemplars. This file is committed.
 
-Read it before you plan the turn, and append what you measure. For the method — how to find the
-tables, how to measure whether a column is usable, when to ask the person, and how to turn weak
-signals into a score — load the `investigate-weak-signals` skill.
+Read it before you plan the turn, and append what you measure. Only a new measurement — not a
+model-request log, and not a line already there. For the method — how to find the tables, how
+to measure whether a column is usable, when to ask the person, and how to turn weak signals
+into a score — load the `investigate-weak-signals` skill.
 
 ## Visuals
 
