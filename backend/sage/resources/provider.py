@@ -1049,6 +1049,25 @@ def failure_kind(exc: Exception) -> tuple[str, str]:
     return "answered", payload
 
 
+def reach_is_transient(exc: BaseException) -> bool:
+    """A Data Source failure that is a dropped connection, not a slow query or a cancel.
+
+    `never_delivered` also covers a deadline and a cancellation. Those already took as long as
+    they were going to, and asking again multiplies that. A refused connection is the one that
+    is worth a moment's wait.
+    """
+    if not isinstance(exc, Exception):
+        return False
+    kind, _payload = failure_kind(exc)
+    if kind != "never_delivered":
+        return False
+    text = " ".join(str(exc).split()).lower()
+    if "deadline exceeded" in text or "cancelled" in text or "canceled" in text:
+        return False
+    origin = type(exc.__context__).__name__ if exc.__context__ is not None else ""
+    return origin not in ("FlightTimedOutError", "FlightCancelledError")
+
+
 def readable_error(exc: Exception, limit: int = 300) -> str:
     """A store's own failure, in a form that can be shown.
 
@@ -1114,6 +1133,17 @@ def frame_rows(frame: Any, limit: int = SAMPLE_CELL_LIMIT) -> tuple[list[str], l
     return columns, [[sample_value(col[i], limit) for col in values] for i in range(len(values[0]))]
 
 
+def _release(handle: object, method: str) -> None:
+    """Call `method` on `handle`, and never let that hide the error it follows."""
+    close = getattr(handle, method, None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:
+        pass
+
+
 def _drain_within(result: Any, limit: int, cell_limit: int = SAMPLE_CELL_LIMIT) -> StatementRows:
     """At most `limit` rows out of a Flight stream, and whether the store had more to say.
 
@@ -1126,13 +1156,14 @@ def _drain_within(result: Any, limit: int, cell_limit: int = SAMPLE_CELL_LIMIT) 
     not cut, and saying it was would put "500 of more than 500" under a table holding the whole
     answer.
 
-    The reader is cancelled once the cap is met, so the rest of the answer is not pulled across the
-    wire to be thrown away.
+    The reader is cancelled once the cap is met, and when the read raises, so the rest of the
+    answer is not pulled across the wire and a retry does not leave the previous socket open.
+    A stream that ended on its own is left alone: cancelling it would say it was cut.
     """
     columns: list[str] = []
     rows: list[list] = []
-    truncated = False
     reader = result.reader
+    release = False
     try:
         while True:
             try:
@@ -1145,13 +1176,19 @@ def _drain_within(result: Any, limit: int, cell_limit: int = SAMPLE_CELL_LIMIT) 
             held = [batch.column(i).to_pylist() for i in range(batch.num_columns)]
             for i in range(batch.num_rows):
                 if len(rows) >= limit:
-                    truncated = True
+                    release = True
                     return StatementRows(columns, rows, True)
                 rows.append([sample_value(col[i], cell_limit) for col in held])
+    except Exception:
+        release = True
+        raise
     finally:
-        if truncated:
-            reader.cancel()
-    return StatementRows(columns, rows, truncated)
+        # At the cap, and when this attempt failed. A stream that ended on its own is already
+        # finished; cancelling it would say it was cut. A reader left open on a failure keeps
+        # its socket across the retry.
+        if release:
+            _release(reader, "cancel")
+    return StatementRows(columns, rows, False)
 
 
 class ResourceProvider(Protocol):
@@ -2312,11 +2349,14 @@ class DominoResourceProvider:
                 "The {platformName} data library isn't installed here, so {assistantName} can "
                 "list {dataSourcePlural} but not look inside them."
             )) from e
-        try:
+        def once():
             client = DataSourceClient()
-            return client.get_datasource(source.name).query(sql).to_pandas()
-        except Exception as e:
-            raise self._store_failure(source, e) from e
+            try:
+                return client.get_datasource(source.name).query(sql).to_pandas()
+            finally:
+                _release(client, "close")
+
+        return self._call_store(source, once)
 
     def _store_failure(self, source: DataSource, e: Exception) -> ResourceUnavailable:
         """Which of the three failures this was, as the exception to raise (#399).
@@ -2356,6 +2396,26 @@ class DominoResourceProvider:
         # would move criterion 4. This string is also what `liveread.mcp._failed_text` hands the
         # model verbatim, which is the half that steers what it then says to the person (#406).
         return ResourceUnavailable(f"{source.name} did not answer: {_scrubbed(_unwrapped(said))}")
+
+    def _call_store(self, source: DataSource, call):
+        """`call()` once, and again when the question never left.
+
+        A store that answered, and a credential Domino refused, are raised on the first failure.
+        Each attempt builds its own client: the caller passes that in `call`, because the token
+        the client reads is short-lived.
+        """
+        from ..transient import ATTEMPTS, pause
+
+        last: Exception | None = None
+        for attempt in range(ATTEMPTS):
+            try:
+                return call()
+            except Exception as e:
+                last = e
+                if not reach_is_transient(e) or attempt + 1 == ATTEMPTS:
+                    raise self._store_failure(source, e) from e
+                pause(attempt)
+        raise self._store_failure(source, last) from last
 
     def run_statement(self, source: DataSource, sql: str, *, limit: int,
                       timeout_s: float = STATEMENT_TIMEOUT_S,
@@ -2400,9 +2460,15 @@ class DominoResourceProvider:
 
         def work() -> None:
             try:
-                client = DataSourceClient()
-                result = client.get_datasource(source.name).query(sql)
-                answer["rows"] = _drain_within(result, max(1, int(limit)), cell_limit)
+                def once():
+                    client = DataSourceClient()
+                    try:
+                        result = client.get_datasource(source.name).query(sql)
+                        return _drain_within(result, max(1, int(limit)), cell_limit)
+                    finally:
+                        _release(client, "close")
+
+                answer["rows"] = self._call_store(source, once)
             # `BaseException`, not `Exception`. Nothing here is swallowed — it is carried across to
             # the calling thread and re-raised there. A `KeyboardInterrupt` or a `SystemExit` raised
             # inside this worker would otherwise be printed by the threading module and lost, and
@@ -2494,16 +2560,20 @@ class DominoResourceProvider:
     ) -> Any:
         import httpx  # local import so tests never need it on the path they don't take
 
+        from ..transient import call_http
+
         try:
             token = (token_provider or self._token_provider)()
-            r = httpx.request(
+            # Both POSTs this class makes are safe to repeat: authentication status is a read,
+            # and adding a collaborator treats "already on the project" as success.
+            r = call_http(lambda: httpx.request(
                 method,
                 (self._root if root is None else root) + path,
                 headers={"Authorization": f"Bearer {token}"},
                 params=params,
                 json=json_body,
                 timeout=self._timeout_s,
-            )
+            ))
         except ResourceUnavailable:
             raise
         except Exception as e:

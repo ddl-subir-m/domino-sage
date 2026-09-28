@@ -91,14 +91,16 @@ def verify_credential(url: str, token: str, *, timeout: float = VERIFY_TIMEOUT) 
     """
     import httpx  # local, like the resource provider's: tests never need it on the path
 
+    from ..transient import call_http
+
     try:
-        r = httpx.post(
+        r = call_http(lambda: httpx.post(
             url,
             json=PROBE_BODY,
             auth=(token, token),
             timeout=timeout,
             headers={"Content-Type": "application/json"},
-        )
+        ))
     except Exception as e:  # httpx raises a family; every member means the same thing here
         return VerifyResult(
             ok=False,

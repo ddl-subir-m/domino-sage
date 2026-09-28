@@ -381,6 +381,7 @@ def test_an_actor_string_names_the_packs_platform(tmp_path, monkeypatch):
     path = tmp_path / "brand.json"
     path.write_text(json.dumps({"platformName": "Acme Cloud"}))
     monkeypatch.setenv("SAGE_BRAND_FILE", str(path))
+    monkeypatch.setattr("sage.transient.pause", lambda _attempt: None)
     monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(503))
 
     provider = DominoAssetProvider("https://acme.example", lambda: "tok", mount_roots=[])

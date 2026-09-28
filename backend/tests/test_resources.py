@@ -221,12 +221,16 @@ def test_a_signed_out_gateway_is_an_error_and_not_an_empty_list():
 _DEAD_PORT = 1
 
 
-def test_an_unreachable_gateway_is_reported_rather_than_raised_raw():
+def test_an_unreachable_gateway_is_reported_rather_than_raised_raw(monkeypatch):
+    # A refused connection is retried. The port still refuses at once; the pause is the part
+    # that would hold the suite.
+    monkeypatch.setattr("sage.transient.pause", lambda _attempt: None)
     with pytest.raises(ResourceUnavailable, match="didn't answer"):
         DominoResourceProvider(f"http://127.0.0.1:{_DEAD_PORT}/v1", lambda: "tok", timeout_s=1.0).list_llm_aliases()
 
 
-def test_the_error_message_never_carries_the_token():
+def test_the_error_message_never_carries_the_token(monkeypatch):
+    monkeypatch.setattr("sage.transient.pause", lambda _attempt: None)
     with pytest.raises(ResourceUnavailable) as e:
         DominoResourceProvider(f"http://127.0.0.1:{_DEAD_PORT}/v1", lambda: "dgw_supersecret", timeout_s=1.0).list_llm_aliases()
     assert "supersecret" not in str(e.value)

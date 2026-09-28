@@ -196,6 +196,7 @@ from ..router.phase_classifier import SHELL_TOOLS, WRITE_TOOLS
 from ..shim.enforcement import EnforcementShim
 from ..shim.keepalive import cut_off_finish_reason, terminal_finish_reason, upstream_error
 from ..tool_timing import MAX_PROGRAMS, program_name
+from ..transient import lost_on_a_short_drop
 from ..workspace import plan_doc
 from ..workspace.manager import (
     ProjectRecord,
@@ -16948,6 +16949,14 @@ class Orchestrator:
                                 and not turn_failed and not unanswered_stream_error
                                 and project.last_gateway_error is None)
                     repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
+                    # A dropped connection leaves no answer. The gateway client already retried the
+                    # bytes that never left; this is the one re-send of the question itself. A
+                    # paragraph that arrived, or a guardrail, is not this — `lost_on_a_short_drop`
+                    # is what says so.
+                    gateway_said = (_error_raw(project.last_gateway_error)
+                                    if project.last_gateway_error else "")
+                    drop_retry = (not recovery_used and lost_on_a_short_drop(
+                        body, step_error or "", gateway_said))
                     if (broken_call is not None and recovery_used and not turn_failed
                             and not step_error and project.last_gateway_error is None):
                         # The one correction was spent, and the response after it carried another
@@ -16983,9 +16992,12 @@ class Orchestrator:
                         finish(done)
                         yield done
                         return
-                    if ((repairable or broken_call is not None or (not invalid and not answered))
-                            and not recovery_used and not turn_failed and not step_error
-                            and project.last_gateway_error is None):
+                    if ((repairable or broken_call is not None
+                            or (not invalid and not answered) or drop_retry)
+                            and not recovery_used
+                            and (drop_retry or (
+                                not turn_failed and not step_error
+                                and project.last_gateway_error is None))):
                         if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                             continue
                         if broken_call is not None and not self._confirm_session_idle(client, sid):
@@ -16995,19 +17007,27 @@ class Orchestrator:
                             log.error("chat: the session would not confirm it stopped after a %s "
                                       "call did not run; no correction is sent", broken_call)
                             break
+                        if drop_retry:
+                            # Sticky witnesses of the drop. Left set, a second attempt that
+                            # answers still reads as unanswered, because `answered` requires
+                            # every one of them to be clear.
+                            step_error = ""
+                            unanswered_stream_error = False
+                            project.last_gateway_error = None
                         recovery_used = True
-                        table_repair = bool(repairable)
-                        # Chat's ONE allowance, shared three ways (#567). The table repair has the
-                        # file on disk as its evidence and keeps first claim; a call whose intended
-                        # tool never ran is next; the bare empty answer is last. Whichever is sent,
-                        # it is the first response that is being corrected, so its fault is retired
-                        # here, and a wrapper in the NEXT response is a new one that the spent
-                        # allowance cannot answer.
-                        call_repair = broken_call is not None and not table_repair
+                        table_repair = bool(repairable) and not drop_retry
+                        # Chat's ONE allowance (#567). The table repair has the file on disk as
+                        # its evidence and keeps first claim; a call whose intended tool never
+                        # ran is next; a short connection drop re-sends the question; the bare
+                        # empty answer is last. Whichever is sent, it is the first response that
+                        # is being corrected, so its fault is retired here, and a wrapper in the
+                        # NEXT response is a new one that the spent allowance cannot answer.
+                        call_repair = broken_call is not None and not table_repair and not drop_retry
                         if table_repair:
                             primary_body = body
                             tables.repair_ran = True
-                        correction = (tables.repair_prompt(repairable) if table_repair
+                        correction = (prompt if drop_retry else
+                                      tables.repair_prompt(repairable) if table_repair
                                       else _CHAT_INVALID_CALL_NOTE.format(
                                           tool=broken_call,
                                           fault=_INVALID_CALL_SAID[broken_category])
@@ -17025,7 +17045,8 @@ class Orchestrator:
                                 if isinstance(part, dict):
                                     seen.add(_part_key(m, i, part))
                         try:
-                            with timing.span("chat.table_repair" if table_repair
+                            with timing.span("chat.drop_retry" if drop_retry
+                                             else "chat.table_repair" if table_repair
                                              else "chat.call_repair" if call_repair
                                              else "chat.answer_repair"):
                                 client.send_prompt(sid,

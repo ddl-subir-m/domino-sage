@@ -199,9 +199,17 @@ def _failed_text(why: str) -> str:
     to answer the question another way — which is right. What it did next was say "here are the
     first 5 rows" over a card nobody had written, because nothing had told it the screen was still
     empty. So that is said first and the message second.
+
+    A dropped connection is the exception. The sentence already says to try again in a moment,
+    and an assistant that follows it tells the person the data is unreachable and stops. Sage has
+    already retried the call. One more try of the same tool is the remaining move; Python is how
+    a store that answered and objected gets around the statement, not how a blip is survived.
     """
-    return (f"The live read did not happen: {why}. Nothing was put on the person's screen. "
-            "Query the data with Python and write the table file yourself, and do not say "
+    standing = (f"The live read did not happen: {why}. Nothing was put on the person's screen. ")
+    if "could not reach" in why and "Try again in a moment" in why:
+        return (standing + "Call this same tool once more before you tell the person the data "
+                "is unreachable. Do not say anything is showing that you did not write.")
+    return (standing + "Query the data with Python and write the table file yourself, and do not say "
             "anything is showing that you did not write.")
 
 

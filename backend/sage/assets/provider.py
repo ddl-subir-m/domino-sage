@@ -359,9 +359,16 @@ class DominoAssetProvider:
                 return str(p)
         return None
 
-    def list_datasets(self, project_id: str | None) -> list[Asset]:
+    def _http_get(self, url: str, *, headers: dict, params: dict):
+        """One GET, retried when the connection drops or the proxy answers 502/503/504."""
         import httpx
 
+        from ..transient import call_http
+
+        return call_http(lambda: httpx.get(
+            url, headers=headers, params=params, timeout=self._timeout_s))
+
+    def list_datasets(self, project_id: str | None) -> list[Asset]:
         if not self._api_host:
             raise ResourceUnavailable(brand.text(
                 "{assistantName} isn't configured to reach the {platformName} API, so it can't "
@@ -379,7 +386,7 @@ class DominoAssetProvider:
             }
             try:
                 headers = {"Authorization": f"Bearer {self._token_provider()}"}
-                r = httpx.get(url, headers=headers, params=params, timeout=self._timeout_s)
+                r = self._http_get(url, headers=headers, params=params)
             except ResourceUnavailable:
                 raise
             except Exception as e:
@@ -459,8 +466,6 @@ class DominoAssetProvider:
         Dataset the caller cannot read is dropped from the response rather than returned empty —
         zipping the answer against the request would then shift every later id onto the wrong row.
         """
-        import httpx
-
         ids = [str(d) for d in dataset_ids if str(d or "").strip()]
         if not ids:
             return {}
@@ -472,9 +477,10 @@ class DominoAssetProvider:
         url = f"{self._api_host}/v4/datasetrw/datasets-v2"
         try:
             headers = {"Authorization": f"Bearer {self._token_provider()}"}
-            r = httpx.get(url, headers=headers,
-                          params={"datasetIds": ",".join(ids), "includeTaxonomyTags": "true"},
-                          timeout=self._timeout_s)
+            r = self._http_get(
+                url, headers=headers,
+                params={"datasetIds": ",".join(ids), "includeTaxonomyTags": "true"},
+            )
         except Exception as e:
             raise ResourceUnavailable(
                 brand.text(
@@ -516,12 +522,9 @@ class DominoAssetProvider:
         `/v4/...` answers 200. The provider calling two different prefixes is correct, not a
         tidy-up waiting to happen.
         """
-        import httpx
-
         try:
             headers = {"Authorization": f"Bearer {self._token_provider()}"}
-            r = httpx.get(f"{self._api_host}/v4/{path}", headers=headers, params=params,
-                          timeout=self._timeout_s)
+            r = self._http_get(f"{self._api_host}/v4/{path}", headers=headers, params=params)
             data = r.json() if r.status_code < 400 else None
         except ResourceUnavailable:
             raise

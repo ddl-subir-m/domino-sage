@@ -172,6 +172,7 @@ def test_a_401_is_refused_and_says_to_paste_a_fresh_sample_request(monkeypatch):
 
 
 def test_a_stopped_model_says_to_start_it_rather_than_blaming_the_token(monkeypatch):
+    monkeypatch.setattr("sage.transient.pause", lambda _attempt: None)
     _answers(monkeypatch, _Response(503, ""))
     assert "not running" in verify_credential(URL, TOKEN).message
 
