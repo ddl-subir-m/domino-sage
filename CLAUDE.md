@@ -274,22 +274,30 @@ both directions: **a marker with no process is stale or pre-claimed, and a proce
 is a session nobody sequenced.** Neither absence proves the box is free; a session between its
 scoped run and its gating run looks exactly like a session that has finished.
 
-**Your worktree cannot run the real-OpenCode tests, and they skip without saying so.**
-`node_modules` is gitignored, so it exists only in the repo root. In a worktree `BINARY.exists()`
-is False and every test guarded on it skips — silently, folded into a total that still reads clean.
+**The real-OpenCode tests skip on a default run, anywhere, and they skip without saying so.** Two
+gates, and both must open. Tests marked `@pytest.mark.opencode` skip unless you pass `--opencode`
+(`backend/tests/conftest.py`), from the root as much as from a worktree. And `node_modules` is
+gitignored, so it exists only in the repo root: in a worktree `BINARY.exists()` is False and every
+test guarded on it skips too. Either way the skips fold into a total that still reads clean.
 Measured on 2026-09-18: one tree collected 6519 items in both places, and gave `6514 passed, 5
 skipped` from the root against `6509 passed, 10 skipped` from a worktree. Five tests ran in one and
-not the other, and nothing in the worktree's summary said so. Run with `-rs` there, always: it
-prints each skip with its reason, which is the only thing that tells a skip from a pass at a glance.
+not the other, and nothing in the worktree's summary said so. Run with `-rs`, always: it prints
+each skip with its reason, which is the only thing that tells a skip from a pass at a glance.
 
-**Name that population by grepping `BINARY.exists()`, never by naming a file**, and run the FULL
-suite from the root rather than "that file from the root". The grep finds the FILES and the sites;
-it does not give you the count. Four `skipif` sites yield five tests, because one carries
-`@pytest.mark.parametrize("mode", ["chat", "build"])` directly beneath it — use `--collect-only` for
-the number. A third file matches the grep and gates nothing: it names `BINARY.exists()` twice in
-prose. Expect that hit and discount it. The five tests live in TWO files, and
-for most of one day this repo's briefings said "the four real-OpenCode tests" and pointed at one of
-them — so a session that ran exactly what it was told still missed a test. The failure is not that
+**The Node codec tests do NOT skip in a worktree — they fail.** They are gated on `node` being on
+`PATH`, not on `node_modules`, so in a worktree they run and die on a missing `@ai-sdk/*` package.
+Measured 2026-09-28: 25 failures, all in `test_native_gateway_transport.py` and
+`test_tool_argument_boundaries_are_bounded_evidence.py`, identical on the base commit. A red of
+that shape in those files is the worktree, not your diff — prove it by running the same files on
+your base, and say so in the report rather than calling the suite green.
+
+**Name that population by its gates, never by naming a file**, and run the FULL suite from the root
+with `--opencode` rather than "that file from the root". Grep `pytest.mark.opencode` and
+`BINARY.exists()`: the two sets overlap but are not equal, and some `BINARY.exists()` hits are
+prose that gates nothing. The grep finds the FILES; it does not give you the count, because
+parametrized tests multiply — `pytest --collect-only -q -m opencode --opencode` gives the number.
+For most of one day this repo's briefings said "the four real-OpenCode tests" and pointed at one
+file — so a session that ran exactly what it was told still missed a test. The failure is not that
 the binary is missing, which anyone learns once and remembers. It is that the population is
 invisible from where the rule gets written, so each writer records the subset they happened to hit
 and the next session inherits a narrower rule than the one they need. Key the rule on its
