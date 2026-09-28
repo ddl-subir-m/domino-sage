@@ -14,21 +14,21 @@ It does not apply to a question one query answers. Run the query.
 
 ---
 
-## 1. The one-script rule is per question, not per investigation
+## 1. The tools, and one step per question
 
-The always-on prompt tells you to do the whole job in one script, because looking in one step and
-computing in the next costs a whole round trip. That rule is about **one question**. It is not
-about a whole investigation.
+- **`live_read_query`** — numbers and catalogue reads, one SELECT per call. What you compute and
+  what you `GROUP BY` comes back to you; row text does not, it stays on the person's card. A
+  result too large to return comes back as "first K of N rows".
+- **`live_read_table` with `operation=analyze_text` and `sql`** — judging row text. The statement
+  runs server-side and only its text column goes to the judging model; you get the judgments and
+  their coverage, never the text. Pass `text_column`, `id_column`, `labels`, `purpose`, and
+  `alias` when the person named a model. §4 is the method.
+- **Python with `DataSourceClient`** — only when `live_read_query` is not in your tool list.
 
-An investigation is a sequence of questions, and each answer decides the next one. You cannot write
-the join before you know which column carries the key, and you cannot know that without measuring
-it. So:
-
-- Inside one question — discover, measure, compute, print: **one script**.
-- Across questions — one script each, in order, each one reading the last one's numbers.
-
-You are not breaking the rule by taking four scripts to answer a question that needed four. You
-break it by splitting a single lookup-and-compute across two round trips.
+An investigation is a sequence of questions, and each answer decides the next: you cannot write the
+join before you have measured which column carries the key. So one statement (or script) per
+question, in order, each reading the last one's numbers. Four for a question that needed four is
+right; splitting one lookup-and-compute across two round trips is the waste.
 
 ## 2. Discovery is two stages: names, then columns
 
@@ -53,8 +53,22 @@ the next one. If you do not know the database, `SHOW DATABASES` first. Schema fi
 uppercase — the person saying `dwh.marts` means database `DWH` and schema `MARTS`, not a table.
 That error is not a dead connection, and it is not a reason to ask them for table names.
 
-**Stage two — columns for the shortlist only.** Once you have picked five or six tables, ask
-`INFORMATION_SCHEMA.COLUMNS` for those tables by name. Not the schema. Not the database.
+**Stage two — one columns read for the shortlist.** Once you have picked five or six tables, ask
+`INFORMATION_SCHEMA.COLUMNS` once, for those tables by name, filtered to the columns you need:
+
+```sql
+SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
+FROM   <db>.INFORMATION_SCHEMA.COLUMNS
+WHERE  TABLE_SCHEMA = '<schema>' AND TABLE_NAME IN ('<T1>', '<T2>', '<T3>')
+  AND  COLUMN_NAME ILIKE ANY ('%ID%', '%TEXT%', '%BODY%', '%DESCRIPTION%', '%TYPE%', '%STATUS%')
+```
+
+Not the schema, not the database, and not paged by `ORDINAL_POSITION`. If the reply says "first K
+of N rows", narrow the `WHERE` — fewer tables, tighter patterns — rather than paging. Never
+`GROUP BY` a catalogue read: each row is already one table or one column, so every count is 1.
+
+**Budget: be querying real tables within about four statements.** Discovery past that is how a
+turn ends with nothing measured.
 
 Write the table-level facts to findings as you go, so the next turn does not re-derive them.
 
@@ -81,11 +95,46 @@ FROM   DWH.MARTS.MIXPANEL__PROFILE
 **Anything under about half populated is a CEILING, not a fact.** Write it to findings with the
 word CEILING in it, because it caps every downstream answer that joins through it. A join key
 populated 18.7% of the time means no rollup across that join can be more than 18.7% complete,
-however clean the SQL is. The confidence number in §6 reads these lines.
+however clean the SQL is. The confidence number in §7 reads these lines.
 
 A ceiling is not a reason to stop. It is a reason to say so in the answer.
 
-## 4. When to ask the person
+## 4. Text evidence: a match finds candidates, a model judges them
+
+Support cases, call transcripts, notes. When the question is about what the text means — "asked
+for", "complained about", "eliminate casual mentions" — a word match finds candidates and is never
+the judgment.
+
+1. **Count candidates** with a cheap match in `live_read_query`: `ILIKE`, or
+   `REGEXP_COUNT(t, '\\bARM\\b', 1, 'i') > 0` for a whole word.
+2. **Measure the candidate set** — rows, distinct accounts, `MAX(LENGTH(t))` — and write it to
+   findings. The length decides between the whole text and a window.
+3. **Judge them in one `analyze_text` call per source**, with `sql` selecting the id and the text
+   for just the candidates. For long text or chunked transcripts, select a window around the match:
+
+   ```sql
+   SELECT CASE_ID, SUBSTR(BODY, GREATEST(POSITION('ARM' IN BODY) - 600, 1), 1500) AS SNIPPET
+   FROM   <db>.<schema>.<CASES>
+   WHERE  REGEXP_COUNT(BODY, '\\bARM\\b') > 0
+   ```
+
+   `labels` names the decision, e.g. `["substantive_request", "casual_or_unrelated"]`; `purpose`
+   states the rule in a sentence ("substantive asks for support on the ARM chip architecture; a
+   passing mention or another sense of the word is casual").
+4. **Join the judged ids back** to accounts in one final statement (`WHERE CASE_ID IN (…)`), or in
+   the answer from the judgments you were handed.
+
+A word search that returns 0 where a looser match found candidates is almost always a trap below.
+Check it before concluding nothing matched. **Snowflake traps:**
+
+- `'\b'` in a single-quoted literal is a backspace, not a word boundary. Write `'\\b'` or `$$\b$$`.
+- `REGEXP_LIKE` and `RLIKE` anchor the whole value: `REGEXP_LIKE(t, '\\bARM\\b')` matches only a
+  cell that is exactly "ARM". Use `REGEXP_COUNT(...) > 0`, or `'.*<pattern>.*'` with the `'s'`
+  parameter so `.` crosses newlines. Regex is case-sensitive unless you pass `'i'`.
+- "Active customer" is a definition, not a column. Measure what the account table offers
+  (`ACCOUNT_TYPE`, status, licence dates), then state the assumption in findings or ask (§5).
+
+## 5. When to ask the person
 
 Three buckets. Put every uncertainty in one of them before you act on it.
 
@@ -103,7 +152,7 @@ are the application's own code paths, fired by the table gate, not something you
 state what you measured, state the choice, ask the one question, and stop. Put the question and its answer in
 findings when it comes back, because the next turn will not remember the conversation.
 
-## 5. The findings file
+## 6. The findings file
 
 Long investigations keep measurements in the findings file the always-on prompt names — under a
 prompt that carries one, `.sage/threads/<threadId>/findings.md`. The prompt is what permits that
@@ -155,11 +204,13 @@ the number **and its denominator**; the fully-qualified object; and one clause o
 signal separates. The last field is what makes honest fusion possible instead of invented.
 
 Read the file before you plan a turn. Append as you measure — not at the end, because the turn may
-not reach the end. Append a measurement once. A line already in the file is not written again,
+not reach the end. Append after every measurement that changes the plan: what a turn stopped at its
+ceiling keeps is best-effort, and a line already in the file is the one sure to survive. Append a
+measurement once. A line already in the file is not written again,
 and a model-request receipt is not a measurement: requested model, response state, provider
 receipt, cache, and fallback belong to the turn's record, not here.
 
-## 6. Fusion: two numbers, not one
+## 7. Fusion: two numbers, not one
 
 A single ranked number cannot carry this answer. Report two.
 
@@ -221,3 +272,16 @@ Two traps this example hit, and every warehouse has its own:
   free-mail and test domains, before any domain-to-account mapping.
 - **A model id baked into an event name** made the event-name space unbounded. Group by a prefix,
   or you will count one event a thousand times under a thousand names.
+
+## Worked example: text evidence
+
+*Shape only, no numbers.* **Question:** active customers who asked for ARM (the chip) support,
+from support cases and call transcripts, with a named model eliminating casual mentions.
+
+1. **Names** filtered `ILIKE ANY ('%CASE%', '%TRANSCRIPT%', '%ACCOUNT%')`, then one filtered
+   columns read. Querying real tables by the third statement.
+2. **"Active":** measure `ACCOUNT_TYPE` on the account table; decide and write it down, or ask.
+3. **Candidates** in each source: counts and distinct accounts, to findings.
+4. **Judge:** one `analyze_text` per source, `sql` selecting id plus snippet, `alias` as named.
+5. **Join** substantive ids to active accounts in one statement. The answer gives each account its
+   evidence per source, and how many cases and transcripts tie to an account at all.
