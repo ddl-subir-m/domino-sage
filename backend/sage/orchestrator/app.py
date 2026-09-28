@@ -1797,6 +1797,9 @@ def diag() -> JSONResponse:
         shortlist — while answering normally and reporting `ok: true`. It is one number in place of
         three grep strings; `/api/diag/log?warn=1` says which classifier and which model. Unlike
         `/api/diag/timing` it is NOT behind SAGE_TIMING (see `sage.degraded`)
+      - classifier_degradations_last_degraded_turn: the same count for the most recent EARLIER turn
+        that lost any. An offer card ends its turn and the replay's grant resets the count above, so
+        without this the turn that degraded reads 0 by the time anyone looks (#593)
       - ports: base_port (what opencode.json tells OpenCode to dial) must equal control_port
       - agents: the agents OpenCode actually resolved. There are five — sage-chat, sage-ask, sage-plan,
         sage-architect, sage-implement — and any of them missing means that mode silently ran the
@@ -1860,6 +1863,7 @@ def diag() -> JSONResponse:
         # serves one project anyway. Put inside, it would be the one key in that dict that survives
         # the project being swapped.
         "classifier_degradations": degraded.count(),
+        "classifier_degradations_last_degraded_turn": degraded.last(),
         "artifacts": _artifacts_diag(),
         "git_credential": _git_credential_diag(),
         "git_credential_list": _git_credential_list_diag(),

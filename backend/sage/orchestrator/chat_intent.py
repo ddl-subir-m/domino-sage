@@ -6,12 +6,14 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .. import degraded, timing
+from ..gateway.capabilities import RouteCapability, legacy
 from ..gateway.client import CostLabels, GatewayClient
-from ..router.models import ModelCatalog, reasoning_efforts_for
-from .scope import _extract, _model_for
+from ..router.models import ModelCatalog
+from .scope import _classifier_effort, _classifier_route, _extract, _model_for
 
 log = logging.getLogger(__name__)
 
@@ -169,6 +171,7 @@ def start(
     session: str | None = None,
     version: str | None = None,
     timeout_s: float = TIMEOUT_S,
+    capability: Callable[[str], RouteCapability] = legacy,
 ) -> Pending:
     text = (prompt or "").strip()
     if not text:
@@ -197,10 +200,6 @@ def start(
         "stream": True,
         "response_format": {"type": "json_object"},
     }
-    # The Ask assignment owns both fields. GLM's default can spend this small cap on
-    # reasoning alone (#417); honor an explicit Low pick without changing Model default.
-    if catalog.ask_effort in reasoning_efforts_for(model):
-        request["reasoning_effort"] = catalog.ask_effort
     labels = CostLabels(phase="ask", mode="auto", component="chat-intent",
                         session=session, version=version)
 
@@ -208,7 +207,13 @@ def start(
         call = timing.model_call(model, "chat-intent")
         chunks = []
         try:
-            for chunk in gateway.route(request, labels):
+            # Resolved on the worker, so a slow route listing is inside the timeout. The Ask
+            # assignment owns both fields; GLM's default can spend this small cap on reasoning
+            # alone (#417), and so can mimo's (#593).
+            route = capability(model)
+            if effort := _classifier_effort(route, catalog.ask_effort):
+                request["reasoning_effort"] = effort
+            for chunk in _classifier_route(gateway, request, labels, route):
                 call.first_byte()
                 call.chunk()
                 chunks.append(chunk)

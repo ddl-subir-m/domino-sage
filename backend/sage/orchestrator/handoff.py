@@ -16,6 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .. import degraded
+from ..gateway.capabilities import RouteCapability, legacy
 from ..gateway.client import CostLabels, GatewayClient
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
@@ -25,12 +26,12 @@ from ..resources.bindings import (
     Binding,
     scope_label,
 )
-from ..router.models import ModelCatalog, reasoning_efforts_for
+from ..router.models import ModelCatalog
 from ..timing import model_call
 from ..workspace import plan_doc
 from ..workspace.threads import handoff_unresolved
 from . import brand
-from .scope import _extract, _model_for
+from .scope import _classifier_effort, _classifier_route, _extract, _model_for
 
 log = logging.getLogger(__name__)
 _CURRENT_TIMING_RECORD = object()
@@ -220,6 +221,7 @@ def wants_an_app(
     version: str | None = None,
     timeout_s: float = TIMEOUT_S,
     timing_record=_CURRENT_TIMING_RECORD,
+    capability: Callable[[str], RouteCapability] = legacy,
 ) -> bool:
     """True when this Thread should be offered Open in Build.
 
@@ -275,10 +277,6 @@ def wants_an_app(
         "temperature": 0,
         "stream": True,
     }
-    # Effort belongs to the Ask assignment. A sensitivity move selects by approval,
-    # not by assignment, so it must not carry the original model's effort (#417).
-    if model == catalog.ask and catalog.ask_effort in reasoning_efforts_for(model):
-        request["reasoning_effort"] = catalog.ask_effort
     labels = CostLabels(phase="ask", mode="auto", component="handoff",
                         session=session, version=version)
 
@@ -295,8 +293,15 @@ def wants_an_app(
             else model_call(model, "handoff", record=timing_record))
 
     def _call() -> str:
+        # Resolved on the worker, so a slow route listing is inside the timeout. Effort belongs to
+        # the Ask assignment. A sensitivity move selects by approval, not by assignment, so it must
+        # not carry the original model's effort (#417); it gets the moved model's default (#593).
+        route = capability(model)
+        picked = catalog.ask_effort if model == catalog.ask else None
+        if effort := _classifier_effort(route, picked):
+            request["reasoning_effort"] = effort
         chunks = []
-        for chunk in gateway.route(request, labels):
+        for chunk in _classifier_route(gateway, request, labels, route):
             call.first_byte()
             call.chunk()
             chunks.append(chunk)
