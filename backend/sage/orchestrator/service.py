@@ -5637,6 +5637,38 @@ def _writing_progress(detail: str, lines: int | None) -> str:
     return f"{detail} · {lines} lines"
 
 
+# A write whose file body is still streaming. OpenCode names these, and a GPT handle is offered
+# `apply_patch` in place of `edit`/`write`, so the live line has to know that name too or a GPT
+# build stays quiet for the whole of the patch.
+_STREAMING_WRITE_VERBS = {
+    "write": "Writing a file",
+    "edit": "Editing a file",
+    "patch": "Editing a file",
+    "multiedit": "Editing a file",
+    "multi_edit": "Editing a file",
+    "apply_patch": "Editing a file",
+}
+
+
+def _streaming_write_label(tool: str, lines: int | None) -> str:
+    """What to say while a write is in flight and OpenCode has not named the file yet.
+
+    The transcript shows that part `pending` with `input={}` until the argument is whole, so
+    `_tool_detail` returns nothing and `_writing_progress` will not decorate an empty subject.
+    The `active` event was then skipped, and the thread showed the model's last sentence with
+    Stop enabled and nothing else until the card arrived. The line count is already on the
+    project. The verb is the subject the path would have been. Below two lines the count stays
+    off, for the same reason `_writing_progress` leaves it off, but the verb does not: the
+    silence starts on the first poll.
+    """
+    verb = _STREAMING_WRITE_VERBS.get(tool)
+    if not verb:
+        return ""
+    if isinstance(lines, int) and lines >= 2:
+        return f"{verb} · {lines} lines"
+    return verb
+
+
 def _tool_detail(tool: str, part: dict) -> str:
     """A short, human label for a tool call (the file it touched, the command it ran) so the UI
     can render dyad-style action cards instead of a bare tool name. Best-effort; '' when unknown."""
@@ -21890,9 +21922,11 @@ class Orchestrator:
                                     broken_category = fault.category
                                     broken_evidence = _unparsed_tool_evidence(part)
                                 # Live "active" hint so a long step names what it's doing instead of
-                                # dead air. Only for tools whose streaming input already carries a
-                                # useful detail (a file path, a command); this deliberately skips
-                                # todowrite so the "0 steps" artifact never surfaces.
+                                # dead air. A tool whose streaming input already carries a subject
+                                # uses that. A write usually does not: the input stays `{}` until
+                                # the file is whole, which is the whole of the silent stretch, so
+                                # the verb stands in until the path arrives. todowrite is still
+                                # skipped — its early input is the "0 steps" artifact.
                                 detail = _tool_detail(tool, part) if tool in ("edit", "write", "read", "bash", "grep") else ""
                                 if tool in ("write", "edit"):
                                     # Only these two: `read`, `bash` and `grep` have short arguments
@@ -21903,6 +21937,9 @@ class Orchestrator:
                                     # whatever the NEXT one has streamed so far.
                                     detail = _writing_progress(detail,
                                                                project.tool_input_lines.get(tool))
+                                if not detail:
+                                    detail = _streaming_write_label(
+                                        tool, project.tool_input_lines.get(tool))
                                 if detail:
                                     sig = f"{tool}:{detail}"
                                     if sig != last_active:

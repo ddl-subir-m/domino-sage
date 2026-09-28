@@ -422,3 +422,52 @@ def test_a_count_does_not_outlive_the_call_that_produced_it(tmp_path: Path, monk
 
     assert _details(first, "write") == ["src/First.tsx \u00b7 240 lines"]
     assert _details(second, "write") == ["src/Second.tsx"]
+
+
+def test_a_write_with_no_path_yet_still_says_the_work_is_happening(tmp_path: Path, monkeypatch):
+    """The screen after "I'll build the routes and the selector."
+
+    Stop stays enabled, because the turn lock is held, and the thread draws nothing else. OpenCode
+    holds the part `pending` with an empty input for the whole streamed argument, so `_tool_detail`
+    has no path and the live line — which refuses to speak without one — never fires. The card
+    ("Edited a file", "Wrote a file") arrives only when the call completes. Until then the line
+    count is the only progress that exists, and a write that has not reached two lines yet still
+    has a verb: the silence starts at the first poll, not at the second newline.
+    """
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    orch, _oc = _orch_with_counts(
+        tmp_path,
+        [Turn(prelude="I'll build the routes and the selector.",
+              writes={"src/App.tsx": "app\n"},
+              streaming={"write": "", "edit": "", "apply_patch": "", "read": ""})],
+        {"write": 240, "edit": 3, "apply_patch": 8, "read": 99})
+
+    events = list(orch.build_stream("build me a dashboard"))
+
+    # A set, like the sibling that streams three tools at once: one `last_active` slot remembers
+    # only the latest label, so the next poll re-announces each of these. The words do not change.
+    assert set(_details(events, "write")) == {"Writing a file · 240 lines"}
+    assert set(_details(events, "edit")) == {"Editing a file · 3 lines"}
+    assert set(_details(events, "apply_patch")) == {"Editing a file · 8 lines"}
+    # A read's arguments arrive whole. An empty one is a poll, not a silent minute, and a count
+    # on it would be the noise the write label exists to avoid.
+    assert _details(events, "read") == []
+
+
+def test_a_write_that_has_not_reached_two_lines_still_names_itself(tmp_path: Path, monkeypatch):
+    """Below two lines the count is noise. The verb is not: this is the same window, earlier."""
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
+    orch, _oc = _orch_with_counts(
+        tmp_path,
+        [Turn(writes={"src/App.tsx": "app\n"}, streaming={"write": ""})],
+        {"write": 1})
+
+    events = list(orch.build_stream("build me a dashboard"))
+
+    assert _details(events, "write") == ["Writing a file"]
