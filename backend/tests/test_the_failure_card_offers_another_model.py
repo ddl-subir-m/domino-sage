@@ -142,7 +142,8 @@ def test_the_picker_offers_allowed_models_and_the_efforts_the_model_accepts():
     offered = {o["value"]: o["disabled"] for o in model["options"]}
     assert offered == {"gpt-5.4": False, "claude-x": True}, "embeddings-only rows are not models"
     (effort,) = [s for s in picker["selects"] if s["label"] == "Reasoning effort"]
-    assert [o["value"] for o in effort["options"]] == ["default", "none"]
+    assert [(o["value"], o["label"]) for o in effort["options"]] == [
+        ("default", "Automatic"), ("none", "None")]
     # The scope of the pick, said before the click: it is the standing pick, not a one-off.
     assert any("later messages" in t for t in picker["text"])
     # And what will run, named from the pick, on the card itself.

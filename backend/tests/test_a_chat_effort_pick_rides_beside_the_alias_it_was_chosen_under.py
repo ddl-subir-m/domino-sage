@@ -57,6 +57,7 @@ def test_model_default_with_nothing_pinned_stays_unpinned():
     assert wrote == {"chat_model": None, "reasoning_effort": None}, wrote
     assert row["serverChatModel"] is None
     assert row["afterEffortSelected"] == ["default"]
+    assert row["afterEffortLabel"] == "Automatic", row["afterEffortLabel"]
 
 
 def test_the_open_menu_marks_the_level_it_holds():
@@ -64,6 +65,14 @@ def test_the_open_menu_marks_the_level_it_holds():
     # the mount BEFORE any click — the seeded level is what a reload hands the composer.
     (row,) = _drawn([{"mode": "plan", "chat": True, "chatModel": ASK, "chatEffort": "low"}])
     assert row["chatEffortSelected"] == ["low"]
+
+
+def test_no_level_reads_automatic_on_the_chip_and_in_the_menu():
+    # The name the model panel gives the same choice. In Chat it sends no level at all.
+    (row,) = _drawn([{"mode": "plan", "chat": True, "chatModel": ASK}])
+    assert row["chatEffortLabel"] == "Automatic", row["chatEffortLabel"]
+    assert row["chatEffortItems"][0]["key"] == "default"
+    assert row["chatEffortItems"][0]["label"] == "Automatic"
 
 
 def test_the_service_refuses_a_level_with_no_alias(tmp_path: Path):
