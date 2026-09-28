@@ -9,7 +9,10 @@ model call does (ADR-0057), and a refusal comes back before a single row is sent
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+
+import pytest
 
 from sage.liveread import run
 from sage.resources.provider import ApprovedModels, ResourceUnavailable
@@ -25,6 +28,13 @@ from .test_csv_text_analysis_data_used import (
 )
 
 SONNET, OPUS = "sonnet", "opus"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_poll(monkeypatch):
+    """`FakeOpenCode` has no event stream, so the Chat turn in `_mid_turn` waits one streamless
+    poll. With sleep erased, conftest's scripted clock pays that second instead of the wall."""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
 
 
 class JudgingGateway(ScriptedGateway):
@@ -112,9 +122,34 @@ def test_a_gate_that_cannot_be_read_refuses_rather_than_judging(tmp_path):
 
     said = _analyze(orch, tid, path, OPUS)
 
+    assert said.startswith(f"Sage did not analyze the text with {OPUS}. "), said
     assert "couldn't check which models the data in this conversation allows" in said, said
     assert gateway.batches == []
     assert _events(orch, project, tid) == []
+
+
+def test_a_declared_lock_with_nothing_approved_refuses_naming_the_alias(tmp_path):
+    orch, gateway, tid, project, path = _mid_turn(tmp_path)
+    reason = "Nothing is approved for support-cases: the LLM Alias group approved is empty."
+    orch._sensitivity_for_turn = lambda *_a, **_k: (None, reason)
+
+    said = _analyze(orch, tid, path, OPUS)
+
+    assert said == f"Sage did not analyze the text with {OPUS}. {reason}", said
+    assert gateway.batches == []
+    assert _events(orch, project, tid) == []
+
+
+def test_a_conversation_with_no_model_in_it_refuses_naming_the_alias(tmp_path):
+    gateway = JudgingGateway()
+    orch, _oc = _orch(tmp_path, gateway=gateway, resources=Aliases())
+    tid = orch.create_thread()["id"]
+
+    said = _analyze(orch, tid, "complaints.csv", OPUS)
+
+    assert said.startswith(f"Sage did not analyze the text with {OPUS}. "), said
+    assert "No language model is in this conversation" in said, said
+    assert gateway.batches == []
 
 
 def test_no_alias_or_the_turns_own_model_runs_on_the_turn_as_before(tmp_path):

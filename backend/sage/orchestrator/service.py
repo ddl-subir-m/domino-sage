@@ -14139,12 +14139,17 @@ class Orchestrator:
             Not counted against `_DELEGATED_CALLS_MAX`: one `analyze_text` call is one tool call,
             and its batches have their own bounds in `text_analysis`.
             """
+            def naming(says: str) -> tuple[str, str]:
+                return "", brand.text("{assistantName} did not analyze the text with {asked}.",
+                                      asked=asked) + " " + says
+
             gate = self._delegated_turn_for(thread_id)
             if gate.refusal:
-                return "", gate.refusal
+                return naming(gate.refusal)
             resolved, refused = delegated.approved_model(asked, gate)
             if resolved is None:
-                return "", refused
+                # Only the empty-set sentence leaves the alias unnamed; the other three name it.
+                return naming(refused) if not gate.aliases and not gate.unresolved else ("", refused)
             try:
                 routed = llm_router.resolve(project.control.snapshot(), project.shim.catalog).model
             except Exception:
