@@ -178,6 +178,26 @@ def test_chat_narrates_the_prose_and_keeps_none_of_it(tmp_path: Path):
         assert SECRET not in blob
 
 
+def test_chat_narrates_the_thought_as_it_streams_and_closes_the_reader(tmp_path: Path):
+    """The live path, where the thought arrives as deltas on OpenCode's event stream. A sentence
+    that names a path never reaches the line, and the turn hands its stream reader back when it
+    ends — an open one would sit on the worker until the fake's own timeout."""
+    tail = "Reading examples/thr_1/sales.csv now."
+    events = [
+        _live("reasoning", part="r1", delta=f"{PROSE} ", final=False),
+        _live("reasoning", part="r1", delta=tail, final=False),
+        _live("reasoning", part="r1", text=f"{PROSE} {tail}", final=True),
+        _live("message", text=ANSWER, final=True),
+        _live("phase", finish="stop"),
+    ]
+    orch, oc = _orch(tmp_path, client=lambda ws: StreamingFake(ws, [Turn(text=ANSWER)], events))
+    tid = orch.create_thread()["id"]
+    out = list(orch.chat_stream(tid, "total the weekly sales"))
+    assert _narration(out) == [PROSE]
+    assert _narration(orch.thread_history(tid)) == []
+    assert oc.stream._closed.is_set()
+
+
 def test_chat_streams_the_prose_and_not_a_tool_call_written_into_the_answer(tmp_path: Path):
     body = f"Looking.\n\n{_WRITTEN_CALL}\n\nDone."
     events = [
