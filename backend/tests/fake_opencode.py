@@ -21,6 +21,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# An interrupt as OpenCode reports it back, measured live on 2026-09-28 (#592).
+ABORTED = {"name": "MessageAbortedError", "data": {"message": "Aborted"}}
+
 
 def execution_plan(name: str = "Test App", summary: str = "A test app.",
                    step: str = "Build the app", *, files: str = "src/App.tsx",
@@ -176,6 +179,9 @@ class FakeOpenCode:
         self.compact_error: Exception | None = None
         # When True, is_running stays true until interrupt — a hung DataSourceClient.query.
         self.stay_running = False
+        # When True, interrupt fails the session's last assistant message the way OpenCode
+        # reports an abort (#592).
+        self.abort_on_interrupt = False
 
     # --- session ---------------------------------------------------------------------------------
 
@@ -318,3 +324,8 @@ class FakeOpenCode:
         self.interrupted += 1
         self.stay_running = False
         self._running[session_id] = False
+        if self.abort_on_interrupt:
+            for m in reversed(self._by_session.get(session_id, [])):
+                if m.get("type") == "assistant":
+                    m["error"] = dict(ABORTED)
+                    break
