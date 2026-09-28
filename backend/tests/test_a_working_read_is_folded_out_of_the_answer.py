@@ -427,7 +427,7 @@ def test_both_doors_offer_the_step_flag():
 
     assert query["inputSchema"]["properties"]["step"]["type"] == "boolean"
     assert "step" not in query["inputSchema"]["required"], "a step flag is never required"
-    assert re.search(r"^\s*step: \{ type: \[\"boolean\", \"null\"\]", ts, re.MULTILINE), (
+    assert re.search(r'^\s*step: \{ anyOf: orNull\(\{ type: "boolean" \}\)', ts, re.MULTILINE), (
         "the custom tool door does not offer `step`")
 
 

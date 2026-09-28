@@ -15,7 +15,8 @@
 //
 // EVERY ARGUMENT COMES OUT REQUIRED. OpenCode marks every key of `args` required and has no reading
 // for a plain schema that says otherwise, so the optional ones are declared nullable and say so,
-// and `execute` drops the nulls before posting — Python then sees the key absent.
+// and `execute` drops the nulls before posting — Python then sees the key absent. Nullable is
+// spelled `anyOf`, never a type list, for the reason at `orNull` in `live_read.ts` (#609).
 //
 // A shim and nothing more. The grant, the per-turn cap, the sensitivity lock and the cost tags all
 // stay in Python, behind the route this posts to. No token and no gateway URL is ever handed to the
@@ -143,11 +144,11 @@ export default {
     },
     prompt: { type: "string", description: "What to ask the model." },
     system: {
-      type: ["string", "null"],
+      anyOf: [{ type: "string" }, { type: "null" }],
       description: "An instruction sent ahead of the prompt." + OPTIONAL,
     },
     max_tokens: {
-      type: ["integer", "null"],
+      anyOf: [{ type: "integer" }, { type: "null" }],
       description: "Answer budget. Null uses the default, and the server caps it either way.",
     },
   },

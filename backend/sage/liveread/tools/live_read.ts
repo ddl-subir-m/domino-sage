@@ -107,6 +107,14 @@ const TIMEOUT_MS =
 
 const OPTIONAL = " Send null if you do not need it."
 
+// Nullable is spelled `anyOf`, never `type: [x, "null"]`. The two say the same thing, but the
+// Gateway's mimo-v2.6-pro route cuts a call's arguments off at the first argument declared with a
+// type list — every call, on Responses and Chat alike — so the call cannot parse and never runs
+// (#609). `anyOf` measured clean on every model the Gateway serves.
+function orNull(schema) {
+  return [schema, { type: "null" }]
+}
+
 // A failure is not an answer, and a fallback the person cannot see is not one either. Every one of
 // these sends the model to Python, which is right — but once it has the rows in hand it describes
 // them as though a card were on screen, and nothing wrote one. Live, a turn whose read failed
@@ -199,37 +207,37 @@ export const table = {
     // Dotted or bare: the context line above names every table `DWH.MARTS.SALES` and hands the
     // model a SELECT over that same string, so a bare name is the form it has to be reminded of,
     // not the form it reaches for. Python takes the dots apart.
-    table: { type: ["string", "null"],
+    table: { anyOf: orNull({ type: "string" }),
       description: "The table. A dotted database.schema.table is fine. Send null when sql names the rows." },
     // Null is the right answer almost always, and now it is also the SAFE one: the read fills
     // both from the position the table was picked at. It did not, once, and an unqualified name
     // reached the warehouse as `..TABLE`.
-    database: { type: ["string", "null"], description: "The database. Send null to read it where the table was picked." },
-    schema: { type: ["string", "null"], description: "The schema. Send null to read it where the table was picked." },
-    operation: { type: ["string", "null"], enum: ["sum", "analyze_text", null],
+    database: { anyOf: orNull({ type: "string" }), description: "The database. Send null to read it where the table was picked." },
+    schema: { anyOf: orNull({ type: "string" }), description: "The schema. Send null to read it where the table was picked." },
+    operation: { anyOf: orNull({ type: "string", enum: ["sum", "analyze_text"] }),
       description: "Calculate totals, or judge a text column with a model." + OPTIONAL },
     // Sent as written, the same as `query`'s. Sage runs it and hands its rows to the judging model
     // only; the statement itself is recorded as a hash, never as text.
-    sql: { type: ["string", "null"], description:
+    sql: { anyOf: orNull({ type: "string" }), description:
       "For analyze_text: one SELECT, written for this store's own SQL, returning the id and the " +
       "text (or a snippet) of just the rows to judge. Name tables in full." + OPTIONAL },
-    group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
-    sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
-    text_column: { type: ["string", "null"], description: "The column containing text for analyze_text." + OPTIONAL },
-    id_column: { type: ["string", "null"], description: "Optional source id column for analyze_text." + OPTIONAL },
-    labels: { type: ["array", "null"], items: { type: "string" },
+    group_by: { anyOf: orNull({ type: "string" }), description: "The group column for sum." + OPTIONAL },
+    sum_column: { anyOf: orNull({ type: "string" }), description: "The numeric column for sum." + OPTIONAL },
+    text_column: { anyOf: orNull({ type: "string" }), description: "The column containing text for analyze_text." + OPTIONAL },
+    id_column: { anyOf: orNull({ type: "string" }), description: "Optional source id column for analyze_text." + OPTIONAL },
+    labels: { anyOf: orNull({ type: "array", items: { type: "string" } }),
       description: "Allowed labels for analyze_text classification, or null for summaries." },
-    output_field: { type: ["string", "null"], description: "The result field name, such as label or summary." + OPTIONAL },
-    batch_size: { type: ["integer", "null"], description: "Records per gateway batch. Null uses the default." },
-    max_concurrency: { type: ["integer", "null"], description: "Parallel gateway batches. Null uses one at a time." },
-    alias: { type: ["string", "null"], description: "Model alias from this turn's prompt. Null for the turn's own model." },
-    selected_fields: { type: ["array", "null"], items: { type: "string" },
+    output_field: { anyOf: orNull({ type: "string" }), description: "The result field name, such as label or summary." + OPTIONAL },
+    batch_size: { anyOf: orNull({ type: "integer" }), description: "Records per gateway batch. Null uses the default." },
+    max_concurrency: { anyOf: orNull({ type: "integer" }), description: "Parallel gateway batches. Null uses one at a time." },
+    alias: { anyOf: orNull({ type: "string" }), description: "Model alias from this turn's prompt. Null for the turn's own model." },
+    selected_fields: { anyOf: orNull({ type: "array", items: { type: "string" } }),
       description: "Result columns and/or total. Null returns structure only." },
-    row_limit: { type: ["integer", "null"], description: "Explicit user row limit; null for all rows." },
-    result_name: { type: ["string", "null"], description: "One filename without a directory." + OPTIONAL },
-    purpose: { type: ["string", "null"], description: "Purpose of this operation." + OPTIONAL },
-    limit: { type: ["integer", "null"], description: "Rows to read. Default 5, capped." + OPTIONAL },
-    title: { type: ["string", "null"], description: "A short title for the card." + OPTIONAL },
+    row_limit: { anyOf: orNull({ type: "integer" }), description: "Explicit user row limit; null for all rows." },
+    result_name: { anyOf: orNull({ type: "string" }), description: "One filename without a directory." + OPTIONAL },
+    purpose: { anyOf: orNull({ type: "string" }), description: "Purpose of this operation." + OPTIONAL },
+    limit: { anyOf: orNull({ type: "integer" }), description: "Rows to read. Default 5, capped." + OPTIONAL },
+    title: { anyOf: orNull({ type: "string" }), description: "A short title for the card." + OPTIONAL },
   },
   async execute(args) {
     return call("live_read_table", args)
@@ -251,28 +259,28 @@ export const files = {
   args: {
     token,
     dataset: { type: "string", description: "The Dataset name." },
-    operation: { type: ["string", "null"], enum: ["sum", "analyze_text", "document", null],
+    operation: { anyOf: orNull({ type: "string", enum: ["sum", "analyze_text", "document"] }),
       description: "Calculate CSV totals, analyze CSV text, or select bounded document text." + OPTIONAL },
-    group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
-    sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
-    text_column: { type: ["string", "null"], description: "The CSV column containing text for analyze_text." + OPTIONAL },
-    id_column: { type: ["string", "null"], description: "Optional source id column for analyze_text." + OPTIONAL },
-    labels: { type: ["array", "null"], items: { type: "string" },
+    group_by: { anyOf: orNull({ type: "string" }), description: "The group column for sum." + OPTIONAL },
+    sum_column: { anyOf: orNull({ type: "string" }), description: "The numeric column for sum." + OPTIONAL },
+    text_column: { anyOf: orNull({ type: "string" }), description: "The CSV column containing text for analyze_text." + OPTIONAL },
+    id_column: { anyOf: orNull({ type: "string" }), description: "Optional source id column for analyze_text." + OPTIONAL },
+    labels: { anyOf: orNull({ type: "array", items: { type: "string" } }),
       description: "Allowed labels for analyze_text classification, or null for summaries." },
-    output_field: { type: ["string", "null"], description: "The result field name, such as label or summary." + OPTIONAL },
-    alias: { type: ["string", "null"], description: "Model alias from this turn's prompt. Null for the turn's own model." },
-    batch_size: { type: ["integer", "null"], description: "Records per gateway batch. Null uses the default." },
-    max_concurrency: { type: ["integer", "null"], description: "Parallel gateway batches. Null uses one at a time." },
-    selected_fields: { type: ["array", "null"], items: { type: "string" },
+    output_field: { anyOf: orNull({ type: "string" }), description: "The result field name, such as label or summary." + OPTIONAL },
+    alias: { anyOf: orNull({ type: "string" }), description: "Model alias from this turn's prompt. Null for the turn's own model." },
+    batch_size: { anyOf: orNull({ type: "integer" }), description: "Records per gateway batch. Null uses the default." },
+    max_concurrency: { anyOf: orNull({ type: "integer" }), description: "Parallel gateway batches. Null uses one at a time." },
+    selected_fields: { anyOf: orNull({ type: "array", items: { type: "string" } }),
       description: "Result columns and/or total. Null returns structure only." },
-    row_limit: { type: ["integer", "null"], description: "Explicit user row limit; null for all rows." },
-    result_name: { type: ["string", "null"], description: "One filename without a directory." + OPTIONAL },
-    purpose: { type: ["string", "null"], description: "Purpose of this operation." + OPTIONAL },
-    heading: { type: ["string", "null"], description: "Exact unique Markdown heading." + OPTIONAL },
-    pages: { type: ["array", "null"], items: { type: "integer" }, maxItems: 20,
+    row_limit: { anyOf: orNull({ type: "integer" }), description: "Explicit user row limit; null for all rows." },
+    result_name: { anyOf: orNull({ type: "string" }), description: "One filename without a directory." + OPTIONAL },
+    purpose: { anyOf: orNull({ type: "string" }), description: "Purpose of this operation." + OPTIONAL },
+    heading: { anyOf: orNull({ type: "string" }), description: "Exact unique Markdown heading." + OPTIONAL },
+    pages: { anyOf: orNull({ type: "array", items: { type: "integer" }, maxItems: 20 }),
       description: "One-based PDF pages; duplicates are removed and pages are sorted." + OPTIONAL },
     path: {
-      type: ["string", "null"],
+      anyOf: orNull({ type: "string" }),
       description: "One file below it." + OPTIONAL + " Then the Dataset is listed instead.",
     },
   },
@@ -316,13 +324,13 @@ export const query = {
     sql: { type: "string", description:
       "One SELECT statement, written for this store's own SQL. Name tables in full, as " +
       "database.schema.table. One statement: no semicolons, no second query." },
-    title: { type: ["string", "null"], description: "A short title for the card." + OPTIONAL },
-    purpose: { type: ["string", "null"], description:
+    title: { anyOf: orNull({ type: "string" }), description: "A short title for the card." + OPTIONAL },
+    purpose: { anyOf: orNull({ type: "string" }), description:
       "What this is being worked out for, in a few words. It goes in the record, not to the " +
       "person." + OPTIONAL },
     // The declared half of the role rule (ADR-0063), and the same field `mcp.py` declares — the
     // two doors on this tool have drifted before, which is what the header above is about.
-    step: { type: ["boolean", "null"], description:
+    step: { anyOf: orNull({ type: "boolean" }), description:
       "True when this statement is a step towards the answer rather than the answer itself — " +
       "counting rows to see whether a table is worth using, measuring how often a column is " +
       "filled, checking that a join key matches. Its card is folded out of the way so the answer " +
