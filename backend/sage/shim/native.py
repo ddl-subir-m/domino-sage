@@ -414,7 +414,7 @@ def text_stream(gateway, request, labels, capability):
                 raise NativePolicyError("The model refused or could not complete the text request.")
             for frame in frames:
                 for line in frame.splitlines():
-                    if not line.startswith(b"data:"):
+                    if not line.startswith(b"data:") or line[5:].strip() == b"[DONE]":
                         continue
                     event = json.loads(line[5:])
                     delta = event.get("delta")

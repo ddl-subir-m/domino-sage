@@ -55,7 +55,8 @@ class RouteGateway:
             events = [{"type": "response.created", "response": response},
                       {"type": "response.output_text.delta", "delta": verdict},
                       {"type": "response.completed", "response": response}]
-            yield b"".join(f"data: {json.dumps(e)}\n\n".encode() for e in events)
+            # The live gateway closes a responses stream with the chat sentinel too (#593).
+            yield b"".join(f"data: {json.dumps(e)}\n\n".encode() for e in events) + b"data: [DONE]\n\n"
             return
         assert protocol is Protocol.CHAT
         chunk = json.dumps({"choices": [{"delta": {"content": verdict}}]})
