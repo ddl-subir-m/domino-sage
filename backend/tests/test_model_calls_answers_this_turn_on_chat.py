@@ -403,8 +403,10 @@ def test_no_straight_to_gateway_caller_touches_the_counter():
 
     # The derivation must actually find these, or this test passes by finding nobody. Named as the
     # floor it has to clear, not as the answer: anything else it turns up is in scope too.
+    # `chat_intent.start` and `handoff.wants_an_app` reach the gateway through
+    # `scope._classifier_route`, which picks the route's verified protocol (#593).
     assert set(found) >= {
-        "chat_intent.py:start", "handoff.py:wants_an_app", "scope.py:start",
+        "scope.py:_classifier_route", "scope.py:start",
         "table_rank.py:_ask", "service.py:_delegated_ask", "service.py:_withhold_probe",
     }, sorted(found)
     assert {k: v for k, v in found.items() if v} == {}, \
