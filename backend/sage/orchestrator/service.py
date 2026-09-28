@@ -6550,7 +6550,10 @@ _PLAN_DOC_SECTIONS = (
     "- Then a '## Done when' heading and short bullets, each one an observable result "
     "someone can check without reading the code.\n"
     "Normalize the request into these sections. Do not copy or quote the user's request "
-    "verbatim; the plan document saves that original separately.\n")
+    "verbatim; the plan document saves that original separately.\n"
+    # #594: the sections are the contract a person approves, so they must agree with each other.
+    "Add no capability, screen or control the request did not ask for.\n"
+    "Nothing under 'Not doing' may exclude anything named in 'What it does' or 'Screens'.\n")
 # Every execution plan uses the self-contained handoff shape below. Phased execution is still a
 # separate runtime decision: the preference and MIN_STEPS decide whether several fresh sessions
 # repay their overhead. A one-step plan carries the same durable contract and runs in one context.
