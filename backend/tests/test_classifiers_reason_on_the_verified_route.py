@@ -126,7 +126,7 @@ def test_an_explicit_level_above_the_lowest_gets_room_to_reason_before_it_answer
 
 def test_an_explicit_level_above_the_lowest_waits_past_the_plain_deadline(monkeypatch):
     monkeypatch.setattr(chat_intent, "REASONING_TIMEOUT_S", 2.0)
-    capability = lambda _model: MIMO  # noqa: E731
+    capability = lambda _model: MIMO
     catalog = replace(_catalog(), ask="mimo-v2.6-pro")
 
     def classify(effort):
