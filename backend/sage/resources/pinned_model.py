@@ -202,6 +202,12 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
          "evidence. Missing evidence stays unknown. A response model name does not prove receipt. "
          "After a refusal, change the request before another call; do not retry it unchanged or "
          "switch models to escape the refusal."),
+        ("- **Carry the model's state into the app UI.** When a screen passes selected values to "
+         "`askModel`, use `onOutcome` and show that model state separately from the data it was "
+         "given. Missing serving model, provider receipt, decision stage, cache, or fallback "
+         "evidence means **unknown**; never turn it into proof of policy coverage. If a model "
+         "response is refused, interrupted, or partial, keep that state visible and do not present "
+         "the partial text as complete."),
         brand.text(
             "- The call goes from the viewer's browser to {platformName}'s {llmGateway} under the "
             "viewer's own {platformName} identity. There is no key to add, no server to write, and "
