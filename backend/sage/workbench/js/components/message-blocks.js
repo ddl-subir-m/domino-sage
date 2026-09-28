@@ -1519,7 +1519,7 @@ window.SW = window.SW || {};
     chat: 'This becomes the model for later messages, until you change it.',
     build: 'This becomes the model for later builds, until you change it.',
   };
-  const CONTINUE_EFFORT_LABEL = (value) => (!value ? 'Model default'
+  const CONTINUE_EFFORT_LABEL = (value) => (!value ? 'Automatic'
     : value === 'xhigh' ? 'Extra high' : value.charAt(0).toUpperCase() + value.slice(1));
 
   // The way back into a failed turn that names its cause (ADR-0069, #570). Drawn under the block
