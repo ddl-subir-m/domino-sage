@@ -7149,6 +7149,10 @@ class Orchestrator:
         # can say what the model was told and went past. One sentence, not a list: the brake fires
         # on a REPEAT, and the sentence that repeated is the last one.
         self._live_read_refused: dict[str, str] = {}
+        # One Live read at a time per Conversation, now that the route runs off the event loop
+        # (#604) and OpenCode can put several reads in one step. `result.record` names a card by its
+        # slug and `count_statement` is a read-then-write, and both assumed the loop's one-at-a-time.
+        self._live_read_serial: dict[str, threading.Lock] = {}
         # Delegated model calls this turn has served, per Conversation, counted by the label the
         # person reads (ADR-0057). Two readers and one writer: the cap reads the total, and the
         # receipt written at the end of the turn reads the breakdown. Reset when the turn's token is
@@ -14399,20 +14403,24 @@ class Orchestrator:
                     "have already measured, and say what is still unmeasured.",
                     n=str(limit))
             log.info("live read: %s (%d of %d)", name, n, limit)
-            try:
-                return live_read.perform(name, args, turn)
-            except Exception as e:
-                # Recorded and re-raised, never handled here: `mcp.handle` owns what the assistant
-                # is told, and what it is told is to answer from Python instead. Never the rows and
-                # never the token — the tool, the Conversation and what broke are the whole record.
-                self._live_read_fell_through.append({
-                    "tool": name,
-                    "thread": turn.thread_id,
-                    "at": round(time.monotonic() - self._boot_at, 1),
-                    "why": f"{type(e).__name__}: {e}"[:200],
-                })
-                self._live_read_fell_through_n += 1
-                raise
+            with self._live_read_lock:
+                serial = self._live_read_serial.setdefault(turn.thread_id, threading.Lock())
+            with serial:
+                try:
+                    return live_read.perform(name, args, turn)
+                except Exception as e:
+                    # Recorded and re-raised, never handled here: `mcp.handle` owns what the
+                    # assistant is told, and what it is told is to answer from Python instead. Never
+                    # the rows and never the token — the tool, the Conversation and what broke are
+                    # the whole record.
+                    self._live_read_fell_through.append({
+                        "tool": name,
+                        "thread": turn.thread_id,
+                        "at": round(time.monotonic() - self._boot_at, 1),
+                        "why": f"{type(e).__name__}: {e}"[:200],
+                    })
+                    self._live_read_fell_through_n += 1
+                    raise
 
         if method in ("initialize", "tools/list"):
             # `/api/diag` reaches this route too, and it asks the same `tools/list` OpenCode asks on
