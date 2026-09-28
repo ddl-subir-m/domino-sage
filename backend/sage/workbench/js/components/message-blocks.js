@@ -5,7 +5,7 @@ window.SW = window.SW || {};
   const { Button, Table, Tooltip, Tag, Space, Input, Spin, Select } = antd;
   const {
     CopyOutlined, RightOutlined, DownOutlined, PushpinOutlined, ReloadOutlined,
-    ExportOutlined, DownloadOutlined, ThunderboltOutlined,
+    ExportOutlined, DownloadOutlined, ThunderboltOutlined, CloseOutlined,
   } = icons;
 
   function CodeBlock({ code, language }) {
@@ -421,6 +421,10 @@ window.SW = window.SW || {};
   // taking shape in a conversation about something else, so it opens tentatively. An explicit
   // "build me a webapp" was already a decision — answering that with "this is starting to look
   // like an app" reads as though nobody was listening.
+  //
+  // The classifier arm declines with a corner ×, not a second button: declining it runs nothing, so
+  // a button beside `Write a plan` read as an act and then did nothing visible (#588). The explicit
+  // arm keeps `Answer here`, because declining that one does run something.
   function PlanSuggestion({ block }) {
     const asked = (block || {}).reason === 'explicit';
     return h(
@@ -430,7 +434,15 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-suggestion-title' },
         h(ThunderboltOutlined, { style: { color: '#543FDE' } }),
-        asked ? 'Open this in Build.' : 'This could become an app.'
+        asked ? 'Open this in Build.' : 'This could become an app.',
+        !asked && h(Button, {
+          type: 'text',
+          size: 'small',
+          'aria-label': 'Dismiss',
+          icon: h(CloseOutlined, null),
+          style: { marginLeft: 'auto' },
+          onClick: () => SW.store.dismissPlanSuggestion(),
+        })
       ),
       h(
         'div',
@@ -447,18 +459,21 @@ window.SW = window.SW || {};
           { type: 'primary', size: 'small', onClick: () => SW.store.draftHandoffPlan() },
           'Write a plan'
         ),
-        h(
+        asked && h(
           Button,
-          { size: 'small', onClick: () => SW.store.dismissPlanSuggestion({ answerHere: asked }) },
-          // Same handler, two labels, because the two arms do two different things. The classifier
-          // card sits under a turn that already answered, so declining it really is `Not now` —
-          // nothing runs, and nothing is owed. The explicit card was raised INSTEAD of a turn, so
-          // declining it runs the question here; `Not now` reads as later, promises nothing, and
-          // the answer that then arrives is a surprise nobody was waiting for.
-          asked ? 'Answer here' : 'Not now'
+          { size: 'small', onClick: () => SW.store.dismissPlanSuggestion({ answerHere: true }) },
+          'Answer here'
         )
       )
     );
+  }
+
+  // What a declined classifier offer leaves in its place. Drawn again on a reload from the
+  // suppressed handoff, so the person is never left wondering whether the × did anything — and it
+  // says the one thing the decline changed: this chat will not be offered again.
+  function PlanSuggestionDeclined() {
+    return h('div', { className: 'sw-status-line' },
+      "Okay, I won't suggest this again in this chat. You can still use Open in Build from the conversation menu.");
   }
 
   // The only way out of a Conversation the gateway keeps refusing (ADR-0022). Two rungs: the first
@@ -478,9 +493,6 @@ window.SW = window.SW || {};
     // words for different reasons.
     const build = (block || {}).surface === 'build';
     const clear = (scope) => (build ? SW.store.clearBuildRecall(scope) : SW.store.clearRecall(scope));
-    const dismiss = () => (build
-      ? SW.store.dismissBuildRecallOffer((block || {}).offerKey)
-      : SW.store.dismissRecallOffer((block || {}).offerKey));
     return h(
       'div',
       { className: 'sw-suggestion' },
@@ -507,23 +519,18 @@ window.SW = window.SW || {};
             ? 'This was blocked twice. Start fresh to continue. Your app, plan, and chat stay.'
             : 'This was blocked twice. Start fresh to continue. A short summary is kept, and your chat stays.')
       ),
+      // No dismiss. Declining is not a preference about a want, the way it is on a Build offer —
+      // it is a judgment made before trying anything else, and this is the only exit. Hiding it
+      // after one "not now" rebuilds the dead end. The offer cannot nag: it appears only on a
+      // turn that has already failed.
       h(
-        Space,
-        { size: 8 },
-        h(
-          Button,
-          {
-            type: 'primary',
-            size: 'small',
-            onClick: () => clear(complete ? 'empty' : 'summary'),
-          },
-          complete ? 'Clear everything' : 'Start fresh'
-        ),
-        // No dismiss. Declining is not a preference about a want, the way it is on a Build offer —
-        // it is a judgment made before trying anything else, and this is the only exit. Hiding it
-        // after one "not now" rebuilds the dead end. The offer cannot nag: it appears only on a
-        // turn that has already failed.
-        h(Button, { size: 'small', onClick: dismiss }, 'Not now')
+        Button,
+        {
+          type: 'primary',
+          size: 'small',
+          onClick: () => clear(complete ? 'empty' : 'summary'),
+        },
+        complete ? 'Clear everything' : 'Start fresh'
       )
     );
   }
@@ -1382,18 +1389,18 @@ window.SW = window.SW || {};
 
   // The door onto the lane that can compute, drawn under a finished answer (#411, ADR-0058).
   //
-  // TWO BUTTONS, AND BOTH ANSWERS ARE ABOUT THIS CALCULATION RATHER THAN THIS CONVERSATION.
-  // "Work it out" replays the question once under the server-minted grant the card arrived with, so
-  // the turn runs unbounded and then the grant is gone. It is deliberately NOT the investigation
-  // card's accept: that one opens a standing grant on the Thread, and accepting one calculation
-  // must not do that — nor touch the investigation card's own answer in either direction (#389).
-  // "Not now" calls nothing at all: the answer this card sits under is already on screen, so no
-  // question is owed and nothing replays, and a decline that wrote a row would be a receipt for
-  // nothing happening — the rule ADR-0056 states for its own decline. Retiring the card locally
-  // leaves the person looking at exactly what a reload shows, which is the sentence without buttons.
+  // ONE BUTTON, AND ITS ANSWER IS ABOUT THIS CALCULATION RATHER THAN THIS CONVERSATION.
+  // "Run the calculation" replays the question once under the server-minted grant the card arrived
+  // with, so the turn runs unbounded and then the grant is gone. It is deliberately NOT the
+  // investigation card's accept: that one opens a standing grant on the Thread, and accepting one
+  // calculation must not do that — nor touch the investigation card's own answer in either
+  // direction (#389).
+  //
+  // No decline beside it (#588). The answer above is one Chat could not finish, so a "Not now" that
+  // hid the button left the person holding it and nothing else. Moving on is the decline: the next
+  // message retires the button (`sendMessage`) and the server drops the grant with it.
   function OtherLaneOffer({ block }) {
     const [busy, run] = SW.util.useBusyAct();
-    const [dismissed, setDismissed] = useState(false);
 
     return h(
       'div',
@@ -1403,24 +1410,18 @@ window.SW = window.SW || {};
         'div',
         { className: 'sw-nudge-main' },
         h('div', null, block.message),
-        block.live && block.prompt && !dismissed
+        block.live && block.prompt
           ? h(
               'div',
               { style: { marginTop: 8 } },
-              h(Space, { size: 8, wrap: true },
-                h(Button, {
-                  type: 'primary',
-                  size: 'small',
-                  loading: busy === 'open',
-                  disabled: !!busy,
-                  onClick: run('open', () => SW.store.workItOutOnTheOtherLane(
-                    block.prompt, block.threadId, block.grant)),
-                }, 'Run the calculation'),
-                h(Button, {
-                  size: 'small',
-                  disabled: !!busy,
-                  onClick: () => setDismissed(true),
-                }, 'Not now'))
+              h(Button, {
+                type: 'primary',
+                size: 'small',
+                loading: busy === 'open',
+                disabled: !!busy,
+                onClick: run('open', () => SW.store.workItOutOnTheOtherLane(
+                  block.prompt, block.threadId, block.grant)),
+              }, 'Run the calculation')
             )
           : null
       )
@@ -1431,8 +1432,7 @@ window.SW = window.SW || {};
   // happened, like the card above it, and for the same reason: the turn has ended, `done` has been
   // read, and this is an offer rather than a question the turn is waiting on.
   //
-  // ONE BUTTON, and no decline beside it. "Not now" on the card above retires a card that is
-  // sitting under a finished answer; here there is no answer, the block above says so, and a
+  // ONE BUTTON, and no decline beside it: there is no answer, the block above says so, and a
   // second button to say "leave it then" adds a click that does nothing the person is not already
   // doing by not pressing the first one. Nothing is recorded either way — a ceiling records no
   // decision, so the next turn that hits one offers again.
@@ -2608,6 +2608,8 @@ window.SW = window.SW || {};
         return h(BuildStalled, { block });
       case 'plan_suggestion':
         return h(PlanSuggestion, { block });
+      case 'plan_suggestion_declined':
+        return h(PlanSuggestionDeclined);
       case 'withhold':
         return h(WithholdCard, { block });
       case 'recall_offer':

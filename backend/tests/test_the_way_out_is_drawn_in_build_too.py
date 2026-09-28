@@ -28,11 +28,8 @@ KEY = "guardrail:Block phone numbers"
 REFUSED = 'Sage couldn\'t finish — the gateway refused it: "Blocked by guardrail: Block phone numbers".'
 
 
-def _run(history: list[dict], dismiss: object = None) -> dict:
-    body = {"history": history}
-    if dismiss is not None:
-        body["dismiss"] = dismiss
-    out = subprocess.run(["node", str(_HARNESS)], input=json.dumps(body),
+def _run(history: list[dict]) -> dict:
+    out = subprocess.run(["node", str(_HARNESS)], input=json.dumps({"history": history}),
                          capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
@@ -56,7 +53,7 @@ def test_a_refused_build_turn_says_why_on_a_reload():
 def test_the_offer_is_drawn():
     drawn = _run(_refused(0) + [{"type": "recall-suggest", "scope": "summary", "order": 3}])
 
-    assert drawn["offers"] == [{"scope": "summary", "surface": "build", "offerKey": "build:3"}]
+    assert drawn["offers"] == [{"scope": "summary", "surface": "build", "order": 3}]
 
 
 def test_the_offer_knows_which_transcript_drew_it():
@@ -89,7 +86,7 @@ def test_a_refusal_after_a_clear_offers_again():
                  + _refused(5)
                  + [{"type": "recall-suggest", "scope": "empty", "order": 8}])
 
-    assert drawn["offers"] == [{"scope": "empty", "surface": "build", "offerKey": "build:8"}]
+    assert drawn["offers"] == [{"scope": "empty", "surface": "build", "order": 8}]
 
 
 def test_only_the_newest_offer_keeps_its_buttons():
@@ -100,26 +97,7 @@ def test_only_the_newest_offer_keeps_its_buttons():
                  + _refused(4)
                  + [{"type": "recall-suggest", "scope": "summary", "order": 7}])
 
-    assert [o["offerKey"] for o in drawn["offers"]] == ["build:7"]
-
-
-def test_not_now_survives_the_poll():
-    """Build rebuilds this transcript every two seconds. Filtering the drawn messages was how Chat
-    dismissed the card, and in Build that lasted until the next tick brought it back."""
-    history = _refused(0) + [{"type": "recall-suggest", "scope": "summary", "order": 3}]
-
-    assert _run(history, dismiss="build:3")["offers"] == []
-
-
-def test_dismissing_one_offer_does_not_dismiss_the_next():
-    """"Not now" is an answer about the offer in front of someone, not a preference about being
-    offered. A later refusal is a new question."""
-    history = (_refused(0)
-               + [{"type": "recall-suggest", "scope": "summary", "order": 3}]
-               + _refused(4)
-               + [{"type": "recall-suggest", "scope": "empty", "order": 7}])
-
-    assert [o["offerKey"] for o in _run(history, dismiss="build:3")["offers"]] == ["build:7"]
+    assert [o["order"] for o in drawn["offers"]] == [7]
 
 
 def test_a_transcript_with_no_refusal_draws_nothing():
