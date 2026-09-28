@@ -15984,6 +15984,10 @@ class Orchestrator:
                 else "greeting" if chat_intent.is_greeting(prompt) else "question")
             if answer_only else None
         )
+        # What the findings slice asks, next to the arming it is about (#601). A bounded label on
+        # an unbounded turn is armed with shell and write above, so it can keep its measurements;
+        # reading `bounded_intent` alone there left an open investigation nothing at the ceiling.
+        can_write_findings = unbounded or not bounded_intent
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
         # Chat and Build cannot drift: `llm_router` applies it outside their fork, and this is the
         # Chat half of putting it there. A refusal ends the turn before OpenCode is even started.
@@ -16476,7 +16480,7 @@ class Orchestrator:
                 # run a step. The two numbers are set together, and a test pins that they still
                 # are — see `_CHAT_FINDINGS_FLUSH_S`.
                 flush_at = _CHAT_TURN_MAX_S - _CHAT_FINDINGS_FLUSH_S
-                if (flush_at > 0 and not bounded_intent and not ceiling and not quiet
+                if (flush_at > 0 and can_write_findings and not ceiling and not quiet
                         and not looped and not flush_rel and now - started >= flush_at):
                     # The reserved tail opens (#454). ONLY on the way to the ceiling: every other
                     # arm below knows something this one does not, and none of them wants the work
