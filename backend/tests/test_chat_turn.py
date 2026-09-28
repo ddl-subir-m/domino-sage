@@ -1058,7 +1058,8 @@ def test_a_data_source_with_no_table_picked_is_reachable_not_shut(tmp_path: Path
     assert "source 'Snowflake-Data-Warehouse'" in prompt
     assert "live_read_query" in prompt
     assert "INFORMATION_SCHEMA.TABLES" in prompt
-    assert "Do not ask the person to name a table until that lookup has failed" in prompt
+    assert "SHOW DATABASES" in prompt
+    assert "Do not ask the person to name a table until that lookup has failed" not in prompt
     assert "Do not guess a table name" not in prompt
     assert "Do not invent rows" in prompt
 

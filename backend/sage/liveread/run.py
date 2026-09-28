@@ -106,6 +106,38 @@ def _refused(turn: Turn, refusal: grant.Refusal | None) -> grant.Refusal | None:
     return refusal
 
 
+# Snowflake opens each statement on a session whose current database is unset
+# (DATA-SOURCES-RESEARCH.md, Addendum 2). The store then says "Call 'USE DATABASE'".
+# That advice does not work here: the client is opened and closed per statement, so a
+# USE never applies to the next one. Qualified names do, and so does SHOW DATABASES.
+# Measured again when a turn asked the person for SFDC and Gong table names after they
+# had already said dwh.marts.
+_NO_CURRENT_DATABASE = "does not have a current database"
+SESSION_DATABASE_REPAIR = (
+    "A missing current database is not a dead connection. "
+    "Do not USE DATABASE or USE SCHEMA: each statement opens its own session, so a USE "
+    "does not apply to the next one. Run SHOW DATABASES, then "
+    "SELECT TABLE_SCHEMA, TABLE_NAME, ROW_COUNT FROM <database>.INFORMATION_SCHEMA.TABLES "
+    "WHERE TABLE_SCHEMA = '<SCHEMA>'. Schema filters are uppercase. "
+    "A name such as dwh.marts is database DWH and schema MARTS, not a table. "
+    "Do not ask the person to name a table."
+)
+
+
+def _session_database(said: str) -> str:
+    """Replace the store's USE DATABASE advice with a statement that can actually run."""
+    if _NO_CURRENT_DATABASE not in said.lower():
+        return said
+    store = said.split(" did not answer", 1)[0].strip()
+    who = f"{store} did not answer: " if store and store != said else ""
+    return who + SESSION_DATABASE_REPAIR
+
+
+def session_database_prompt() -> str:
+    """The same repair, as a prompt: only the store that reports the gap should follow it."""
+    return "If the store reports no current database: " + SESSION_DATABASE_REPAIR
+
+
 def _no_card(says: str) -> str:
     """A read that ends with no card. The sentence is returned unchanged, and said out loud on the
     way past.
@@ -585,7 +617,10 @@ def _statement(args: dict, turn: Turn) -> str:
         # scrubbed. Surfaced rather than replaced: reporting the analysis as impossible when the
         # store merely objected is the distinction #399 had to be reopened to make. A turn that
         # cannot express its question in SQL should offer the other lane from here (#411).
-        return _no_card(str(e))
+        #
+        # One objection is replaced, because the store's own words are the wrong next step.
+        # "Call 'USE DATABASE'" cannot apply to the following statement on this client.
+        return _no_card(_session_database(str(e)))
 
     verdict = disclosure.decide(sql, answer.rows,
                                 connector_type=getattr(source, "connector_type", ""))

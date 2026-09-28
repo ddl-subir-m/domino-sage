@@ -168,9 +168,11 @@ def _resolve_coarse_attachment(args: dict, turn):
     in, when the folder holds one CSV and the text column was already named.
     """
     if args.get("source") and not str(args.get("table") or "").strip():
+        from .run import session_database_prompt
         return ("This Data Source was attached without a table. "
                 "One live_read_query of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS "
-                "names the table and the text column. Call live_read_table again with "
+                "names the table and the text column. " + session_database_prompt() + " "
+                "Call live_read_table again with "
                 "operation=analyze_text, this source, that table, and text_column. "
                 "Do not ask the person to attach a table.")
     dataset = str(args.get("dataset") or "")

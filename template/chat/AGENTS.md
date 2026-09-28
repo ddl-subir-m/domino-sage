@@ -254,9 +254,14 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   the path. A {dataset} folder uses that same call with the {dataset} name and omits path; the
   reply names the CSV files and their columns. Call again with path set to the file name inside
   the folder, not the public/data path, and text_column. A {dataSource} with no table uses one
-  `live_read_query` of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS, then
-  `live_read_table` with operation=analyze_text, the source, the table, and text_column. Do not
-  ask the person to attach a file or a table. Pass `alias` as the name this conversation can call.
+  `live_read_query` of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS. If the store
+  reports no current database, that is not a dead connection. Do not USE DATABASE or
+  USE SCHEMA: each statement opens its own session, so a USE does not apply to the next one.
+  Run SHOW DATABASES, then SELECT TABLE_SCHEMA, TABLE_NAME, ROW_COUNT FROM
+  <database>.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '<SCHEMA>'. Schema filters are
+  uppercase. A name such as dwh.marts is database DWH and schema MARTS, not a table. Do not
+  ask the person to name a table. Then `live_read_table` with operation=analyze_text, the
+  source, the table, and text_column. Do not ask the person to attach a file or a table. Pass `alias` as the name this conversation can call.
   Do not grep the filesystem, env, or `/opt/sage` for credentials. **Print little.** What a
   script prints is kept and re-read on every step that follows it, so print the few numbers you
   need and no more — never a whole frame, and at most a handful of rows. `df.head()` on a wide
