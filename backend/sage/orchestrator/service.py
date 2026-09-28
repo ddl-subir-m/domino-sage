@@ -4814,17 +4814,18 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "- {dataSource} {name}{extra}. No {scope} is chosen on it, so which tables it holds is "
                 "not recorded here. Discover them before you answer: call `live_read_query` with this "
                 "turn's token, source {quoted}, and one SELECT of at most 50 rows from "
-                "INFORMATION_SCHEMA.TABLES (or the catalog this source uses). Then query the table "
-                "the question needs, named in full as database.schema.table. Do not ask the person "
-                "to name a table until that lookup has failed. To judge text in a table you found, "
+                "INFORMATION_SCHEMA.TABLES (or the catalog this source uses). "
+                + live_read.session_database_prompt() +
+                " Then query the table the question needs, named in full as database.schema.table. "
+                "To judge text in a table you found, "
                 "call `live_read_table` with operation=analyze_text, source {quoted}, that table, "
                 "and text_column. Do not ask the person to attach a table. To see a few rows, call "
                 "`live_read_table` with the same token and source. If those tools are not in your "
                 "tool list this turn and you have a shell, "
                 "`from domino_data.data_sources import DataSourceClient` then "
                 "`DataSourceClient().get_datasource({quoted})`. Do not search files, env, "
-                "or /opt/sage for credentials. Do not invent rows. If the query errors, tell the "
-                "person.",
+                "or /opt/sage for credentials. Do not invent rows. If the query errors for any "
+                "other reason, tell the person.",
                 name=name, extra=extra, quoted=repr(store),
             )
         # Reached only when a table is scoped and no source name resolved, which is the one shape
@@ -14747,7 +14748,8 @@ class Orchestrator:
                 "Omit path. The reply names the CSV files and their columns. Call again with path "
                 "set to the file name inside the folder, not the public/data path, and text_column. "
                 "A Data Source with no table: one live_read_query of INFORMATION_SCHEMA.TABLES and "
-                "INFORMATION_SCHEMA.COLUMNS, then live_read_table, operation=analyze_text, the source, "
+                "INFORMATION_SCHEMA.COLUMNS. " + live_read.session_database_prompt() + " "
+                "Then live_read_table, operation=analyze_text, the source, "
                 "the table, and text_column. Do not ask the person to attach a file or a table. "
                 "Pass text_column, optional id_column, labels when classifying, alias when this "
                 "conversation names a model, purpose for the judgment, and a bounded batch_size. "
@@ -15174,8 +15176,9 @@ class Orchestrator:
                  "and the Dataset name, and omits path. The reply names the CSV files and their "
                  "columns. Call again with path set to the file name inside the folder, not the "
                  "public/data path, and text_column. A Data Source with no table uses one "
-                 "live_read_query of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS, then "
-                 "the statement or the text call the question needs. Do not ask the person to attach "
+                 "live_read_query of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS. "
+                 + live_read.session_database_prompt() + " "
+                 "Then the statement or the text call the question needs. Do not ask the person to attach "
                  "a file or a table."),
                 ("A number is one live_read_query. Text that needs a model — classifying, "
                  "summarising, extracting, or deciding — is one analyze_text call: live_read_files "

@@ -47,6 +47,12 @@ WHERE  TABLE_SCHEMA = '<schema>' AND TABLE_NAME ILIKE '%<term>%'
 ORDER  BY ROW_COUNT DESC
 ```
 
+Snowflake opens each statement with no current database. Qualify the catalog as above. Do not
+`USE DATABASE` or `USE SCHEMA`: each statement is its own session, so a USE does not apply to
+the next one. If you do not know the database, `SHOW DATABASES` first. Schema filters are
+uppercase — the person saying `dwh.marts` means database `DWH` and schema `MARTS`, not a table.
+That error is not a dead connection, and it is not a reason to ask them for table names.
+
 **Stage two — columns for the shortlist only.** Once you have picked five or six tables, ask
 `INFORMATION_SCHEMA.COLUMNS` for those tables by name. Not the schema. Not the database.
 
