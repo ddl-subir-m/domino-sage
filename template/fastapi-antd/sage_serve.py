@@ -133,6 +133,16 @@ def mount(app: FastAPI, *, executor=None) -> _State:
                                                    preview=is_preview())
     preview = is_preview()
 
+    @app.exception_handler(Exception)
+    async def route_raised(request: Request, exc: Exception) -> Response:
+        # JSON, so the page's `res.json()` reads a reason instead of throwing on Starlette's plain
+        # "Internal Server Error". Starlette re-raises after answering, so the traceback still
+        # reaches stdout: the App's log, and the preview's validation. The exception's own text is
+        # for the builder only; a published App's viewer is told where to look instead.
+        detail = (f"{type(exc).__name__}: {exc}" if preview
+                  else "The app's server could not answer this request. The App's log has the details.")
+        return JSONResponse({"error": detail[:1000], "path": request.url.path}, status_code=500)
+
     @app.get("/", include_in_schema=False)
     def index(request: Request) -> Response:
         try:

@@ -20971,6 +20971,13 @@ class Orchestrator:
             "preview is blank. Fix the code so it renders without throwing. Do not just guard the "
             "symptom — find and fix the root cause.\n\nError: {message}\n\nStack:\n{stack}"
         )
+        SERVER_FIX_NUDGE = (
+            "The app compiled, but one of its own server routes raised an exception while the page "
+            "loaded, so that request answered 500. Fix the route so it answers without raising. A "
+            "platform response field can be null or absent even when the table in AGENTS.md names "
+            "it: read what the response actually holds rather than assuming its shape. Find and fix "
+            "the root cause.\n\nError: {message}\n\nServer output:\n{stack}"
+        )
         PLATFORM_READ_NUDGE = (
             "The app's read of the platform API was refused while the preview ran it: {status} on "
             "`{path}`. Evidence: {reason}. Requested Dataset IDs: {resource_ids}. "
@@ -23162,7 +23169,8 @@ class Orchestrator:
                     first_line = (rt.get("message") or "runtime error").splitlines()[0][:140]
                     iterate_reason = f"app crashed at runtime — fixing ({first_line})"
                     yield {"type": "iterate", "reason": iterate_reason}
-                    current = RUNTIME_FIX_NUDGE.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
+                    nudge = SERVER_FIX_NUDGE if rt.get("source") == "server" else RUNTIME_FIX_NUDGE
+                    current = nudge.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
                     continue
                 # The relay refused a platform read while this turn's code ran (#556). No wait of
                 # its own: the runtime wait above is the window, and a refusal that landed inside
@@ -24160,6 +24168,12 @@ class Orchestrator:
                     return None
                 if validation.error is not None:
                     return validation.error
+                # A route that raised while this document loaded. The browser saw only a 500 it
+                # may render as an empty state; the server's log holds the traceback.
+                fault = project.supervisor.runtime_fault()
+                if fault is not None and fault["generation"] == validation.generation:
+                    return {"message": fault["message"], "stack": "\n".join(fault["output"]),
+                            "source": "server"}
             else:
                 rt = project.runtime_error
                 if rt is not None and rt.get("ts", 0.0) >= since and rt.get("app", app_id) == app_id:

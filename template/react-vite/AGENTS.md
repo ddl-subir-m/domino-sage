@@ -414,6 +414,10 @@ nothing about access at all.
   snapshot whose `isReadWrite` is false and read that one.
 - **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
   `user.fullName`.
+- **Any field in a platform answer can be `null` or missing**, including ones the table names:
+  `{"data": null}` is how a {dataset} with no governance answers. Read it as `body.data ?? []`,
+  and use `?.` before indexing into a nested value. A render that reads `.length` of `null`
+  crashes the whole page, not just the panel that needed it.
 - **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
   the listing that gave it. On any other path, the platform does not route that path from inside;
   stop guessing at that family, because the table is the list of what answers.
