@@ -186,28 +186,48 @@ export const table = {
     "columns, a row count and a path — not the rows themselves, which go straight to the card the " +
     "person sees. Say what the table holds; do not claim to be quoting values you were not given. " +
     "Operation sum calculates a bound table locally and returns selected totals " +
-    "in the same call without needing a Sample rows approval step.",
+    "in the same call without needing a Sample rows approval step. Operation analyze_text judges " +
+    "a text column with a model: find the candidate rows with live_read_query first, then pass " +
+    "sql selecting the id and the text of just those rows. Sage runs it and sends only " +
+    "text_column and id_column through the LLM Gateway; you get judgments and coverage back, " +
+    "never the text. For long text select a window around the match rather than the whole cell, " +
+    "such as SUBSTR(t, GREATEST(POSITION('ARM' IN t) - 600, 1), 1500) AS SNIPPET, and filter " +
+    "chunked transcripts to the matching chunks rather than joining them together.",
   args: {
     token,
     source: { type: "string", description: "The Data Source name." },
     // Dotted or bare: the context line above names every table `DWH.MARTS.SALES` and hands the
     // model a SELECT over that same string, so a bare name is the form it has to be reminded of,
     // not the form it reaches for. Python takes the dots apart.
-    table: { type: "string", description: "The table. A dotted database.schema.table is fine." },
+    table: { type: ["string", "null"],
+      description: "The table. A dotted database.schema.table is fine. Send null when sql names the rows." },
     // Null is the right answer almost always, and now it is also the SAFE one: the read fills
     // both from the position the table was picked at. It did not, once, and an unqualified name
     // reached the warehouse as `..TABLE`.
     database: { type: ["string", "null"], description: "The database. Send null to read it where the table was picked." },
     schema: { type: ["string", "null"], description: "The schema. Send null to read it where the table was picked." },
-    operation: { type: ["string", "null"], enum: ["sum", null],
-      description: "Calculate a table locally and return selected totals." + OPTIONAL },
+    operation: { type: ["string", "null"], enum: ["sum", "analyze_text", null],
+      description: "Calculate totals, or judge a text column with a model." + OPTIONAL },
+    // Sent as written, the same as `query`'s. Sage runs it and hands its rows to the judging model
+    // only; the statement itself is recorded as a hash, never as text.
+    sql: { type: ["string", "null"], description:
+      "For analyze_text: one SELECT, written for this store's own SQL, returning the id and the " +
+      "text (or a snippet) of just the rows to judge. Name tables in full." + OPTIONAL },
     group_by: { type: ["string", "null"], description: "The group column for sum." + OPTIONAL },
     sum_column: { type: ["string", "null"], description: "The numeric column for sum." + OPTIONAL },
+    text_column: { type: ["string", "null"], description: "The column containing text for analyze_text." + OPTIONAL },
+    id_column: { type: ["string", "null"], description: "Optional source id column for analyze_text." + OPTIONAL },
+    labels: { type: ["array", "null"], items: { type: "string" },
+      description: "Allowed labels for analyze_text classification, or null for summaries." },
+    output_field: { type: ["string", "null"], description: "The result field name, such as label or summary." + OPTIONAL },
+    batch_size: { type: ["integer", "null"], description: "Records per gateway batch. Null uses the default." },
+    max_concurrency: { type: ["integer", "null"], description: "Parallel gateway batches. Null uses one at a time." },
+    alias: { type: ["string", "null"], description: "Model alias from this turn's prompt. Null for the turn's own model." },
     selected_fields: { type: ["array", "null"], items: { type: "string" },
       description: "Result columns and/or total. Null returns structure only." },
     row_limit: { type: ["integer", "null"], description: "Explicit user row limit; null for all rows." },
     result_name: { type: ["string", "null"], description: "One filename without a directory." + OPTIONAL },
-    purpose: { type: ["string", "null"], description: "Purpose of this calculation." + OPTIONAL },
+    purpose: { type: ["string", "null"], description: "Purpose of this operation." + OPTIONAL },
     limit: { type: ["integer", "null"], description: "Rows to read. Default 5, capped." + OPTIONAL },
     title: { type: ["string", "null"], description: "A short title for the card." + OPTIONAL },
   },
@@ -240,6 +260,7 @@ export const files = {
     labels: { type: ["array", "null"], items: { type: "string" },
       description: "Allowed labels for analyze_text classification, or null for summaries." },
     output_field: { type: ["string", "null"], description: "The result field name, such as label or summary." + OPTIONAL },
+    alias: { type: ["string", "null"], description: "Model alias from this turn's prompt. Null for the turn's own model." },
     batch_size: { type: ["integer", "null"], description: "Records per gateway batch. Null uses the default." },
     max_concurrency: { type: ["integer", "null"], description: "Parallel gateway batches. Null uses one at a time." },
     selected_fields: { type: ["array", "null"], items: { type: "string" },
