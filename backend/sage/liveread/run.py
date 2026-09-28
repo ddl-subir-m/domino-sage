@@ -74,6 +74,9 @@ class Turn:
     reference_for: Callable[[str], reference.Authorized | None] | None = None
     record_data_use: Callable[..., None] | None = None
     analyze_text_batch: Callable[[dict[str, Any]], Any] | None = None
+    # The model an `analyze_text` alias names: (model, "") to send its batches to, ("", "") for the
+    # turn's own model, or ("", sentence) refusing it. Asked once, before any row is read (#607).
+    text_model_for: Callable[[str], tuple[str, str]] | None = None
     # Told the sentence a `not-in-range` refusal handed the model (#488). The Turn is built fresh
     # per call, so the record cannot live on it; the caller keeps it per Conversation, and a turn
     # the repeat brake stops can then say what the model was told and ignored. A refusal names a

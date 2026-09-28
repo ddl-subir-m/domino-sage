@@ -321,6 +321,15 @@ def analyze(args: dict, turn) -> str:
     if row_limit is not None and (type(row_limit) is not int or row_limit < 1):
         return "The row limit must be a positive integer."
 
+    serving = ""
+    asked = str(args.get("model") or "").strip()
+    if asked:
+        if turn.text_model_for is None:
+            return f"{asked} could not be checked for this conversation, so no text was analyzed."
+        serving, refused = turn.text_model_for(asked)
+        if refused:
+            return refused
+
     loaded = _load(args, turn, text_column, id_column, row_limit)
     if isinstance(loaded, str):
         return loaded
@@ -360,7 +369,7 @@ def analyze(args: dict, turn) -> str:
     try:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = [
-                pool.submit(_run_batch, i, batch, args, output_field, labels, turn)
+                pool.submit(_run_batch, i, batch, args, output_field, labels, turn, serving)
                 for i, batch in enumerate(batches)
             ]
             for future in as_completed(futures):
@@ -476,11 +485,11 @@ def _manifest(rows: list[dict[str, str]], text_column: str, id_column: str | Non
 
 
 def _run_batch(index: int, records: list[Record], args: dict, output_field: str,
-               labels: list[str] | None, turn) -> BatchResult:
+               labels: list[str] | None, turn, serving: str = "") -> BatchResult:
     request_id = "req_" + uuid4().hex
     evidence = {"request_id": request_id,
                 "requested_alias": str(args.get("model") or "auto"),
-                "serving_model": None,
+                "serving_model": serving or None,
                 "provider_receipt": "unknown",
                 "cache": "unknown",
                 "decision_stage": "unknown",
@@ -489,7 +498,8 @@ def _run_batch(index: int, records: list[Record], args: dict, output_field: str,
                 "records": len(records)}
     last_error = ""
     for attempt in range(2):
-        request = _request(evidence["requested_alias"], records, args, output_field, labels)
+        request = _request(serving or evidence["requested_alias"], records, args, output_field,
+                           labels)
         try:
             text, state, denied = _collect(turn.analyze_text_batch(request))
         except CancelledError:

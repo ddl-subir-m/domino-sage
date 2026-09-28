@@ -501,6 +501,7 @@ def test_a_data_source_table_is_judged_from_the_text_column_only(tmp_path):
         bound={"datasource": ("Snowflake-Data-Warehouse",)},
         source_for=lambda name: _Warehouse() if name == "Snowflake-Data-Warehouse" else None,
         run_statement=run_statement,
+        text_model_for=lambda asked: (asked, ""),
     )
 
     reply = json.loads(run.perform("live_read_table", {
