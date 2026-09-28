@@ -68,7 +68,7 @@ def test_model_default_off_and_adaptive_effort_are_distinct():
     cap = resolve(row["gateway"], row, evidence())
     assert cap.settings(None, tools=True) == {}
     assert cap.settings("none", tools=True) == {"thinking": {"type": "disabled"}}
-    assert cap.settings("high", tools=True) == {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}
+    assert cap.settings("high", tools=True) == {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "high"}}
     with pytest.raises(ValueError, match="unavailable"):
         cap.settings("invented", tools=True)
 

@@ -22,6 +22,12 @@ MAX_ARGUMENT_LANES = 40
 log = logging.getLogger("sage.gateway")
 
 
+def _gemini_thought(delta: dict) -> bool:
+    """Gemini streams thoughts as `content` flagged here; they are reasoning, not reply text."""
+    google = (delta.get("extra_content") or {}).get("google")
+    return isinstance(google, dict) and bool(google.get("thought"))
+
+
 @dataclass
 class StreamEvents:
     protocol: Protocol
@@ -374,8 +380,9 @@ class StreamEvents:
                         self.error = self.terminal
                 delta = choice.get("delta") or {}
                 self.refused |= bool(delta.get("refusal"))
-                self.saw_text |= bool(delta.get("content"))
-                if delta.get("content"):
+                text = delta.get("content") and not _gemini_thought(delta)
+                self.saw_text |= bool(text)
+                if text:
                     self.first_action_kind = self.first_action_kind or "text"
                 for tool in delta.get("tool_calls") or []:
                     if not isinstance(tool, dict):
@@ -478,9 +485,10 @@ class StreamEvents:
     def _is_reasoning(self, event: dict) -> bool:
         """Identify protocol reasoning frames without retaining their content."""
         if self.protocol is Protocol.CHAT:
-            return any(bool((choice.get("delta") or {}).get(key))
+            return any(bool(delta.get("reasoning") or delta.get("reasoning_content")
+                            or (delta.get("content") and _gemini_thought(delta)))
                        for choice in event.get("choices") or []
-                       for key in ("reasoning", "reasoning_content"))
+                       for delta in [choice.get("delta") or {}])
         if self.protocol is Protocol.MESSAGES:
             return (event.get("type") == "content_block_delta"
                     and (event.get("delta") or {}).get("type") == "thinking_delta"

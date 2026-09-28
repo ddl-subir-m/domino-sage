@@ -276,7 +276,9 @@ def test_automatic_build_stages_send_their_policy_effort_and_record_its_source(
 def test_stage_default_uses_any_measured_alias_and_omits_an_unsupported_one(running, monkeypatch):
     supported, supported_call = _automatic_stage_call(
         running, monkeypatch, phase=Phase.PLAN, model="domino/gemini-3.7-flash")
-    assert supported["reasoning_effort"] == "high"
+    # A Vertex route carries its level inside `thinking_config`, beside its thoughts (#599).
+    assert "reasoning_effort" not in supported
+    assert supported["google"] == {"thinking_config": {"include_thoughts": True, "thinking_level": "high"}}
     assert supported_call["effortStatus"] == "applied"
 
     unsupported, unsupported_call = _automatic_stage_call(
@@ -381,7 +383,7 @@ def test_sensitivity_validates_the_existing_stage_decision_against_the_final_ali
         running, monkeypatch, phase=Phase.PLAN, model="GLM 5.3 OR", approved=approved)
 
     assert outbound["model"] == "domino/gemini-3.7-flash"
-    assert outbound["reasoning_effort"] == "high"
+    assert outbound["google"] == {"thinking_config": {"include_thoughts": True, "thinking_level": "high"}}
     assert (call["effortSource"], call["effortStatus"]) == ("stage_default", "applied")
 
 
@@ -393,7 +395,8 @@ def test_sensitivity_keeps_a_persons_saved_effort_and_validates_the_final_alias(
         saved_slots=frozenset({"plan"}), effort="max", approved=approved)
 
     assert outbound["model"] == "domino/gemini-3.7-flash"
-    assert outbound["reasoning_effort"] == "max"
+    # `thinking_level` refuses max; the saved level is still what the record says was applied.
+    assert outbound["google"] == {"thinking_config": {"include_thoughts": True, "thinking_level": "high"}}
     assert (call["configuredEffort"], call["effectiveEffort"], call["effortSource"],
             call["effortStatus"]) == ("max", "max", "user", "applied")
 

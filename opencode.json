@@ -151,6 +151,8 @@
     }
   },
   "model": "sage-gateway/sage-model",
+  "small_model": "sage-gateway/sage-model",
+  "enabled_providers": ["sage-gateway"],
   "permission": {
     "skill": {
       "*": "allow"

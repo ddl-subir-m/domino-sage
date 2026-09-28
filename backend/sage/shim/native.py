@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..gateway.protocol import Protocol
 from ..router.models import EffortDecision
+from .tool_json import _event_of, _rewrite_data
 
 
 class NativePolicyError(ValueError):
@@ -320,6 +321,90 @@ def sdk_view(prompt, tools):
         for t in tools or [] if t.get("type") == "function"]}
 
 
+def readable_reasoning_as_summary(frame: bytes) -> bytes:
+    """Rename a Responses raw-reasoning delta to the summary delta OpenCode's codec reads (#599).
+
+    mimo streams `response.reasoning_text.delta`; the installed `@ai-sdk/openai` (3.0.84, and 4.0.79)
+    builds reasoning parts only from `response.reasoning_summary_*` and drops this one, so the part
+    stays empty. Index 0 is the part the codec already opened on `output_item.added`.
+    """
+    event = _event_of(frame)
+    if not isinstance(event, dict) or event.get("type") != "response.reasoning_text.delta":
+        return frame
+    return _rewrite_data(frame, {"type": "response.reasoning_summary_text.delta",
+                                 "item_id": event.get("item_id"),
+                                 "output_index": event.get("output_index"),
+                                 "summary_index": 0, "delta": event.get("delta", "")})
+
+
+def without_readable_reasoning(body: dict) -> dict:
+    """Keep reasoning text OpenCode now holds out of the Responses request (#599).
+
+    An item with no `encrypted_content` is only text `readable_reasoning_as_summary` let OpenCode
+    keep; before that, OpenCode never sent one, so it is dropped. An item with state keeps it and
+    loses the summary text Sage now asks for. Either way the gateway request, its size, and the
+    opaque-state checkpoint stay exactly as they were.
+    """
+    items = body.get("input")
+    if not isinstance(items, list):
+        return body
+    kept = []
+    for item in items:
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            if not item.get("encrypted_content"):
+                continue
+            if item.get("summary"):
+                item = {**item, "summary": []}
+        kept.append(item)
+    return {**body, "input": kept}
+
+
+_GEMINI_LEVEL = {"max": "high"}
+
+
+def gemini_thoughts(request: dict, capability) -> dict:
+    """Ask a Vertex route for its thoughts, and keep them out of what it is sent (#599).
+
+    Gemini returns thoughts only under `google.thinking_config.include_thoughts`, and the gateway
+    refuses that beside `reasoning_effort`, so the level moves into `thinking_level`. `max` and
+    `minimal` are refused there; `reasoning_effort: max` spent what `high` does (923 vs 894
+    reasoning tokens, measured 2026-09-28). The `reasoning_content` OpenCode now replays carries no
+    state (signatures ride on tool calls) and was never sent before, so it is dropped.
+    """
+    identity = capability.identity
+    if len(identity) < 5 or identity[4] != "vertex":
+        return request
+    effort = request.get("reasoning_effort")
+    request = {k: v for k, v in request.items() if k != "reasoning_effort"}
+    config = {"include_thoughts": True}
+    if effort is not None:
+        config["thinking_level"] = _GEMINI_LEVEL.get(effort, effort)
+    messages = [{k: v for k, v in m.items() if k != "reasoning_content"} if isinstance(m, dict) else m
+                for m in request.get("messages", [])]
+    return {**request, "messages": messages, "google": {"thinking_config": config}}
+
+
+def gemini_thought_as_reasoning(frame: bytes) -> bytes:
+    """Move a Gemini thought out of `content` into `reasoning_content` (#599).
+
+    Gemini streams thoughts as ordinary content flagged `extra_content.google.thought`; the chat
+    codec ignores the flag and would show the thought as the reply.
+    """
+    event = _event_of(frame)
+    if not isinstance(event, dict):
+        return frame
+    changed = False
+    for choice in event.get("choices") or []:
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        google = ((delta or {}).get("extra_content") or {}).get("google")
+        if not (isinstance(google, dict) and google.get("thought") and delta.get("content")):
+            continue
+        delta["reasoning_content"] = delta.pop("content")
+        google.pop("thought")
+        changed = True
+    return _rewrite_data(frame, event) if changed else frame
+
+
 def session_policy(directory: Path, session: str, state, *, opaque: bool) -> None:
     """Persist policy provenance, not reasoning state. OpenCode owns the state itself.
 
@@ -374,6 +459,8 @@ def prepare_native(shim, body, protocol, project, session, on_resolved=None, *, 
     if protocol is Protocol.RESPONSES:
         result["store"] = False
         result["include"] = sorted(set(result.get("include", [])) | {"reasoning.encrypted_content"})
+        # gpt-5.4 streams no reasoning text unless asked; mimo ignores it (#599).
+        result["reasoning"] = {**result.get("reasoning", {}), "summary": "auto"}
     return NativePreparation(result, labels, used, request, capability, effort_decision)
 
 
