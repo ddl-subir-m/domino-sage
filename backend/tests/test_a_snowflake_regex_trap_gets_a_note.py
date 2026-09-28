@@ -12,6 +12,8 @@ single-escape check has to read the raw token, not the literal's value.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from sage.liveread import mcp, run, sql_hints
@@ -81,6 +83,19 @@ def test_the_note_follows_the_result_and_the_statement_still_runs(tmp_path):
 
     assert ran == [sql]
     assert said.index("Result: [[0]]") < said.index(sql_hints.ANCHOR_NOTE)
+
+
+@pytest.mark.parametrize("taught", [sql_hints.DESCRIPTION, sql_hints.ANCHOR_NOTE])
+def test_every_recommended_form_survives_newlines_and_case(taught):
+    """`.` does not match a newline unless 's' is passed, and matching is case-sensitive unless
+    'i' is. A REGEXP_LIKE taught without 'is' is FALSE on every multi-line case description and
+    call transcript, and misses 'ARM' — the text this guidance exists for."""
+    counts = re.findall(r"REGEXP_COUNT\(col, '[^']*'([^)]*)\) > 0", taught)
+    likes = re.findall(r"REGEXP_LIKE\(col, '[^']*'([^)]*)\)", taught)
+    assert counts, "REGEXP_COUNT leads: it does not anchor, so newlines cannot defeat it"
+    assert taught.index("REGEXP_COUNT(col") < taught.index("REGEXP_LIKE(col")
+    assert all(params == ", 1, 'i'" for params in counts), counts
+    assert likes and all(params == ", 'is'" for params in likes), likes
 
 
 def test_both_doors_teach_the_two_facts_in_the_same_sentence():

@@ -15,10 +15,15 @@ import re
 
 # Model-facing. Kept identical in both doors' `live_read_query` description (`mcp.py`,
 # `tools/live_read.ts`).
+# REGEXP_COUNT leads because it does not anchor, so a newline in the text cannot defeat it. Any
+# REGEXP_LIKE form must pass 's' (`.` does not match a newline by default) and 'i' (matching is
+# case-sensitive by default): without them `'.*\\barm\\b.*'` is FALSE on every multi-line case or
+# transcript, and misses 'ARM'.
 DESCRIPTION = (
-    r"On Snowflake, REGEXP_LIKE and RLIKE match the whole value, so find a word inside text with "
-    r"'.*\\bword\\b.*' or REGEXP_COUNT(col, '\\bword\\b') > 0, and write a regex backslash twice "
-    r"inside single quotes: '\\b', not '\b'."
+    r"On Snowflake, find a word inside text with REGEXP_COUNT(col, '\\bword\\b', 1, 'i') > 0; "
+    r"REGEXP_LIKE and RLIKE match the whole value, so they need REGEXP_LIKE(col, "
+    r"'.*\\bword\\b.*', 'is'), and a regex backslash is written twice inside single quotes: "
+    r"'\\b', not '\b'."
 )
 ESCAPE_NOTE = (
     r"Snowflake note: inside single quotes a backslash is a string escape, so '\b' reaches the "
@@ -27,8 +32,8 @@ ESCAPE_NOTE = (
 )
 ANCHOR_NOTE = (
     r"Snowflake note: REGEXP_LIKE, RLIKE and REGEXP match the whole value, so '\\barm\\b' matches "
-    r"only a cell that is exactly 'arm'; to find a word inside text use '.*\\barm\\b.*' or "
-    r"REGEXP_COUNT(col, '\\barm\\b') > 0."
+    r"only a cell that is exactly 'arm'; to find a word inside text use "
+    r"REGEXP_COUNT(col, '\\barm\\b', 1, 'i') > 0, or REGEXP_LIKE(col, '.*\\barm\\b.*', 'is')."
 )
 
 # A backslash then a letter, after an even run of backslashes, in the RAW literal. Read off the
