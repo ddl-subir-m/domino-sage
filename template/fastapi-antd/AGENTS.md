@@ -220,7 +220,7 @@ Everything below is a global the page already carries. Nothing else is, and noth
 | `icons` | Ant Design's icons, by name: `icons.SearchOutlined`, `icons.PlusOutlined`. |
 | `dayjs` | Formatting, parsing and date ranges; what `antd.DatePicker` gives and takes. |
 | `Highcharts` | Charts. Line, area, column, bar, pie, and the `more` and `funnel` modules are loaded. |
-| `sage` | {assistantName}'s helpers: `sage.url`, `sage.theme`, `sage.accents`, `sage.ErrorBoundary`. It also carries the helpers for a {dataSource}, an {llmAlias} and a {modelApi}, but each is explained in its own section below, which is there only when this app has that Resource bound. With no such section, do not call or look for them. |
+| `sage` | {assistantName}'s helpers: `sage.url`, `sage.theme`, `sage.accents`, `sage.ErrorBoundary`. It also carries the helpers for a {dataSource}, an {llmAlias} and a {modelApi}, but each is explained in its own section below, which is there only when this app has one bound. With no such section, do not call or look for them. |
 
 ### URLs: always relative, always through `sage.url`
 A published app is served under a path its own code cannot know. `static/sage/appBase.js` works it
