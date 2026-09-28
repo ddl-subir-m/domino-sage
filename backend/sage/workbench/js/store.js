@@ -3505,6 +3505,9 @@ window.SW = window.SW || {};
         // nothing failed and nothing is missing. What is worth knowing is that the name reached
         // more files than the person probably meant, and the sentence says which (ADR-0030).
         ensureAssistant().blocks.push({ type: 'status', value: ev.message });
+      } else if (ev.type === 'dataset-attached' && ev.message) {
+        // The file a single-file Dataset gave without a card (#591). A plain line: nothing failed.
+        ensureAssistant().blocks.push({ type: 'status', value: ev.message });
       } else if (ev.type === 'reset-offer' && ev.message) {
         // `live` is set only on the frame that arrived over SSE this session (see applyBuildEvent),
         // and a reload replaces buildHistory with plain server rows that never carry it. So a

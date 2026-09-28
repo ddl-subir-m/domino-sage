@@ -22,6 +22,7 @@ person, which is why it owes no `brand_coverage.toml` entry.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -49,10 +50,14 @@ class Ranking:
     Both, for the reason `table_search.Ranking` carries both: the order is a convenience and the
     count is a claim. A card saying it found the files where nothing matched would be presenting
     the top of a listing as an answer.
+
+    `named` is whether the request `@`-mentioned the Dataset itself (#591). A separate signal from
+    `matched` rather than a score on the files: the mention says which Dataset, not which file in it.
     """
 
     candidates: tuple[DatasetFile, ...]
     matched: int
+    named: bool = False
 
 
 def rank(prompt: str, dataset_name: str, files: Iterable[DatasetFile]) -> Ranking:
@@ -68,5 +73,7 @@ def rank(prompt: str, dataset_name: str, files: Iterable[DatasetFile]) -> Rankin
     asked = table_search.asked_words(prompt, dataset_name)
     scored = [(table_search.name_score(asked, f.path), f) for f in files]
     scored.sort(key=lambda p: (-p[0][0], -p[0][1], p[1].path))
+    named = bool(dataset_name) and re.search(
+        r"(?<!\S)@" + re.escape(dataset_name) + r"(?![\w-])", prompt or "", re.IGNORECASE)
     return Ranking(tuple(f for _, f in scored),
-                   sum(1 for (whole, part), _ in scored if whole or part))
+                   sum(1 for (whole, part), _ in scored if whole or part), bool(named))

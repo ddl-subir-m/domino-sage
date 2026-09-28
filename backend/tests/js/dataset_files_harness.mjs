@@ -157,6 +157,8 @@ const drawn = blocks().map((b) => ({
   drawn: (({ rows, pickable, more, moreLabel, past }) =>
     ({ rows, pickable, more, moreLabel, past }))(draw(b)),
 }));
+const statuses = (chat ? [] : SW.store.get().buildMessages)
+  .flatMap((m) => m.blocks || []).filter((b) => b.type === 'status').map((b) => b.value);
 
 calls.length = 0;
 if (picked.kind === 'past') {
@@ -177,6 +179,7 @@ const record = calls.find((c) => c.url.includes('/files/attach') || c.url.includ
 const replay = calls.find((c) => c.url.includes('/build/stream') || c.url.includes('/chat/stream'));
 console.log(JSON.stringify({
   cards: drawn,
+  statuses,
   // What the transcript says the person did. Drawn by the store the moment the click lands and
   // never streamed back, so it is the only sentence they see while the turn runs (#208).
   bubbles: SW.store.get().buildMessages.filter((m) => m.role === 'user')

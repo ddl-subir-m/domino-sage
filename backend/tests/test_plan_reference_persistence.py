@@ -550,8 +550,8 @@ def test_stop_during_missing_attachment_resolution_is_consumed_before_the_next_t
     prompts_before = list(client.prompts)
     prepare = orch._prepare_build_attachments
 
-    def prepare_then_stop(active_project, mentions):
-        prepared = prepare(active_project, mentions)
+    def prepare_then_stop(active_project, mentions, *rest):
+        prepared = prepare(active_project, mentions, *rest)
         assert prepared[1], "the test did not reach the missing-input exit"
         assert orch.stop_build() is True
         return prepared

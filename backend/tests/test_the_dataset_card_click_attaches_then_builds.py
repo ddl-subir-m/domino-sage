@@ -79,6 +79,16 @@ def test_the_card_is_drawn_from_the_turn_row_with_its_rows_intact():
 
 
 @needs_node
+def test_a_file_attached_without_a_card_is_said_in_the_transcript():
+    """A single-file Dataset attaches its file unasked (#591), and the Build transcript says so."""
+    history = [{"type": "user", "text": PROMPT},
+               {"type": "dataset-attached", "message": "Using adae.csv from ABC123_ADAE."},
+               {"type": "done", "ok": True, "decision": "built"}]
+
+    assert "Using adae.csv from ABC123_ADAE." in _run(history=history)["statuses"]
+
+
+@needs_node
 def test_a_card_read_back_off_the_server_carries_no_buttons():
     """`live` is set only on a frame that arrived over SSE this session. A card replayed on a page
     load is a record of a decision somebody already made, and its buttons would attach files to an
