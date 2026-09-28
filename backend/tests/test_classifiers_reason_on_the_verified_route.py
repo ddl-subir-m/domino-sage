@@ -8,6 +8,7 @@ explicit Ask pick is still honoured exactly (#417); an unverified route is left 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 
 import pytest
@@ -99,6 +100,44 @@ def test_intent_explicit_pick_is_sent_as_is(effort):
     assert _intent(MIMO, effort, gateway).valid
     assert gateway.seen_protocols == [Protocol.RESPONSES]
     assert gateway.seen[0][0]["reasoning"] == {"effort": effort}
+
+
+class SlowGateway(RouteGateway):
+    """Answers after `delay`, the way a reasoning level answers after it has thought."""
+
+    def __init__(self, delay: float):
+        super().__init__()
+        self.delay = delay
+
+    def route(self, request, labels, *, protocol=Protocol.CHAT, cancel=None):
+        time.sleep(self.delay)
+        yield from super().route(request, labels, protocol=protocol, cancel=cancel)
+
+
+@pytest.mark.parametrize("effort, cap", [(None, 160), ("none", 160), ("medium", 1024), ("max", 1024)])
+def test_an_explicit_level_above_the_lowest_gets_room_to_reason_before_it_answers(effort, cap):
+    """Measured live (#606): the Ask slot at `medium` spent mimo's 160-token cap on reasoning and
+    ran past 5s, so every first turn fell back. The pick is still honoured (#417); it is given the
+    room it needs rather than a cap only the lowest level fits in."""
+    gateway = RouteGateway()
+    assert _intent(MIMO, effort, gateway).valid
+    assert gateway.seen[0][0]["max_output_tokens"] == cap
+
+
+def test_an_explicit_level_above_the_lowest_waits_past_the_plain_deadline(monkeypatch):
+    monkeypatch.setattr(chat_intent, "REASONING_TIMEOUT_S", 2.0)
+    capability = lambda _model: MIMO  # noqa: E731
+    catalog = replace(_catalog(), ask="mimo-v2.6-pro")
+
+    def classify(effort):
+        return chat_intent.start(
+            "What is regression?", context="", has_bound_context=False, gateway=SlowGateway(0.5),
+            catalog=replace(catalog, ask_effort=effort), capability=capability,
+            timeout_s=0.2).result()
+
+    assert classify("medium").valid, "a reasoning level is waited for past the plain deadline"
+    assert classify("none").fallback == "timeout", "the lowest level keeps the plain deadline"
+    assert classify(None).fallback == "timeout"
 
 
 @pytest.mark.parametrize("effort, sent", [(None, "low"), ("high", "high"), ("none", None)])
