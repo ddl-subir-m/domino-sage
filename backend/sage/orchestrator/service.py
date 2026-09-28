@@ -8906,7 +8906,7 @@ class Orchestrator:
                 # "Model default" back on the button after every pick (#487). Refused, the route
                 # answers 400 and the client restores the pair it showed (#306).
                 raise ValueError("a reasoning_effort rides beside a chat_model; send the alias "
-                                 "the level was chosen under, or Model default to clear both")
+                                 "the level was chosen under, or Automatic to clear both")
             project.control.pick_chat(None, None)
             return
         try:
