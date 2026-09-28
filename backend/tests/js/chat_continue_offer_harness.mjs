@@ -20,7 +20,10 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history } = JSON.parse(fs.readFileSync(0, 'utf8'));
+// `rowType` is the card's wire type: Continue by default, or Direct's `keep-going` (#585), which
+// is drawn and pressed through the same Thread.
+const { history, rowType = 'continue-offer' } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const blockType = rowType.replace('-', '_');
 
 const THREAD = { id: 'thr_1', title: 'The adoption question', artifacts: [], handoff: null };
 
@@ -100,7 +103,7 @@ async function settle() {
 
 const cards = () => SW.store.get().messages
   .flatMap((m) => m.blocks || [])
-  .filter((b) => b.type === 'continue_offer');
+  .filter((b) => b.type === blockType);
 
 // Every button the real card drew, with the click it carries. Children go in as `children`, the
 // way React passes them: calling a component on its props alone drops everything nested inside it,
@@ -132,12 +135,12 @@ await SW.store.openThread('thr_1');
 await settle();
 const drawn = cards();
 
-const row = history.find((r) => r.type === 'continue-offer') || {};
+const row = history.find((r) => r.type === rowType) || {};
 // The card as it arrives over SSE, which is the only shape that carries a button. The one the
 // reload draws above is the same block with `live` off, and `cards[].live` reports that.
-const live = buttons(SW.MessageBlock({ block: { ...row, type: 'continue_offer', live: true } }), []);
+const live = buttons(SW.MessageBlock({ block: { ...row, type: blockType, live: true } }), []);
 const replayed = buttons(
-  SW.MessageBlock({ block: { ...row, type: 'continue_offer', live: false } }), []);
+  SW.MessageBlock({ block: { ...row, type: blockType, live: false } }), []);
 
 calls.length = 0;
 if (live.length) await live[0].onClick();

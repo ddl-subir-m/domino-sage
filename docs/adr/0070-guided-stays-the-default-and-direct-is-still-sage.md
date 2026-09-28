@@ -48,6 +48,27 @@ Direct is still Sage:
 A forged `direct` is still only a way of working. It keeps the gateway, the file fence, and the
 row rule. It is not a grant.
 
+## A volume cap offers Keep going (#585)
+
+"One short agent" describes one turn, not the work. Three caps end a turn that is still working
+rather than one that is stuck: Chat's ceiling, Build's shell cap, and Build's progress budget. In
+Direct, each still ends the turn exactly as in Guided: the session is interrupted, the lock goes
+back, and Build still checks what was written. The turn then draws a **Keep going** card. Its
+button sends one fixed sentence, "Keep going from where you stopped.", as an ordinary Direct turn
+into the same OpenCode session. The model keeps everything it read and did, so no state rides on
+the sentence.
+
+In Chat, Keep going replaces the findings Continue card. It does not appear beside it.
+
+Keep going never appears on a quiet window or a repeat brake. Continuing a hang or a loop must not
+be one click. Nor does it appear on the pre-edit limit: by the time that limit stops a turn, it has
+already replaced the session once, and it has made no edit at all.
+
+Rejected: holding the turn open until the person clicks. That keeps the project's turn lock for as
+long as nobody answers. Also rejected: replaying the original prompt, which throws the session's
+context away, and simply raising the caps, which removes the backstop for a turn nobody is watching
+(#400).
+
 Chat stays an answer. Direct explains the result. It is not a terminal echo.
 
 ## What was already true, and is not rebuilt

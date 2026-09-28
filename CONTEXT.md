@@ -464,6 +464,7 @@ A way of working a person chooses, for themselves, in which Chat, Auto, and Impl
 automatic cards and the plan gate and run one short agent. [[Guided]] is the other choice, and the
 one they have until they choose this. The choice follows the person across Projects and never goes
 in git. It is not a Build mode: Ask stays read-only and Plan still proposes, whichever is selected.
+A turn a volume cap paused offers Keep going, which continues in the same session.
 Chat stays an answer — Direct explains the result, rather than echoing a terminal. Every model call
 still goes through the enforcement shim, Sage-owned files stay untouchable, and raw rows stay off
 the transcript. See

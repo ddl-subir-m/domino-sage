@@ -263,6 +263,19 @@ def _turn_lock_is_handed_back(request):
                 f"released in a `finally`, or handed back with `_release_turn()`.")
 
 
+@pytest.fixture(autouse=True)
+def _chat_save_timer_is_cancelled():
+    """Cancel the post-turn Chat save timer on the orchestrators THIS test made.
+
+    Every Chat turn arms one, and it re-arms every 30 s while the turn lock is held, so it outlives
+    the test and fires into a later test's worker with this test's temp directory already gone.
+    Defined after `_turn_lock_is_handed_back`, so it tears down first and sees this test's list.
+    """
+    yield
+    for orch in _MADE_BY_THIS_TEST:
+        orch._cancel_chat_idle_save()
+
+
 # The OpenCode servers THIS test started, cleared at the start of each one (#536).
 _SERVERS_STARTED_BY_THIS_TEST: list = []
 # Taken at import: the driver tests replace `subprocess.Popen` itself with a fake while they run.

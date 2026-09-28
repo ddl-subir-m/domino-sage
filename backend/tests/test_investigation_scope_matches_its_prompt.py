@@ -46,7 +46,34 @@ def test_open_investigation_treats_the_selected_table_as_a_starting_point(tmp_pa
 def test_ordinary_chat_keeps_its_one_table_instruction(tmp_path: Path):
     orch, oc, tid = _setup(tmp_path)
     list(orch.chat_stream(tid, "How many accounts are there?"))
-    assert "do not query another table" in oc.prompts[-1]["text"]
+    prompt = oc.prompts[-1]["text"]
+    assert "do not query another table" in prompt
+    # Judging text is analyze_text on the chosen table. Sampling rows stays for a look
+    # at the shape; the text column itself is not selected into the answering model.
+    assert "operation=analyze_text" in prompt
+    assert "text_column" in prompt
+    assert "alias set to the model this conversation names" in prompt
+    assert "Do not select the text column to read it." in prompt
+
+
+def test_selected_tables_are_told_to_judge_text_and_still_ask_before_another(tmp_path: Path):
+    orch, oc = _orch(tmp_path, [Turn(text="Answered.")],
+                     gateway=IntentGateway({"label": "data_answer", "confidence": 0.93}))
+    tid = orch.create_thread()["id"]
+    for table in ("GONG__CALL_TRANSCRIPTS", "SFDC__CASE"):
+        orch.add_thread_context(tid, {
+            "kind": "data_source", "name": "Snowflake-Data-Warehouse",
+            "bindingKey": ["data_source", "ds-dwh"],
+            "resourceId": f"table:ds-dwh:DWH.MARTS.{table}",
+            "scope": {"database": "DWH", "schema": "MARTS", "table": table},
+        })
+    list(orch.chat_stream(tid, "How many accounts are there?"))
+    prompt = oc.prompts[-1]["text"]
+    assert "GONG__CALL_TRANSCRIPTS" in prompt
+    assert "SFDC__CASE" in prompt
+    assert "before using any other table" in prompt
+    assert "operation=analyze_text" in prompt
+    assert "Do not select the text column to read it." in prompt
 
 
 def test_chat_token_cannot_gain_an_unrelated_app_binding_after_the_turn(tmp_path: Path):

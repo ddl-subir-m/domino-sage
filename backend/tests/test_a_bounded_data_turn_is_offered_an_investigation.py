@@ -90,6 +90,10 @@ QUIET = [
     # `really` and `actually` are intensifiers unless they reach a verb of doing.
     "can you actually show me revenue by region?",
     "that's really useful — now break it down by month",
+    # `either ... or` is a choice of one measure until each side names a different record.
+    "show me revenue for either last quarter or this one",
+    # The same record twice is still one record.
+    "how many open cases and closed cases landed last month?",
 ]
 
 
@@ -175,6 +179,32 @@ def test_a_classifier_that_did_not_answer_offers_rather_than_running_blind(tmp_p
 
     assert any(e.get("type") == "investigation-offer" for e in events)
     assert oc.prompts == []
+
+
+# The question that drew the table card: two records, no fusion verb. Gong calls or
+# SFDC cases, then transcripts and cases. Either sentence is enough.
+TWO_RECORDS = (
+    "give me a list of customers who have not churned and have mentioned arm support "
+    "in either gong calls or sfdc cases in the last 12 months. use haiku to analyze "
+    "the chat transcripts and sfdc cases so only non casual conversations and cases count"
+)
+
+
+def test_two_records_in_one_question_are_offered_the_investigation(tmp_path: Path):
+    """Calls or cases is a look across the warehouse, so the cross-data card comes first
+    and the turn does not run. Accepting it is what lets the next turn find the churn table."""
+    orch, oc = _orch(tmp_path, [Turn(text="answered anyway")],
+                     gateway=IntentGateway({"label": "data_answer", "confidence": 0.93}))
+    tid = _thread_with_a_store(orch)
+
+    events = list(orch.chat_stream(tid, TWO_RECORDS))
+
+    card = next(e for e in events if e.get("type") == "investigation-offer")
+    assert card["prompt"] == TWO_RECORDS
+    done = next(e for e in events if e.get("type") == "done")
+    assert done["ok"] is False and done["decision"] == "investigation offer"
+    assert oc.prompts == []
+    assert not any(e.get("type") == "table-candidates" for e in events)
 
 
 def test_an_explicit_build_request_that_fuses_sources_still_goes_to_build(tmp_path: Path):

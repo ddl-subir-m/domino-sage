@@ -502,6 +502,7 @@ _PERSISTED_EVENTS = frozenset({
     "app_change", "build-stalled", "build-rollover", "build-context-limit",
     "gateway-call", "gateway-alias-unbound",
     "data-source-unasked", "data-source-failed", "build-recovery", "build-pre-edit-limit",
+    "keep-going",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -2777,6 +2778,28 @@ _FUSES_SOURCES = re.compile(
     re.IGNORECASE,
 )
 
+# Two different records in one sentence, joined by and or or. "either gong calls or
+# sfdc cases" and "transcripts and sfdc cases" name two records and match none of the
+# fusion verbs above, so the table card was asked first and the churn table was never
+# looked up. A bare "either ... or" is a choice of one measure ("either last quarter
+# or this one"), and the same record said twice ("open cases and closed cases") is
+# still one record — both stay ordinary questions. The two kinds have to differ, which
+# one alternation cannot say, so this is a function beside the pattern rather than
+# another limb of it.
+_RECORD_KIND = re.compile(r"\b(calls?|cases?|transcripts?)\b", re.IGNORECASE)
+_RECORD_LINK = re.compile(r"\b(?:and|or)\b", re.IGNORECASE)
+
+
+def _names_two_records(text: str) -> bool:
+    """True when one sentence names two different records and links them with and or or."""
+    for sentence in re.split(r"[.?!]", text or ""):
+        if _RECORD_LINK.search(sentence) is None:
+            continue
+        kinds = {m.group(1).lower().rstrip("s") for m in _RECORD_KIND.finditer(sentence)}
+        if len(kinds) >= 2:
+            return True
+    return False
+
 
 # The doubt limb. Every word here is about the QUESTION — whether the thing asked about is real —
 # rather than about the data that would answer it.
@@ -2805,7 +2828,8 @@ def _looks_investigative(prompt: str) -> bool:
     """
     text = prompt or ""
     return any(pattern.search(text) is not None
-               for pattern in (_INVESTIGATIVE_ACT, _FUSES_SOURCES, _DOUBTS_THE_COLUMN))
+               for pattern in (_INVESTIGATIVE_ACT, _FUSES_SOURCES, _DOUBTS_THE_COLUMN)
+               ) or _names_two_records(text)
 
 
 # The fourth condition of the investigation offer (ADR-0056), in two halves that
@@ -4158,6 +4182,21 @@ def _loop_message(n: int) -> str:
         n=n)
 
 
+# What Keep going sends (#585). Fixed and server-owned: the card replays it as an ordinary turn,
+# and the session the cap interrupted still holds everything the turn read and did, so the
+# sentence carries no state of its own.
+_KEEP_GOING_PROMPT = "Keep going from where you stopped."
+
+
+def _keep_going_offer(message: str, **where: str) -> dict:
+    """Direct's card under a turn a volume cap ended while it was still working (#585, ADR-0070).
+
+    Only volume caps draw it: Chat's ceiling, Build's shell cap, Build's progress budget. A quiet
+    window or a repeat brake never does, because continuing a hang or a loop must not be one click.
+    """
+    return {"type": "keep-going", "message": message, "prompt": _KEEP_GOING_PROMPT, **where}
+
+
 def _refused_writes_message(n: int, one_model: str) -> str:
     """What to tell somebody whose Build turn was stopped after its `n`-th refused edit.
 
@@ -4710,7 +4749,10 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "total, an average, a ranking, a group-by — call `live_read_query` with this "
                 "turn's token, source {quoted}, and one SELECT against those tables; a join across "
                 "them is still one SELECT. To see a few rows, call `live_read_table` with the same "
-                "token and source. If those tools are not in your tool list this turn and you have "
+                "token and source. To judge text in a table, call `live_read_table` with "
+                "operation=analyze_text, source {quoted}, that table, text_column, and alias set "
+                "to the model this conversation names. Do not select the text column to read it. "
+                "If those tools are not in your tool list this turn and you have "
                 "a shell, `from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
                 '"SELECT * FROM {first} LIMIT 50").to_pandas()`. '
@@ -4743,7 +4785,10 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "- {dataSource} {name}, table {dotted}.{extra} To work a number out of it — a "
                 "count, a total, an average, a ranking, a group-by — call `live_read_query` with "
                 "this turn's token, source {quoted}, and one SELECT against {dotted}. To see a few "
-                "rows, call `live_read_table` with the same token and source. If those tools are "
+                "rows, call `live_read_table` with the same token and source. To judge text in "
+                "that table, call `live_read_table` with operation=analyze_text, source {quoted}, "
+                "that table, text_column, and alias set to the model this conversation names. "
+                "Do not select the text column to read it. If those tools are "
                 "not in your tool list this turn and you have a shell, "
                 "`from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
@@ -16512,6 +16557,10 @@ class Orchestrator:
                         # false, and a block that says what was kept must not be read as saying
                         # the question was settled.
                         message = brand.text(
+                            "This reached the {minutes}-minute limit for one turn, so "
+                            "{assistantName} paused it before it had an answer.",
+                            minutes=f"{_CHAT_TURN_MAX_S / 60:.0f}",
+                        ) if direct else brand.text(
                             "This ran out of time before {assistantName} had an answer. What it "
                             "measured is written down in {rel} — Continue picks the question up "
                             "from there instead of measuring it again. What ends a turn is the "
@@ -16539,7 +16588,17 @@ class Orchestrator:
                     if suggestion:
                         store.append_history(thread_id, suggestion)
                         yield suggestion
-                    if kept_findings and on_the_ceiling:
+                    if direct and on_the_ceiling:
+                        # Direct's way back in (#585) replaces Continue rather than joining it:
+                        # the session still holds what this turn read, so it goes on from there
+                        # whether or not the slice wrote anything down.
+                        resume = _keep_going_offer(
+                            brand.text("Keep going picks up in the same conversation, with "
+                                       "everything {assistantName} has already read."),
+                            threadId=thread_id)
+                        store.append_history(thread_id, resume)
+                        yield resume
+                    elif kept_findings and on_the_ceiling:
                         # The way back in, and only where there is something to go back to AND a
                         # sentence above it that says so (#454). `kept_findings` answers the
                         # first; `on_the_ceiling` answers the second, and both are needed. The
@@ -21972,9 +22031,20 @@ class Orchestrator:
                     project.stop_requested = False
                     tap.close()
                     restore_mode()
+                    # Every call differed, so in Direct the shell cap is a volume cap and not a
+                    # loop (#585): the card says how many and offers to go on, rather than
+                    # telling the person to ask a different way.
+                    keep_going = direct and shell_capped and owns_turn
+                    if keep_going:
+                        looped = brand.text(
+                            "{assistantName} ran {n} shell commands in this turn, so it paused.",
+                            n=bash_calls)
                     yield from stalled_offer(0.0, in_tool=False, looped=looped,
                                              decision="looped" if (shell_capped or write_capped)
                                              else "repeat_brake")
+                    if keep_going:
+                        yield persist(_keep_going_offer(
+                            "Keep going picks up in the same session, from where it paused."))
                     return
                 # The progress budget (#544). Here rather than inside the walk above so that one
                 # poll that delivers several calls is judged once, on the totals it leaves behind;
@@ -23015,6 +23085,12 @@ class Orchestrator:
                         saved = self._save_to_git(project, prompt)
                     if saved is not None:
                         yield persist(saved)
+                # Last, under the check and the save: the progress budget stopped the work, Sage
+                # checked what it wrote, and in Direct the person may send it on (#585).
+                if direct and owns_turn and progress_limit == "stop":
+                    yield persist(_keep_going_offer(
+                        brand.text("{assistantName} paused after several steps that didn't "
+                                   "change the app. Keep going picks up in the same session.")))
                 return
             iterate_reason = decision.reason
             yield {"type": "iterate", "reason": iterate_reason}
