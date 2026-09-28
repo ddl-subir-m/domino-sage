@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from sage import timing
 from sage.liveread import run
 from sage.resources.provider import ApprovedModels, ResourceUnavailable
 
@@ -162,6 +163,22 @@ def test_no_alias_or_the_turns_own_model_runs_on_the_turn_as_before(tmp_path):
         assert [b["model"] for b in gateway.batches] == [SONNET, SONNET], (alias, gateway.batches)
     requests = _events(orch, project, tid)[-1]["requests"]
     assert [r["serving_model"] for r in requests] == [None, None], requests
+
+
+@pytest.mark.parametrize("alias, ran_on", [(OPUS, OPUS), (None, SONNET)])
+def test_every_batch_is_on_the_turns_ledger_by_the_model_it_ran_on(tmp_path, alias, ran_on):
+    """#606: neither route passes the /v1 handler that fills the ledger, so /api/diag/timing read
+    an analyze_text turn as shorter than it was by every batch in it."""
+    orch, gateway, tid, _project, path = _mid_turn(tmp_path)
+    timing.start_turn("chat", "classify these complaints")
+    try:
+        json.loads(_analyze(orch, tid, path, alias))
+    finally:
+        record = timing.finish_turn(ok=True, decision="-")
+
+    batches = [c for c in record.calls if c.phase == "text-analysis"]
+    assert len(batches) == len(gateway.batches) == 2
+    assert [(c.model, c.ok, c.chunks > 0) for c in batches] == [(ran_on, True, True)] * 2
 
 
 def test_a_turn_with_no_gate_wired_refuses_an_alias(tmp_path):

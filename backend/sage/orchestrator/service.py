@@ -5382,6 +5382,25 @@ _NAME_PATTERNS = {
 }
 
 
+def _timed_batch(stream, call):
+    """An analyze_text batch's stream, closing its ledger entry when the reader is done with it.
+
+    `text_analysis._collect` stops reading only at an error in the stream, so a stream closed
+    before its end is a failed batch."""
+    try:
+        for chunk in stream:
+            call.first_byte()
+            call.chunk()
+            yield chunk
+    except GeneratorExit:
+        call.done(ok=False, error="the batch stream ended in an error")
+        raise
+    except BaseException as e:
+        call.done(ok=False, error=f"{type(e).__name__}: {e}")
+        raise
+    call.done()
+
+
 def _unparsed_tool_input(part: dict) -> bool:
     """True when a tool call's arguments never parsed into a dict.
 
@@ -14160,13 +14179,20 @@ class Orchestrator:
             return resolved, ""
 
         def analyze_text_batch(request: dict):
+            # On the turn's ledger for the reason `_delegated_generate` gives: neither route below
+            # passes the /v1 handler that fills it, so /api/diag/timing missed every batch (#606).
+            call = timing.model_call(str(request.get("model") or ""), "text-analysis")
             if request.get("model") in honoured:
                 # Past the shim, which replaces every request's model with the turn's.
-                return project.shim.gateway.route(request, CostLabels(
+                upstream = project.shim.gateway.route(request, CostLabels(
                     phase="ask", mode="auto", component="chat-delegated",
                     session=f"{thread_id}:text-analysis", version=project.shim.version))
-            return project.shim.handle(request, project=project.id,
-                                       session=f"{thread_id}:text-analysis")
+            else:
+                upstream = project.shim.handle(
+                    request, project=project.id, session=f"{thread_id}:text-analysis",
+                    on_resolved=lambda model, _phase, reason: call.model(model, "text-analysis",
+                                                                         reason))
+            return _timed_batch(upstream, call)
 
         def record_refusal(says: str) -> None:
             with self._live_read_lock:
