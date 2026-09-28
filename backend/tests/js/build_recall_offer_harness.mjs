@@ -13,7 +13,7 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history, dismiss } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { history } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const json = (body) => ({
   ok: true, status: 200,
@@ -77,20 +77,13 @@ SW.store.set({
 await SW.store.loadBuild();
 await settle();
 
-// "Not now" is this tab's alone and is deliberately never written to the transcript, so the only
-// way to check it holds is to dismiss and then make the transcript be rebuilt — which is what the
-// poll does every two seconds, and what used to bring the card straight back.
-if (dismiss !== undefined) {
-  SW.store.dismissBuildRecallOffer(dismiss);
-  await SW.store.loadBuild();
-  await settle();
-}
-
-const blocks = SW.store.get().buildMessages.flatMap((m) => m.blocks || []);
+const messages = SW.store.get().buildMessages;
+const blocks = messages.flatMap((m) => m.blocks || []);
 console.log(JSON.stringify({
   types: blocks.map((b) => b.type),
-  offers: blocks.filter((b) => b.type === 'recall_offer')
-    .map((b) => ({ scope: b.scope, surface: b.surface, offerKey: b.offerKey })),
+  // `order` is the message's, which is the row the offer was drawn from.
+  offers: messages.flatMap((m) => (m.blocks || []).filter((b) => b.type === 'recall_offer')
+    .map((b) => ({ scope: b.scope, surface: b.surface, order: m.order }))),
   cleared: blocks.filter((b) => b.type === 'recall_cleared').map((b) => b.scope),
   statuses: blocks.filter((b) => b.type === 'status').map((b) => b.value),
 }));
