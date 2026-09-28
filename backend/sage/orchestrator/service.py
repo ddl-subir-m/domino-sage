@@ -5406,6 +5406,15 @@ def _ask_session_to_stop(client, sid: str) -> None:
     except Exception:
         log.exception("invalid tool call: interrupt failed")
 
+
+def _aborted(err: object) -> bool:
+    """Is this OpenCode's report of an interrupt? Sage's own stop comes back in this shape (#592).
+
+    So do a person's Stop and a provider's abort, so this alone never discounts a failure: the
+    caller also needs its own stop, asked for the fault still standing, before this arrived.
+    """
+    return isinstance(err, dict) and err.get("name") == "MessageAbortedError"
+
 # The closed vocabulary a correction and a give-up draw their sentence from. Keyed by category,
 # never by the SDK's message, so nothing the model emitted can reach a person or the next prompt.
 _INVALID_CALL_SAID = {
@@ -16163,6 +16172,9 @@ class Orchestrator:
             # window's, and a second interrupt is not a new fact.
             broken_id = ""
             stopped_invalid: set[str] = set()
+            # Message failures that were that stop coming back (#592), so every later poll that
+            # re-reads the message still reads it as the step's end and not as the turn failing.
+            own_aborts: set[tuple[str, object]] = set()
             # Resolved against the chat workdir, which is where the agent stands and the only place
             # every path in the prompt resolves: `examples/` and `.sage/scratch/` are the Project's
             # and `public/data/` is the app's, and all three are linked in there.
@@ -16646,6 +16658,14 @@ class Orchestrator:
                     return
                 for ev in tap.drain():
                     last_activity = time.monotonic()
+                    if (ev.kind == "error" and _aborted(ev.payload.get("error"))
+                            and broken_call is not None and broken_id in stopped_invalid
+                            and not project.stop_requested):
+                        # The stop asked below, reported back (#592). It is the idle reading
+                        # the correction waits on; counted as a failed step, it blocked it.
+                        log.info("chat: the session stopped as asked after a %s call", broken_call)
+                        appeared = True
+                        continue
                     if ev.kind == "error":
                         # Not shown as it happens — a step that fails may still be retried, and the
                         # answer is what the Thread is for. Kept, so the end of the turn can say it,
@@ -16879,6 +16899,14 @@ class Orchestrator:
                     # that ends the turn, and a text part is re-read every time (it is never added
                     # to `seen`). Keyed off `seen` for the reporting alone.
                     failure = m.get("error")
+                    if failure and _aborted(failure) and (
+                            _message_error_key(m) in own_aborts
+                            or (_message_error_key(m) not in seen and broken_call is not None
+                                and broken_id in stopped_invalid
+                                and not project.stop_requested)):
+                        # First read only after the stop was asked, so it is that stop (#592).
+                        own_aborts.add(_message_error_key(m))
+                        failure = None
                     turn_failed = bool(failure)
                     if failure and _message_error_key(m) not in seen:
                         seen.add(_message_error_key(m))
@@ -21579,6 +21607,8 @@ class Orchestrator:
             # not another interrupt.
             broken_id = ""
             stopped_invalid: set[str] = set()
+            # Message failures that were that stop coming back (#592), as in Chat.
+            own_aborts: set[tuple[str, object]] = set()
             # Which closed category the fault fell in; the correction's sentence comes from it.
             broken_category = "unparsed"
             # Captured with it, reported only if the turn ends on it. Held rather than logged at
@@ -21704,6 +21734,14 @@ class Orchestrator:
                     # place either can reach it. Read here and not in the part walk below because a
                     # message refused before it wrote anything has no parts at all.
                     failure = m.get("error")
+                    if failure and _aborted(failure) and (
+                            _message_error_key(m) in own_aborts
+                            or (_message_error_key(m) not in seen and broken_call is not None
+                                and broken_id in stopped_invalid
+                                and not project.stop_requested)):
+                        # First read only after the stop was asked, so it is that stop (#592).
+                        own_aborts.add(_message_error_key(m))
+                        failure = None
                     turn_failure = failure or None
                     if failure and _message_error_key(m) not in seen:
                         seen.add(_message_error_key(m))

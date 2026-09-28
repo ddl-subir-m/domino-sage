@@ -31,7 +31,7 @@ from sage.orchestrator.service import (
 )
 from sage.router.models import ModelCatalog
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import ABORTED, FakeOpenCode, Turn
 
 
 class OkFeedback:
@@ -479,6 +479,8 @@ def test_a_session_that_keeps_running_is_stopped_and_the_turn_is_sent_again(tmp_
     orch._build_policy = replace(orch._build_policy, quiet_timeout_seconds=5,
                                  open_tool_quiet_timeout_seconds=5)
     oc.stay_running = True
+    # The stop comes back as a failed message, as it does live (#592).
+    oc.abort_on_interrupt = True
 
     events = list(orch.build_stream("build me a dashboard"))
 
@@ -536,6 +538,19 @@ def test_a_provider_terminal_error_beats_the_recovery(tmp_path: Path):
     _no_cause(events)
     assert len(oc.sessions) == 1
     assert not orch._turn_lock.locked()
+
+
+def test_an_abort_sage_did_not_ask_for_still_ends_the_build(tmp_path: Path):
+    """The abort is on the message before Sage asked anything, so it is not Sage's stop (#592)."""
+    orch, oc = _orch(tmp_path, [Turn(invalid_calls=["write"], error=dict(ABORTED)),
+                                Turn(text="Added.", writes={"src/App.tsx": "app\n"})])
+
+    events = list(orch.build_stream("build me a dashboard"))
+
+    done = _of(events, "done")[0]
+    assert done["decision"] == "gateway error" and done["turnId"]
+    _no_cause(events)
+    assert len(oc.sessions) == 1 and len(oc.prompts) == 1
 
 
 class _WillNotStop(FakeOpenCode):

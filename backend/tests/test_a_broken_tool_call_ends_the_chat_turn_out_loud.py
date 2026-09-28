@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import threading
 from dataclasses import replace
 from pathlib import Path
 
 from sage.orchestrator import service
 
-from .fake_opencode import FakeOpenCode, Turn
+from .fake_opencode import ABORTED, FakeOpenCode, Turn
 from .test_chat_turn import (
     IntentGateway,
     ObservedControlOpenCode,
@@ -181,6 +183,8 @@ def test_a_session_that_keeps_running_is_stopped_and_corrected_once(tmp_path: Pa
     orch, oc = _orch(tmp_path, [Turn(invalid_calls=["live_read_query"]),
                                 Turn(text="There are three columns.")])
     oc.stay_running = True
+    # The stop comes back as a failed message, as it does live (#592).
+    oc.abort_on_interrupt = True
     tid = orch.create_thread()["id"]
 
     events = list(orch.chat_stream(tid, "summarize the file"))
@@ -215,6 +219,100 @@ def _stream(tmp_path: Path, turns: list[Turn], call_id: str = "c1"):
         _live("phase", finish="stop"),
     ]
     return _orch(tmp_path, client=lambda ws: _LateTranscript(ws, turns, events))
+
+
+class _AbortStream:
+    """Scripted frames, then whatever `report` adds, then open until closed.
+
+    `report` returns once the reader has taken the frame, so the next poll drains it: the
+    abort lands after the stop that caused it, and on the poll the session reads idle.
+    """
+
+    def __init__(self, events) -> None:
+        self._q: queue.Queue = queue.Queue()
+        for ev in events:
+            self._q.put(ev)
+        self.delivered = threading.Event()
+        self._taken = threading.Event()
+
+    def __iter__(self):
+        while True:
+            if self._q.empty():
+                self.delivered.set()
+                self._taken.set()
+            ev = self._q.get()
+            if ev is None:
+                return
+            yield ev
+
+    def report(self, ev) -> None:
+        self._taken.clear()
+        self._q.put(ev)
+        self._taken.wait(5)
+
+    def close(self) -> None:
+        self._q.put(None)
+
+
+class _AbortReported(_LateTranscript):
+    """OpenCode's answer to an interrupt: a failed step on the stream and a failed message."""
+
+    def __init__(self, workspace, turns, events) -> None:
+        super().__init__(workspace, turns, [])
+        self.stream = _AbortStream(events)
+        self.abort_on_interrupt = True
+
+    def interrupt(self, session_id: str) -> None:
+        super().interrupt(session_id)
+        self.stream.report(_live("error", error=dict(ABORTED)))
+
+
+def test_the_abort_sages_own_stop_causes_does_not_fail_the_step(tmp_path: Path, caplog):
+    """Live, the stop came back as `MessageAbortedError` on both witnesses, the step counted as
+    failed, and the correction never went out (#592)."""
+    wrapper_input = {"tool": "live_read_query", "error": Turn.invalid_error}
+    events = [
+        _live("tool_run", tool="invalid", input=wrapper_input, call_id="c1", status="called"),
+        _live("tool_run", tool="invalid", input=wrapper_input, call_id="c1", status="success"),
+    ]
+    orch, oc = _orch(tmp_path, client=lambda ws: _AbortReported(
+        ws, [Turn(invalid_calls=["live_read_query"]), Turn(text="There are three columns.")],
+        events))
+    tid = orch.create_thread()["id"]
+
+    with caplog.at_level(logging.WARNING, logger="sage.orchestrator"):
+        events = list(orch.chat_stream(tid, "summarize the file"))
+
+    assert oc.interrupted == 1
+    assert len(oc.prompts) == 2 and len(oc.sessions) == 1
+    assert "Your last live_read_query call arrived with arguments that did not validate" \
+        in oc.prompts[1]["text"]
+    for rows in (events, orch.thread_history(tid)):
+        done = _done(rows)
+        assert done["ok"] is True and done["decision"] == "answered"
+        assert done["recoveries"] == 1
+    assert not _of(events, "error")
+    assert "step failed" not in caplog.text and "the turn failed" not in caplog.text
+    oc.stream.close()
+    for t in threading.enumerate():
+        if t.name == "sage-events":
+            t.join(5)
+    assert not any(t.name == "sage-events" and t.is_alive() for t in threading.enumerate())
+
+
+def test_an_abort_sage_did_not_ask_for_still_fails_the_turn(tmp_path: Path):
+    """The abort is on the message before Sage asked anything, so it is not Sage's stop."""
+    orch, oc = _orch(tmp_path, [Turn(invalid_calls=["write"], error=dict(ABORTED)),
+                                Turn(text="never")])
+    tid = orch.create_thread()["id"]
+
+    events = list(orch.chat_stream(tid, "summarize the file"))
+
+    assert len(oc.prompts) == 1, "no correction over an abort nobody in Sage asked for"
+    done = _done(events)
+    assert done["ok"] is False and done["decision"] == "step failed"
+    assert "recoveries" not in done
+    _no_cause(events)
 
 
 def test_the_wrapper_is_read_off_the_stream(tmp_path: Path, caplog):
