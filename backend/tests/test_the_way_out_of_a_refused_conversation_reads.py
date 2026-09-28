@@ -61,18 +61,13 @@ def test_each_rung_asks_for_the_clear_it_advertised():
     assert _buttons(complete)[0]["text"] == "Clear everything"
 
 
-def test_the_destructive_act_is_the_primary_and_the_only_primary():
+def test_the_way_out_is_the_only_button():
+    """No `Not now` (#588). This card is the only exit from a Conversation the gateway keeps
+    refusing, so hiding it rebuilt the dead end it exists to remove. Not pressing it is the
+    decline, and it cannot nag: it only appears on a turn that already failed."""
     for scope in ("summary", "empty"):
         buttons = _buttons(_render({"type": "recall_offer", "scope": scope}))
-        assert [b["kind"] for b in buttons] == ["primary", ""]
-
-
-def test_declining_is_offered_but_only_dismisses():
-    """`Not now` is local here. Declining is a judgment about a moment, not a preference about a
-    want, so nothing is written down and the next refusal offers again."""
-    buttons = _buttons(_render({"type": "recall_offer", "scope": "summary"}))
-    assert buttons[1]["text"] == "Not now"
-    assert buttons[1]["act"] == "dismiss"
+        assert [b["kind"] for b in buttons] == ["primary"]
 
 
 def test_the_divider_says_which_clear_happened():
@@ -102,11 +97,8 @@ _CHAT_HARNESS = Path(__file__).resolve().parent / "js" / "chat_recall_offer_harn
 _KEY = "guardrail:Block phone numbers"
 
 
-def _drawn(history: list[dict], dismiss: object = None) -> dict:
-    body = {"history": history}
-    if dismiss is not None:
-        body["dismiss"] = dismiss
-    out = subprocess.run(["node", str(_CHAT_HARNESS)], input=json.dumps(body),
+def _drawn(history: list[dict]) -> dict:
+    out = subprocess.run(["node", str(_CHAT_HARNESS)], input=json.dumps({"history": history}),
                          capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
@@ -124,9 +116,6 @@ def test_the_offer_is_drawn_while_it_is_the_newest_one():
     drawn = _drawn(_refusal(0) + [{"type": "recall-suggest", "scope": "summary", "order": 3}])
 
     assert [o["scope"] for o in drawn["offers"]] == ["summary"]
-    # Namespaced by surface, not by position alone. Under the split view the two transcripts number
-    # their own rows, so an undecorated 3 would let one "Not now" hide Build's offer as well.
-    assert drawn["offers"][0]["offerKey"] == "chat:3"
 
 
 def test_a_clear_retires_the_offer_above_it():
@@ -149,23 +138,6 @@ def test_a_refusal_after_a_clear_offers_again():
                    + [{"type": "recall-suggest", "scope": "empty", "order": 8}])
 
     assert [o["scope"] for o in drawn["offers"]] == ["empty"]
-
-
-def test_not_now_survives_reopening_the_thread():
-    """The comment on `dismissRecallOffer` has said "lasts until the next refusal re-offers" since
-    it shipped. Filtering the drawn messages made it last until the next read instead."""
-    history = _refusal(0) + [{"type": "recall-suggest", "scope": "summary", "order": 3}]
-
-    assert _drawn(history, dismiss="chat:3")["offers"] == []
-
-
-def test_dismissing_one_offer_does_not_dismiss_the_next():
-    history = (_refusal(0)
-               + [{"type": "recall-suggest", "scope": "summary", "order": 3}]
-               + _refusal(4)
-               + [{"type": "recall-suggest", "scope": "empty", "order": 7}])
-
-    assert [o["scope"] for o in _drawn(history, dismiss="chat:3")["offers"]] == ["empty"]
 
 
 # ---- the same card, on Build's side --------------------------------------------------------------
@@ -209,9 +181,8 @@ def test_builds_buttons_reach_builds_clear_and_not_chats():
     seeded = _render({"type": "recall_offer", "scope": "summary", "surface": "build"})
     complete = _render({"type": "recall_offer", "scope": "empty", "surface": "build"})
 
-    assert _buttons(seeded)[0]["act"] == "clear-build:summary"
-    assert _buttons(complete)[0]["act"] == "clear-build:empty"
-    assert _buttons(seeded)[1]["act"] == "dismiss-build"
+    assert [b["act"] for b in _buttons(seeded)] == ["clear-build:summary"]
+    assert [b["act"] for b in _buttons(complete)] == ["clear-build:empty"]
     # And Chat's card still reaches Chat's.
     assert _buttons(_render({"type": "recall_offer", "scope": "summary"}))[0]["act"] == "clear:summary"
 
@@ -223,4 +194,4 @@ def test_both_sides_keep_the_same_labels():
         block = {"type": "recall_offer", "scope": "summary"}
         if surface:
             block["surface"] = surface
-        assert [b["text"] for b in _buttons(_render(block))] == ["Start fresh", "Not now"]
+        assert [b["text"] for b in _buttons(_render(block))] == ["Start fresh"]

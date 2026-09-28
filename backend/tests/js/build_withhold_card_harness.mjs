@@ -156,8 +156,7 @@ if (act === 'withhold') {
 } else if (act === 'dismiss') {
   SW.store.dismissWithholdCard(before.find((b) => b.type === 'withhold'));
   // And then the poll tick. Build rebuilds its whole transcript from `buildHistory` every two
-  // seconds, so a dismissal that only filters the drawn list lasts until the next one — which is
-  // the defect `dismissBuildRecallOffer` was written to fix for the rung above this.
+  // seconds, so a dismissal that only filters the drawn list lasts until the next one.
   await SW.store.loadBuild();
 }
 await settle();
