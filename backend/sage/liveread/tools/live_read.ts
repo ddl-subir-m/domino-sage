@@ -283,7 +283,10 @@ export const query = {
     "on the card; none of its values come back to you. For a regression, return REGR_* statistics " +
     "and numeric counts together. Keep MIN/MAX of dates or text in a separate display query if " +
     "needed; mixing them with numeric statistics withholds those statistics too. Prefer this " +
-    "over reading rows and adding them up yourself.",
+    "over reading rows and adding them up yourself. On Snowflake, REGEXP_LIKE and RLIKE match " +
+    "the whole value, so find a word inside text with '.*\\\\bword\\\\b.*' or " +
+    "REGEXP_COUNT(col, '\\\\bword\\\\b') > 0, and write a regex backslash twice inside single " +
+    "quotes: '\\\\b', not '\\b'.",
   args: {
     token,
     source: { type: "string", description: "The Data Source name." },

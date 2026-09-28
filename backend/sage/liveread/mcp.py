@@ -109,7 +109,10 @@ TOOLS: list[dict[str, Any]] = [
             "come back to you. For a regression, return REGR_* statistics and numeric counts "
             "together. Keep MIN/MAX of dates or text in a separate display query if needed; "
             "mixing them with numeric statistics withholds those statistics too. Prefer this "
-            "over reading rows and adding them up yourself."
+            "over reading rows and adding them up yourself. "
+            r"On Snowflake, REGEXP_LIKE and RLIKE match the whole value, so find a word inside "
+            r"text with '.*\\bword\\b.*' or REGEXP_COUNT(col, '\\bword\\b') > 0, and write a "
+            r"regex backslash twice inside single quotes: '\\b', not '\b'."
         ),
         "inputSchema": {
             "type": "object",
