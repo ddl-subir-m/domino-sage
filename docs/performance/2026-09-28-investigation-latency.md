@@ -88,7 +88,7 @@ What the numbers point at, in order:
    the repeat brake stopped the turn. The arguments themselves aren't recorded anywhere (by design),
    so the bad character isn't known. The `live_read_query` args schema did not change since the
    #600 build; its description did (#603 added the Snowflake regex note), and so did the
-   investigation skill (#605). On the #600 build the same model made 15 valid calls. **This blocks
+   investigation skill (#605). On the #600 build the same model made 15 valid calls. Filed as #609. **This blocks
    the controlled `mimo-v2.6-pro` re-run the ticket asked for.**
 2. **The investigating model didn't take the `analyze_text` + `sql` route.** `gemini-3.7-flash` read
    candidates with `live_read_query`, then spent 30 calls in `write`/`bash` and judged through
