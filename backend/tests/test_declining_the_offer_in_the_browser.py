@@ -121,6 +121,14 @@ def test_a_classifier_tag_over_an_unanswered_question_loses_it():
     assert out["routes"] == ["api/threads/t1"]
 
 
+def test_only_the_decline_that_runs_nothing_leaves_a_note():
+    """#588. The classifier decline changes nothing else on screen, so the note is the receipt. The
+    explicit decline is followed by its answer, which is receipt enough — a note above it would say
+    Sage is not suggesting something while it answers the very question that was offered."""
+    assert _decline(OFFERED_AFTER)["notes"] == 1
+    assert _decline(OFFERED_INSTEAD)["notes"] == 0
+
+
 def test_the_thread_reads_as_suppressed_either_way():
     for seed in (OFFERED_INSTEAD, OFFERED_AFTER):
         assert _decline(seed)["handoff"]["status"] == "suppressed"
