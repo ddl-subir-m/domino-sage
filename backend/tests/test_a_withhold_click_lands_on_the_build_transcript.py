@@ -85,7 +85,7 @@ def test_when_nothing_survives_it_does_not_re_run():
 def test_dismiss_takes_the_card_away_and_it_stays_away():
     """Two failures in one press. It filtered `state.messages`, which Build does not draw, so
     nothing happened at all — and had it filtered the right list, the next two-second poll would
-    have rebuilt the card anyway. Same shape, same fix, as `dismissBuildRecallOffer`."""
+    have rebuilt the card anyway."""
     r = _click("dismiss")
     assert r["after"]["cards"] == []
     assert r["posted"] == [], "hiding a card is not an answer worth writing to the transcript"

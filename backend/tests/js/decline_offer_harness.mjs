@@ -74,6 +74,8 @@ console.log(JSON.stringify({
   users: messages.filter((m) => m.role === 'user')
     .map((m) => (m.blocks.find((b) => b.type === 'text') || {}).value),
   offers: messages.filter((m) => (m.blocks || []).some((b) => b.type === 'plan_suggestion')).length,
+  notes: messages.filter((m) => (m.blocks || []).some((b) => b.type === 'plan_suggestion_declined'))
+    .length,
   answers: messages.filter((m) => m.role === 'assistant')
     .flatMap((m) => m.blocks.map((b) => b.value)),
   handoff: SW.store.get().thread.handoff,

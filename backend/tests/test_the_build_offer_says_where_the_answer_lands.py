@@ -1,12 +1,13 @@
 """What the two Build offers promise, in the only place anyone reads it: the button.
 
-The card arrives by two routes that do two different things on decline. The classifier raises it
-after a turn that already answered, so declining runs nothing and `Not now` is the truth. The
-explicit-build regex raises it INSTEAD of a turn, so declining runs the question in Chat — and
-`Not now` reads as later, promises nothing, and leaves that answer arriving unannounced.
+The card arrives by two routes that do two different things on decline. The explicit-build regex
+raises it INSTEAD of a turn, so declining runs the question in Chat and the button says `Answer
+here`. The classifier raises it after a turn that already answered, so declining runs nothing —
+and a second button there read as an act that then did nothing visible (#588). It declines with a
+corner × and leaves a note saying what changed.
 
-One handler, two labels. A source assertion on `dismissPlanSuggestion` cannot see which word the
-person got, and the word is the whole difference.
+One handler, two shapes. A source assertion on `dismissPlanSuggestion` cannot see which the
+person got, and that is the whole difference.
 """
 from __future__ import annotations
 
@@ -37,26 +38,34 @@ def _offer(reason: str) -> list[dict]:
 
 
 def test_the_explicit_offer_says_the_answer_lands_here():
-    """Declining this one runs the question in Chat, so the button says so."""
-    assert _offer("explicit")[1]["text"] == "Answer here"
+    """Declining this one runs the question in Chat, so the button says so — and asks for it."""
+    buttons = _offer("explicit")
+    assert [b["text"] for b in buttons] == ["Write a plan", "Answer here"]
+    assert buttons[1]["act"] == "dismiss-plan:answer"
 
 
-def test_the_classifier_offer_still_says_not_now():
-    """Nothing runs under this one — the turn beneath it already answered."""
-    assert _offer("classifier")[1]["text"] == "Not now"
+def test_the_classifier_offer_declines_with_a_corner_x():
+    """Nothing runs under this one — the turn beneath it already answered — so a second button
+    beside `Write a plan` read as an act and then did nothing visible (#588). The decline is a ×
+    that says what it is to a screen reader, and it does not ask for an answer."""
+    buttons = _offer("classifier")
+    assert [b["text"] for b in buttons] == ["", "Write a plan"]
+    assert buttons[0]["label"] == "Dismiss"
+    assert buttons[0]["act"] == "dismiss-plan"
 
 
-def test_both_labels_are_the_same_button():
-    """Two words, one act. The route is chosen by the store from what is on the Thread, not by
-    which label was clicked, so a card that wired the new label to a new handler would be wrong."""
+def test_write_a_plan_is_the_one_primary_on_either_arm():
     for reason in ("explicit", "classifier"):
         buttons = _offer(reason)
-        assert buttons[0]["text"] == "Write a plan"
-        assert buttons[0]["act"] == "plan"
-        assert buttons[1]["act"] == "dismiss-plan"
+        assert [b["text"] for b in buttons if b["kind"] == "primary"] == ["Write a plan"]
+        assert next(b for b in buttons if b["text"] == "Write a plan")["act"] == "plan"
 
 
-def test_declining_is_never_the_primary():
-    """Writing a plan stays the one primary action on the card, under either label."""
-    for reason in ("explicit", "classifier"):
-        assert [b["kind"] for b in _offer(reason)] == ["primary", ""]
+def test_the_declined_note_says_what_changed_and_the_way_back():
+    """What the × leaves in the card's place. The decline is permanent for this chat, and nothing
+    else on screen moves, so the note is the only way the person learns either."""
+    rendered = _render({"type": "plan_suggestion_declined"})
+    said = " ".join(n["text"] for n in rendered["nodes"] if n["text"])
+    assert "won't suggest this again in this chat" in said
+    assert "Open in Build" in said
+    assert _buttons(rendered) == []

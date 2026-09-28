@@ -57,7 +57,7 @@ On `APP`, write:
 }
 ```
 
-Never suggest again *while this entry is unresolved*. Once it reaches `bound`, the Conversation is eligible for a fresh suggestion about a different app. `Not now` sets `suppressed: true` and `status: "suppressed"`, and that one is permanent — it is the person saying stop. The overflow **Open in Build** / **Turn into an app** still works.
+Never suggest again *while this entry is unresolved*. Once it reaches `bound`, the Conversation is eligible for a fresh suggestion about a different app. Declining (the classifier card's ×, or the explicit card's **Answer here**) sets `suppressed: true` and `status: "suppressed"`, and that one is permanent — it is the person saying stop. The overflow **Open in Build** / **Turn into an app** still works.
 
 Do not run the classifier when the user message is already an explicit build request ("build me a dashboard", "open this in the builder"). Treat that as confirm-intent and go to the sheet (§4) directly.
 
@@ -66,9 +66,9 @@ Do not run the classifier when the user message is already an explicit build req
 The Chat pane shows the prototype callout once, inline. The classifier raises it after the assistant turn that triggered it:
 
 ```
-This is starting to look like an app.
+This is starting to look like an app.                       [×]
 I can write a plan so you can review it and build from it.
-[Write a plan]   [Not now]
+[Write a plan]
 ```
 
 The explicit-build regex raises it *instead of* a turn, so the card says a decision was heard rather than noticed, and its second button says where the answer will land:
@@ -79,7 +79,7 @@ I can turn this conversation into a plan to start from.
 [Write a plan]   [Answer it here]
 ```
 
-One label per arm, because the arms do different things. `Not now` is true of the classifier card — the turn under it already answered, so declining runs nothing. It is false of the explicit card, which was raised before any turn: declining there runs the question in Chat, and a button that reads *later* leaves that answer arriving unannounced.
+One shape per arm, because the arms do different things. The classifier card sits under a turn that already answered, so declining runs nothing — and a second button beside **Write a plan** read as an act and then did nothing visible (#588). It declines with a corner ×, which leaves a note in the card's place: *"Okay, I won't suggest this again in this chat. You can still use Open in Build from the conversation menu."* The note is drawn again on reload from the suppressed handoff. The explicit card was raised before any turn: declining there runs the question in Chat, so its second button says where the answer lands.
 
 **Write a plan** runs `sage-plan` in the **Build** OpenCode session against a prompt assembled from:
 
@@ -89,7 +89,7 @@ One label per arm, because the arms do different things. `Not now` is true of th
 
 The plan body is the existing `sage-plan` shape and is written to `.sage/plan.md` the way Build already does: one sentence, then the brief sections a colleague reads (`## Problem & outcome`, `## Who uses this`, `## What it does`, `## Screens`, `## Data` when the app reads any, `## Not doing`, `## Done when`), then `## Plan` and `## Open questions`. A plan document is created from the same text, carrying this Conversation as its origin so the plan page can offer the way back to the conversation. Then open the sheet with the plan included.
 
-**Not now** / **Answer it here** both suppress, permanently. What differs is what is owed underneath. The classifier card sits on a turn that answered, so declining stops there. The explicit card was offered instead of that turn, so declining owes the answer: `POST /api/threads/<id>/handoff/decline` suppresses, then streams the pending question as an ordinary Chat turn — charts and tables under `examples/<threadId>/`, not a sentence about Build. That turn alone is told the offer was made and turned down, so it answers rather than restating that nothing has been planned.
+**×** / **Answer it here** both suppress, permanently. What differs is what is owed underneath. The classifier card sits on a turn that answered, so declining stops there and leaves the note. The explicit card was offered instead of that turn, so declining owes the answer: `POST /api/threads/<id>/handoff/decline` suppresses, then streams the pending question as an ordinary Chat turn — charts and tables under `examples/<threadId>/`, not a sentence about Build. That turn alone is told the offer was made and turned down, so it answers rather than restating that nothing has been planned.
 
 **Open in Build** on a Conversation that has no plan yet is the same as Write a plan, then the sheet.
 
@@ -203,13 +203,13 @@ Out of scope. "Ask about this app" from Build can wait. A user who wants Chat af
 ## 8. Acceptance
 
 1. Three analysis turns that never mention an app produce **no** callout. A fourth that says "put this on a dashboard colleagues can open" produces exactly one callout. Reload does not show it again as a new suggestion (`suggestedAt` is set).
-2. **Not now** hides the callout permanently for that Conversation. Overflow **Open in Build** still opens the sheet (and drafts a plan if none exists). On the explicit card the button reads **Answer it here** and the declined question is answered in Chat; on the classifier card it reads **Not now** and nothing runs, because the turn beneath it already answered.
+2. Declining hides the callout permanently for that Conversation. Overflow **Open in Build** still opens the sheet (and drafts a plan if none exists). On the explicit card the button reads **Answer it here** and the declined question is answered in Chat; on the classifier card it is a corner × and nothing runs, because the turn beneath it already answered — a note takes the card's place, and a reload shows the same note.
 3. Confirm with the transcript preference off writes `plan.md` and `handoff.md`, does not write `handoff-transcript.md`, upserts Bindings for Data Sources that were chips, leaves `src/` still untouched until Approve & build.
 4. After confirm, `#/build/<threadId>` shows the existing plan approval card, the preview pane, and App dependencies containing those Bindings. The rail still has the Conversation. Switching to Chat shows the same Conversation, not a blank greeting. — This last clause is the one the split UI could never satisfy, in either direction. It is delivered by the merged transcript, in Chat by #56 and in Build by #57 ([ADR-0009](../adr/0009-one-conversation-build-is-a-view.md)); under the split arm it stays unmet by design, until the comparison ends and #61 removes the loser.
 5. Approve & build on that card runs `sage-implement`, which reads `plan.md`, sees `handoff.md`, and edits `src/`. Typecheck loop runs. Chat's `examples/` files are still there.
 6. The Project's name is unchanged by confirm, and Default is still Default. The new Built App's display name is the plan title.
 9. A second Conversation in the same Project confirms a handoff with **New app**. It gets a second `apps/<appId>/`, and the first app's `src/`, plan document and Bindings are untouched. Both appear in Build's header app control.
-10. A Conversation that has already reached `bound` produces a fresh callout when it drifts toward a different app. A Conversation that was **Not now**'d never does.
+10. A Conversation that has already reached `bound` produces a fresh callout when it drifts toward a different app. A Conversation whose callout was declined never does.
 11. The sheet never preselects an existing app.
 7. Classifier timeout or 5xx → no callout, turn otherwise succeeds. Three consecutive garbage verdicts trip a breaker and Chat stops calling it for this process (same pattern as `scope.py`).
 8. Tests: classifier bias (APP only on app-shaped last turn); sheet confirm file set; Bindings upsert from `context.json`; Conversation URL survives the mode switch; `sage-chat` history.jsonl is not the file implement greps as `.sage/history.md`.
