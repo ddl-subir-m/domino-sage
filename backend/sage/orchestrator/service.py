@@ -15526,6 +15526,9 @@ class Orchestrator:
         # nothing, or a token already spent, falls through as an ordinary turn — it does not fail,
         # it is simply bounded, which is what every turn without a card behind it is.
         other_lane_granted = self._spend_other_lane_grant(thread_id, other_lane_grant)
+        # Any turn moves past the offers above it, so their grants go with it (#588). The client
+        # takes the button off on the same send; this is what makes a stale page's click bounded.
+        self._other_lane_grants.pop(thread_id, None)
         # A replay under a grant joins the three flags below for their reason, not a new one: the
         # turn that drew the card already wrote this question into the Thread, and writing it again
         # prints the person's question twice under one card.

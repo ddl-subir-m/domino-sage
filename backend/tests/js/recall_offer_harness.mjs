@@ -25,6 +25,7 @@ function node(type, props, ...children) {
     className: (props && props.className) || '',
     onClick: props && props.onClick,
     kind: (props && props.type) || '',
+    label: (props && props['aria-label']) || '',
     children: flat,
   };
 }
@@ -46,15 +47,18 @@ const sandbox = {
     // correctly and do the wrong thing.
     store: {
       clearRecall: (scope) => clicked.push(`clear:${scope}`),
-      dismissRecallOffer: () => clicked.push('dismiss'),
       // Build's half. Recorded separately, because the card reaching the WRONG clear is a defect
       // this harness is in a position to catch: the two empty different sessions.
       clearBuildRecall: (scope) => clicked.push(`clear-build:${scope}`),
-      dismissBuildRecallOffer: () => clicked.push('dismiss-build'),
       draftHandoffPlan: () => clicked.push('plan'),
-      dismissPlanSuggestion: () => clicked.push('dismiss-plan'),
+      // The arm is the argument, so it is what gets recorded: the explicit decline answers the
+      // question and the classifier one does not, and one handler serves both.
+      dismissPlanSuggestion: (opts) => clicked.push(
+        opts && opts.answerHere ? 'dismiss-plan:answer' : 'dismiss-plan'),
+      workItOutOnTheOtherLane: (prompt, threadId, grant) => clicked.push(`calculate:${grant}`),
       get: () => ({ threads: [], touched: [] }),
     },
+    util: { useBusyAct: () => [null, (_key, act) => act] },
   },
 };
 sandbox.window = sandbox;
@@ -74,7 +78,8 @@ function walk(n, out) {
     if (out.length) out[out.length - 1].text += String(n);
     return out;
   }
-  out.push({ tag: n.tag, className: n.className, kind: n.kind, text: '', hasClick: !!n.onClick });
+  out.push({ tag: n.tag, className: n.className, kind: n.kind, label: n.label, text: '',
+             hasClick: !!n.onClick });
   const at = out.length - 1;
   for (const child of n.children) walk(child, out);
   // Fire the handler so the test can assert which act a button is wired to, not merely that it
