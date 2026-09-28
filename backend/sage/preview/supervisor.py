@@ -150,6 +150,7 @@ class ViteSupervisor:
         self._restarts = 0
         self._stopped = False
         self._last_error: str | None = None
+        self._runtime_fault: dict | None = None
         self._tail: collections.deque[str] = collections.deque(maxlen=40)  # recent Vite output
         self._retry_lock = threading.RLock()
         self._retry_thread: threading.Thread | None = None
@@ -227,6 +228,12 @@ class ViteSupervisor:
     def last_error(self) -> str | None:
         """Why the server is not up, for a caller that has to tell somebody. None while healthy."""
         return self._last_error
+
+    def runtime_fault(self) -> dict | None:
+        """The last error the server printed while serving, with the generation it was serving.
+        The server stays up through it; this is what page validation reads."""
+        with self._state_lock:
+            return dict(self._runtime_fault) if self._runtime_fault else None
 
     def recent_output(self, lines: int = 20) -> list[str]:
         """The server's own last words. The reason a start failed is almost always in here."""
@@ -477,11 +484,21 @@ class ViteSupervisor:
                     self._begin_generation()
                 # A failed reload child leaves the parent watching. Keep the final exception.
                 if ("ERROR:" in line or re.match(r"^[\w.]+(?:Error|Exception):", line.strip())):
-                    self._upstream = None
-                    self._ready.clear()
-                    self._state = "failed"
-                    self._last_error = line.strip()[:1000]
-                    self._settled.set()
+                    if self._state == "ready":
+                        # A serving server printing an error is the app's log, not its death: a
+                        # route that raises (uvicorn) or a transform that fails (Vite) leaves every
+                        # other request answering. A dying reload child says "Reloading..." first,
+                        # which moved the state off "ready" above. The last line wins, so a
+                        # traceback leaves its exception, with the traceback in `output`.
+                        self._runtime_fault = {
+                            "message": line.strip()[:1000], "output": self.recent_output(),
+                            "generation": f"{self._instance}:{self._generation}"}
+                    else:
+                        self._upstream = None
+                        self._ready.clear()
+                        self._state = "failed"
+                        self._last_error = line.strip()[:1000]
+                        self._settled.set()
                 if pending is None and (url := self._parse_url(line)):
                     pending = url
                     if self._READY_LINE is None:

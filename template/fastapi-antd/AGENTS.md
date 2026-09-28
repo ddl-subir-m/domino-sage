@@ -357,7 +357,8 @@ components outside what was asked.
 `app.py` is FastAPI. The page and its data are already served — `sage_serve.mount(app)` does that —
 so a route of your own is only for something the browser cannot do itself: a computation over the
 whole of an attached file, a call to the platform API. Keep routes under `/api/`, return JSON, and
-let errors print to stdout, which is the App's log.
+let errors print to stdout, which is the App's log. A route that raises answers the page a JSON 500
+whose `error` says why, so check `res.ok` before reading a body as data.
 
 > **Most apps never need this section.** A request for a chart, a table, or a page over data already
 > in this project is built from that data. Reaching the {platformName} API adds a call that can fail
@@ -418,6 +419,10 @@ GET only, and only these families; anything else answers 403 or 405:
   snapshot whose `isReadWrite` is false and read that one.
 - **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
   `user.fullName`.
+- **Any field in a platform answer can be `null` or missing**, including ones the table names:
+  `{"data": null}` is how a {dataset} with no governance answers. `body.get("data", [])` still
+  returns that `None`, so write `body.get("data") or []`, and check a value is a dict before
+  indexing into it. A route that raises on one such answer fails that request for every viewer.
 - **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
   the listing that gave it. On any other path, the platform does not route that path from inside;
   stop guessing at that family, because the table is the list of what answers.

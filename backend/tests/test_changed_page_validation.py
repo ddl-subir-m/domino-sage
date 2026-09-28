@@ -28,6 +28,9 @@ class Preview:
         return {'appId': self.app, 'generation': f'preview:{self.generation}',
                 'state': self.state, 'error': 'ImportError: missing_dependency' if self.state == 'failed' else None}
 
+    def runtime_fault(self):
+        return None
+
 
 @pytest.fixture
 def build(tmp_path, monkeypatch):
