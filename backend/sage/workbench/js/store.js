@@ -9103,7 +9103,7 @@ window.SW = window.SW || {};
       store._watchTimer = setInterval(tick, 2000);
     },
 
-    // `opts` is how `Not now` reuses this. Declining a Build offer runs the question the offer was
+    // `opts` is how `Answer here` reuses this. Declining a Build offer runs the question the offer was
     // made instead of answering, and that turn is an ordinary Chat turn in every way but two: the
     // question is already on the Thread and already on screen, so neither end records it again.
     //   `echo: false` — do not push a second bubble for a question already in the transcript.
