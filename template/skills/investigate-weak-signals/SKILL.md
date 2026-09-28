@@ -149,7 +149,9 @@ the number **and its denominator**; the fully-qualified object; and one clause o
 signal separates. The last field is what makes honest fusion possible instead of invented.
 
 Read the file before you plan a turn. Append as you measure — not at the end, because the turn may
-not reach the end.
+not reach the end. Append a measurement once. A line already in the file is not written again,
+and a model-request receipt is not a measurement: requested model, response state, provider
+receipt, cache, and fallback belong to the turn's record, not here.
 
 ## 6. Fusion: two numbers, not one
 

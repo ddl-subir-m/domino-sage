@@ -433,6 +433,44 @@ def data_use_summaries(history: list[dict]) -> list[str]:
     return [line for line in lines if line]
 
 
+def findings_measurements(history: list[dict]) -> list[str]:
+    """One stable line per distinct read, for `findings.md`.
+
+    Not `data_use_summaries`. That formatter is the Build handoff, and it carries every model
+    request on the operation — requested alias, state, serving model, provider receipt, decision
+    stage, cache, fallback. A text analysis records one request per batch, so one read of a large
+    table is hundreds of identical clauses, and the clause list changes every time a batch is
+    re-saved. Appending that block whenever it is not an exact substring re-logs the same
+    measurement with a longer tail.
+
+    A finding is the measurement: what was read, the counts that are not zero, and where the
+    result went. Request evidence, batch errors, the manifest, and a model-written purpose stay
+    on the history row — a purpose is free text and can carry a name, and this file is committed.
+    Selected values stay off it, as they do for the handoff. `selected_fields` repeats `columns`,
+    so the columns are said once. Two operations with the same measurement collapse to one line;
+    a later turn's new operation id does not make the same numbers a new finding.
+    """
+    found: dict[str, dict] = {}
+    order: list[str] = []
+    for row in history or []:
+        if not isinstance(row, dict):
+            continue
+        for event in _row_data_used(row):
+            key = str(event.get("operation_id") or "") or f"{event.get('source')}-{len(order)}"
+            if key not in found:
+                order.append(key)
+            found[key] = event
+    lines: list[str] = []
+    seen: set[str] = set()
+    for key in order:
+        line = _findings_line(found[key])
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+    return lines
+
+
 def data_reads_by_source(history: list[dict]) -> list[dict]:
     """One row per source this Thread has read: the source, how many turns touched it, and where
     the most recent result landed. Newest first.
@@ -533,6 +571,39 @@ def _coverage_line(raw: object) -> str:
         return ""
     keys = ("total", "processed", "excluded", "failed", "unfinished")
     parts = [f"{raw[k]} {k}" for k in keys if isinstance(raw.get(k), int)]
+    return ", ".join(parts)
+
+
+def _findings_line(event: dict) -> str:
+    operation = str(event.get("operation") or "").strip().replace("_", " ") or "read"
+    source = str(event.get("source") or "unknown source")
+    pieces = [f"{operation} from {source}."]
+    columns = _names_list(event.get("columns")) or _names_list(event.get("selected_fields"))
+    if columns:
+        pieces.append(f"Columns: {columns}.")
+    coverage = _findings_coverage(event.get("coverage"))
+    if coverage:
+        pieces.append(f"Coverage: {coverage}.")
+    elif isinstance(event.get("result_rows"), int):
+        pieces.append(f"Rows: {event['result_rows']}.")
+    artifact = str(event.get("artifact") or "").strip()
+    if artifact:
+        pieces.append(f"Result Artifact: {artifact}.")
+    return " ".join(pieces)
+
+
+def _findings_coverage(raw: object) -> str:
+    """The counts that change a conclusion. A zero is the absence of one, said on every read."""
+    if not isinstance(raw, dict):
+        return ""
+    parts = []
+    for key in ("total", "processed"):
+        if isinstance(raw.get(key), int):
+            parts.append(f"{raw[key]} {key}")
+    for key in ("excluded", "failed", "unfinished"):
+        value = raw.get(key)
+        if isinstance(value, int) and value:
+            parts.append(f"{value} {key}")
     return ", ".join(parts)
 
 

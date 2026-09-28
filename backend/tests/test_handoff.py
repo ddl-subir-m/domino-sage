@@ -409,6 +409,59 @@ def _data_used_event() -> dict:
     }
 
 
+def test_findings_keep_the_measurement_and_drop_the_request_log():
+    """The handoff line is the wrong text for `findings.md`.
+
+    A text analysis re-saves the same operation once per batch, and each save carries the whole
+    request list. That list is what a findings file filled up with. The measurement — source,
+    the counts that are not zero, the artifact — is the finding. The request log, a model-written
+    purpose, batch errors, and selected values are not.
+    """
+    event = _data_used_event()
+    event["requests"] = event["requests"] * 40
+    event["purpose"] = "Verizon asked about ARM chips"
+    event["batches"] = [{"error": "scan failed " * 80}]
+    event["coverage"] = {"total": 43026, "processed": 12, "excluded": 0, "failed": 2,
+                         "unfinished": 0}
+    lines = handoff.findings_measurements([
+        {"type": "data_used", "dataUsed": [event]},
+        {"type": "data_used", "dataUsed": [{**event, "operation_id": "du_again"}]},
+    ])
+
+    assert len(lines) == 1
+    line = lines[0]
+    assert line == (
+        "text analysis from support.csv. "
+        "Columns: ticket_id, body. "
+        "Coverage: 43026 total, 12 processed, 2 failed. "
+        "Result Artifact: examples/thr_1/support-summary.table.json."
+    )
+    assert "Verizon" not in line
+    assert "scan failed" not in line
+    assert "North" not in line
+    assert "Model requests" not in line
+
+
+def test_a_query_purpose_is_not_copied_into_a_finding():
+    """A query event has no operation name. Its purpose is free text the model supplied, and the
+    findings file is committed, so the purpose does not become the line."""
+    lines = handoff.findings_measurements([{"type": "data_used", "dataUsed": [{
+        "operation_id": "du_q",
+        "source": "Snowflake-Data-Warehouse",
+        "purpose": "count ARM mentions for Verizon",
+        "columns": [],
+        "selected_fields": ["N"],
+        "coverage": {"total": 1, "processed": 1, "excluded": 0, "failed": 0, "unfinished": 0},
+        "artifact": "examples/thr_1/arm.table.json",
+        "result_rows": 1,
+    }]}])
+
+    assert lines == [(
+        "read from Snowflake-Data-Warehouse. Columns: N. Coverage: 1 total, 1 processed. "
+        "Result Artifact: examples/thr_1/arm.table.json."
+    )]
+
+
 def test_data_used_summaries_keep_evidence_but_not_selected_values():
     lines = handoff.data_use_summaries([{"type": "done", "dataUsed": [_data_used_event()]}])
 
