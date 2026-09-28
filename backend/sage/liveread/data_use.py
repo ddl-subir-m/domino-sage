@@ -8,7 +8,7 @@ import threading
 from collections import deque
 from uuid import uuid4
 
-from .. import timing
+from .. import build_intent, timing
 from ..router.phase_classifier import READ_TOOLS, SHELL_TOOLS
 from ..shim.chat_paths import (
     MENTION_MARK,
@@ -28,6 +28,8 @@ _DELEGATION_TOOLS = frozenset({"task"})
 _PATH_KEYS = ("path", "filePath", "file_path")
 _COMMAND_KEYS = ("command", "cmd", "code")
 _EXIT = "Command exited with code "
+# OpenCode's `read` writes `N: ` before each line of the file it returns.
+_READ_LINE_NUMBER = re.compile(r"^\d+: ")
 # The one string every redaction placeholder carries, so that a placeholder the model has written
 # back into its own work can be recognised however it was reshaped (#510).
 _MARK_BODY = "local data withheld"
@@ -353,7 +355,9 @@ class DataUse:
                     text = _tool_content_text(message.get("content"))
                     for oid, _event, _reply in self._selected_operation_args(text):
                         used.add(oid)
-                    source = _source_for_local_text(text, local_texts, direct.values())
+                    checked = (build_intent.without_source_requests(text)
+                               if message.get("role") == "user" else text)
+                    source = _source_for_local_text(checked, local_texts, direct.values())
                     if source:
                         message = {**message,
                                    "content": _redact_message_text(message.get("content"), source)}
@@ -1060,8 +1064,26 @@ def _contains_local_text(text, local_texts):
     return False
 
 
+def _quotes_local_row(text, local_texts):
+    """Whether message text quotes a whole row of local output: a line of two or more fields.
+
+    A single token is not a row. A column name the plan names, or a word the person's request
+    shares with an attached file, matched on its own and withheld the Build-intent carrier (#590).
+    """
+    haystack = str(text or "")
+    if not haystack:
+        return False
+    for raw in local_texts:
+        for line in str(raw).splitlines():
+            row = _READ_LINE_NUMBER.sub("", line.strip())
+            if (len(row) >= 8 and len(re.split(r"[,;|\t]", row.strip("|"))) > 1
+                    and row in haystack):
+                return True
+    return False
+
+
 def _source_for_local_text(text, local_texts, sources):
-    if not _contains_local_text(text, local_texts):
+    if not _quotes_local_row(text, local_texts):
         return {}
     out = _dedupe_sources(source for source in sources for source in source.get("sources", []))
     return {"sources": out, "withheld": any(source.get("withheld") for source in sources)}
