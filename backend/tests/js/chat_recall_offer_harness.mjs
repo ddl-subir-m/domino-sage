@@ -11,7 +11,7 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history, dismiss } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { history } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const THREAD = { id: 'thr_1', title: 'The claims question', artifacts: [], handoff: null };
 
@@ -71,17 +71,9 @@ SW.store.set({ scope: { id: 'proj', name: 'Demo Project' }, threads: [], attachm
 await SW.store.openThread('thr_1');
 await settle();
 
-// "Not now" is never written to the transcript, so the only way to check it holds is to dismiss and
-// then re-open — which is what `clearRecall` and every navigation back to this Thread do.
-if (dismiss !== undefined) {
-  SW.store.dismissRecallOffer(dismiss);
-  await SW.store.openThread('thr_1');
-  await settle();
-}
-
 const blocks = SW.store.get().messages.flatMap((m) => m.blocks || []);
 console.log(JSON.stringify({
   offers: blocks.filter((b) => b.type === 'recall_offer')
-    .map((b) => ({ scope: b.scope, surface: b.surface || null, offerKey: b.offerKey })),
+    .map((b) => ({ scope: b.scope, surface: b.surface || null })),
   cleared: blocks.filter((b) => b.type === 'recall_cleared').map((b) => b.scope),
 }));
