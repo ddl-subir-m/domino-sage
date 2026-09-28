@@ -113,9 +113,10 @@ the judgment.
    for just the candidates. For long text or chunked transcripts, select a window around the match:
 
    ```sql
-   SELECT CASE_ID, SUBSTR(BODY, GREATEST(POSITION('ARM' IN BODY) - 600, 1), 1500) AS SNIPPET
+   SELECT CASE_ID,
+          SUBSTR(BODY, GREATEST(REGEXP_INSTR(BODY, '\\bARM\\b', 1, 1, 0, 'i') - 600, 1), 1500) AS SNIPPET
    FROM   <db>.<schema>.<CASES>
-   WHERE  REGEXP_COUNT(BODY, '\\bARM\\b') > 0
+   WHERE  REGEXP_COUNT(BODY, '\\bARM\\b', 1, 'i') > 0
    ```
 
    `labels` names the decision, e.g. `["substantive_request", "casual_or_unrelated"]`; `purpose`
@@ -131,8 +132,10 @@ Check it before concluding nothing matched. **Snowflake traps:**
 
 - `'\b'` in a single-quoted literal is a backspace, not a word boundary. Write `'\\b'` or `$$\b$$`.
 - `REGEXP_LIKE` and `RLIKE` anchor the whole value: `REGEXP_LIKE(t, '\\bARM\\b')` matches only a
-  cell that is exactly "ARM". Use `REGEXP_COUNT(...) > 0`, or `'.*<pattern>.*'` with the `'s'`
-  parameter so `.` crosses newlines. Regex is case-sensitive unless you pass `'i'`.
+  cell that is exactly "ARM". `.` does not cross newlines and matching is case-sensitive unless
+  you pass parameters, so `REGEXP_LIKE(t, '.*\\barm\\b.*')` is FALSE for any multi-line text and
+  misses "ARM". For a word in text, use `REGEXP_COUNT(t, '\\bword\\b', 1, 'i') > 0`, or
+  `REGEXP_LIKE(t, '.*\\bword\\b.*', 'is')`.
 - "Active customer" is a definition, not a column. Measure what the account table offers
   (`ACCOUNT_TYPE`, status, licence dates), then state the assumption in findings or ask (§5).
 
@@ -283,7 +286,8 @@ from support cases and call transcripts, with a named model eliminating casual m
 1. **Names** filtered `ILIKE ANY ('%CASE%', '%TRANSCRIPT%', '%ACCOUNT%')`, then one filtered
    columns read. Querying real tables by the third statement.
 2. **"Active":** measure `ACCOUNT_TYPE` on the account table; decide and write it down, or ask.
-3. **Candidates** in each source: counts and distinct accounts, to findings.
+3. **Candidates** in each source, `WHERE REGEXP_COUNT(<text>, '\\bARM\\b', 1, 'i') > 0`: counts and
+   distinct accounts, to findings.
 4. **Judge:** one `analyze_text` per source, `sql` selecting id plus snippet, `id_column` set,
    `alias` as named. A reply with only `counts` means narrow the `sql` and judge again.
 5. **Join** substantive ids to active accounts in one statement. The answer gives each account its

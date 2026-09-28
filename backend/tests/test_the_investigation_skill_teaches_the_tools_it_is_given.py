@@ -8,6 +8,7 @@ red this; dropping the guidance does.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -32,8 +33,19 @@ def _body() -> str:
     # Snowflake: '\b' is a backspace, and REGEXP_LIKE anchors the whole value.
     "`'\\\\b'` or `$$\\b$$`",
     "`REGEXP_LIKE` and `RLIKE` anchor the whole value",
+    # '.' stops at a newline and matching is case-sensitive, so a word-in-text match needs both.
+    "`.` does not cross newlines and matching is case-sensitive",
+    "`REGEXP_COUNT(t, '\\\\bword\\\\b', 1, 'i') > 0`",
+    "`REGEXP_LIKE(t, '.*\\\\bword\\\\b.*', 'is')`",
     # What a turn stopped at its ceiling keeps is best-effort.
     "Append after every measurement that changes the plan",
 ])
 def test_the_skill_carries_the_method(phrase):
     assert phrase in _body()
+
+
+def test_every_word_match_the_skill_shows_is_case_insensitive():
+    """A case-sensitive example is copied as written, and misses 'arm' in a note about ARM."""
+    calls = re.findall(r"REGEXP_(?:COUNT|INSTR)\([^)]*\)", _body())
+    assert calls
+    assert [c for c in calls if not c.endswith("'i')")] == []
