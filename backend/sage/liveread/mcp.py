@@ -48,7 +48,13 @@ TOOLS: list[dict[str, Any]] = [
             "card. Use this whenever they ask what the data looks like, or to see a sample row. "
             "You get back the columns, a row count and a path — not the rows themselves, which go "
             "straight to the card the person sees. Say what the table holds; do not claim to be "
-            "quoting values you were not given."
+            "quoting values you were not given. Operation analyze_text judges a text column with "
+            "a model: find the candidate rows with live_read_query first, then pass sql selecting "
+            "the id and the text of just those rows. Sage runs it and sends only text_column and "
+            "id_column through the LLM Gateway; you get judgments and coverage back, never the "
+            "text. For long text select a window around the match rather than the whole cell, "
+            "such as SUBSTR(t, GREATEST(POSITION('ARM' IN t) - 600, 1), 1500) AS SNIPPET, and "
+            "filter chunked transcripts to the matching chunks rather than joining them together."
         ),
         "inputSchema": {
             "type": "object",
@@ -63,9 +69,16 @@ TOOLS: list[dict[str, Any]] = [
                 # `DWH.MARTS.SALES`, so that is what it sends, and taking it apart here costs less
                 # than teaching one screen to disagree with the rest.
                 "table": {"type": "string", "description": "The table. A dotted "
-                                                          "database.schema.table is fine."},
+                                                          "database.schema.table is fine. Omit "
+                                                          "when sql names the rows."},
                 "operation": {"type": "string", "enum": ["sum", "analyze_text"],
                               "description": "Calculate totals, or judge a text column with a model."},
+                # Sent as written, like `live_read_query`'s. Its rows go to the judging model only,
+                # and the statement is recorded as a hash (`text_analysis._load_statement`).
+                "sql": {"type": "string", "description": (
+                    "For analyze_text: one SELECT, written for this store's own SQL, returning the "
+                    "id and the text (or a snippet) of just the rows to judge. Name tables in full."
+                )},
                 "group_by": {"type": "string"},
                 "text_column": {"type": "string"},
                 "id_column": {"type": "string"},
@@ -84,7 +97,7 @@ TOOLS: list[dict[str, Any]] = [
                 "limit": {"type": "integer", "description": "Rows to read. Default 5, capped."},
                 "title": {"type": "string", "description": "A short title for the card."},
             },
-            "required": ["token", "source", "table"],
+            "required": ["token", "source"],
         },
     },
     {

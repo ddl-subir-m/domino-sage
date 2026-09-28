@@ -145,6 +145,53 @@ def test_the_live_read_tools_are_named_the_same_either_way():
         )["result"]["content"][0]["text"] == "ok"
 
 
+def _ts_tools() -> dict[str, tuple[set[str], set[str]]]:
+    """{tool name: (argument names, operation enum values)} as `live_read.ts` offers them.
+
+    Read by regex rather than by running the file, for the reason the naming test above gives: no
+    Node, no OpenCode. Arguments sit at exactly four spaces inside `args: {`, and nothing else does.
+    """
+    root = pathlib.Path(__file__).resolve().parents[2]
+    ts = root / "backend" / "sage" / "liveread" / "tools" / "live_read.ts"
+    text = ts.read_text()
+    found = {}
+    for match in re.finditer(r"^export const (\w+) = \{(.*?)^\}", text, re.MULTILINE | re.DOTALL):
+        body = match.group(2)
+        args = body.split("  args: {", 1)[1].split("  async execute", 1)[0]
+        names = set(re.findall(r"^    (\w+)[:,]", args, re.MULTILINE))
+        enum = re.search(r"^    operation: \{[^}]*?enum: \[([^\]]*)\]", args, re.MULTILINE)
+        values = set(re.findall(r'"(\w+)"', enum.group(1))) if enum else set()
+        found[f"{ts.stem}_{match.group(1)}"] = (names, values)
+    return found
+
+
+def test_the_live_read_tools_take_the_same_arguments_either_way():
+    """#602. The naming test above compared names only, and the arguments drifted under it.
+
+    #574 gave `mcp.py`'s `live_read_table` operation=analyze_text, `text_column`, `labels` and
+    `alias`, and left `live_read.ts` — the ONE copy the model is offered — at `enum: ["sum", null]`.
+    Every prompt that said "call live_read_table with operation=analyze_text … alias" pointed at
+    arguments the model could not send, and nothing noticed.
+    """
+    offered = _ts_tools()
+    assert set(offered) == {t["name"] for t in mcp.TOOLS}
+    for tool in mcp.TOOLS:
+        names, values = offered[tool["name"]]
+        props = tool["inputSchema"]["properties"]
+        assert names == set(props), (
+            f"{tool['name']}: live_read.ts and mcp.py disagree about the arguments: "
+            f"only in the .ts {sorted(names - set(props))}, only in mcp.py {sorted(set(props) - names)}")
+        assert values == set(props.get("operation", {}).get("enum", [])), (
+            f"{tool['name']}: the two doors offer different operations")
+
+
+def test_the_offered_table_tool_can_judge_text_from_a_statement():
+    names, values = _ts_tools()["live_read_table"]
+    assert "analyze_text" in values
+    assert {"sql", "text_column", "id_column", "labels", "alias"} <= names
+    assert "alias" in _ts_tools()["live_read_files"][0]
+
+
 def test_the_custom_tool_calls_the_route_this_process_serves():
     """The `.ts` is a shim and must stay one: every decision lives in Python behind this route."""
     root = pathlib.Path(__file__).resolve().parents[2]

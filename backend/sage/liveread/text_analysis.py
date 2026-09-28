@@ -46,6 +46,8 @@ def _load(args, turn, text_column, id_column, row_limit):
     bytes the coverage hash is taken from, the columns, the row dicts, and the upload path to
     re-read when the analysis finishes. A Dataset or a table has no second local file to watch.
     """
+    if args.get("source") and args.get("sql"):
+        return _load_statement(args, turn, row_limit)
     if args.get("source"):
         return _load_table(args, turn, text_column, id_column, row_limit)
     dataset = str(args.get("dataset") or "upload")
@@ -140,6 +142,55 @@ def _load_table(args, turn, text_column, id_column, row_limit):
     return label or table, raw, columns, rows, None
 
 
+def _load_statement(args, turn, row_limit):
+    """The rows one statement the agent composed chose: the candidates, not the whole table.
+
+    Same boundary `_load_table` crosses, narrower: the rows go to the judging model through the
+    Gateway and never to the chat model. The statement is returned to no one and written nowhere;
+    `analyze` records its hash, for the reason `run._statement` gives.
+    """
+    from ..orchestrator import brand
+    from ..resources.provider import ResourceUnavailable, ScopeIncomplete
+    from . import grant
+    from .run import _session_database
+
+    name = str(args.get("source") or "")
+    sql = str(args.get("sql") or "").strip()
+    refused = grant.reachable(
+        "datasource", name,
+        bound=turn.bound.get("datasource", ()),
+        chips=turn.chips.get("datasource", ()),
+    )
+    if refused:
+        return refused.says
+    source = turn.source_for(name) if turn.source_for else None
+    if source is None:
+        return brand.text(
+            "{assistantName} could not find {name} among the {dataSourcePlural} it can open here.",
+            name=name or "that",
+        )
+    if turn.run_statement is None:
+        return "This data source cannot be read for text analysis in this turn."
+    fetch = row_limit if row_limit is not None else MAX_RECORDS + 1
+    try:
+        answer = turn.run_statement(source, sql, limit=fetch, cell_limit=MAX_TEXT_CHARS)
+    except ScopeIncomplete as error:
+        return str(error)
+    except ResourceUnavailable as error:
+        return _session_database(str(error))
+    columns = [str(column) for column in answer.columns]
+    rows = []
+    for row in answer.rows:
+        if len(row) != len(columns):
+            return ("The statement could not be analyzed. A row had the wrong number of fields. "
+                    "No result was saved.")
+        rows.append({
+            columns[i]: "" if row[i] is None else str(row[i]) for i in range(len(columns))
+        })
+    raw = json.dumps([columns, rows], ensure_ascii=True).encode()
+    return f"{name}.sql", raw, columns, rows, None
+
+
 def _inside_dataset(path: str) -> str:
     """A file name inside the Dataset. A workspace path names the folder the person attached."""
     rel = path.replace("\\", "/").strip().lstrip("/")
@@ -167,7 +218,8 @@ def _resolve_coarse_attachment(args: dict, turn):
     A string is what the model should do next. A dict is the same call with the file path filled
     in, when the folder holds one CSV and the text column was already named.
     """
-    if args.get("source") and not str(args.get("table") or "").strip():
+    if (args.get("source") and not str(args.get("table") or "").strip()
+            and not str(args.get("sql") or "").strip()):
         from .run import session_database_prompt
         return ("This Data Source was attached without a table. "
                 "One live_read_query of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS "
@@ -276,6 +328,10 @@ def analyze(args: dict, turn) -> str:
     if text_column not in columns or (id_column and id_column not in columns):
         return "The data must have the selected text column and source ID column."
     if len(rows) > MAX_RECORDS and row_limit is None:
+        if args.get("source") and args.get("sql"):
+            return (f"This statement returned more than {MAX_RECORDS} records, above the analysis "
+                    "limit. No sample was used. Narrow its WHERE to the candidate rows, or ask "
+                    "for an explicitly labelled sample.")
         if args.get("source"):
             return (f"This table has more than {MAX_RECORDS} records, above the analysis limit. "
                     "No sample was used. Ask for an explicitly labelled sample or add a limit.")
@@ -357,6 +413,11 @@ def analyze(args: dict, turn) -> str:
         "requests": [b.request for b in batch_results],
         "delivery": "unknown",
     }
+    if args.get("source") and args.get("sql"):
+        # The HASH, never the statement: this event is committed with the Thread's history, and a
+        # literal in a WHERE is a row value (`run._statement`).
+        event["statement_sha256"] = hashlib.sha256(
+            str(args["sql"]).strip().encode()).hexdigest()
     selected = _selected(rows_out, columns_out)
     reply = {
         "data_use": operation,
