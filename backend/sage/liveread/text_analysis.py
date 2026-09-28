@@ -323,6 +323,8 @@ def analyze(args: dict, turn) -> str:
 
     serving = ""
     asked = str(args.get("model") or "").strip()
+    if asked.lower() == "auto":
+        asked = ""
     if asked:
         if turn.text_model_for is None:
             return f"{asked} could not be checked for this conversation, so no text was analyzed."
