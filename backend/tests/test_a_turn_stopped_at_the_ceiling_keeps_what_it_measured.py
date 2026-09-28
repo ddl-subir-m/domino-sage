@@ -19,6 +19,7 @@ and a write that never lands both end the turn at the same instant the work woul
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -29,10 +30,6 @@ from sage.router.models import ModelCatalog
 from sage.workspace.threads import findings_file
 
 from .fake_opencode import FakeOpenCode, Turn
-
-# Captured before the fixture below replaces `time.sleep` with a no-op. One fake here needs a call
-# that really does not come back, and the no-op is a stub of the case that never mattered.
-_real_sleep = time.sleep
 
 # What a turn is asked and what its slice writes down. The question is investigation-shaped on
 # purpose: `bounded_intent` leaves `suggestion` non-None for a build-shaped one, and the handoff
@@ -78,6 +75,7 @@ class WorksUntilStopped(FakeOpenCode):
         # own 300-second timeout, so a dispatch that blocks is five minutes on top of a ten-minute
         # ceiling — see `dispatch_blocks_for`.
         self.dispatch_blocks_for = 0.0
+        self.dispatch_released = threading.Event()
 
     def interrupt(self, session_id: str) -> None:
         self.interrupted += 1
@@ -88,9 +86,9 @@ class WorksUntilStopped(FakeOpenCode):
 
     def send_prompt(self, *args, **kwargs) -> None:
         if self.dispatch_blocks_for and len(self.prompts) >= 1:
-            # A real `time.sleep`, not the fixture's no-op: the whole point is a call that does
-            # not come back, and a stub that returns instantly is a stub of the healthy case.
-            _real_sleep(self.dispatch_blocks_for)
+            # A real wait, not the fixture's no-op `time.sleep`: the whole point is a call that
+            # does not come back, and a stub that returns instantly is a stub of the healthy case.
+            self.dispatch_released.wait(self.dispatch_blocks_for)
         super().send_prompt(*args, **kwargs)
         if self.writes_forever and len(self.prompts) > 1:
             self.stay_running = True
@@ -525,9 +523,12 @@ def test_a_dispatch_that_blocks_does_not_extend_the_turn_either(tmp_path: Path, 
     oc.turns.append(Turn(writes=_findings_write(tid)))
     oc.dispatch_blocks_for = 4.0
 
-    began = time.monotonic()
-    out = _run(orch, tid)
-    ran = time.monotonic() - began
+    try:
+        began = time.monotonic()
+        out = _run(orch, tid)
+        ran = time.monotonic() - began
+    finally:
+        oc.dispatch_released.set()
 
     assert ran < 1.2 + 1.5, f"the turn ran {ran:.2f}s against a 1.2s ceiling"
     assert not [e for e in out if e["type"] == "continue-offer"]
