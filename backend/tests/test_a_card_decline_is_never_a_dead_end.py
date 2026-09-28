@@ -90,8 +90,8 @@ def test_a_new_turn_drops_the_grant_it_did_not_spend(tmp_path: Path):
     tid = orch.create_thread()["id"]
     store = ThreadStore(orch._chat_project().record.path)
     orch._statements_tried[tid] = 1
-    grant = list(orch._chat_other_lane_offer(store, tid, "correlate signups with seats",
-                                             claimed=True))[0]["grant"]
+    grant = next(iter(orch._chat_other_lane_offer(store, tid, "correlate signups with seats",
+                                                  claimed=True)))["grant"]
 
     list(orch.chat_stream(tid, "and by region?"))
 
