@@ -120,9 +120,11 @@ the judgment.
 
    `labels` names the decision, e.g. `["substantive_request", "casual_or_unrelated"]`; `purpose`
    states the rule in a sentence ("substantive asks for support on the ARM chip architecture; a
-   passing mention or another sense of the word is casual").
-4. **Join the judged ids back** to accounts in one final statement (`WHERE CASE_ID IN (…)`), or in
-   the answer from the judgments you were handed.
+   passing mention or another sense of the word is casual"). Pass `id_column`, or no ids come back.
+4. **Join the judged ids back** to accounts in one final statement (`WHERE CASE_ID IN (…)`) — but
+   only when the reply carries rows of id and label. A large judged set comes back as `counts` per
+   label with no ids. Then do not invent ids: narrow the candidate set in `sql` (a tighter regex,
+   one source or one account band at a time) until the rows fit, or report the counts only.
 
 A word search that returns 0 where a looser match found candidates is almost always a trap below.
 Check it before concluding nothing matched. **Snowflake traps:**
@@ -282,6 +284,7 @@ from support cases and call transcripts, with a named model eliminating casual m
    columns read. Querying real tables by the third statement.
 2. **"Active":** measure `ACCOUNT_TYPE` on the account table; decide and write it down, or ask.
 3. **Candidates** in each source: counts and distinct accounts, to findings.
-4. **Judge:** one `analyze_text` per source, `sql` selecting id plus snippet, `alias` as named.
+4. **Judge:** one `analyze_text` per source, `sql` selecting id plus snippet, `id_column` set,
+   `alias` as named. A reply with only `counts` means narrow the `sql` and judge again.
 5. **Join** substantive ids to active accounts in one statement. The answer gives each account its
    evidence per source, and how many cases and transcripts tie to an account at all.
