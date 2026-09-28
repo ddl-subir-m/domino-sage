@@ -576,6 +576,9 @@ def test_a_failed_read_is_logged_on_one_line(monkeypatch, capsys):
 
 
 def test_a_dead_sidecar_is_a_502_and_not_a_hang(dist, monkeypatch):
+    # A refused sidecar is retried. The backoff is the part that would eat the five-second
+    # bound below; the port still refuses at once, and the response is still closed.
+    monkeypatch.setattr(sd, "_BLIP_BACKOFF_S", (0, 0, 0))
     with _stub_platform() as (host, seen):
         monkeypatch.setenv("DOMINO_API_HOST", host)
         monkeypatch.setenv("DOMINO_API_PROXY", f"http://127.0.0.1:{_DEAD_PORT}")

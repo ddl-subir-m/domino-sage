@@ -62,10 +62,15 @@ def _source() -> DataSource:
 def _read_raising(monkeypatch, exc: Exception) -> str:
     """Fail where the real one fails: inside `.query()`, which is the Flight hop.
 
+    A dropped connection is retried. The pause is what this stubs out, so a failure that is
+    retried does not spend the backoff sitting in this test.
+
     The module is faked rather than imported. `domino_data` is the `domino` extra, which no test
     installs (see backend/pyproject.toml), so importing it for real passes on a laptop that once
     synced that extra and fails in CI.
     """
+
+    monkeypatch.setattr("sage.transient.pause", lambda _attempt: None)
 
     class Boom:
         def get_datasource(self, name):

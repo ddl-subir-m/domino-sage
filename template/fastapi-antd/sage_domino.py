@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -154,6 +155,21 @@ def _problem(status: int, message: str) -> tuple[int, dict[str, str], bytes]:
     return status, _headers(_JSON), json.dumps({"error": message}).encode("utf-8")
 
 
+# Same pause as a Data Source blip in `sage_queries.py`. A 4xx is the platform's answer and is
+# returned as it came. A timeout already waited `TIMEOUT_S` and is not tried again.
+_BLIP_ATTEMPTS = 4
+_BLIP_BACKOFF_S = (0.4, 1.0, 2.0)
+_BLIP_STATUS = (502, 503, 504)
+
+
+def _platform_blip(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _BLIP_STATUS
+    if isinstance(exc, urllib.error.URLError):
+        return not isinstance(exc.reason, TimeoutError)
+    return False
+
+
 def get(path: str, query: str = "") -> tuple[int, dict[str, str], bytes]:
     """One GET of `path` on the platform as this app: `(status, headers, body)`.
 
@@ -167,29 +183,57 @@ def get(path: str, query: str = "") -> tuple[int, dict[str, str], bytes]:
     host = platform_host()
     if not host:
         return _problem(503, _NO_HOST)
-    try:
-        bearer = token()
-    except Exception as e:  # noqa: BLE001
-        print(f"[sage] platform api: no token from the sidecar ({type(e).__name__})", flush=True)
-        return _problem(502, _NO_TOKEN)
-    url = f"{host}/{path.lstrip('/')}" + (f"?{query}" if query else "")
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {bearer}",
-        # JSON first, but never only: a Dataset file comes back as whatever it is.
-        "Accept": "application/json, */*;q=0.5",
-    })
-    try:
-        with _opener.open(req, timeout=TIMEOUT_S) as resp:
-            status, ctype, body = resp.status, resp.headers.get("Content-Type"), resp.read(MAX_BYTES + 1)
-    except urllib.error.HTTPError as e:
-        status, ctype = e.code, e.headers.get("Content-Type")
+    status = ctype = None
+    body = b""
+    for attempt in range(_BLIP_ATTEMPTS):
         try:
-            body = e.read(MAX_BYTES + 1)
-        except Exception:  # noqa: BLE001
-            body = b""
-    except Exception as e:  # noqa: BLE001
-        # `!r`: the path is the page's, and a log line is one line.
-        print(f"[sage] platform api: GET {path!r} failed ({type(e).__name__})", flush=True)
+            bearer = token()
+        except Exception as e:  # noqa: BLE001
+            if _platform_blip(e) and attempt + 1 < _BLIP_ATTEMPTS:
+                print(f"[sage] platform api: token blip ({type(e).__name__}); "
+                      f"retrying ({attempt + 1}/{_BLIP_ATTEMPTS - 1})", flush=True)
+                time.sleep(_BLIP_BACKOFF_S[attempt])
+                continue
+            print(f"[sage] platform api: no token from the sidecar ({type(e).__name__})", flush=True)
+            return _problem(502, _NO_TOKEN)
+        url = f"{host}/{path.lstrip('/')}" + (f"?{query}" if query else "")
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {bearer}",
+            # JSON first, but never only: a Dataset file comes back as whatever it is.
+            "Accept": "application/json, */*;q=0.5",
+        })
+        try:
+            with _opener.open(req, timeout=TIMEOUT_S) as resp:
+                status, ctype, body = (
+                    resp.status, resp.headers.get("Content-Type"), resp.read(MAX_BYTES + 1))
+            break
+        except urllib.error.HTTPError as e:
+            try:
+                code = e.code
+                ctype_now = e.headers.get("Content-Type")
+                try:
+                    raw = e.read(MAX_BYTES + 1)
+                except Exception:  # noqa: BLE001
+                    raw = b""
+            finally:
+                e.close()
+            if code in _BLIP_STATUS and attempt + 1 < _BLIP_ATTEMPTS:
+                print(f"[sage] platform api: GET {path!r} answered {code}; "
+                      f"retrying ({attempt + 1}/{_BLIP_ATTEMPTS - 1})", flush=True)
+                time.sleep(_BLIP_BACKOFF_S[attempt])
+                continue
+            status, ctype, body = code, ctype_now, raw
+            break
+        except Exception as e:  # noqa: BLE001
+            if _platform_blip(e) and attempt + 1 < _BLIP_ATTEMPTS:
+                print(f"[sage] platform api: GET {path!r} blip ({type(e).__name__}); "
+                      f"retrying ({attempt + 1}/{_BLIP_ATTEMPTS - 1})", flush=True)
+                time.sleep(_BLIP_BACKOFF_S[attempt])
+                continue
+            # `!r`: the path is the page's, and a log line is one line.
+            print(f"[sage] platform api: GET {path!r} failed ({type(e).__name__})", flush=True)
+            return _problem(502, _UNREACHABLE)
+    if status is None:
         return _problem(502, _UNREACHABLE)
     if len(body) > MAX_BYTES:
         return _problem(502, _TOO_LARGE)

@@ -255,6 +255,57 @@ class _PooledHTTPClient:
         if client is not None:
             client.close()
 
+    def _stream_post(self, url: str, request: dict[str, Any], headers: dict[str, str],
+                     cancel) -> Iterator[bytes]:
+        """POST `request` and yield the body. A drop before the first byte is tried again.
+
+        A stream that has already yielded is not restarted: the caller has forwarded those
+        bytes, and a second copy would bill the call twice and could run a tool twice.
+        """
+        import httpx
+
+        from ..transient import ATTEMPTS, TRANSIENT_STATUS, pause, transport_blip
+
+        last: BaseException | None = None
+        for attempt in range(ATTEMPTS):
+            yielded = False
+            retry: BaseException | None = None
+            try:
+                with self._http_client().stream(
+                        "POST", url, json=request, headers=headers) as resp:
+                    if cancel is not None:
+                        cancel.bind(resp.close)
+                    if resp.status_code >= 400 or resp.is_redirect:
+                        # Read, then leave the `with`, before any pause. Sleeping inside it would
+                        # hold the socket for the whole backoff.
+                        body = resp.read().decode(errors="replace")[:800]
+                        err = GatewayUpstreamError(resp.status_code, url, body)
+                        stopped = cancel is not None and cancel.event.is_set()
+                        if (resp.status_code in TRANSIENT_STATUS and attempt + 1 < ATTEMPTS
+                                and not stopped):
+                            retry = err
+                        else:
+                            raise err
+                    else:
+                        for chunk in resp.iter_bytes():
+                            if cancel is not None and cancel.event.is_set():
+                                return
+                            yielded = True
+                            for start in range(0, len(chunk), 65536):
+                                yield chunk[start:start + 65536]
+                        return
+            except httpx.TransportError as exc:
+                stopped = cancel is not None and cancel.event.is_set()
+                if (yielded or not transport_blip(exc) or attempt + 1 >= ATTEMPTS or stopped):
+                    raise
+                retry = exc
+            if retry is None:
+                return
+            last = retry
+            pause(attempt)
+        if last is not None:
+            raise last
+
 
 class OpenAICompatibleClient(_PooledHTTPClient):
     """Client for any OpenAI-compatible endpoint behind a Bearer token.
@@ -317,20 +368,10 @@ class OpenAICompatibleClient(_PooledHTTPClient):
         # OpenCode severs -> "TypeError: network error". But read=None (unbounded) is WRONG too: a
         # gateway that stops sending would hang the turn forever. A large FINITE value tolerates real
         # thinking gaps yet still surfaces a dead stream as a clean error (the shim wraps it into a
-        # readable message). connect/write/pool stay bounded via _timeout_s.
-        with self._http_client().stream("POST", url, json=request, headers=headers) as resp:
-            if cancel is not None:
-                cancel.bind(resp.close)
-            # Surface upstream errors BEFORE streaming so the caller gets a clean message
-            # instead of a mid-stream reset. A 3xx here means auth bounced to a login page.
-            if resp.status_code >= 400 or resp.is_redirect:
-                body = resp.read().decode(errors="replace")[:800]
-                raise GatewayUpstreamError(resp.status_code, url, body)
-            for chunk in resp.iter_bytes():
-                if cancel is not None and cancel.event.is_set():
-                    return
-                for start in range(0, len(chunk), 65536):
-                    yield chunk[start:start + 65536]
+        # readable message). connect/write/pool stay bounded via _timeout_s. A drop before the
+        # first byte is retried inside `_stream_post`; a timeout is not, because this budget
+        # already waited.
+        yield from self._stream_post(url, request, headers, cancel)
 
     def guardrail_events(self) -> Iterator[GuardrailEvent]:
         raise NotImplementedError("Step 2.3: depends on guardrail event exposure (Q4)")
@@ -363,11 +404,7 @@ class MultiProviderOpenAIClient(_PooledHTTPClient):
 
         headers = {"Authorization": f"Bearer {key}"}
         url = f"{model.base_url.rstrip('/')}/chat/completions"
-        with self._http_client().stream("POST", url, json=request, headers=headers) as resp:
-            if resp.status_code >= 400 or resp.is_redirect:
-                body = resp.read().decode(errors="replace")[:800]
-                raise GatewayUpstreamError(resp.status_code, url, body)
-            yield from resp.iter_bytes()
+        yield from self._stream_post(url, request, headers, cancel)
 
     def guardrail_events(self) -> Iterator[GuardrailEvent]:
         raise NotImplementedError("openai mode has no guardrail surface")

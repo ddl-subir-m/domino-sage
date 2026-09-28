@@ -560,6 +560,47 @@ _CANNOT_OPEN = ("This app could not open the Data Source it reads. Whoever publi
 _NO_ANSWER = ("The Data Source did not answer this question. Try again — if it keeps failing, "
               "whoever published this app can see the reason in the App's log.")
 
+# A dropped connection, tried again before the viewer is told the store did not answer.
+# A deadline and a credential fault are not in this set: one already waited, the other will
+# not clear by waiting.
+BLIP_ATTEMPTS = 4
+BLIP_BACKOFF_S = (0.4, 1.0, 2.0)
+_BLIP_TEXT = re.compile(
+    r"unavailable|failed to connect|connection refused|socket closed|"
+    r"transport is closing|ConnectError|RemoteProtocolError|Connection reset",
+    re.IGNORECASE,
+)
+_STEADY_TEXT = re.compile(
+    r"deadline exceeded|cancelled|canceled|no credentials|configobjecterror|"
+    r"invalidhostorport|invalid credentials",
+    re.IGNORECASE,
+)
+
+
+def store_blip(exc: BaseException) -> bool:
+    text = str(exc)
+    return bool(_BLIP_TEXT.search(text)) and not _STEADY_TEXT.search(text)
+
+
+def retry_blip(call, transient):
+    """`call()` again when `transient` says the failure was a dropped connection.
+
+    The last failure is re-raised, so a caller that already turns an exception into a
+    sentence keeps that sentence.
+    """
+    last = None
+    for attempt in range(BLIP_ATTEMPTS):
+        try:
+            return call()
+        except Exception as exc:
+            last = exc
+            if not transient(exc) or attempt + 1 == BLIP_ATTEMPTS:
+                raise
+            print(f"[sage] transient {type(exc).__name__}; retrying "
+                  f"({attempt + 1}/{BLIP_ATTEMPTS - 1})", flush=True)
+            time.sleep(BLIP_BACKOFF_S[attempt])
+    raise last
+
 # The same three failures, said to the person who is BUILDING the app rather than to a viewer of a
 # published one. Sage runs this same file over loopback to answer queries during a build (#24), so
 # every sentence above was reaching a creator who had published nothing and was being sent to read
@@ -673,16 +714,44 @@ class FlightExecutor:
         sql = render(query.sql, params, source.connector_type)
         config, _ = source.scope()
         started = time.monotonic()
-        client = self._client_once()
+
+        def once():
+            # A dropped channel is not reused: the next attempt builds a new client. A store
+            # that answered keeps the one it has — rebuilding would only hide which client
+            # the successful queries share.
+            opened = False
+            try:
+                client = self._client_once()
+                datasource = client.get_datasource(source.name)
+                opened = True
+                datasource.update(_ScopeConfig(config))
+                return _drain(datasource.query(sql).reader, self._max_rows)
+            except QueryProblem:
+                raise
+            except Exception as exc:
+                if store_blip(exc):
+                    close = getattr(self._client, "close", None)
+                    if close is not None:
+                        try:
+                            close()
+                        except Exception:  # noqa: BLE001, S110
+                            pass
+                    self._client = None
+                    raise
+                if not opened:
+                    print(f"[sage] query {query.name}: cannot open {source.name}: {_readable(exc)}",
+                          flush=True)
+                    raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE, self._cannot_open) from exc
+                print(f"[sage] query {query.name} failed: {_readable(exc)}", flush=True)
+                raise QueryProblem(HTTPStatus.BAD_GATEWAY, self._no_answer) from exc
+
         try:
-            datasource = client.get_datasource(source.name)
+            columns, rows, truncated = retry_blip(once, store_blip)
+        except QueryProblem:
+            raise
         except Exception as exc:
-            print(f"[sage] query {query.name}: cannot open {source.name}: {_readable(exc)}", flush=True)
-            raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE, self._cannot_open) from exc
-        try:
-            datasource.update(_ScopeConfig(config))
-            columns, rows, truncated = _drain(datasource.query(sql).reader, self._max_rows)
-        except Exception as exc:
+            # Every retry was a dropped connection. The viewer gets the same "try again"
+            # sentence a query that the store never answered gets.
             print(f"[sage] query {query.name} failed: {_readable(exc)}", flush=True)
             raise QueryProblem(HTTPStatus.BAD_GATEWAY, self._no_answer) from exc
         # The only place this is measurable. A creator reading the App log is the one person who can
@@ -721,24 +790,35 @@ def _drain(reader, max_rows: int) -> tuple:
     """
     columns = [str(c) for c in reader.schema.names]
     rows: list = []
-    while len(rows) <= max_rows:    # one row past the cap, so "there was more" is a fact, not a guess
-        try:
-            chunk = reader.read_chunk()
-        except StopIteration:
-            break
-        batch = getattr(chunk, "data", None)
-        if batch is None:
-            continue
-        values = [c.to_pylist() for c in batch.columns]
-        rows.extend([_jsonable(c[i]) for c in values] for i in range(batch.num_rows))
-    truncated = len(rows) > max_rows
-    if truncated:
-        del rows[max_rows:]
-        try:
-            reader.cancel()     # stop the store streaming into a socket nobody is reading
-        except Exception:  # noqa: BLE001, S110
-            pass
-    return columns, rows, truncated
+    release = False
+    try:
+        while len(rows) <= max_rows:    # one row past the cap, so "there was more" is a fact, not a guess
+            try:
+                chunk = reader.read_chunk()
+            except StopIteration:
+                break
+            batch = getattr(chunk, "data", None)
+            if batch is None:
+                continue
+            values = [c.to_pylist() for c in batch.columns]
+            rows.extend([_jsonable(c[i]) for c in values] for i in range(batch.num_rows))
+        truncated = len(rows) > max_rows
+        if truncated:
+            del rows[max_rows:]
+            release = True
+        return columns, rows, truncated
+    except Exception:
+        release = True
+        raise
+    finally:
+        # At the cap, and when this attempt failed. A stream that ended on its own is already
+        # finished; cancelling it would say it was cut. A reader left open on a failure keeps
+        # its socket across the retry.
+        if release:
+            try:
+                reader.cancel()
+            except Exception:  # noqa: BLE001, S110
+                pass
 
 
 def _jsonable(value):
