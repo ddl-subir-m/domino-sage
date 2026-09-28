@@ -501,6 +501,7 @@ _PERSISTED_EVENTS = frozenset({
     "app_change", "build-stalled", "build-rollover", "build-context-limit",
     "gateway-call", "gateway-alias-unbound",
     "data-source-unasked", "data-source-failed", "build-recovery", "build-pre-edit-limit",
+    "keep-going",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -4178,6 +4179,21 @@ def _loop_message(n: int) -> str:
         "{assistantName} ran {n} shell commands in this turn without changing the app, so it "
         "stopped. Ask a different way, or paste the text it was trying to read into the prompt.",
         n=n)
+
+
+# What Keep going sends (#585). Fixed and server-owned: the card replays it as an ordinary turn,
+# and the session the cap interrupted still holds everything the turn read and did, so the
+# sentence carries no state of its own.
+_KEEP_GOING_PROMPT = "Keep going from where you stopped."
+
+
+def _keep_going_offer(message: str, **where: str) -> dict:
+    """Direct's card under a turn a volume cap ended while it was still working (#585, ADR-0070).
+
+    Only volume caps draw it: Chat's ceiling, Build's shell cap, Build's progress budget. A quiet
+    window or a repeat brake never does, because continuing a hang or a loop must not be one click.
+    """
+    return {"type": "keep-going", "message": message, "prompt": _KEEP_GOING_PROMPT, **where}
 
 
 def _refused_writes_message(n: int, one_model: str) -> str:
@@ -16540,6 +16556,10 @@ class Orchestrator:
                         # false, and a block that says what was kept must not be read as saying
                         # the question was settled.
                         message = brand.text(
+                            "This reached the {minutes}-minute limit for one turn, so "
+                            "{assistantName} paused it before it had an answer.",
+                            minutes=f"{_CHAT_TURN_MAX_S / 60:.0f}",
+                        ) if direct else brand.text(
                             "This ran out of time before {assistantName} had an answer. What it "
                             "measured is written down in {rel} — Continue picks the question up "
                             "from there instead of measuring it again. What ends a turn is the "
@@ -16567,7 +16587,17 @@ class Orchestrator:
                     if suggestion:
                         store.append_history(thread_id, suggestion)
                         yield suggestion
-                    if kept_findings and on_the_ceiling:
+                    if direct and on_the_ceiling:
+                        # Direct's way back in (#585) replaces Continue rather than joining it:
+                        # the session still holds what this turn read, so it goes on from there
+                        # whether or not the slice wrote anything down.
+                        resume = _keep_going_offer(
+                            brand.text("Keep going picks up in the same conversation, with "
+                                       "everything {assistantName} has already read."),
+                            threadId=thread_id)
+                        store.append_history(thread_id, resume)
+                        yield resume
+                    elif kept_findings and on_the_ceiling:
                         # The way back in, and only where there is something to go back to AND a
                         # sentence above it that says so (#454). `kept_findings` answers the
                         # first; `on_the_ceiling` answers the second, and both are needed. The
@@ -21980,9 +22010,20 @@ class Orchestrator:
                     project.stop_requested = False
                     tap.close()
                     restore_mode()
+                    # Every call differed, so in Direct the shell cap is a volume cap and not a
+                    # loop (#585): the card says how many and offers to go on, rather than
+                    # telling the person to ask a different way.
+                    keep_going = direct and shell_capped and owns_turn
+                    if keep_going:
+                        looped = brand.text(
+                            "{assistantName} ran {n} shell commands in this turn, so it paused.",
+                            n=bash_calls)
                     yield from stalled_offer(0.0, in_tool=False, looped=looped,
                                              decision="looped" if (shell_capped or write_capped)
                                              else "repeat_brake")
+                    if keep_going:
+                        yield persist(_keep_going_offer(
+                            "Keep going picks up in the same session, from where it paused."))
                     return
                 # The progress budget (#544). Here rather than inside the walk above so that one
                 # poll that delivers several calls is judged once, on the totals it leaves behind;
@@ -23023,6 +23064,12 @@ class Orchestrator:
                         saved = self._save_to_git(project, prompt)
                     if saved is not None:
                         yield persist(saved)
+                # Last, under the check and the save: the progress budget stopped the work, Sage
+                # checked what it wrote, and in Direct the person may send it on (#585).
+                if direct and owns_turn and progress_limit == "stop":
+                    yield persist(_keep_going_offer(
+                        brand.text("{assistantName} paused after several steps that didn't "
+                                   "change the app. Keep going picks up in the same session.")))
                 return
             iterate_reason = decision.reason
             yield {"type": "iterate", "reason": iterate_reason}

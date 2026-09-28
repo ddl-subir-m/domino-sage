@@ -87,6 +87,7 @@ class _Gateway:
     def stop(self) -> None:
         self.hold.set()
         self._server.shutdown()
+        self._server.server_close()
 
 
 def _no_vite() -> str:
