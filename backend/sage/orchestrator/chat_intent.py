@@ -95,7 +95,11 @@ def _parse(raw: str) -> Intent:
     try:
         body = json.loads(raw)
     except json.JSONDecodeError:
-        return Intent(raw=raw, fallback="invalid-json")
+        # A native route has no JSON mode, and Anthropic models fence the object and explain it.
+        try:
+            body, _ = json.JSONDecoder().raw_decode(raw[raw.index("{"):])
+        except ValueError:
+            return Intent(raw=raw, fallback="invalid-json")
     if not isinstance(body, dict):
         return Intent(raw=raw, fallback="invalid-json")
     label = str(body.get("label") or "").strip()

@@ -147,6 +147,35 @@ def test_a_sensitivity_move_takes_the_moved_models_route_and_default():
     assert gateway.seen[0][0]["reasoning"] == {"effort": "none"}
 
 
+HAIKU = _verified("haiku")
+# Haiku's live reply on the messages route, which has no JSON mode: the label, fenced, then prose.
+HAIKU_REPLY = ('```json\n{"label":"plain_answer","confidence":0.95}\n```\n\n'
+               "This is a general statistical/educational question asking for an explanation.")
+
+
+class MessagesGateway:
+    def route(self, request, labels, *, protocol=Protocol.CHAT, cancel=None):
+        assert protocol is Protocol.MESSAGES
+        events = [
+            ("message_start", {"type": "message_start", "message": {
+                "model": "claude-haiku-4-5", "usage": {"input_tokens": 345, "output_tokens": 1}}}),
+            ("content_block_start", {"type": "content_block_start", "index": 0,
+                                     "content_block": {"type": "text", "text": ""}}),
+            ("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                     "delta": {"type": "text_delta", "text": HAIKU_REPLY}}),
+            ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                               "usage": {"output_tokens": 40}}),
+            ("message_stop", {"type": "message_stop"}),
+        ]
+        yield b"".join(f"event: {name}\ndata: {json.dumps(e)}\n\n".encode() for name, e in events)
+
+
+def test_intent_reads_the_verdict_haiku_fences_on_the_messages_route():
+    intent = _intent(HAIKU, None, MessagesGateway(), model="haiku")
+    assert (intent.label, intent.confidence, intent.fallback) == ("plain_answer", 0.95, "")
+
+
 def test_a_chat_turn_hands_both_classifiers_the_orchestrators_route(tmp_path, monkeypatch):
     # Low confidence leaves the turn unbounded, which is what lets the handoff classify run too.
     gateway = RouteGateway(json.dumps({"label": "plain_answer", "confidence": 0.2}))
