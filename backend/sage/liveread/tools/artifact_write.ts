@@ -11,10 +11,11 @@ const PORT = process.env.SAGE_CONTROL_PORT || "8080"
 // the TOOL and leaves 30s for the sentence below to come back.
 //
 // This tool was the one with no bound at all, and the reason it mattered is a composition rather
-// than either half alone: `/mcp/live-read` is an `async def` and runs ON the control app's event
-// loop, so a read this tool's neighbour already gave up on goes on holding that loop. The write
-// posted here cannot even be dispatched to its threadpool until the loop comes back. With no
-// ceiling it simply waited, and at 240s the turn died with nothing said.
+// than either half alone: `/mcp/live-read` then ran ON the control app's event loop, so a read
+// this tool's neighbour already gave up on went on holding that loop, and the write posted here
+// could not even be dispatched to its threadpool until the loop came back. With no ceiling it
+// simply waited, and at 240s the turn died with nothing said. The read runs off the loop now
+// (#604); the ceiling stays, because a write still must not outlast the turn's quiet window.
 //
 // The ceiling does not come from `AbortSignal.timeout`'s own range because that range is a
 // different number on each runtime, and which runtime runs these tools is not settled here:
