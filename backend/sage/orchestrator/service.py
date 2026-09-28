@@ -76,6 +76,7 @@ from ..pre_edit_guard import (
     PreEditDecision,
     PreEditGuard,
     PreEditState,
+    PreEditTrigger,
 )
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
@@ -9397,7 +9398,8 @@ class Orchestrator:
                                 if not guard.start_recovery():
                                     raise RuntimeError("pre-edit recovery state changed")
                                 text = self._pre_edit_recovery_packet(
-                                    project, project.active_build_intent, guard.baseline)
+                                    project, project.active_build_intent, guard.baseline,
+                                    granted.trigger)
                             continue
                     if pending is None:
                         if project.last_gateway_error is not None:
@@ -19748,6 +19750,7 @@ class Orchestrator:
     @classmethod
     def _pre_edit_recovery_packet(
         cls, project: Project, intent: BuildIntent, baseline: str,
+        trigger: PreEditTrigger = PreEditTrigger.NONE,
     ) -> str:
         """Build the content-free recovery orientation around the unchanged BuildIntent."""
         objective = intent.phase_brief.strip()
@@ -19758,7 +19761,11 @@ class Orchestrator:
             objective = next((item.strip() for item in intent.source_requests if item.strip()), "")
         changed = project.snapshot.changed_paths(baseline, project.snapshot.working_tree_hash())
         parts = [
-            ("The previous attempt made no app edit. This is the only clean recovery. "
+            ("The previous attempt repeated a tool call it had already made, with the same "
+             "arguments, and made no app edit. This is the only clean recovery. Do not search "
+             "again for what you already looked up: make your edit now."
+             if trigger is PreEditTrigger.REPEATED_TOOL_CALL else
+             "The previous attempt made no app edit. This is the only clean recovery. "
              "Implement the same Build intent now."),
             cls._build_source_note(project.app_for_turn().path),
         ]
@@ -21246,7 +21253,9 @@ class Orchestrator:
                 yield persist({
                     "type": "build-pre-edit-limit",
                     "message": ("Sage stopped before changing the app because the clean retry "
-                                "also reached the pre-edit work limit."),
+                                + ("also repeated a tool call it had already made."
+                                   if decision.trigger is PreEditTrigger.REPEATED_TOOL_CALL
+                                   else "also reached the pre-edit work limit.")),
                     "trigger": decision.trigger.value,
                     "kept": False,
                 })
@@ -21283,7 +21292,8 @@ class Orchestrator:
                             if project.stop_requested or not guard.start_recovery():
                                 raise BuildSessionCreationCancelled()
                         current = self._pre_edit_recovery_packet(
-                            project, project.active_build_intent, guard.baseline)
+                            project, project.active_build_intent, guard.baseline,
+                            granted.trigger)
             except BuildSessionCreationCancelled:
                 guard.claim_cancellation()
                 yield handle_stop()
