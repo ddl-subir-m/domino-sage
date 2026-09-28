@@ -155,7 +155,7 @@ def test_a_conversation_with_no_model_in_it_refuses_naming_the_alias(tmp_path):
 def test_no_alias_or_the_turns_own_model_runs_on_the_turn_as_before(tmp_path):
     orch, gateway, tid, project, path = _mid_turn(tmp_path)
 
-    for alias in (None, SONNET, SONNET_LABEL):
+    for alias in (None, SONNET, SONNET_LABEL, "auto", "AUTO"):
         gateway.batches.clear()
         reply = json.loads(_analyze(orch, tid, path, alias))
         assert reply["coverage"]["processed"] == 12, alias
