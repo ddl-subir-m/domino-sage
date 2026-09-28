@@ -21,6 +21,7 @@ from sage.implementation_request import IMPLEMENT_SECTIONS, apply_instruction_pr
 from sage.orchestrator.service import Orchestrator
 from sage.resources import bound_schema, pinned_model, pinned_model_api
 from sage.resources.bindings import KIND_DATA_SOURCE, Binding
+from sage.resources.model_api_credentials import Credential
 from sage.workspace.manager import WorkspaceManager
 from sage.workspace.stack import FASTAPI_ANTD, REACT_VITE
 
@@ -97,3 +98,22 @@ def test_a_bound_alias_carries_the_model_outcome_guidance(tmp_path: Path, stack)
                    "do not present the partial text as complete"):
         assert phrase in block, phrase
         assert phrase in prompt, phrase
+
+
+API = Binding("model_api", "id-fraud", "fraud-scorer", "Fraud Scorer")
+
+
+@pytest.mark.parametrize("stack", STACKS, ids=lambda s: s.name)
+def test_the_model_examples_are_written_in_the_stacks_own_language(stack):
+    # A plain-script page has no module loader: `import` there is a syntax error, and the helpers
+    # are on `window.sage` already. The Data Source example already says so; these two did not.
+    blocks = {"askModel": pinned_model.agents_block([ALIAS], [], stack.helpers),
+              "callModelApi": pinned_model_api.agents_block(
+                  [API], {API.id: Credential("https://m", "t")}, stack.helpers)}
+    for helper, block in blocks.items():
+        assert block, helper
+        if stack is FASTAPI_ANTD:
+            assert "import {" not in block, helper
+            assert f"await sage.{helper}(" in block, helper
+        else:
+            assert f"import {{ {helper}" in block, helper
