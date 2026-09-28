@@ -19762,8 +19762,8 @@ class Orchestrator:
         changed = project.snapshot.changed_paths(baseline, project.snapshot.working_tree_hash())
         parts = [
             ("The previous attempt repeated a tool call it had already made, with the same "
-             "arguments, and made no app edit. This is the only clean recovery. Do not search "
-             "again for what you already looked up: make your edit now."
+             "arguments, and made no app edit. This is the only clean recovery. Read only what "
+             "the edit needs, once each, and make your edit now."
              if trigger is PreEditTrigger.REPEATED_TOOL_CALL else
              "The previous attempt made no app edit. This is the only clean recovery. "
              "Implement the same Build intent now."),
