@@ -14131,7 +14131,35 @@ class Orchestrator:
             self._statements_tried[thread_id] = self._statements_tried.get(thread_id, 0) + 1
             return self._resources.run_statement(source, sql, **kw)
 
+        honoured: set[str] = set()
+
+        def text_model_for(asked: str) -> tuple[str, str]:
+            """The Delegated model call's gate, asked live and failing closed (ADR-0057, #607).
+
+            Not counted against `_DELEGATED_CALLS_MAX`: one `analyze_text` call is one tool call,
+            and its batches have their own bounds in `text_analysis`.
+            """
+            gate = self._delegated_turn_for(thread_id)
+            if gate.refusal:
+                return "", gate.refusal
+            resolved, refused = delegated.approved_model(asked, gate)
+            if resolved is None:
+                return "", refused
+            try:
+                routed = llm_router.resolve(project.control.snapshot(), project.shim.catalog).model
+            except Exception:
+                routed = ""
+            if resolved == routed:
+                return "", ""
+            honoured.add(resolved)
+            return resolved, ""
+
         def analyze_text_batch(request: dict):
+            if request.get("model") in honoured:
+                # Past the shim, which replaces every request's model with the turn's.
+                return project.shim.gateway.route(request, CostLabels(
+                    phase="ask", mode="auto", component="chat-delegated",
+                    session=f"{thread_id}:text-analysis", version=project.shim.version))
             return project.shim.handle(request, project=project.id,
                                        session=f"{thread_id}:text-analysis")
 
@@ -14160,6 +14188,7 @@ class Orchestrator:
             reference_for=reference_for,
             record_data_use=record_data_use,
             analyze_text_batch=analyze_text_batch,
+            text_model_for=text_model_for,
             record_refusal=record_refusal,
         )
 

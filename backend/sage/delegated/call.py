@@ -113,46 +113,9 @@ def perform(name: str, args: dict, turn: Turn) -> str:
     if not prompt:
         return _refused("Send the text to ask the model as `prompt`.")
 
-    resolved = _resolve(asked, turn)
+    resolved, refused = approved_model(asked, turn)
     if resolved is None:
-        if not turn.aliases and not turn.unresolved:
-            # Different fact and a different act: nothing was refused, there is simply nothing bound
-            # yet. Naming an empty set as though it were a choice reads as a bug.
-            return _refused(brand.text(
-                "No language model is in this conversation, so {assistantName} has none to call. "
-                "Add one from {project} resources, then ask again.",
-            ))
-        if any(asked.casefold() == label.casefold() for label in turn.unresolved):
-            return _refused(brand.text(
-                "{assistantName} couldn't read the list of language models this {turn}, so it "
-                "could not call {asked}. Try again.",
-                asked=asked,
-            ))
-        # Names the PLACE and not the control. Until #410 this said "with Use in this conversation",
-        # which is a menu label — the row itself draws an unlabelled `+`, so a person told to look
-        # for those words found none. The panel's own heading is the thing they can actually see,
-        # and `store.js` already sends people to it in the same words.
-        return _refused(brand.text(
-            "{asked} isn't a language model in this conversation. {assistantName} can call "
-            "{names}. Add {asked} from {project} resources, then ask again.",
-            asked=asked, names=_alias_list(turn) or "none",
-        ))
-
-    if turn.approved is not None and resolved not in turn.approved:
-        # The sensitivity lock, named model by name (ADR-0043). The set is in the sentence because
-        # the alternative — refusing and saying only that — sends the agent to guess, and a guess
-        # that lands is a substitution nobody agreed to.
-        # Both halves in the words on screen. `ApprovedModels.names` holds gateway alias names, and
-        # a sentence that refuses `Claude Opus 4.6` and then offers `gemini-2-5-pro` is naming the
-        # set in a vocabulary the person's chips do not use — which is the guessing this sentence
-        # exists to prevent. A name with no label known travels as itself; that is honest, and it
-        # is the only thing Sage has for a model this Conversation never named.
-        return _refused(brand.text(
-            "{label} isn't approved for the data in this conversation, so {assistantName} did not "
-            "call it. Approved here: {names}.",
-            label=turn.label_for.get(resolved, resolved),
-            names=", ".join(sorted(turn.label_for.get(n, n) for n in turn.approved)) or "none",
-        ))
+        return refused
 
     if turn.ask is None or turn.reserve is None:
         return _refused(brand.text(
@@ -199,6 +162,55 @@ def perform(name: str, args: dict, turn: Turn) -> str:
             label=turn.label_for.get(resolved, resolved),
         ))
     return answer
+
+
+def approved_model(asked: str, turn: Turn) -> tuple[str | None, str]:
+    """The Alias name `asked` resolves to on this turn, or None and the sentence refusing it.
+
+    Shared with `analyze_text` (#607), so a model that picks its judge by alias meets the same
+    grant and the same lock, in the same words, as one that calls it directly.
+    """
+    resolved = _resolve(asked, turn)
+    if resolved is None:
+        if not turn.aliases and not turn.unresolved:
+            # Different fact and a different act: nothing was refused, there is simply nothing bound
+            # yet. Naming an empty set as though it were a choice reads as a bug.
+            return None, _refused(brand.text(
+                "No language model is in this conversation, so {assistantName} has none to call. "
+                "Add one from {project} resources, then ask again.",
+            ))
+        if any(asked.casefold() == label.casefold() for label in turn.unresolved):
+            return None, _refused(brand.text(
+                "{assistantName} couldn't read the list of language models this {turn}, so it "
+                "could not call {asked}. Try again.",
+                asked=asked,
+            ))
+        # Names the PLACE and not the control. Until #410 this said "with Use in this conversation",
+        # which is a menu label — the row itself draws an unlabelled `+`, so a person told to look
+        # for those words found none. The panel's own heading is the thing they can actually see,
+        # and `store.js` already sends people to it in the same words.
+        return None, _refused(brand.text(
+            "{asked} isn't a language model in this conversation. {assistantName} can call "
+            "{names}. Add {asked} from {project} resources, then ask again.",
+            asked=asked, names=_alias_list(turn) or "none",
+        ))
+
+    if turn.approved is not None and resolved not in turn.approved:
+        # The sensitivity lock, named model by name (ADR-0043). The set is in the sentence because
+        # the alternative — refusing and saying only that — sends the agent to guess, and a guess
+        # that lands is a substitution nobody agreed to.
+        # Both halves in the words on screen. `ApprovedModels.names` holds gateway alias names, and
+        # a sentence that refuses `Claude Opus 4.6` and then offers `gemini-2-5-pro` is naming the
+        # set in a vocabulary the person's chips do not use — which is the guessing this sentence
+        # exists to prevent. A name with no label known travels as itself; that is honest, and it
+        # is the only thing Sage has for a model this Conversation never named.
+        return None, _refused(brand.text(
+            "{label} isn't approved for the data in this conversation, so {assistantName} did not "
+            "call it. Approved here: {names}.",
+            label=turn.label_for.get(resolved, resolved),
+            names=", ".join(sorted(turn.label_for.get(n, n) for n in turn.approved)) or "none",
+        ))
+    return resolved, ""
 
 
 def _budget(requested: object) -> int:
