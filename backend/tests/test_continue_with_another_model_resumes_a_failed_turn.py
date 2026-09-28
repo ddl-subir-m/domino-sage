@@ -51,7 +51,7 @@ from sage.workspace.threads import ThreadStore
 from .fake_opencode import FakeOpenCode, Turn, execution_plan
 from .test_a_no_action_plan_retry_is_task_focused import _no_action_on
 from .test_a_prompt_naming_no_app_asks_what_to_build import ScriptedGateway
-from .test_chat_turn import _no_waiting
+from .test_chat_turn import IntentGateway, _no_waiting
 from .test_chat_turn import _orch as _chat_orch
 
 __all__ = ["_no_waiting"]  # the host's autouse fixture, so a poll never really sleeps here
@@ -330,6 +330,51 @@ def test_a_chat_click_resends_the_pending_question_not_the_reply(tmp_path: Path)
     assert _done(events)["ok"] is True
     assert "how many rows are in the file" in oc.prompts[2]["text"]
     assert "summarize the file" not in oc.prompts[2]["text"]
+
+
+_ARM = ("Which active customers asked for ARM support? "
+        "Look at the sfdc cases and the gong transcripts.")
+
+
+def test_a_failed_investigation_replay_continues_the_question_the_card_kept(tmp_path: Path):
+    """Yes on the investigation card replays the question with the echo off (#386).
+
+    That replay is its own turn, and it writes no user row: the sentence is already above the
+    card. When the replay then stops on a tool call that did not validate, Continue looks in
+    the failed turn's window, finds no request, and refuses. The question is the row the card
+    turn wrote. The click has to resend that."""
+    orch, oc = _chat_orch(
+        tmp_path,
+        [Turn(invalid_calls=["live_read_query"]), Turn(invalid_calls=["live_read_query"]),
+         Turn(text="Three accounts asked.")],
+        gateway=IntentGateway({"label": "data_answer", "confidence": 0.93}))
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {"kind": "data_source", "id": "ds1",
+                                  "name": "Snowflake-Data-Warehouse"})
+    offer = list(orch.chat_stream(tid, _ARM))
+    assert any(e.get("type") == "investigation-offer" for e in offer)
+    assert oc.prompts == [], "the card ends the turn before a model runs"
+    orch.decide_thread_investigation(tid, "open")
+
+    replay = list(orch.chat_stream(tid, _ARM, skip_investigation_gate=True))
+    done = _done(replay)
+    assert done["cause"] == "invalid_tool_call" and done["stage"] == "chat"
+    rows = orch.thread_history(tid)
+    failed_at = next(i for i, row in enumerate(rows)
+                     if row.get("type") == "done" and row.get("turnId") == done["turnId"])
+    card_at = next(i for i in range(failed_at - 1, -1, -1) if rows[i].get("type") == "done")
+    assert not any(row.get("type") == "user" for row in rows[card_at + 1:failed_at]), (
+        "the replay must be the window with no user row, or this is a different bug")
+    _settled(orch)
+
+    answer = orch.continue_availability(done["turnId"], tid, "")
+    assert answer["available"] is True, answer
+
+    routed = _watch_routing(orch, oc)
+    events = _click(orch, done["turnId"], tid, "")
+    assert _done(events)["ok"] is True, _done(events)
+    assert _ARM in oc.prompts[-1]["text"]
+    assert routed == [{"model": _MODEL, "effort": _EFFORT}]
 
 
 @pytest.mark.parametrize("stack", ["react-vite", "fastapi-antd"])
