@@ -485,9 +485,6 @@ _PERSISTED_EVENTS = frozenset({
     # only on the write. It is also what `recall.offer` counts (ADR-0022): a ladder over a
     # transcript that keeps no refusals can never reach its second rung.
     "error",
-    # The thought, after the tool call has been taken out of it. Chat's store keeps every row;
-    # Build drops whatever is not listed here, so a fold that streamed would vanish on reload.
-    "reasoning",
     # The ladder's own two rows, so an offer and a clear survive a reload the way Chat's do.
     recall.SUGGEST, recall.CLEARED,
     # And the three rungs below it (ADR-0022, `withhold.py`). Chat's store takes anything; Build
@@ -4390,12 +4387,47 @@ def _hold_incomplete(text: str) -> str:
     return text
 
 
-class ReasoningFold:
-    """One turn's reasoning parts, in order, sanitized before anything is shown or saved.
+_NARRATION_LIMIT = 100
+# An unfinished sentence shorter than this waits, so the line does not change word by word.
+_NARRATION_TAIL_MIN = 24
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\n+")
+_LIST_MARK = re.compile(r"^(?:[-*•]|\d+[.)]|#+)\s+")
+# What the person should not have to read: code, markup, a path, an identifier, a tool's name.
+_TECHNICAL = re.compile(
+    r"`|[{}\[\]<>|=\\]|\w/\w|\b\w+_\w+\b|\w\(|\b(?:bash|grep|glob|todowrite|webfetch)\b",
+    re.IGNORECASE)
+
+
+def narration_sentence(prose: str) -> str:
+    """The one line of a thought the in-progress indicator shows, or "" when none reads plainly.
+
+    `prose` has already been through `visible_reasoning`. The latest plain sentence wins; an
+    unfinished one counts once it is long enough to read. A sentence with code, a path or an
+    identifier in it is skipped rather than shown, and the one before it stands.
+    """
+    pieces = [p.strip() for p in _SENTENCE_BREAK.split(prose) if p.strip()]
+    if not pieces:
+        return ""
+    finished = pieces if prose.rstrip()[-1] in ".!?" else pieces[:-1]
+    candidates = finished if finished is pieces or len(pieces[-1]) < _NARRATION_TAIL_MIN else pieces
+    for piece in reversed(candidates):
+        sentence = _LIST_MARK.sub("", piece).replace("**", "").strip()
+        if not sentence or _TECHNICAL.search(sentence):
+            continue
+        if len(sentence) <= _NARRATION_LIMIT:
+            return sentence
+        return sentence[:_NARRATION_LIMIT - 1].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return ""
+
+
+class ReasoningNarration:
+    """One turn's reasoning parts, in order, read down to the sentence the indicator shows.
 
     The stream sends a delta; the transcript later sends the whole part. Both land in the same
     slot, keyed by the part id, so the transcript replaces the buffer instead of appending a
-    second copy. An open part holds back an unfinished call. A closed part is the final prose.
+    second copy. An open part holds back an unfinished call. `push` and `replace` return the
+    sentence when it changes, and None otherwise — including when nothing reads plainly, so the
+    last good sentence stays up rather than blanking.
     """
 
     def __init__(self) -> None:
@@ -4436,8 +4468,8 @@ class ReasoningFold:
         return "\n\n".join(chunks)
 
     def _publish(self) -> str | None:
-        shown = self.prose()
-        if shown == self._shown:
+        shown = narration_sentence(self.prose())
+        if not shown or shown == self._shown:
             return None
         self._shown = shown
         return shown
@@ -4483,7 +4515,7 @@ def _chat_live_event(ev) -> dict | None:
     `final` carries the WHOLE text rather than the last fragment, because /event cannot be replayed:
     a dropped frame leaves the live copy short, and this is the event that makes it whole again.
 
-    bash becomes the tool event the poll loop already yields, so "Running Python…" shows up when the
+    bash becomes the tool event the poll loop already yields, so "Running the analysis…" shows when the
     command starts instead of when it finishes. Everything else is dropped: the other tools stay off
     Chat's Thread (see _CHAT_SHOWN_TOOLS), and step and error frames are the poll loop's business.
     """
@@ -15403,20 +15435,9 @@ class Orchestrator:
         # other state because `finish` below writes `recoveries` off it (ADR-0069), and a `done`
         # can pass through `finish` before the loop is reached.
         recovery_used = False
-        # The thought, kept apart from the answer. None until the turn reaches the model loop:
-        # an ending before that has nothing to fold.
-        reasoner: ReasoningFold | None = None
-        reasoning_saved = False
-
-        def save_reasoning() -> None:
-            nonlocal reasoning_saved
-            if reasoner is None or reasoning_saved:
-                return
-            prose = reasoner.prose()
-            if not prose:
-                return
-            store.append_history(thread_id, {"type": "reasoning", "text": prose})
-            reasoning_saved = True
+        # The thought, kept apart from the answer and never saved. None until the turn reaches the
+        # model loop: an ending before that has nothing to narrate.
+        reasoner: ReasoningNarration | None = None
 
         def finish(done: dict) -> dict:
             """The Chat turn's terminal row, on its way to the Thread.
@@ -15484,7 +15505,6 @@ class Orchestrator:
                         "support tools on this route; its declared capabilities cannot answer, "
                         "and this is what it actually did.",
                         resolved.model, streak, done.get("decision", "-"))
-            save_reasoning()
             store.append_history(thread_id, done)
             return done
 
@@ -15997,9 +16017,6 @@ class Orchestrator:
         def publish_chat_artifacts(outcome: str):
             """Every active Chat exit validates bytes before retention, text and artifacts."""
             nonlocal artifacts, immediate, artifacts_finished, asked_for_the_other_lane
-            # Before the answer row, so a reload shows the thought above the answer. `finish`
-            # saves again only when this exit never ran.
-            save_reasoning()
             if tables is None or artifacts_finished:
                 return {}
             body = primary_body if tables.repair_ran else last_text or streamed_body
@@ -16156,7 +16173,7 @@ class Orchestrator:
             project.last_gateway_error = None
             with timing.span("setup.baseline"):
                 seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
-            reasoner = ReasoningFold()
+            reasoner = ReasoningNarration()
             # Invalid-call faults already charged, as (session id, call id) — the identity
             # `_invalid_tool_call` hands back (#567). The stream and the transcript both see a
             # completed `invalid` wrapper, and a re-delivered part is the same call, so this is
@@ -16790,8 +16807,8 @@ class Orchestrator:
                             running_tools.pop(call, None)
                             running_paths.pop(call, None)
                     if ev.kind == "reasoning" and reasoner is not None:
-                        # Not an answer, and not a delta: the page folds this, and `answered`
-                        # stays about the text the person asked for.
+                        # Not an answer, and not a delta: the page shows this as the indicator's
+                        # line, and `answered` stays about the text the person asked for.
                         payload = ev.payload or {}
                         part_id = str(payload.get("part") or "")
                         if payload.get("final"):
@@ -16800,7 +16817,7 @@ class Orchestrator:
                         else:
                             updated = reasoner.push(part_id, str(payload.get("delta") or ""))
                         if updated is not None:
-                            yield {"type": "reasoning", "text": updated}
+                            yield {"type": "narration", "text": updated}
                         continue
                     live = _chat_live_event(ev)
                     if live is not None:
@@ -16938,7 +16955,7 @@ class Orchestrator:
                                 updated = reasoner.replace(
                                     str(part.get("id") or key), str(text), closed=closed)
                                 if updated is not None:
-                                    yield {"type": "reasoning", "text": updated}
+                                    yield {"type": "narration", "text": updated}
                             continue
                         if key in seen:
                             continue
@@ -17019,7 +17036,7 @@ class Orchestrator:
                             elif str(tool).lower() == "bash" and not tap.ok:
                                 # Only when the transcript IS the source. With the stream up this
                                 # line already ran when the command started, and replaying it from
-                                # the final read would flash "Running Python…" on a finished turn.
+                                # the final read would flash "Running the analysis…" on a finished turn.
                                 yield ev
                 if not streaming:
                     # No stream to open and close calls on, so the transcript answers instead: a
@@ -21664,6 +21681,7 @@ class Orchestrator:
                              if progress_armed else "")
             looped = ""
             poll_failures = 0
+            narration = ReasoningNarration()
             while True:
                 # Set by a completed wrapper still unresolved at the end of this poll, and
                 # only then. An in-flight unparsed call is the other shape of `broken_call`,
@@ -21987,18 +22005,16 @@ class Orchestrator:
                             else:
                                 yield persist({"type": "agent", "kind": "text", "text": body})
                         elif pt == "reasoning":
-                            # Not the answer, and not the plan. A gate turn keeps its prose for
-                            # the plan card; this part never joins that card or an agent text row.
-                            if key in seen:
-                                continue
+                            # Not the answer, and not the plan: the indicator's line, never saved.
+                            # Read while the part is still open, which is when it is worth reading.
                             closed = ((part.get("time") or {}).get("end") is not None
                                       or (appeared and not running))
-                            if not closed:
-                                continue
-                            seen.add(key)
-                            prose = visible_reasoning(str(part.get("text") or ""))
-                            if prose:
-                                yield persist({"type": "reasoning", "text": prose})
+                            said = narration.replace(str(part.get("id") or key),
+                                                     str(part.get("text") or ""), closed=closed)
+                            if closed:
+                                seen.add(key)
+                            if said is not None:
+                                yield {"type": "narration", "text": said}
                 active_call = project.active_model_snapshot()
                 model_active = bool(
                     active_call is not None

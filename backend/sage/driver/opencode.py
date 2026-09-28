@@ -153,7 +153,7 @@ def map_session_event(raw: dict, session_id: str) -> AgentEvent | None:
             "status": _TOOL_STATUS[t], **harness_times(props, event_type=t),
         })
     if t == "session.next.shell.started":
-        # The command itself, at the moment it starts — what drives Chat's "Running Python…" line.
+        # The command itself, at the moment it starts — what drives Chat's "Running the analysis…" line.
         return AgentEvent(kind="tool_run", payload={"tool": "bash",
                                                     "command": str(props.get("command") or ""),
                                                     "call_id": str(props.get("callID") or ""),
