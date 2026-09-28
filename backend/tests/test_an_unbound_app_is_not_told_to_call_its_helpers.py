@@ -39,9 +39,8 @@ ALIAS = Binding("llm_alias", "id-sonnet", "sonnet", "Claude Sonnet 4.6")
 def _seeded_agents(tmp_path: Path, stack) -> str:
     """The AGENTS.md a freshly seeded app of `stack` carries — voiced, as the model reads it."""
     mgr = WorkspaceManager(workspace_dir=tmp_path / "ws", template=REPO / "template" / "react-vite")
-    ws = mgr.ensure("proj1")
-    if stack is FASTAPI_ANTD:
-        ws = mgr.create_app("proj1", stack="fastapi-antd")
+    ws = mgr.ensure("proj1", stack=stack.name)
+    assert ws.stack_name == stack.name
     return (ws.path / "AGENTS.md").read_text()
 
 
