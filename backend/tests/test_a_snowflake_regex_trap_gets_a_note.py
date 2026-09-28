@@ -54,12 +54,36 @@ def test_both_traps_at_once_get_both_notes():
     assert sql_hints.ESCAPE_NOTE in note and sql_hints.ANCHOR_NOTE in note
 
 
+@pytest.mark.parametrize("predicate", [
+    r"REGEXP_LIKE(BODY, '.*\\barm\\b.*')",
+    r"REGEXP_LIKE(BODY, '.*\\barm\\b.*', 'i')",
+    r"BODY RLIKE '.*\\barm\\b.*'",
+    r"BODY REGEXP '^.*arm'",
+])
+def test_a_dot_without_s_gets_the_newline_note(predicate):
+    assert sql_hints.regex_hint(WHERE + predicate, SF) == sql_hints.NEWLINE_NOTE
+
+
+@pytest.mark.parametrize("predicate", [
+    r"REGEXP_LIKE(BODY, 'a.m')",
+    r"REGEXP_LIKE(BODY, '\\barm\\b')",
+])
+def test_a_call_the_anchor_note_covers_gets_no_second_note(predicate):
+    assert sql_hints.regex_hint(WHERE + predicate, SF) == sql_hints.ANCHOR_NOTE
+
+
 @pytest.mark.parametrize("sql, connector", [
-    (WHERE + r"REGEXP_LIKE(BODY, '.*\\barm\\b.*')", SF),
+    (WHERE + r"REGEXP_LIKE(BODY, '.*\\barm\\b.*', 'is')", SF),
+    (WHERE + r"REGEXP_LIKE(BODY, '.*\\barm\\b.*', 's')", SF),
+    (WHERE + r"REGEXP_LIKE(BODY, '.*\\barm\\b.*', FLAGS)", SF),
+    (WHERE + r"REGEXP_LIKE(BODY, '^v1\\.2$')", SF),
+    (r"SELECT COUNT(*) AS N FROM CASES WHERE REGEXP_COUNT(BODY, '.*\\barm\\b.*') > 0", SF),
+    (r"SELECT REGEXP_SUBSTR(BODY, '.*arm.*') AS S FROM CASES", SF),
+    (WHERE + r"REGEXP_LIKE(BODY, '.*\\barm\\b.*')", "PostgreSQLConfig"),
     (WHERE + r"REGEXP_LIKE(BODY, '^ARM$')", SF),
     (r"SELECT COUNT(*) AS N FROM CASES WHERE REGEXP_COUNT(BODY, '\\barm\\b') > 0", SF),
     (r"SELECT COUNT(*) AS N FROM CASES WHERE REGEXP_INSTR(BODY, 'arm') > 0", SF),
-    (WHERE + r"NOTE = '\b' AND REGEXP_LIKE(BODY, '.*arm.*')", SF),
+    (WHERE + r"NOTE = '\b' AND REGEXP_LIKE(BODY, '.*arm.*', 'is')", SF),
     (WHERE + r"REGEXP_LIKE(BODY, '\barm\b')", "PostgreSQLConfig"),
     (WHERE + r"REGEXP_LIKE(BODY, '\barm\b')", ""),
     ("SELECT FROM WHERE REGEXP_LIKE((( '\\b", SF),
@@ -96,6 +120,12 @@ def test_every_recommended_form_survives_newlines_and_case(taught):
     assert taught.index("REGEXP_COUNT(col") < taught.index("REGEXP_LIKE(col")
     assert all(params == ", 1, 'i'" for params in counts), counts
     assert likes and all(params == ", 'is'" for params in likes), likes
+
+
+def test_the_newline_note_points_at_the_forms_that_survive_it():
+    note = sql_hints.NEWLINE_NOTE
+    assert re.search(r"REGEXP_COUNT\(col, '[^']*', 1, 'i'\) > 0", note), note
+    assert "pass 'is'" in note
 
 
 def test_both_doors_teach_the_two_facts_in_the_same_sentence():

@@ -3,7 +3,9 @@
 Two traps, both from Snowflake's own docs and both able to turn a real match into a 0 (#600's
 `ARM_WORD_CASES = 0`). In a single-quoted literal a backslash is a string escape, so `'\\b'` reaches
 the regex engine as a backspace and `'\\d'` as a bare `d`. And `REGEXP_LIKE` / `RLIKE` / `REGEXP`
-anchor both ends, so `'\\\\barm\\\\b'` matches only a cell that is exactly `arm`.
+anchor both ends, so `'\\\\barm\\\\b'` matches only a cell that is exactly `arm`. A third follows
+from the second: `.` stops at a newline unless the parameters carry `s`, so `'.*\\\\barm\\\\b.*'`
+fails on every multi-line value.
 
 A hint and never a gate: the statement has already run by the time this is asked, and anything
 that goes wrong here — an import, a parse, a token — is no sentence rather than an error.
@@ -35,11 +37,18 @@ ANCHOR_NOTE = (
     r"only a cell that is exactly 'arm'; to find a word inside text use "
     r"REGEXP_COUNT(col, '\\barm\\b', 1, 'i') > 0, or REGEXP_LIKE(col, '.*\\barm\\b.*', 'is')."
 )
+NEWLINE_NOTE = (
+    r"Snowflake note: '.' stops at a newline unless the parameters include 's', so a whole-value "
+    r"match like '.*\\barm\\b.*' fails on multi-line text; use "
+    r"REGEXP_COUNT(col, '\\barm\\b', 1, 'i') > 0, or pass 'is'."
+)
 
 # A backslash then a letter, after an even run of backslashes, in the RAW literal. Read off the
 # token and not off the parsed value, because `sqlglot`'s Snowflake dialect parses `'\d'` and
 # `'\\d'` to the same `\d` — only `'\b'`, which it turns into a real backspace, would show there.
 _SINGLE_ESCAPED = re.compile(r"(?<!\\)(?:\\\\)*\\[A-Za-z]")
+# A regex `.` in the parsed pattern, not an escaped `\.`, which is a literal dot and never spans.
+_UNESCAPED_DOT = re.compile(r"(?<!\\)(?:\\\\)*\.")
 
 
 def regex_hint(sql: str, connector_type: str) -> str:
@@ -64,7 +73,7 @@ def _hint(sql: str) -> str:
         if token.token_type == TokenType.STRING:
             raw.setdefault(token.text, []).append(sql[token.start:token.end + 1])
 
-    escaped = whole_value = False
+    escaped = whole_value = newline = False
     for statement in sqlglot.parse(sql, dialect="snowflake"):
         if statement is None:
             continue
@@ -75,7 +84,18 @@ def _hint(sql: str) -> str:
             elif not isinstance(pattern, exp.RawString):
                 continue
             value = str(pattern.this)
-            whole_value = whole_value or not (value.startswith((".*", "^"))
-                                              or value.endswith((".*", "$")))
-    return " ".join(note for note, fired in ((ESCAPE_NOTE, escaped), (ANCHOR_NOTE, whole_value))
-                    if fired)
+            if not (value.startswith((".*", "^")) or value.endswith((".*", "$"))):
+                whole_value = True
+            # One note per call: a call the anchor note already covers gets no second one.
+            elif _UNESCAPED_DOT.search(value) and _without_s(call.args.get("flag"), exp):
+                newline = True
+    return " ".join(note for note, fired in ((ESCAPE_NOTE, escaped), (ANCHOR_NOTE, whole_value),
+                                             (NEWLINE_NOTE, newline)) if fired)
+
+
+def _without_s(flag, exp) -> bool:
+    """No parameters argument, or a literal one without `s`. A parameter this cannot read — a
+    column, an expression — is not flagged, because a hint that guesses is noise."""
+    if flag is None:
+        return True
+    return isinstance(flag, exp.Literal) and flag.is_string and "s" not in str(flag.this)
