@@ -511,8 +511,8 @@ takes one — most of the Aliases on the LLM Gateway discard the field in silenc
 that takes none offers no control at all, and which levels a model accepts is measured per Alias
 rather than guessed from its name. Choosing no level reads **Automatic** on every row but is two
 different things: on Plan and Implement it means the stage's own level, hard while planning and
-cheap while building, while on Ask and Chat it means no setting is sent at all. An Effort belongs to the model that actually runs a turn
-rather than to the slot it was saved on: when the signing pin, the sensitivity lock or a Model
+cheap while building, while on Ask and Chat it means no setting is sent at all. An Effort belongs
+to the model that actually runs a turn rather than to the slot it was saved on: when the signing pin, the sensitivity lock or a Model
 override moves a turn onto another model, the Effort moves with it — to the one chosen for that
 model, or to none where whoever moved it chose no level. A saved level is dropped rather than sent when the model on the wire will
 not take it, which includes a level that was legal when it was saved and stopped being, since
