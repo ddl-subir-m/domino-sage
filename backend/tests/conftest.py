@@ -1,6 +1,7 @@
 import collections
 import gc
 import os
+import socket
 import stat
 import subprocess
 import sys
@@ -40,6 +41,16 @@ def _remember_popen(init):
 # Guarded for the reason `_remember` below is: this module is reachable under two names.
 if not getattr(subprocess.Popen.__init__, "_remembers", False):
     subprocess.Popen.__init__ = _remember_popen(subprocess.Popen.__init__)
+
+# macOS's resolver opens a socket on a process's first reverse lookup and a pipe on its first
+# forward one, and holds both for the life of the process. Unwarmed, the check below bills them to
+# whichever test a worker happens to run first that resolves a name (#608). Once per process, so a
+# lookup that leaks on every call still reddens.
+for _lookup in (lambda: socket.getfqdn("127.0.0.1"), lambda: socket.getaddrinfo("localhost", 80)):
+    try:
+        _lookup()
+    except OSError:
+        pass
 
 
 def _open_fds() -> dict[str, int]:
