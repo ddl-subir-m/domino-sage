@@ -190,16 +190,31 @@ def test_two_single_file_datasets_and_an_uploaded_shell_all_reach_the_plan_and_a
     assert {a["path"] for a in oc.prompts[1]["attachments"]} == carried
 
 
-def test_a_mention_of_one_attached_file_keeps_the_other_attachments(tmp_path: Path):
-    """What `@ABC123_ADAE` turns into once the Dataset's file is attached: a mention of that file.
-    It adds; it never takes the shell or the other Dataset's file out of the turn."""
+def _three_attached(tmp_path: Path):
     orch, oc = _orch(tmp_path, _assets(tmp_path, SINGLE))
     orch.bind_dataset("ds_ABC123_ADSL")
     orch.bind_dataset("ds_ABC123_ADAE")
     adsl = orch.attach_file("ds_ABC123_ADSL", "adsl.csv")["path"]
     adae = orch.attach_file("ds_ABC123_ADAE", "adae.csv")["path"]
     shell = orch.upload_file("TFL_shell_Table_14_3_1_1.md", b"# Table 14.3.1.1\n")["path"]
+    return orch, oc, adsl, adae, shell
+
+
+def test_a_dataset_mention_keeps_the_other_attachments(tmp_path: Path):
+    """What `@ABC123_ADAE` sends once the Dataset's file is attached: the Dataset as a Resource and
+    its file as a mention. The file adds; it never takes the shell or the other Dataset out."""
+    orch, oc, adsl, adae, shell = _three_attached(tmp_path)
+
+    list(orch.build_stream("Build the enrollment table", [adae],
+                           [{"kind": "dataset", "id": "ds_ABC123_ADAE", "name": "ABC123_ADAE"}]))
+
+    assert {a["path"] for a in oc.prompts[0]["attachments"]} == {adsl, adae, shell}
+
+
+def test_an_explicit_file_mention_still_narrows_the_turn(tmp_path: Path):
+    """The reference policy stands: `@adae.csv` names that file, and the others stay out."""
+    orch, oc, _, adae, _ = _three_attached(tmp_path)
 
     list(orch.build_stream("Build the enrollment table", [adae]))
 
-    assert {a["path"] for a in oc.prompts[0]["attachments"]} == {adsl, adae, shell}
+    assert [a["path"] for a in oc.prompts[0]["attachments"]] == [adae]

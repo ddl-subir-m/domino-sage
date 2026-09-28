@@ -17536,27 +17536,34 @@ class Orchestrator:
 
     def _prepare_build_attachments(
         self, project: Project, mentions: list[str] | None,
+        resources: list[dict] | None = None,
     ) -> tuple[list[str] | None, list[str]]:
-        """Select this app's inputs: every Attachment, with the mentioned paths first.
+        """Select only this app's inputs; an explicit mention list narrows that selection.
 
-        A mention adds and never narrows (#591). `@ABC123_ADAE` resolves to that Dataset's attached
-        file, and narrowing to it dropped the uploaded shell from the plan turn and from Approve."""
+        Only an explicit FILE mention narrows (#591). `@ABC123_ADAE` arrives twice once that
+        Dataset has a file attached: as the Dataset in `resources`, and as its files in `mentions`.
+        Those files add to the turn and never take the app's other Attachments out of it, which is
+        how the uploaded shell dropped out of the plan turn and of Approve."""
         started = time.monotonic()
         attached = project.attachments_for_turn()
-        selected = list(mentions or [])
+        selected = list(mentions) if mentions is not None else [entry["path"] for entry in attached]
         known = {entry["path"]: entry for entry in attached}
         groups = _by_folder(attached)
         eligible: dict[str, dict] = {}
+        named = {str(r.get("id") or "") for r in resources or [] if r.get("kind") == KIND_DATASET}
+        narrows = False
         for path in selected:
             if path in known:
-                eligible[path] = known[path]
+                found = [known[path]]
             else:
-                _, members = _folder_members(groups, path)
-                eligible.update((entry["path"], entry) for entry in members)
-        for entry in attached:
-            if entry["path"] not in eligible:
-                selected.append(entry["path"])
-                eligible[entry["path"]] = entry
+                _, found = _folder_members(groups, path)
+            eligible.update((entry["path"], entry) for entry in found)
+            narrows = narrows or not found or any(e.get("dataset_id") not in named for e in found)
+        if mentions and not narrows:
+            for entry in attached:
+                if entry["path"] not in eligible:
+                    selected.append(entry["path"])
+                    eligible[entry["path"]] = entry
         missing = [entry for path, entry in eligible.items() if self._on_disk(project, path) is None]
         if missing:
             self._restore_attachments(missing)
@@ -19790,13 +19797,10 @@ class Orchestrator:
         # Approval already carries these app-selected paths. The first request must use the
         # same resolver before opening a session or paying for a scope/model call (#513).
         missing_inputs = []
-        # What was @-mentioned, before the preflight adds every other Attachment to it (#591). A
-        # mention still decides which files are inlined as references; it no longer decides which
-        # files the turn carries.
-        typed_mentions = mentions
         if not answer_only:
             with timing.span("setup.attachments"):
-                mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
+                mentions, missing_inputs = self._prepare_build_attachments(
+                    project, mentions, resources)
         if project.fresh_session_preflight and project.stop_requested:
             # Stop can land while attachment paths are being resolved. There is no active session,
             # transcript row, or filesystem baseline yet, so consume it here before the missing-input
@@ -20972,7 +20976,7 @@ class Orchestrator:
                     descriptors=descriptors,
                 )
             else:
-                direct_sources = [str(source) for source in (typed_mentions or mentions or [])]
+                direct_sources = [str(source) for source in (mentions or [])]
                 direct_mentions = set(direct_sources)
                 explicit_paths = {
                     str(entry.get("path") or "") for entry in attachment_manifest

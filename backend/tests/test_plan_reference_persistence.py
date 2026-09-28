@@ -226,8 +226,8 @@ def test_plan_restart_approve_reprepares_only_the_saved_reference(tmp_path: Path
     assert builder.prompts[0]["session"] == builder.sessions[0]["id"]
     assert RULE in outgoing
     assert NEIGHBOR not in outgoing
-    # Both files are carried (#591), but only the saved reference is prepared into the prompt.
-    assert {a["path"] for a in builder.prompts[0]["attachments"]} == {shell, neighbor}
+    assert shell in outgoing and neighbor not in outgoing
+    assert len(builder.prompts[0]["attachments"]) == 1
     assert not [part for part in builder.messages(builder.prompts[0]["session"])[0]["content"]
                 if isinstance(part, dict) and part.get("type") == "tool"
                 and part.get("tool") in {"read", "grep", "bash"}]
@@ -550,8 +550,8 @@ def test_stop_during_missing_attachment_resolution_is_consumed_before_the_next_t
     prompts_before = list(client.prompts)
     prepare = orch._prepare_build_attachments
 
-    def prepare_then_stop(active_project, mentions):
-        prepared = prepare(active_project, mentions)
+    def prepare_then_stop(active_project, mentions, *rest):
+        prepared = prepare(active_project, mentions, *rest)
         assert prepared[1], "the test did not reach the missing-input exit"
         assert orch.stop_build() is True
         return prepared
