@@ -3067,7 +3067,12 @@ def _failed_turn_request(rows: list[dict], done: int) -> str:
     Walks back the way `_failed_plan_request` does, but from a NAMED `done` row rather than the
     last one, because a click names its turn (#569). A window whose user row is itself a bare
     retry, a bare continue or an earlier Continue click is a replay of the window before it, so
-    the walk goes on until it finds the person's own words."""
+    the walk goes on until it finds the person's own words.
+
+    A window with no user row is the same kind of replay. Accepting the investigation card, the
+    table card, the dataset card, or the ceiling's Continue resends the question with the echo
+    off: the sentence is already on the record, in the window that drew the card, and writing it
+    again would print it twice. Stopping on the empty window reports that request as missing."""
     end = done
     while end >= 0:
         start = next((i for i in range(end - 1, -1, -1) if rows[i].get("type") == "done"), -1) + 1
@@ -3075,7 +3080,7 @@ def _failed_turn_request(rows: list[dict], done: int) -> str:
                       if row.get("type") == "user"), "")
         if asked and not _looks_like_recovery_retry(asked) and asked != _CONTINUE_CLICK_TEXT:
             return asked
-        if not asked:
+        if start == 0:
             return ""
         end = start - 1
     return ""
