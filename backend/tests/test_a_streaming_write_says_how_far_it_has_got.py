@@ -333,7 +333,7 @@ def _details(events: list[dict], tool: str) -> list[str]:
 
 def test_the_count_reaches_the_active_event_a_screen_is_drawn_from(tmp_path: Path, monkeypatch):
     """End to end on the half that can be tested here: a `write` in flight is captioned with the
-    lines the shim has counted, and `store.js` renders `ev.detail` verbatim."""
+    lines the shim has counted, and `store.js` keeps that count beside the tool's verb."""
     import time
 
     monkeypatch.setattr(time, "sleep", lambda *_: None)

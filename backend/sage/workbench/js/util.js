@@ -1243,7 +1243,7 @@ window.SW = window.SW || {};
         case 'query': return name ? `Querying ${name}…` : 'Running the query…';
         case 'analyze': return name ? `Analyzing ${name}…` : 'Analyzing text…';
         case 'write': return name ? `Saving ${name}…` : 'Saving the results…';
-        case 'bash': return 'Running Python…';
+        case 'bash': return 'Running the analysis…';
         // A Delegated model call (ADR-0057). `detail` is the Alias and which call this is, and both
         // halves are the point: one model call is a step, and the twentieth is spend somebody may
         // want to stop.
@@ -1258,7 +1258,7 @@ window.SW = window.SW || {};
         }
         case 'idle': return 'Thinking…';
         // No `doing` at all is the transcript fallback, which only ever names bash.
-        default: return ev.tool === 'bash' ? 'Running Python…' : 'Thinking…';
+        default: return ev.tool === 'bash' ? 'Running the analysis…' : 'Thinking…';
       }
     },
 

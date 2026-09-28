@@ -4470,6 +4470,8 @@ window.SW = window.SW || {};
     return !!turn.running || liveBuildTurns > 0 || liveChatTurns > 0;
   }
 
+  // The latest Build `narration` sentence, which the reasoning-only notice defers to.
+  let buildThought = '';
   function applyBuildEvent(ev) {
     if (!ev) return;
     // A turn that never ran leaves the transcript alone. The transcript is the receipt and there is
@@ -4496,15 +4498,20 @@ window.SW = window.SW || {};
       return;
     }
     if (ev.type === 'user') return;
-    if (ev.type === 'model-active') {
+    if (ev.type === 'narration') {
+      // The one plain sentence of the thought the server picked: the line, never a block.
+      buildThought = String(ev.text || '');
+      state.buildTyping = buildThought || state.buildTyping;
+    } else if (ev.type === 'model-active') {
+      // A sentence already on the line is better evidence of work than a timer's "Still working…".
       state.buildTyping = ev.active === false ? null
-        : (ev.message || 'Still working…');
+        : (buildThought || ev.message || 'Still working…');
     } else if (ev.type === 'active' || (ev.type === 'agent' && ev.kind === 'tool')) {
-      // The command a bash step ran can be a whole pipeline, so bash shows the verb; every other
-      // tool shows its subject — the file, the search pattern — which is shorter and says more.
-      // The verb is what a tool with no subject falls back to, so this line stops reading "glob".
-      const labels = TOOL_LABELS[ev.tool] || {};
-      state.buildTyping = (ev.tool === 'bash' ? labels.doing : (ev.detail || labels.doing)) || 'Working';
+      // The verb, never the subject: the subject is a workspace path or a shell pipeline, which is
+      // the machinery rather than the progress. A tool with no verb says "Working", not "glob".
+      // A streaming write's line count stays (#497) — it is the progress, and it names no file.
+      const count = / · \d+ lines$/.exec(ev.detail || '');
+      state.buildTyping = ((TOOL_LABELS[ev.tool] || {}).doing || 'Working') + (count ? count[0] : '');
     } else if (ev.type === 'typecheck-start') {
       state.buildTyping = `${ev.kind || 'Typecheck'}…`;
     } else if (ev.type === 'iterate') {
@@ -4525,8 +4532,10 @@ window.SW = window.SW || {};
       };
     } else if (ev.type === 'agent' && ev.kind === 'text') {
       state.buildTyping = null;
+      buildThought = '';
     } else if (ev.type === 'plan-proposed' || ev.type === 'done' || ev.type === 'error' || ev.type === 'stopped') {
       state.buildTyping = null;
+      buildThought = '';
     }
     // A plan appearing and a plan being consumed are the two events the pin exists to show. Fired
     // and not awaited: applyBuildEvent is called once per SSE frame and must not block the stream.
@@ -4554,7 +4563,8 @@ window.SW = window.SW || {};
     }
     if (ev.type === 'stopped') return;
     if (ev.type === 'active' || ev.type === 'model-active' || ev.type === 'phase'
-        || ev.type === 'typecheck-start' || ev.type === 'iterate') return;
+        || ev.type === 'typecheck-start' || ev.type === 'iterate'
+        || ev.type === 'narration') return;
     // The buttons on a reset offer belong to the offer the user is looking at, not to every copy of
     // it the transcript keeps. Marking the live frame is what separates the two — the server row a
     // reload returns has no `live`, so it replays as text (see buildHistoryToMessages).
@@ -9236,6 +9246,8 @@ window.SW = window.SW || {};
       let liveIndex = -1;
       let streamed = '';
       let painting = false;
+      // The latest `narration` sentence, so the line can go back to it when a step finishes.
+      let thought = '';
       // `fromStream` marks a block this stream wrote, and is what the transcript record below
       // replaces. It is NOT `live`, which these blocks used to be filtered on — that key belongs to
       // the candidate and reset-offer cards, which this filter must leave standing.
@@ -9378,21 +9390,11 @@ window.SW = window.SW || {};
             putDataUsed(state.messages, () => assistant, ev.dataUsed);
             notify();
           }
-          if (ev.type === 'reasoning') {
-            // The whole thought so far, not a fragment to append. The server already took the
-            // tool call out. This block is not `fromStream`: the recorded answer replaces only
-            // the answer, and the fold has to still be there afterwards.
-            state.typing = null;
-            ensurePushed();
-            const prose = String(ev.text || '');
-            const kept = assistant.blocks.filter((b) => b.type !== 'reasoning');
-            if (prose.trim()) {
-              const streamAt = kept.findIndex((b) => b.type === 'text' && b.fromStream);
-              const at = streamAt >= 0 ? streamAt : kept.length;
-              kept.splice(at, 0, { type: 'reasoning', value: prose, streaming: true });
-            }
-            assistant.blocks = kept;
-            liveIndex = kept.findIndex((b) => b.fromStream && b.streaming);
+          if (ev.type === 'narration') {
+            // The one plain sentence of the thought the server picked. It is the indicator's line
+            // and nothing else: no block, and the Thread keeps none of it.
+            thought = String(ev.text || '');
+            state.typing = thought || state.typing;
             notify();
           } else if (ev.type === 'delta') {
             state.typing = null;
@@ -9423,13 +9425,14 @@ window.SW = window.SW || {};
             // once liveIndex is -1.
             liveIndex = -1;
             assistant.blocks = [
-              ...assistant.blocks.filter((b) => !b.fromStream).map((b) => (
-                b.type === 'reasoning' ? { ...b, streaming: false } : b)),
+              ...assistant.blocks.filter((b) => !b.fromStream),
               ...(ev.text ? [{ type: 'text', value: ev.text }] : []),
             ];
             notify();
           } else if (ev.type === 'agent' && ev.kind === 'tool') {
-            state.typing = SW.util.activityLabel(ev);
+            // A step running is newer than the sentence before it; a step ending hands the line
+            // back to that sentence rather than to "Thinking…".
+            state.typing = ev.doing === 'idle' && thought ? thought : SW.util.activityLabel(ev);
             notify();
           } else if (ev.type === 'artifacts' || (ev.type === 'done' && ev.artifacts && ev.artifacts.length)) {
             state.typing = null;
@@ -9515,10 +9518,6 @@ window.SW = window.SW || {};
                                 { type: 'status', ok: true, value: ev.message }];
             notify();
           } else if (ev.type === 'done') {
-            if (assistant) {
-              assistant.blocks = assistant.blocks.map((b) => (
-                b.type === 'reasoning' ? { ...b, streaming: false } : b));
-            }
             // A failed turn that names its cause is one another model can pick up (ADR-0069,
             // #570). The row that arrived is the promise itself, so the card is drawn available
             // without asking the route; the GET is for a reload.

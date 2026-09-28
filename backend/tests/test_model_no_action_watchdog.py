@@ -258,6 +258,28 @@ def test_model_active_is_live_status_only_and_clears_on_action():
     assert status not in result["values"]
 
 
+def test_build_narration_outranks_the_timer_and_steps_name_no_path():
+    """A sentence of the thought is better evidence of work than "Still working…", so the notice
+    defers to it. A running step still takes the line, by its verb: the workspace path stays off
+    it, and a streaming write keeps its count. None of it is a block in the transcript."""
+    thought = "I'll put the revenue chart under the table."
+    status = "Still working…"
+    result = _node({"events": [
+        {"type": "narration", "text": thought},
+        {"type": "model-active", "active": True, "message": status},
+        {"type": "active", "tool": "write", "detail": "src/App.tsx · 240 lines"},
+        {"type": "agent", "kind": "text", "text": "Ready"},
+        {"type": "done", "ok": True, "decision": "clean"},
+    ]})
+
+    typings = [t for t in result["typings"] if t]
+    assert typings[typings.index(thought) + 1] == "Writing a file · 240 lines"
+    assert status not in typings
+    assert not any("src/" in t for t in typings)
+    assert result["typings"][-1] is None
+    assert thought not in json.dumps(result["values"])
+
+
 def test_refresh_reconstructs_model_active_for_the_same_running_build():
     status = "The model is working but has not returned text or a tool yet — 30 s"
     result = _node({

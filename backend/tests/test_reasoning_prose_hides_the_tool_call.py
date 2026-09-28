@@ -14,13 +14,14 @@ import pytest
 
 from sage.orchestrator.service import (
     Orchestrator,
-    ReasoningFold,
+    ReasoningNarration,
     _AnswerMarkup,
+    narration_sentence,
     strip_written_tool_call,
     visible_reasoning,
 )
 
-from .fake_opencode import Turn, execution_plan
+from .fake_opencode import FakeOpenCode, Turn, execution_plan
 from .test_chat_turn import ScriptedGateway, StreamingFake, _live, _orch
 
 PROSE = "I'll total the weekly sales."
@@ -72,7 +73,7 @@ def test_an_unclosed_function_call_is_not_reasoning():
 
 
 def test_a_partial_tool_tag_is_held_until_the_call_closes():
-    fold = ReasoningFold()
+    fold = ReasoningNarration()
     assert fold.push("p", f"{PROSE} <tool_ca") == PROSE
     assert "<" not in fold.prose()
     fold.push("p", "ll>" + _WRITTEN_CALL[len("<tool_call>"):] + " After.")
@@ -102,13 +103,56 @@ def test_json_that_is_not_a_tool_call_stays():
 
 
 def test_an_unfinished_call_is_held_until_the_part_closes():
-    fold = ReasoningFold()
+    fold = ReasoningNarration()
     assert fold.push("p", f"{PROSE} ") == PROSE
     assert fold.push("p", '{"name":"read","arguments":') is None
     assert "{" not in fold.prose()
     assert fold.replace("p", f"{PROSE}\n\n{CALL}", closed=True) is None
     assert fold.prose() == PROSE
     assert "filePath" not in fold.prose()
+
+
+@pytest.mark.parametrize("prose, shown", [
+    # The latest plain sentence wins.
+    ("I'll read the file. Then I'll total the weekly sales.", "Then I'll total the weekly sales."),
+    # A sentence naming a path, an identifier or code is passed over for the one before it.
+    ("I'll total the weekly sales. Reading examples/thr_1/sales.csv now.",
+     "I'll total the weekly sales."),
+    ("I'll total the weekly sales. The column is weekly_total.", "I'll total the weekly sales."),
+    ("I'll total the weekly sales.\n```python\ndf.sum()\n```", "I'll total the weekly sales."),
+    ("I'll total the weekly sales. Run `df.sum()` first.", "I'll total the weekly sales."),
+    # A heading or list marker is not part of the sentence.
+    ("**Totaling weekly sales**\n\nFirst the file.", "First the file."),
+    ("- Grouping revenue by desk", "Grouping revenue by desk"),
+    # An unfinished sentence shows once it is long enough to read, and not before.
+    ("I'll total the weekly sales. Then group them by desk and", "Then group them by desk and"),
+    ("I'll total the weekly sales. Then", "I'll total the weekly sales."),
+    # Nothing plain at all is nothing, not the least technical fragment.
+    ("df.groupby(desk).sum().reset_index()", ""),
+    ("", ""),
+])
+def test_the_narration_is_one_plain_sentence(prose, shown):
+    assert narration_sentence(prose) == shown
+
+
+def test_a_long_sentence_is_cut_on_a_word():
+    words = "I'll compare every desk's weekly revenue against the same week last year " * 3
+    shown = narration_sentence(words.strip() + ".")
+    assert len(shown) <= 100
+    assert shown.endswith("…")
+    assert words.startswith(shown[:-1])
+    assert shown[-2] != " "
+
+
+def test_a_sentence_that_turns_technical_leaves_the_last_good_one_up():
+    fold = ReasoningNarration()
+    assert fold.push("p", f"{PROSE} ") == PROSE
+    assert fold.push("p", "Reading examples/thr_1/sales") is None
+    assert fold.push("p", ".csv now.") is None
+
+
+def _narration(rows):
+    return [e["text"] for e in rows if e.get("type") == "narration"]
 
 
 def _reasoning_rows(rows):
@@ -119,20 +163,19 @@ def _answer_text(rows):
     return [e.get("text") for e in rows if e.get("type") == "agent" and e.get("kind") == "text"]
 
 
-def test_chat_shows_the_prose_and_keeps_the_call_out_of_the_thread(tmp_path: Path):
+def test_chat_narrates_the_prose_and_keeps_none_of_it(tmp_path: Path):
     orch, _oc = _orch(tmp_path, [Turn(reasoning=f"{PROSE}\n\n{CALL}", text=ANSWER)])
     tid = orch.create_thread()["id"]
     events = list(orch.chat_stream(tid, "total the weekly sales"))
     history = orch.thread_history(tid)
+    assert _narration(events) == [PROSE]
+    assert _narration(history) == []
+    assert _reasoning_rows(events) == _reasoning_rows(history) == []
     for rows in (events, history):
-        shown = _reasoning_rows(rows)
-        assert [e["text"] for e in shown] == [PROSE]
         assert _answer_text(rows) == [ANSWER]
         blob = json.dumps(rows)
         assert "filePath" not in blob
         assert SECRET not in blob
-    kinds = [e["type"] for e in history]
-    assert kinds.index("reasoning") < kinds.index("agent")
 
 
 def test_chat_streams_the_prose_and_not_a_tool_call_written_into_the_answer(tmp_path: Path):
@@ -172,25 +215,74 @@ def test_chat_shows_nothing_when_the_thought_is_only_the_call(tmp_path: Path):
     events = list(orch.chat_stream(tid, "total the weekly sales"))
     history = orch.thread_history(tid)
     for rows in (events, history):
+        assert _narration(rows) == []
         assert _reasoning_rows(rows) == []
         assert _answer_text(rows) == [ANSWER]
         assert "filePath" not in json.dumps(rows)
         assert SECRET not in json.dumps(rows)
 
 
-def test_build_shows_the_prose_and_does_not_write_the_call_into_the_plan(tmp_path: Path):
+def test_build_narrates_the_prose_and_does_not_write_the_call_into_the_plan(tmp_path: Path):
     plan = execution_plan()
     orch, _oc = _orch(tmp_path, [Turn(reasoning=f"{PROSE}\n\n{CALL}", text=plan)],
                       gateway=ScriptedGateway("BUILD"))
     events = list(orch.build_stream("build a small dashboard", conversation="conv_reason"))
     history = orch.history("conv_reason")
+    assert _narration(events) == [PROSE]
+    assert PROSE not in json.dumps(history)
     for rows in (events, history):
-        shown = _reasoning_rows(rows)
-        assert [e["text"] for e in shown] == [PROSE]
+        assert _reasoning_rows(rows) == []
         assert not any(e.get("kind") == "text" and "filePath" in (e.get("text") or "")
                        for e in rows)
         blob = json.dumps(rows)
         assert "filePath" not in blob
         assert SECRET not in blob
         assert PROSE not in json.dumps(
-            [e for e in rows if e.get("type") != "reasoning"])
+            [e for e in rows if e.get("type") != "narration"])
+
+
+_FIRST = "I'll lay out the dashboard first."
+_THEN = "Then the revenue chart goes under it."
+
+
+class _ThinkingAloud(FakeOpenCode):
+    """A Build turn whose reasoning part is read three times: open, grown, then closed.
+
+    No `session_events`, so the turn opens no stream reader and the poll is the only witness —
+    which is the path Build's narration rides on.
+    """
+
+    STAGES = ((_FIRST, False), (f"{_FIRST} {_THEN}", False), (f"{_FIRST} {_THEN}", True))
+
+    def __init__(self, workspace, turns):
+        super().__init__(workspace, turns)
+        self.polls = 0
+
+    def is_running(self, session_id):
+        if not self.prompts:
+            return super().is_running(session_id)
+        self.polls += 1
+        return self.polls < len(self.STAGES)
+
+    def messages(self, session_id, *, limit=None):
+        text, closed = self.STAGES[min(max(self.polls, 1), len(self.STAGES)) - 1]
+        timing = {"start": 1, "end": 2} if closed else {"start": 1}
+        return [{**m, "content": [
+            {**p, "text": text, "time": timing}
+            if isinstance(p, dict) and p.get("type") == "reasoning" else p
+            for p in m.get("content", [])]}
+            for m in super().messages(session_id, limit=limit)]
+
+
+def test_build_narrates_a_reasoning_part_while_it_is_still_open(tmp_path: Path):
+    """Build used to wait for the part to close and then save the whole thought at once, so a long
+    think showed nothing until it was over. Each poll now reads the open part, and the line moves
+    when its latest sentence does — once per sentence, not once per poll."""
+    orch, _oc = _orch(tmp_path, client=lambda ws: _ThinkingAloud(
+        ws, [Turn(reasoning="placeholder", text=execution_plan())]),
+        gateway=ScriptedGateway("BUILD"))
+    events = list(orch.build_stream("build a small dashboard", conversation="conv_open"))
+    assert _narration(events) == [_FIRST, _THEN]
+    history = json.dumps(orch.history("conv_open"))
+    assert _FIRST not in history and _THEN not in history
+    assert SECRET not in json.dumps(events)
