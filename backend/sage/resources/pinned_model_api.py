@@ -139,18 +139,25 @@ def agents_block(apis: list[Binding], credentials: dict[str, Credential],
                        "`fetch` yourself:",
                        name=usable[0].display_name, helper=names.model_api_path), "",
         ]
-    code = [
-        "```tsx",
-        (f'import {{ callModelApi, ModelApiError }} from "./{names.model_api}";'
-        f'  // from a subfolder: "../{names.model_api}"'),
+    call = "sage." if names.ext == "js" else ""
+    code = (["```js",
+             (f"// `sage.callModelApi` is on the page already ({names.model_api_path}); nothing to "
+              "import.")]
+            if names.ext == "js" else
+            ["```tsx",
+             (f'import {{ callModelApi, ModelApiError }} from "./{names.model_api}";'
+              f'  // from a subfolder: "../{names.model_api}"')])
+    code += [
         "",
-        "const result = await callModelApi({ score: 0.9 });  // whatever this model's function takes",
+        (f"const result = await {call}callModelApi({{ score: 0.9 }});  "
+         "// whatever this model's function takes"),
     ]
     if several:
         code += [
             "",
             "// Another of this app's models, for the rows that are that model's job:",
-            f'const other = await callModelApi(row, {{ model: {json.dumps(usable[1].display_name)} }});',
+            (f'const other = await {call}callModelApi(row, '
+             f'{{ model: {json.dumps(usable[1].display_name)} }});'),
         ]
     code += ["```", ""]
     rules = []

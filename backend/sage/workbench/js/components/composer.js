@@ -21,21 +21,15 @@ window.SW = window.SW || {};
     return SW.util.chatCapable(resourceGroups.model_llm);
   }
 
-  // Two names for no level, because since #545 it no longer means one thing on both surfaces.
+  // No level reads 'Automatic' on every surface, and it does not send the same thing on each. On a
+  // Build plan or implement turn Sage sends the stage's own level, High while planning and Low
+  // while building. In Chat it sends no level at all, and the model reasons as it likes.
   //
-  // On a Build plan or implement turn it means 'Automatic': Sage sends the stage's own level, High
-  // while planning and Low while building. 'Model default' was the honest name for that row right
-  // up until the level stopped being the model's.
-  //
-  // In Chat it still means the model's own default — Chat is untouched by #545 — so that row keeps
-  // the old name. One label across both would be wrong on whichever surface it did not describe.
-  //
-  // Neither is 'Default', for the reason it never was: `none` is a level some aliases really offer
-  // (gpt-5.4 measured 2026-09-12, #280) and it means the opposite thing — it SENDS the field and
-  // turns reasoning off. Two menu entries a row apart cannot both be called Default.
+  // It is not 'Default': `none` is a level some aliases really offer (gpt-5.4 measured
+  // 2026-09-12, #280) and it means the opposite thing — it SENDS the field and turns reasoning
+  // off. Two menu entries a row apart cannot both be called Default.
   const AUTOMATIC_EFFORT = 'Automatic';
-  const MODEL_DEFAULT_EFFORT = 'Model default';
-  function effortLabel(value, unset = MODEL_DEFAULT_EFFORT) {
+  function effortLabel(value, unset = AUTOMATIC_EFFORT) {
     if (!value) return unset;
     if (value === 'xhigh') return 'Extra high';
     return value.charAt(0).toUpperCase() + value.slice(1);
@@ -1023,7 +1017,7 @@ window.SW = window.SW || {};
         // rows above were built from — `effectiveModel`, not `model`. With no explicit Chat pick
         // `model` is `''`, and the server reads an empty model as "clear the pick" and drops the
         // level with it, answering 200 (#487). So the pick pins the alias the chip already shows,
-        // the way a Build pick always carries its model. Model default with nothing pinned stays
+        // the way a Build pick always carries its model. Automatic with nothing pinned stays
         // unpinned: that is the one click that means "follow the slot".
         if (key === 'default') return SW.store.setChatModel(model, null);
         SW.store.setChatModel(effectiveModel, key);

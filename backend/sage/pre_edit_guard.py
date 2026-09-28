@@ -31,6 +31,7 @@ class PreEditTrigger(str, Enum):
     NO_EDIT_COMPLETION = "no_edit_completion"
     MODEL_OUTPUT_LIMIT = "model_output_limit"
     MODEL_NO_ACTION = "model_no_action"
+    REPEATED_TOOL_CALL = "repeated_tool_call"
     REQUEST_MEASUREMENT_UNAVAILABLE = "request_measurement_unavailable"
     TREE_WITNESS_UNAVAILABLE = "tree_witness_unavailable"
     SESSION_ABORT_UNCONFIRMED = "session_abort_unconfirmed"
@@ -252,6 +253,10 @@ class PreEditGuard:
     def model_no_action(self) -> PreEditDecision:
         """Handle a bounded model call that produced no text or tool announcement."""
         return self._completion_without_edit(PreEditTrigger.MODEL_NO_ACTION)
+
+    def repeated_tool_call(self) -> PreEditDecision:
+        """Handle one model response that repeated a tool call with byte-identical arguments."""
+        return self._completion_without_edit(PreEditTrigger.REPEATED_TOOL_CALL)
 
     def _completion_without_edit(self, trigger: PreEditTrigger) -> PreEditDecision:
         with self._lock:

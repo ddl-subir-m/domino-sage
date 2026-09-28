@@ -156,23 +156,30 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
                        name=default.display_name, helper=names.llm_path),
             "",
         ]
-    code = [
-        "```tsx",
-        (f'import {{ askModel, checkModel }} from "./{names.llm}";'
-        f'  // from a subfolder: "../{names.llm}"'),
+    js = names.ext == "js"
+    call = "sage." if js else ""
+    code = (["```js",
+             f"// `sage.askModel` is on the page already ({names.llm_path}); nothing to import."]
+            if js else
+            ["```tsx",
+             (f'import {{ askModel, checkModel }} from "./{names.llm}";'
+              f'  // from a subfolder: "../{names.llm}"')])
+    code += [
         "",
-        'const answer = await askModel([{ role: "user", content: question }]);',
+        f'const answer = await {call}askModel([{{ role: "user", content: question }}]);',
     ]
     if several:
         code += [
             "",
             "// Another of this app's models, for a call that is that model's job:",
-            f'const clustered = await askModel(messages, {{ alias: {json.dumps(aliases[1].name)} }});',
+            (f'const clustered = await {call}askModel(messages, '
+             f'{{ alias: {json.dumps(aliases[1].name)} }});'),
         ]
     code += [
         "",
         "// Stream provisional text. Mark it incomplete until this promise resolves:",
-        "await askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });",
+        ("await sage.askModel(messages, { onToken: (t) => { answerEl.textContent += t; } });" if js
+         else "await askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });"),
         "```", "",
     ]
     rules = []
@@ -185,8 +192,8 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
             "model is a wrong answer nobody can see.")
     rules += [
         ("- **Check on load and show the result.** "
-         + (f'`const status = await checkModel({json.dumps(default.name)});`' if several
-            else "`const status = await checkModel();`")
+         + (f'`const status = await {call}checkModel({json.dumps(default.name)});`' if several
+            else f"`const status = await {call}checkModel();`")
          + " — when `status.ok` is false, render `status.message` instead of the model UI. Whether "
            "this model is available depends on who opens the app, not on the app, so it works for the "
            "person who built it and can still fail for the person they share it with. Telling them on "
@@ -202,6 +209,12 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
          "evidence. Missing evidence stays unknown. A response model name does not prove receipt. "
          "After a refusal, change the request before another call; do not retry it unchanged or "
          "switch models to escape the refusal."),
+        ("- **Carry the model's state into the app UI.** When a screen passes selected values to "
+         "`askModel`, use `onOutcome` and show that model state separately from the data it was "
+         "given. Missing serving model, provider receipt, decision stage, cache, or fallback "
+         "evidence means **unknown**; never turn it into proof of policy coverage. If a model "
+         "response is refused, interrupted, or partial, keep that state visible and do not present "
+         "the partial text as complete."),
         brand.text(
             "- The call goes from the viewer's browser to {platformName}'s {llmGateway} under the "
             "viewer's own {platformName} identity. There is no key to add, no server to write, and "

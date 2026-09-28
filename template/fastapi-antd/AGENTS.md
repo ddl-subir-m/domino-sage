@@ -40,7 +40,7 @@ as the same six things when the user types one — they will, whatever this work
 and answer in the words above rather than repeating theirs. Don't correct them; just use your own
 word for it.
 
-Identifiers are not words. `.sage/`, `static/sage/appQuery.js`, `sage.runQuery`, `DatasetClient`
+Identifiers are not words. `.sage/`, `static/sage/appQuery.js`, `sage.url`, `DatasetClient`
 and every other file, path, import and symbol keep their spelling whatever these things are called.
 Never rename code to match a name a person reads.
 
@@ -144,7 +144,7 @@ a route of its own. There is nothing to install, compile, or bundle.
   `git blame <file>` bare, or not at all.
 - **Do not touch `static/sage/appLlm.js` or `static/sage/appLlm.config.js` either.** {assistantName}
   owns both and rewrites them: they hold which language model this app calls, which is chosen in
-  {assistantName} rather than in code. Call `sage.askModel`, never edit them. If no model has been
+  {assistantName} rather than in code. Use them, never edit them. If no model has been
   chosen, `appLlm.config.js` is all nulls and there is nothing to fix here — say the app needs a
   model chosen in {assistantName}. `static/sage/appModelApi.js` and `static/sage/appQuery.js` are
   {assistantName}'s on the same terms, whether or not this app has a {modelApi} or a {dataSource}
@@ -190,14 +190,6 @@ a route of its own. There is nothing to install, compile, or bundle.
   print 10 or 11 digits in a row, including digits after a decimal point, and the gateway's PII
   rule treats that shape as a phone number. Use `round()`, `to_string(float_format=...)`, or build
   a small summary dict with fixed precision instead of printing a frame slice.
-- **Carry Data used into the app UI.** When a local calculation, table, or chart comes from
-  `sage.runQuery`, keep `result.dataUsed` with the derived view. Show the {dataSource} name, query
-  name, row coverage, and truncated state near the output. The query result is local app data:
-  `dataUsed.modelView` tells you it was not sent to a model by the query itself. If you later pass
-  selected values to `sage.askModel`, use `onOutcome` and show that model state separately.
-  Missing serving model, provider receipt, decision stage, cache, or fallback evidence means
-  **unknown**; never turn it into proof of policy coverage. If a model response is refused,
-  interrupted, or partial, keep that state visible and do not present the partial text as complete.
 - **Plain scripts, no modules.** There is no bundler: `static/app.js` runs as a `<script>`, so
   there is no `import`, no `export`, and no JSX. Build elements with `React.createElement` —
   alias it to `h` at the top of each file — and share code between files through `window.app`.
@@ -228,7 +220,7 @@ Everything below is a global the page already carries. Nothing else is, and noth
 | `icons` | Ant Design's icons, by name: `icons.SearchOutlined`, `icons.PlusOutlined`. |
 | `dayjs` | Formatting, parsing and date ranges; what `antd.DatePicker` gives and takes. |
 | `Highcharts` | Charts. Line, area, column, bar, pie, and the `more` and `funnel` modules are loaded. |
-| `sage` | {assistantName}'s helpers: `sage.url`, `sage.runQuery`, `sage.askModel`, `sage.checkModel`, `sage.callModelApi`, `sage.theme`, `sage.accents`, `sage.ErrorBoundary`. |
+| `sage` | {assistantName}'s helpers: `sage.url`, `sage.theme`, `sage.accents`, `sage.ErrorBoundary`. It also carries the helpers for a {dataSource}, an {llmAlias} and a {modelApi}, but each is explained in its own section below, which is there only when this app has one bound. With no such section, do not call or look for them. |
 
 ### URLs: always relative, always through `sage.url`
 A published app is served under a path its own code cannot know. `static/sage/appBase.js` works it
@@ -337,8 +329,9 @@ components outside what was asked.
   credentials is an error with a retry action, never “No tags” or zero results. Show an empty state
   only after a successful response explicitly supplies an empty collection. For taxonomy tags,
   require the requested {dataset} row and an explicit `taxonomyTags: []`; absent/null tags mean the
-  response did not establish whether tags exist. Keep the seeded preview reporter loaded before
-  app startup so {assistantName} can observe the page's own requests and errors.
+  response did not establish whether tags exist. Leave the `static/sage/reportRuntimeError.js`
+  script tag in `static/index.html` where it is, ahead of `static/app.js`, so {assistantName} can
+  observe the page's own requests and errors.
 - **A screen whose whole data source is unreachable is NOT an empty collection.** An empty list is
   one region with nothing in it; this is every control on the screen going inert at once, and the
   two need opposite treatments. Do not reach for the empty state above by analogy — if this app

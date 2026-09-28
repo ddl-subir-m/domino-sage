@@ -656,18 +656,17 @@ def test_a_row_whose_model_takes_a_level_offers_one_and_names_the_way_back():
                                   "disabled": False, "title": None}
 
 
-def test_the_two_rows_that_take_a_stage_level_say_so_and_the_one_that_does_not_does_not():
-    """One stored value, two meanings, since #545 — so two names (ADR-0049 amendment).
-
-    On Plan and Implement, clearing the level now asks for the STAGE's level, High while planning
-    and Low while building, which is why that row reads "Automatic". Ask and Chat did not change:
-    clearing there still sends no field and leaves the alias to reason as it likes, so that row
-    keeps the name that has always described it. One label over all three would be false on one of
-    them whichever label were chosen, which is the whole reason this is two."""
-    (drawn,) = _drawn([{}])
+def test_every_row_calls_no_level_automatic_and_keeps_none_apart():
+    """One name for "no level picked" on all three rows, though it sends different things: the
+    stage's level on Plan and Implement, no field at all on Ask and Chat. `none` is a real level
+    that sends the field, so where an alias offers it, it is its own entry beside Automatic."""
+    (drawn,) = _drawn([{"seed": {"implement": {"model": "gemini-3.7-flash"},
+                                 "ask": {"model": "gpt-5.4"}}}])
     labels = {slot: (_effort_row(drawn, slot) or {}).get("options", [{}])[0].get("label")
-              for slot in ("Plan", "Ask and Chat")}
-    assert labels == {"Plan": "Automatic", "Ask and Chat": "Model default"}
+              for slot in ("Plan", "Implement", "Ask and Chat")}
+    assert labels == {"Plan": "Automatic", "Implement": "Automatic", "Ask and Chat": "Automatic"}
+    ask = [(o["value"], o["label"]) for o in _effort_row(drawn, "Ask and Chat")["options"]]
+    assert ask == [("__model_default__", "Automatic"), ("none", "None")]
 
 
 def test_a_model_that_throws_the_field_away_gets_no_control_at_all():
