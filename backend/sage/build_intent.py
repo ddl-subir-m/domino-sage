@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
@@ -17,6 +18,9 @@ _PRECEDENCE = (
     "The exact source request fills omissions."
 )
 _COMMAND = "Implement now. Use tools, edit files, and verify the result."
+_CARRIER = re.compile(
+    r"<<<SAGE_BUILD_INTENT:(?P<id>[^:\s]+):START>>>\n(?P<body>.*)\n"
+    r"<<<SAGE_BUILD_INTENT:(?P=id):END>>>", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,24 @@ def render(intent: BuildIntent) -> str:
     body = body.replace("<", "\\u003c").replace(">", "\\u003e")
     start, end = _delimiters(intent)
     return f"{start}\n{body}\n{end}"
+
+
+def without_source_requests(text: str) -> str:
+    """A whole-carrier text with its `source_requests` emptied, for the local-data check (#590).
+
+    The source requests are the person's own words, and what they chose to send is not local data
+    to withhold from the request. The plan, answers and notes are model-written and stay checked.
+    Any other text is returned unchanged.
+    """
+    match = _CARRIER.fullmatch(text)
+    if not match:
+        return text
+    try:
+        body = json.loads(match.group("body"))
+        body["source_requests"] = []
+    except (ValueError, TypeError):
+        return text
+    return json.dumps(body, ensure_ascii=False)
 
 
 def _protocol(value) -> Protocol | None:

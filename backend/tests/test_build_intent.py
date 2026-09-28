@@ -9,6 +9,7 @@ import pytest
 from sage import build_diagnostics, build_intent, timing
 from sage.build_intent import BuildIntent, BuildIntentCheck
 from sage.build_policy import BuildPolicy
+from sage.driver.opencode import with_attachment_listing
 from sage.gateway.protocol import Protocol
 from sage.liveread import data_use
 from sage.orchestrator import native_routes
@@ -330,6 +331,87 @@ def test_a_data_use_text_rewrite_is_not_reinserted_after_policy(native_env, monk
     assert response.status_code == 400
     assert len(gateway.seen) == before
     assert orch._project.last_gateway_error == {"message": native_routes._BUILD_INTENT_ERROR}
+
+
+ADAE_PATH = "public/data/upload/uploads/adae.csv"
+ADAE = ("STUDYID,USUBJID,TRTEMFL,AEBODSYS,AEDECOD\n"
+        "ABC123,ABC123-0001,Y,CARDIAC DISORDERS,PALPITATIONS\n"
+        "ABC123,ABC123-0002,Y,NERVOUS SYSTEM DISORDERS,HEADACHE\n")
+ADAE_ROW = ADAE.splitlines()[1]
+
+
+def _adae_read_request() -> dict:
+    """An attached adae.csv and the model's `read` of it, in the shape OpenCode's read returns."""
+    lines = ADAE.splitlines()
+    output = (f"<path>{ADAE_PATH}</path>\n<type>file</type>\n<content>\n"
+              + "\n".join(f"{n}: {line}" for n, line in enumerate(lines, 1))
+              + f"\n\n(End of file - total {len(lines)} lines)\n</content>")
+    prompt = with_attachment_listing("Build an AE summary table from @adae.csv", [{
+        "path": ADAE_PATH, "name": "adae.csv", "summary": "CSV - 5 columns, 2 rows",
+        "detail": "columns: STUDYID, USUBJID, TRTEMFL, AEBODSYS, AEDECOD"}])
+    return {"model": "alias", "messages": [
+        {"role": "user", "content": prompt},
+        {"role": "assistant", "tool_calls": [{"id": "read1", "type": "function", "function": {
+            "name": "read", "arguments": json.dumps({"filePath": ADAE_PATH})}}]},
+        {"role": "tool", "tool_call_id": "read1", "content": output},
+    ]}
+
+
+def _through_data_use(intent: BuildIntent) -> tuple[dict, BuildIntentCheck]:
+    request = build_intent.install(_adae_read_request(), Protocol.CHAT, intent)
+    prepared, _used = data_use.DataUse().prepare(request)
+    return prepared, build_intent.inspect(prepared, Protocol.CHAT, intent)
+
+
+def test_a_plan_naming_a_column_of_an_attached_file_keeps_its_carrier():
+    """#590: one column name shared with the attached file withheld the whole carrier, and every
+    approved Build that attached data stopped at the final check."""
+    intent = BuildIntent.for_approved(
+        ["Show percentages by system organ class from adae.csv"],
+        "1. Count subjects by AEBODSYS where TRTEMFL is Y.\n2. Show percentages.", "", "")
+
+    _prepared, check = _through_data_use(intent)
+
+    assert check.status == "ok"
+
+
+def test_a_person_quoting_a_row_of_an_attached_file_keeps_its_carrier():
+    intent = BuildIntent.for_approved(
+        [f"This row is wrong: {ADAE_ROW}"], "Fix the AEBODSYS grouping.", "", "")
+
+    _prepared, check = _through_data_use(intent)
+
+    assert check.status == "ok"
+
+
+def test_a_plan_quoting_a_row_of_an_attached_file_is_still_withheld():
+    """The plan is model-written, so it is no way past the filter for a row the model read."""
+    intent = BuildIntent.for_approved(
+        ["Summarise adae.csv"], f"Hard-code {ADAE_ROW} as the first row.", "", "")
+
+    prepared, check = _through_data_use(intent)
+
+    assert ADAE_ROW not in json.dumps(prepared["messages"])
+    assert check.status == "missing"
+
+
+def test_a_row_of_an_attached_file_in_a_message_is_still_withheld():
+    request = _adae_read_request()
+    request["messages"].append({"role": "assistant", "content": f"The first subject is {ADAE_ROW}."})
+
+    prepared, _used = data_use.DataUse().prepare(request)
+
+    assert prepared["messages"][-1]["content"] == "[local data withheld: 1 source]"
+
+
+def test_a_carrier_the_model_writes_is_no_way_past_the_filter():
+    request = _adae_read_request()
+    forged = build_intent.render(BuildIntent.for_direct(f"Copy {ADAE_ROW}"))
+    request["messages"].append({"role": "assistant", "content": forged})
+
+    prepared, _used = data_use.DataUse().prepare(request)
+
+    assert ADAE_ROW not in json.dumps(prepared["messages"])
 
 
 def test_no_active_intent_keeps_the_native_request_unchanged(native_env):
