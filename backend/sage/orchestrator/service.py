@@ -2776,6 +2776,28 @@ _FUSES_SOURCES = re.compile(
     re.IGNORECASE,
 )
 
+# Two different records in one sentence, joined by and or or. "either gong calls or
+# sfdc cases" and "transcripts and sfdc cases" name two records and match none of the
+# fusion verbs above, so the table card was asked first and the churn table was never
+# looked up. A bare "either ... or" is a choice of one measure ("either last quarter
+# or this one"), and the same record said twice ("open cases and closed cases") is
+# still one record — both stay ordinary questions. The two kinds have to differ, which
+# one alternation cannot say, so this is a function beside the pattern rather than
+# another limb of it.
+_RECORD_KIND = re.compile(r"\b(calls?|cases?|transcripts?)\b", re.IGNORECASE)
+_RECORD_LINK = re.compile(r"\b(?:and|or)\b", re.IGNORECASE)
+
+
+def _names_two_records(text: str) -> bool:
+    """True when one sentence names two different records and links them with and or or."""
+    for sentence in re.split(r"[.?!]", text or ""):
+        if _RECORD_LINK.search(sentence) is None:
+            continue
+        kinds = {m.group(1).lower().rstrip("s") for m in _RECORD_KIND.finditer(sentence)}
+        if len(kinds) >= 2:
+            return True
+    return False
+
 
 # The doubt limb. Every word here is about the QUESTION — whether the thing asked about is real —
 # rather than about the data that would answer it.
@@ -2804,7 +2826,8 @@ def _looks_investigative(prompt: str) -> bool:
     """
     text = prompt or ""
     return any(pattern.search(text) is not None
-               for pattern in (_INVESTIGATIVE_ACT, _FUSES_SOURCES, _DOUBTS_THE_COLUMN))
+               for pattern in (_INVESTIGATIVE_ACT, _FUSES_SOURCES, _DOUBTS_THE_COLUMN)
+               ) or _names_two_records(text)
 
 
 # The fourth condition of the investigation offer (ADR-0056), in two halves that
@@ -4709,7 +4732,10 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "total, an average, a ranking, a group-by — call `live_read_query` with this "
                 "turn's token, source {quoted}, and one SELECT against those tables; a join across "
                 "them is still one SELECT. To see a few rows, call `live_read_table` with the same "
-                "token and source. If those tools are not in your tool list this turn and you have "
+                "token and source. To judge text in a table, call `live_read_table` with "
+                "operation=analyze_text, source {quoted}, that table, text_column, and alias set "
+                "to the model this conversation names. Do not select the text column to read it. "
+                "If those tools are not in your tool list this turn and you have "
                 "a shell, `from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
                 '"SELECT * FROM {first} LIMIT 50").to_pandas()`. '
@@ -4742,7 +4768,10 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
                 "- {dataSource} {name}, table {dotted}.{extra} To work a number out of it — a "
                 "count, a total, an average, a ranking, a group-by — call `live_read_query` with "
                 "this turn's token, source {quoted}, and one SELECT against {dotted}. To see a few "
-                "rows, call `live_read_table` with the same token and source. If those tools are "
+                "rows, call `live_read_table` with the same token and source. To judge text in "
+                "that table, call `live_read_table` with operation=analyze_text, source {quoted}, "
+                "that table, text_column, and alias set to the model this conversation names. "
+                "Do not select the text column to read it. If those tools are "
                 "not in your tool list this turn and you have a shell, "
                 "`from domino_data.data_sources import DataSourceClient` then "
                 '`DataSourceClient().get_datasource({quoted}).query('
