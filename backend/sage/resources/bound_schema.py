@@ -540,6 +540,12 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
         ("- **`runQuery` throws an `Error` whose `message` is written for the viewer.** Catch it and "
          "show that message as it is; do not replace it with your own wording."),
         brand.text(
+            "- **Keep `result.dataUsed` beside what it produced.** When a local calculation, table, "
+            "or chart comes from `runQuery`, keep `result.dataUsed` with the derived view. Show the "
+            "{dataSource} name, query name, row coverage, and truncated state near the output. The "
+            "query result is local app data: `dataUsed.modelView` tells you it was not sent to a "
+            "model by the query itself."),
+        brand.text(
             "- **Queries answer in the preview too**, against the same {dataSource}, the same part "
             "of it and the same statements the published app will use. So a query that fails while "
             "you are building is a real failure and worth fixing now — do not design a screen "
