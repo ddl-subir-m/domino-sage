@@ -57,11 +57,11 @@ def test_missing_selected_source_stops_before_model_dispatch(build):
     assert events[-1]["type"] == "done" and events[-1]["ok"] is False
 
 
-def test_explicit_selection_does_not_include_other_app_inputs(build):
-    orch, oc, project, paths = build
-    (project.workspace.path / paths[1]).resolve().unlink()
-    list(orch.build_stream("Build the enrollment table", [paths[0]]))
-    assert [a["path"] for a in oc.prompts[0]["attachments"]] == [paths[0]]
+def test_a_mention_adds_to_the_app_inputs_rather_than_narrowing_them(build):
+    """#591: a mention names what to read first; it never drops the app's other Attachments."""
+    orch, oc, _, paths = build
+    list(orch.build_stream("Build the enrollment table", [paths[1]]))
+    assert [a["path"] for a in oc.prompts[0]["attachments"]] == [paths[1], paths[0], paths[2]]
 
 
 def test_intact_inputs_do_not_restore_or_download(build, monkeypatch):

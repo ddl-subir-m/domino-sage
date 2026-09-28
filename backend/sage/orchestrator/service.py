@@ -498,7 +498,7 @@ _PERSISTED_EVENTS = frozenset({
     "agent", "typecheck", "done", "saved", "data-leak", "plan-proposed",
     "build-plan", "step-start", "step-done", "attachments-restored",
     "reset-offer", "app-reset", "incoming-changes", "mentions-unresolved",
-    "mentions-ambiguous",
+    "mentions-ambiguous", "dataset-attached",
     "app_change", "build-stalled", "build-rollover", "build-context-limit",
     "gateway-call", "gateway-alias-unbound",
     "data-source-unasked", "data-source-failed", "build-recovery", "build-pre-edit-limit",
@@ -10219,18 +10219,28 @@ class Orchestrator:
             # which was never going to run should not pay for.
             #
             # `skip_dataset_gate` is the card being ANSWERED, not the gate being bypassed: the click
-            # has attached the files by the time this replay arrives, so it would not fire again for
-            # the Dataset it was about. What the flag stops is a SECOND unattached Dataset turning
-            # the build that click just bought into another question — and it is also the whole of
-            # the way past the card, where nothing was attached at all.
+            # has attached the files, or recorded the way past, by the time this replay arrives, so
+            # the gate does not fire again for the Dataset it was about. It still runs, because a
+            # SECOND unattached Dataset is asked about next rather than dropped (#591).
             if dismissed_dataset:
-                # Recorded before the gate rather than inside it, because the gate is about to be
-                # skipped: the name arrives only from the card's own way-past button, so it is the
-                # Dataset that was asked about and nothing has to be re-derived to find it.
+                # Recorded before the gate, so the gate below reads the Dataset as settled: the name
+                # arrives only from the card's own way-past button, so it is the Dataset that was
+                # asked about and nothing has to be re-derived to find it.
                 self._dataset_dismissed.add((app.app_id, dismissed_dataset))
+            # And the bubble a Dataset pick writes, the same click one level down again from the
+            # table (#196, ADR-0039). Last of the three because it is the last card the turn can
+            # have been answering, which makes it the narrowest choice on a turn carrying several —
+            # the rule the two above already follow. Before the gate, so the next Dataset's card is
+            # drawn under what this click chose rather than under the request a second time.
+            #
+            # Not for the way past: `dismissed_dataset` is the button that attached nothing, and a
+            # sentence naming a file would invert the only thing the person said.
+            if skip_dataset_gate and not dismissed_dataset:
+                picked = self._picked_dataset_text(dataset_pick) or picked
+            dataset_note = ""
             # Direct does not draw this card. It only asks; a Dataset with no file stays
             # unattached and the agent says so (ADR-0070).
-            if not skip_dataset_gate and not direct:
+            if not direct:
                 # The gates already answered ride along, `skipTableGate` included. It is not in
                 # `answered` above because the Data Source card is drawn BEFORE the table search and
                 # would carry it into a store nobody has picked a table in yet; by here that search
@@ -10240,21 +10250,14 @@ class Orchestrator:
                 # picked off the Data Source card earlier in this same turn, and a replay that
                 # dropped it would send the turn back to matching prose against a question they
                 # already answered with a click.
-                offer = self._dataset_offer(
+                offer, attached_now = self._dataset_offer(
                     prompt, {**answered, "skipTableGate": skip_table_gate,
-                             "chosenSource": chosen_source}, picked)
+                             "chosenSource": chosen_source},
+                    picked or ("Build it." if skip_dataset_gate else ""))
                 if offer is not None:
                     yield from offer
                     return
-            # And the bubble a Dataset pick writes, the same click one level down again from the
-            # table (#196, ADR-0039). Last of the three because it is the last card the turn can
-            # have been answering, which makes it the narrowest choice on a turn carrying several —
-            # the rule the two above already follow.
-            #
-            # Not for the way past: `dismissed_dataset` is the button that attached nothing, and a
-            # sentence naming a file would invert the only thing the person said.
-            if skip_dataset_gate and not dismissed_dataset:
-                picked = self._picked_dataset_text(dataset_pick) or picked
+                dataset_note = " ".join(attached_now)
             # A button answering the offer is a click, not a second typing of the request — the
             # prompt is already a bubble in the transcript, put there by _reset_offer. So the turn
             # gets the short line the click deserves, the way an Approve click does, instead of
@@ -10262,6 +10265,7 @@ class Orchestrator:
             # above it as an `app-reset` marker.
             yield from self._build_stream(
                 prompt, mentions, resources, mode=mode, how_sage_works=how_sage_works,
+                dataset_note=dataset_note,
                 # The pick wins over the three skip flags, which it can arrive carrying: a turn
                 # started by choosing a Data Source says which one, whatever gate the turn before
                 # it had also answered.
@@ -17513,10 +17517,13 @@ class Orchestrator:
     def _prepare_build_attachments(
         self, project: Project, mentions: list[str] | None,
     ) -> tuple[list[str] | None, list[str]]:
-        """Select only this app's inputs; an explicit mention list narrows that selection."""
+        """Select this app's inputs: every Attachment, with the mentioned paths first.
+
+        A mention adds and never narrows (#591). `@ABC123_ADAE` resolves to that Dataset's attached
+        file, and narrowing to it dropped the uploaded shell from the plan turn and from Approve."""
         started = time.monotonic()
         attached = project.attachments_for_turn()
-        selected = mentions if mentions is not None else [entry["path"] for entry in attached]
+        selected = list(mentions or [])
         known = {entry["path"]: entry for entry in attached}
         groups = _by_folder(attached)
         eligible: dict[str, dict] = {}
@@ -17526,6 +17533,10 @@ class Orchestrator:
             else:
                 _, members = _folder_members(groups, path)
                 eligible.update((entry["path"], entry) for entry in members)
+        for entry in attached:
+            if entry["path"] not in eligible:
+                selected.append(entry["path"])
+                eligible[entry["path"]] = entry
         missing = [entry for path, entry in eligible.items() if self._on_disk(project, path) is None]
         if missing:
             self._restore_attachments(missing)
@@ -18874,11 +18885,11 @@ class Orchestrator:
                               sized=listing.measured)
         rows = found[:dataset_files.MAX_ROWS]
         return {"rows": rows[:dataset_files.SHORTLIST], "allRows": rows, "total": len(rows),
-                "listed": len(found), "matched": ranking.matched,
+                "listed": len(found), "matched": ranking.matched, "named": ranking.named,
                 "truncated": listing.truncated}
 
     def _dataset_offer(self, prompt: str, answered: dict, user_text: str = ""):
-        """Events for a turn whose app records a Dataset and has attached nothing from it, or None.
+        """The card for the next Dataset that needs a choice, or None, and what was attached unasked.
 
         THE DEAD END ADR-0038 CLOSED, reached through the other door. `bind_dataset` has written a
         real Binding since #141, and the working set stays out of the prompt (ADR-0020) — so the
@@ -18899,42 +18910,80 @@ class Orchestrator:
         platform outage must not take somebody's build hostage — and the managed block still says
         this app cannot read its Dataset, so failing open does not mean failing silently.
 
-        THE FIRST unattached Dataset where an app records two. That is one question and this answers
-        one; the second is asked on the turn after the first is answered, which is how `named_source`
-        already handles two unscoped Data Sources and how a person would answer them anyway.
+        ONE CARD PER DATASET, IN TURN (#591). Every unattached Dataset is settled before the build
+        starts: answering one card replays the request, and the replay comes back here and asks
+        about the next. The answered Dataset does not ask again because its click attached a file
+        or recorded the way past. A Dataset whose listing holds exactly one file is not a question,
+        so that file is attached here and the sentence saying so is returned instead of a card.
         """
         project = self.project()
 
         def dismissed(binding: Binding) -> bool:
             return (project.app_for_turn().app_id, binding.id) in self._dataset_dismissed
 
-        bindings = parse_bindings(project.workspace.read_bindings())
-        binding = next((b for b in bindings if b.kind == KIND_DATASET
-                        and not _dataset_is_attached(project.attached, b)
-                        and not dismissed(b)), None)
-        if binding is None:
-            return None
-        try:
-            with timing.span("gate.dataset"):
-                card = self._dataset_candidates(self._find_asset(binding.id), prompt, folders=True)
-        except (LookupError, ResourceUnavailable) as e:
-            log.info("dataset files: %s could not be listed — %s", binding.display_name, e)
-            return None
-        except Exception:
-            log.exception("dataset files: could not list %s", binding.display_name)
-            return None
-        if not card["total"]:
-            # An empty Dataset is not a question: there is nothing to pick, and a card saying so
-            # would stop a build over a fact the managed block already states.
-            return None
-        return self._dataset_files_events(prompt, binding, card, answered, user_text)
+        datasets = [b for b in parse_bindings(project.workspace.read_bindings())
+                    if b.kind == KIND_DATASET]
+        attached_now: list[str] = []
+        for binding in datasets:
+            if _dataset_is_attached(project.attached, binding) or dismissed(binding):
+                continue
+            try:
+                with timing.span("gate.dataset"):
+                    card = self._dataset_candidates(self._find_asset(binding.id), prompt,
+                                                    folders=True)
+            except (LookupError, ResourceUnavailable) as e:
+                log.info("dataset files: %s could not be listed — %s", binding.display_name, e)
+                continue
+            except Exception:
+                log.exception("dataset files: could not list %s", binding.display_name)
+                continue
+            if not card["total"]:
+                # An empty Dataset is not a question: there is nothing to pick, and a card saying so
+                # would stop a build over a fact the managed block already states.
+                continue
+            only = card["allRows"][0]
+            if card["listed"] == 1 and only["kind"] == "file" and not card["truncated"]:
+                try:
+                    self.attach_file(binding.id, only["path"])
+                except Exception:
+                    # Asked instead: the card still offers the file, so a failed attach is a click
+                    # away from being retried rather than a build on nothing.
+                    log.exception("dataset files: could not attach the only file in %s",
+                                  binding.display_name)
+                else:
+                    attached_now.append(brand.text("Using {file} from {name}.", file=only["path"],
+                                                   name=binding.display_name))
+                    continue
+            return self._dataset_files_events(prompt, binding, card, answered, user_text,
+                                              datasets), attached_now
+        return None, attached_now
 
     def _dataset_files_events(self, prompt: str, binding: Binding, card: dict, answered: dict,
-                              user_text: str = ""):
-        """The card itself: what the Dataset holds, and the request to replay after the attach."""
+                              user_text: str = "", datasets: Sequence[Binding] = ()):
+        """The card itself: what the Dataset holds, and the request to replay after the attach.
+
+        Where several Datasets are bound it says which one this is and what the others settled to,
+        so a second card after the first click reads as the next question and not the same one."""
         project = self.project()
         name = binding.display_name
-        if card["matched"]:
+        where = ""
+        if len(datasets) > 1:
+            where = brand.text("{name}, {n} of {total} {datasetPlural}. ", name=name,
+                               n=datasets.index(binding) + 1, total=len(datasets))
+            for other in datasets:
+                if other is binding:
+                    continue
+                files = [e.get("file") or e["path"]
+                         for e in _dataset_attached_entries(project.attached, other)]
+                if len(files) == 1:
+                    where += brand.text("Using {file} from {name}. ", file=files[0],
+                                        name=other.display_name)
+                elif files:
+                    where += brand.text("Using {n} files from {name}. ", n=len(files),
+                                        name=other.display_name)
+                elif (project.app_for_turn().app_id, other.id) in self._dataset_dismissed:
+                    where += brand.text("Continuing without {name}. ", name=other.display_name)
+        if card["matched"] or card["named"]:
             message = brand.text(
                 "Choose what this app should read. Then it is built from your request.")
         else:
@@ -18944,6 +18993,7 @@ class Orchestrator:
             message = brand.text(
                 "Nothing in {name} matched. Choose a file, or continue without one.",
                 name=name)
+        message = where + message
         message += self._partial_note(card["truncated"], name)
         message += self._capped_note(card["listed"], card["total"])
         events = ({"type": "user", "text": user_text or prompt},
@@ -19006,7 +19056,7 @@ class Orchestrator:
     def _chat_dataset_files_events(self, store: ThreadStore, thread_id: str, prompt: str,
                                    asset: Asset, card: dict):
         """The card itself, written to the Thread rather than to a Built App's transcript."""
-        if card["matched"]:
+        if card["matched"] or card["named"]:
             message = brand.text(
                 "Choose a file. Then your question is answered.")
         else:
@@ -19681,7 +19731,7 @@ class Orchestrator:
                       validate_page: bool | None = None,
                       continuation_note: str = "",
                       initial_repair_objective: str = "implementation",
-                      how_sage_works: str = "guided"):
+                      how_sage_works: str = "guided", dataset_note: str = ""):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -19720,6 +19770,10 @@ class Orchestrator:
         # Approval already carries these app-selected paths. The first request must use the
         # same resolver before opening a session or paying for a scope/model call (#513).
         missing_inputs = []
+        # What was @-mentioned, before the preflight adds every other Attachment to it (#591). A
+        # mention still decides which files are inlined as references; it no longer decides which
+        # files the turn carries.
+        typed_mentions = mentions
         if not answer_only:
             with timing.span("setup.attachments"):
                 mentions, missing_inputs = self._prepare_build_attachments(project, mentions)
@@ -20379,6 +20433,10 @@ class Orchestrator:
             # closes it is retyping the mention the menu can now reach (ADR-0030).
             if ambiguous:
                 yield persist({"type": "mentions-ambiguous", "message": ambiguous})
+            # The files the Dataset gate attached without asking, because each was its Dataset's
+            # only file (#591). Under the bubble, so the transcript says what this build reads.
+            if dataset_note:
+                yield persist({"type": "dataset-attached", "message": dataset_note})
 
         # The user's own model pick (None in Auto), BOTH halves of it. Set when a planning stall
         # forces us to pin the strong model for the Implement retry (see the nudge branch); restored
@@ -20894,7 +20952,7 @@ class Orchestrator:
                     descriptors=descriptors,
                 )
             else:
-                direct_sources = [str(source) for source in (mentions or [])]
+                direct_sources = [str(source) for source in (typed_mentions or mentions or [])]
                 direct_mentions = set(direct_sources)
                 explicit_paths = {
                     str(entry.get("path") or "") for entry in attachment_manifest

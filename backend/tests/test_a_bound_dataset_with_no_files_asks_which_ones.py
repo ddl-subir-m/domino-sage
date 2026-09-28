@@ -420,7 +420,7 @@ def test_the_way_past_the_card_builds_with_nothing_attached(tmp_path: Path, monk
     orch.bind_dataset("ds_revenue_2026")
     client = _client(orch, monkeypatch)
 
-    body = _build(client, skipDatasetGate=True)
+    body = _build(client, skipDatasetGate=True, datasetDismissed="ds_revenue_2026")
 
     assert [f for f in _frames(body) if f.get("type") == "dataset-files"] == []
     assert oc.prompts, "building past the card did not build"
@@ -772,9 +772,11 @@ def test_an_unmounted_listing_that_did_measure_keeps_every_size_the_platform_gav
 def test_clicking_a_file_on_an_unmounted_dataset_attaches_it_and_then_the_request_builds(
         tmp_path: Path, monkeypatch):
     """The same click, the same replay, the same build. Only the attach itself differs — the bytes
-    come down through the data library rather than off a mount — and nothing above it can tell."""
+    come down through the data library rather than off a mount — and nothing above it can tell.
+    Two files, because a single-file Dataset attaches without a card (#591)."""
     orch, oc = _orch(tmp_path, _unmounted(tmp_path, "revenue_2026", {
         "calls_daily.csv": "day,calls\n2026-01-01,7\n",
+        "accounts.csv": "id,name\n1,Acme\n",
     }))
     orch.bind_dataset("ds_revenue_2026")
     client = _client(orch, monkeypatch)
@@ -868,7 +870,7 @@ def test_listing_a_dataset_does_not_put_its_tree_into_the_prompt(tmp_path: Path,
     client = _client(orch, monkeypatch)
     _card(_build(client))
 
-    _build(client, skipDatasetGate=True)
+    _build(client, skipDatasetGate=True, datasetDismissed="ds_calls_raw")
 
     assert oc.prompts
     assert "part.csv" not in "\n".join(p["text"] for p in oc.prompts)
