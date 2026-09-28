@@ -152,40 +152,40 @@ def test_the_spinner_names_the_slow_work_instead_of_just_spinning():
     ]
 
 
-def test_a_transcript_fallback_still_says_running_python():
+def test_a_transcript_fallback_still_names_the_analysis():
     """When the stream is down the tool events come from the transcript, which names bash and
     nothing else. That path predates `doing` and has to keep working untouched."""
     out = _turn([{"type": "user", "text": "q"},
                  {"type": "agent", "kind": "tool", "tool": "bash", "detail": "python p.py"},
                  {"type": "agent", "kind": "text", "text": "Done."},
                  {"type": "done", "ok": True, "decision": "answered"}])
-    assert "Running Python…" in out["typings"]
+    assert "Running the analysis…" in out["typings"]
 
 
-def test_the_thinking_fold_survives_the_answer_that_replaces_the_stream():
-    """The recorded answer deletes every block this stream painted. The thought is not one of
-    those: it stays, collapsed, and the answer replaces only the answer."""
-    thought = "I'll total the weekly sales."
-    frames = [
+def test_the_thought_is_the_indicators_line_and_never_a_block():
+    """The line is the latest sentence, a running step takes it over, and the step ending hands it
+    back rather than falling to "Thinking…". None of it reaches the Thread. A thought an older turn
+    saved still replays as its fold."""
+    first, then, saved = ("I'll total the weekly sales.", "Then I'll chart it by desk.",
+                          "An older turn's saved thought.")
+    out = _turn([
         {"type": "user", "text": "q"},
-        {"type": "reasoning", "text": thought},
-        {"type": "delta", "text": "Rev"},
-        {"type": "delta", "text": "enue rose."},
+        {"type": "narration", "text": first},
+        {"type": "agent", "kind": "tool", "tool": "bash", "doing": "read", "detail": "sales.csv"},
+        {"type": "agent", "kind": "tool", "doing": "idle"},
+        {"type": "narration", "text": then},
         {"type": "delta", "text": "Revenue rose.", "final": True},
         {"type": "agent", "kind": "text", "text": "Revenue rose."},
         {"type": "done", "ok": True, "decision": "answered"},
-    ]
-    out = _turn(frames, replay=[
+    ], replay=[
         {"type": "user", "text": "q"},
-        {"type": "reasoning", "text": thought},
+        {"type": "reasoning", "text": saved},
         {"type": "agent", "kind": "text", "text": "Revenue rose."},
     ])
-    assert out["final"] == [
-        {"type": "reasoning", "value": thought, "streaming": False},
-        {"type": "text", "value": "Revenue rose."},
-    ]
-    assert out["steps"][-1] == f"={thought} | =Revenue rose."
+    assert out["typings"] == ["Thinking…", first, "Reading sales.csv…", first, then]
+    assert out["final"] == [{"type": "text", "value": "Revenue rose."}]
+    assert not any(first in s or then in s for s in out["steps"])
     assert out["replay"] == [
-        {"type": "reasoning", "value": thought},
+        {"type": "reasoning", "value": saved},
         {"type": "text", "value": "Revenue rose."},
     ]
