@@ -1,6 +1,11 @@
 import collections
+import gc
+import os
+import socket
+import stat
 import subprocess
 import sys
+import threading
 import time
 import weakref
 from dataclasses import replace
@@ -17,6 +22,105 @@ from sage.orchestrator.service import Orchestrator
 # watch the autouse check below actually fire. A fixture nobody ever sees fail is indistinguishable
 # from one that cannot.
 pytest_plugins = ["pytester"]
+
+
+# The processes THIS test started, cleared at the start of each one (#608). Taken off
+# `Popen.__init__` rather than `subprocess.Popen`, because tests replace the name with fakes and a
+# fake is not a process that can outlive anything.
+_POPENED_BY_THIS_TEST: list = []
+
+
+def _remember_popen(init):
+    def wrapped(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        _POPENED_BY_THIS_TEST.append(self)
+    wrapped._remembers = True
+    return wrapped
+
+
+# Guarded for the reason `_remember` below is: this module is reachable under two names.
+if not getattr(subprocess.Popen.__init__, "_remembers", False):
+    subprocess.Popen.__init__ = _remember_popen(subprocess.Popen.__init__)
+
+# macOS's resolver opens a socket on a process's first reverse lookup and a pipe on its first
+# forward one, and holds both for the life of the process. Unwarmed, the check below bills them to
+# whichever test a worker happens to run first that resolves a name (#608). Once per process, so a
+# lookup that leaks on every call still reddens.
+for _lookup in (lambda: socket.getfqdn("127.0.0.1"), lambda: socket.getaddrinfo("localhost", 80)):
+    try:
+        _lookup()
+    except OSError:
+        pass
+
+
+def _open_fds() -> dict[str, int]:
+    """Descriptor -> mode. Checked after listing, so the one `listdir` itself held is gone."""
+    out = {}
+    for fd in os.listdir("/dev/fd"):
+        try:
+            out[fd] = os.fstat(int(fd)).st_mode
+        except OSError:
+            pass
+    return out
+
+
+def _what_fd(mode: int) -> str:
+    return ("socket" if stat.S_ISSOCK(mode) else "pipe" if stat.S_ISFIFO(mode)
+            else "file" if stat.S_ISREG(mode) else "other")
+
+
+def _what_thread(t: threading.Thread) -> str:
+    """What it runs, which its name often does not say: a `Timer` is named `Thread-N`."""
+    fn = getattr(t, "function", None) or getattr(t, "_target", None)
+    return f"{type(t).__name__} running {getattr(fn, '__qualname__', fn)!s}"
+
+
+@pytest.fixture(autouse=True)
+def __nothing_is_left_open(request):
+    """Fail the test that leaves a thread, a process or a file descriptor open (#608).
+
+    A leak does not redden the test that made it. A thread keeps a worker busy, a socket or a file
+    holds a descriptor, and a process keeps running — each makes the whole suite slower, and under
+    `--dist load` whichever test lands next on that worker pays for it. So this bills the leaker.
+
+    Named to sort first. pytest sets up a conftest's autouse fixtures in NAME order, not in the
+    order they are written, so this is set up first and torn down LAST: after the turn-lock grace,
+    the Chat save timer's cancel, the OpenCode server stop and `monkeypatch`'s undo. Under any other
+    name it bills a thread one of those was about to stop.
+
+    Cheap when nothing leaked — one `listdir` and one `enumerate`. Only a suspect pays for
+    `gc.collect()`, which closes what only a reference cycle was holding, and for the grace, which
+    lets a thread or a process that is already on its way out finish. A process still running
+    after it is killed, for the reason `_opencode_server_is_stopped` gives. Nothing else is touched.
+    """
+    threads = set(threading.enumerate())
+    fds = _open_fds()
+    _POPENED_BY_THIS_TEST.clear()
+    yield
+    new_threads = [t for t in threading.enumerate() if t not in threads]
+    procs = [p for p in _POPENED_BY_THIS_TEST if p.poll() is None]
+    if not new_threads and not procs and not (_open_fds().keys() - fds.keys()):
+        return
+    gc.collect()
+    deadline = time.monotonic() + 1.0
+    for t in new_threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    while procs and time.monotonic() < deadline:
+        time.sleep(0.02)
+        procs = [p for p in procs if p.poll() is None]
+    new_threads = [t for t in new_threads if t.is_alive()]
+    now = _open_fds()
+    new_fds = sorted(now.keys() - fds.keys(), key=int)
+    for p in procs:
+        p.kill()
+        p.wait()
+    _POPENED_BY_THIS_TEST.clear()
+    left = ([f"thread {t.name!r} ({_what_thread(t)})" for t in new_threads]
+            + [f"process {p.args!r}" for p in procs]
+            + [f"fd {fd} ({_what_fd(now[fd])})" for fd in new_fds])
+    if left:
+        pytest.fail(f"{request.node.nodeid} left open: {', '.join(left)}. Close what a test opens "
+                    f"(`with`, or a fixture's teardown), join its threads and stop its processes.")
 
 
 @pytest.fixture(autouse=True)
@@ -269,11 +373,23 @@ def _chat_save_timer_is_cancelled():
 
     Every Chat turn arms one, and it re-arms every 30 s while the turn lock is held, so it outlives
     the test and fires into a later test's worker with this test's temp directory already gone.
-    Defined after `_turn_lock_is_handed_back`, so it tears down first and sees this test's list.
+    Its name sorts it before `_turn_lock_is_handed_back`, so it tears down after the grace.
+
+    Found by what they run, not only through `_chat_save_timer` (#608): a save already firing is on
+    nobody's slot once the next one is armed, and it arms another on its way out. So each is joined
+    before whatever it armed is cancelled.
     """
     yield
     for orch in _MADE_BY_THIS_TEST:
-        orch._cancel_chat_idle_save()
+        for _ in range(3):
+            saves = [t for t in threading.enumerate() if isinstance(t, threading.Timer)
+                     and t.function == orch._on_chat_save_idle]
+            if not saves:
+                break
+            for timer in saves:
+                timer.cancel()
+                timer.join(1.0)
+            orch._cancel_chat_idle_save()
 
 
 # The OpenCode servers THIS test started, cleared at the start of each one (#536).

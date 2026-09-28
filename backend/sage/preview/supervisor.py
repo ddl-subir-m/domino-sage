@@ -510,6 +510,7 @@ class ViteSupervisor:
                                      args=(proc, pending, self._generation), daemon=True).start()
         # stdout closed -> process exited. Restart unless we asked it to stop.
         code = proc.wait()
+        proc.stdout.close()
         restart = False
         with self._state_lock:
             if proc is not self._proc:
