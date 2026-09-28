@@ -30,6 +30,7 @@ from ..shim.native import (
     session_policy,
 )
 from ..shim.tool_json import ArgumentRepair
+from ..shim.tool_repeat import RepeatedToolCall
 from ..tool_result_window import completed_tool_results
 
 # The same logger the legacy `/v1/chat/completions` handler writes to, so its "model call ->
@@ -59,6 +60,10 @@ _IMPLEMENT_REASONING_BUDGET_MESSAGE = (
     "The implementation turn kept reasoning without text or a tool call. "
     "Sage stopped this attempt so the next step can start."
 )
+_PRE_EDIT_REPEATED_CALL = (
+    "The model repeated a tool call it had already made in this response. "
+    "Sage stopped this attempt under the active pre-edit Build policy."
+)
 
 
 class _ModelNoActionTimeout(Exception):
@@ -71,6 +76,11 @@ class _ImplementReasoningBudget(Exception):
     def __init__(self, snapshot: dict) -> None:
         super().__init__(_IMPLEMENT_REASONING_BUDGET_MESSAGE)
         self.snapshot = snapshot
+
+
+class _PreEditRepeatedCall(Exception):
+    def __init__(self) -> None:
+        super().__init__(_PRE_EDIT_REPEATED_CALL)
 
 
 def _record_build_intent(call, intent, check, failure_stage):
@@ -366,6 +376,10 @@ def install(app, get_orchestrator):
                 )
                 call.done(ok=False, error=message, outcome="pre_edit_policy")
                 return _error(message, 409)
+        state = project.control.snapshot()
+        repeats = (RepeatedToolCall(protocol)
+                   if guard is not None and guard.is_armed and not state.read_only_turn
+                   and state.chat_thread_id is None else None)
         context_state = project.context_rollover
         if context_state is not None:
             categories = composition.get("categories") if isinstance(composition, dict) else None
@@ -420,7 +434,7 @@ def install(app, get_orchestrator):
             terminal_logged = True
 
         def validated():
-            nonlocal received
+            nonlocal received, repeats
             try:
                 for chunk in upstream:
                     # A scoped Stop or ended turn always owns the result of this frame.
@@ -481,7 +495,16 @@ def install(app, get_orchestrator):
                     # before the call closes. The pump only copies this when a chunk is yielded.
                     if events.tool_input_lines:
                         project.tool_input_lines = dict(events.tool_input_lines)
-                    yield from repair.push_frames(frames)
+                    forwarded = repair.push_frames(frames)
+                    # Before OpenCode sees the frame that would run the repeated call.
+                    if repeats is not None and repeats.repeats(forwarded):
+                        with project.pre_edit_tree_lock:
+                            decision = guard.repeated_tool_call()
+                        if decision.action in {
+                                PreEditAction.RECOVER, PreEditAction.STOP, PreEditAction.FAIL}:
+                            raise _PreEditRepeatedCall()
+                        repeats = None
+                    yield from forwarded
                 if not cancel.event.is_set():
                     yield from repair.finish()
                     events.finish()
@@ -492,6 +515,8 @@ def install(app, get_orchestrator):
             except _ModelNoActionTimeout:
                 raise
             except _ImplementReasoningBudget:
+                raise
+            except _PreEditRepeatedCall:
                 raise
             except Exception:
                 if build_watchdog:
@@ -565,6 +590,8 @@ def install(app, get_orchestrator):
                 message = _MODEL_NO_ACTION_MESSAGE
             elif isinstance(error, _ImplementReasoningBudget):
                 message = _IMPLEMENT_REASONING_BUDGET_MESSAGE
+            elif isinstance(error, _PreEditRepeatedCall):
+                message = _PRE_EDIT_REPEATED_CALL
             elif isinstance(error, GatewayUpstreamError):
                 message = f"The model gateway refused this request (HTTP {error.status})."
                 if "guardrail_blocked" in error.body:
@@ -627,6 +654,8 @@ def install(app, get_orchestrator):
                     "reasoning_only_chunks": snapshot["reasoningOnlyChunks"],
                 })
                 outcome = "implement_reasoning_budget"
+            elif isinstance(error, _PreEditRepeatedCall):
+                outcome = "pre_edit_policy"
             call.done(ok=False, error=message, outcome=outcome)
             return message
 
@@ -640,7 +669,9 @@ def install(app, get_orchestrator):
             cancel.cancel()
             # Retrying an invalid request cannot repair it. Some native providers
             # report quota/request refusals inside an HTTP 200 error stream.
-            return _error(failure(first[1]), 400 if events.error == "invalid_request_error" else 502)
+            return _error(failure(first[1]),
+                          409 if isinstance(first[1], _PreEditRepeatedCall)
+                          else 400 if events.error == "invalid_request_error" else 502)
         # Word for word the legacy handler's line, so one grep of the ring reads both routes.
         log.info("model call -> streaming (first byte %.1fs%s)", time.monotonic() - started,
                  ", pending; keepalive engaged" if first is ka.EMPTY else "")
