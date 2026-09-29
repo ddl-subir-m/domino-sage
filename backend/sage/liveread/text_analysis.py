@@ -19,6 +19,8 @@ MAX_RECORDS = 10_000
 MAX_BATCH_SIZE = 100
 MAX_CONCURRENCY = 4
 MAX_TEXT_CHARS = 2_000
+# Reasoning counts against it: mimo spent up to 4,095 tokens thinking before a ~900-token answer.
+MAX_OUTPUT_TOKENS = 16_000
 
 
 @dataclass(frozen=True)
@@ -581,7 +583,7 @@ def _request(model: str, records: list[Record], args: dict, output_field: str,
         payload["labels"] = labels
     instruction = ("Return only JSON with a records array. Each item must have id and "
                    f"{output_field}. Use each provided id exactly once. Do not add unknown ids.")
-    return {"model": model, "stream": True, "messages": [
+    return {"model": model, "stream": True, "max_tokens": MAX_OUTPUT_TOKENS, "messages": [
         {"role": "system", "content": instruction},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
     ]}
