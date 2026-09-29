@@ -245,6 +245,33 @@ def test_interrupted_batch_is_unfinished_even_with_json_content(tmp_path):
     assert data.events("turn1")[0]["batches"][0]["error"] == "interrupted"
 
 
+def test_unjudged_records_tell_the_model_not_to_judge_them_itself(tmp_path):
+    """#606: with nothing but coverage counts in the reply, Gemini answered a failed pass by reading
+    the rows through scripts and judging them with delegated_model_call."""
+    calls = []
+
+    def provider(request):
+        calls.append(request)
+        if len(calls) <= 2:
+            return [("data: " + json.dumps({"choices": [{"delta": {"content": ""}}]}) + "\n\n")
+                    .encode()]
+        return sse(json.dumps(labels_for(request)))
+
+    turn, _, _, _ = setup_turn(tmp_path, provider=provider)
+    reply = json.loads(run.perform("live_read_files", analysis_args(batch_size=6), turn))
+
+    assert reply["coverage"]["processed"] == 6
+    assert reply["warning"].startswith("6 of 12 records were not judged"), reply["warning"]
+    assert "delegated_model_call" in reply["warning"]
+
+
+def test_a_complete_pass_carries_no_warning(tmp_path):
+    turn, _, _, _ = setup_turn(tmp_path)
+    reply = json.loads(run.perform("live_read_files", analysis_args(batch_size=6), turn))
+    assert reply["coverage"]["processed"] == 12
+    assert "warning" not in reply
+
+
 def test_ten_thousand_records_are_processed_by_bounded_batches(tmp_path):
     content = "complaint,email\n" + "\n".join(
         f"Package arrived late {i},person{i}@example.invalid" for i in range(10_000)
