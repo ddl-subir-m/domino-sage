@@ -7235,6 +7235,9 @@ class Orchestrator:
         self._resources = resources or FakeResourceProvider()
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float, bool]] = {}
+        # The token each Conversation's turn before this one held, so a refusal can say the model
+        # sent it (#606). Compared, never logged.
+        self._live_read_earlier: dict[str, str] = {}
         self._live_read_lock = threading.Lock()
         # Live reads this turn has served, per Conversation, under the same lock as the token they
         # spend. Reset when the token is minted, so a count is always about one turn.
@@ -14013,6 +14016,8 @@ class Orchestrator:
             project.shim.data_use.restore(workspace.read_history(thread_id),
                                           lambda ev: workspace.append_history(ev, thread_id))
         with self._live_read_lock:
+            if thread_id in self._live_read:
+                self._live_read_earlier[thread_id] = self._live_read[thread_id][0]
             self._live_read[thread_id] = (token, time.monotonic(), include_app_bindings)
             self._live_reads.pop(thread_id, None)
             self._live_read_refused.pop(thread_id, None)
@@ -14039,6 +14044,7 @@ class Orchestrator:
             for thread_id, (tok, at, _) in list(self._live_read.items()):
                 if now - at > _LIVE_READ_TTL_S:
                     self._live_read.pop(thread_id, None)
+                    self._live_read_earlier.pop(thread_id, None)
                     self._live_reads.pop(thread_id, None)
                     self._live_read_refused.pop(thread_id, None)
                     expired.append(thread_id)
@@ -14058,6 +14064,22 @@ class Orchestrator:
                     self._delegated_calls.pop(thread_id, None)
                     self._delegated_lines.pop(thread_id, None)
         return found
+
+    def _refused_token_shape(self, sent: str) -> str:
+        """How a refused token differs from the ones Sage holds, without either token's value."""
+        if not sent:
+            return "no token sent"
+        with self._live_read_lock:
+            current = [tok for tok, _, _ in self._live_read.values()]
+            earlier = set(self._live_read_earlier.values())
+        trimmed = sent.strip().strip("\"'`").strip()
+        if trimmed != sent and trimmed in current:
+            return "matches this turn's once trimmed"
+        if trimmed in earlier:
+            return "an earlier turn's"
+        shared = max((len(os.path.commonprefix([sent, tok])) for tok in current), default=0)
+        return (f"{len(sent)} chars, {'lrt_' if sent.startswith('lrt_') else 'no lrt_'} prefix, "
+                f"first {shared} match a current token")
 
     def _last_live_read_refusal(self, thread_id: str) -> str:
         """The last `not-in-range` sentence a Live read handed the model this turn, or "" (#488).
@@ -14525,7 +14547,8 @@ class Orchestrator:
                 # an earlier turn did exactly that: the same call, three times, until the repeat
                 # brake stopped it (#488). The sentence now points at WHICH token, and never at
                 # asking again.
-                log.info("live read: %s — the token is not this turn's, asking again", name)
+                log.info("live read: %s — the token is not this turn's, asking again (%s)", name,
+                         self._refused_token_shape(str(args.get("token") or "")))
                 return ("That read token is not current — it is from an earlier turn. Use the "
                         "token written in this turn's prompt, exactly as it appears there. Do "
                         "not repeat the call with the same token.")
@@ -14614,7 +14637,8 @@ class Orchestrator:
                 # assistant plainly so it uses the right token rather than inventing an answer.
                 # Worded as the Live read's twin above is, and for the same reason (#488): "ask
                 # again" reads as "repeat the call", and three repeats is the brake.
-                log.info("delegated model call: the token is not this turn's, asking again")
+                log.info("delegated model call: the token is not this turn's, asking again (%s)",
+                         self._refused_token_shape(str(args.get("token") or "")))
                 return ("That turn token is not current — it is from an earlier turn. Use the "
                         "token written in this turn's prompt, exactly as it appears there. Do "
                         "not repeat the call with the same token.")
