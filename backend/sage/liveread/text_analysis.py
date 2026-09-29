@@ -303,10 +303,21 @@ def analyze(args: dict, turn) -> str:
         return "The group column must be a column name."
 
     labels = args.get("labels")
+    if isinstance(labels, str):
+        try:
+            labels = json.loads(labels)
+        except ValueError:
+            pass
     if labels is not None:
         if (not isinstance(labels, list) or not labels
                 or any(not isinstance(label, str) or not label for label in labels)):
-            return "Labels must be a non-empty list of strings."
+            # Names what arrived, and never its values: this sentence is also the log line, and
+            # without it six refusals in a row left no trace of what the model had sent.
+            sent = ("an empty list" if labels == [] else
+                    "a list with an empty or non-string item" if isinstance(labels, list) else
+                    {str: "a string", dict: "an object"}.get(type(labels), type(labels).__name__))
+            return ('Labels must be a non-empty JSON array of strings, such as ["yes", "no"]. '
+                    f"This call sent {sent}.")
         labels = list(dict.fromkeys(labels))
     if group_by and not labels:
         return "Grouping counts judgments per group, so it needs labels. Pass labels, or omit group_by."

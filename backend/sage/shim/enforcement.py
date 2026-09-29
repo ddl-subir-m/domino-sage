@@ -357,6 +357,11 @@ class EnforcementShim:
         # plan, and stack before an implement call. A request that arrives first must not drop them.
         self._instruction_facts = InstructionFacts()
         self.resolve_capability = legacy
+        # The last capability each model resolved to, for dispatch only. The resolver re-reads the
+        # Gateway listing every few seconds and raises when that read fails; measured 2026-09-29,
+        # one failed read ended a Chat turn at 7 minutes on "The gateway route cannot be checked
+        # now". Saving a setting still refuses on an outage — that path calls the resolver itself.
+        self._last_capability: dict[str, Any] = {}
 
     @property
     def catalog(self) -> ModelCatalog:
@@ -376,6 +381,28 @@ class EnforcementShim:
         """Sage git rev for the `sage-version` cost tag, so a caller tagging its own request can
         attribute it to the same deploy the shim's own traffic is attributed to."""
         return _SAGE_VERSION
+
+    def _capability_for(self, model: str):
+        """The route to dispatch on. A failed listing read reuses this model's last answer; a model
+        never resolved in this process gets one more read, then raises, since there is nothing
+        honest to send on."""
+        try:
+            capability = self.resolve_capability(model)
+        except ValueError:
+            known = self._last_capability.get(model)
+            if known is None:
+                logging.getLogger("sage.shim").warning(
+                    "model policy: %s — the gateway listing could not be read, reading it once "
+                    "more", model)
+                capability = self.resolve_capability(model)
+                self._last_capability[model] = capability
+                return capability
+            logging.getLogger("sage.shim").warning(
+                "model policy: %s — the gateway listing could not be read, dispatching on its "
+                "last-known route", model)
+            return known
+        self._last_capability[model] = capability
+        return capability
 
     def set_catalog(self, catalog: ModelCatalog) -> None:
         """Swap the catalog this shim's requests resolve against (e.g. a per-project override of
@@ -763,7 +790,7 @@ class EnforcementShim:
         #    every alias, so a Build plan phase — always tool-carrying — could never send one, and
         #    gemini's measured 200 with tools and all was thrown away with it.
         tool_call = bool(request.get("tools"))
-        capability = self.resolve_capability(request["model"])
+        capability = self._capability_for(request["model"])
         accepted = capability.efforts_with_tools if tool_call else capability.efforts
         # Whatever the caller sent is not an answer to any of the three. `model` is overwritten
         # above on every request, so an incoming effort was chosen for a model that is no longer on
