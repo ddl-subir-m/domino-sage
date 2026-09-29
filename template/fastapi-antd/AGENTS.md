@@ -384,7 +384,7 @@ GET only, and only these families; anything else answers 403 or 405:
 | taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way — the id is the one beside the {dataset}'s name in this file, never the name itself |
 | governance bundles | `/api/governance/v1/bundles` — paged, rows under `data`; per bundle `id`, `name`, `policyName`, `stage`, `stages`, `policies`, `projectName`, `classificationValue`. One bundle on its own: `/api/governance/v1/bundles/<id>` |
 | a bundle's approvals | `/api/governance/v1/bundles/<id>/approvals` — a bare array, not rows under `data`; per approval `name`, `status`, `approvers`, `updatedAt`, `updatedBy` |
-| what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them. `{"data": null}` is how a {dataset} with no governance answers: `body.get("data") or []`, because `body.get("data", [])` still returns `None` |
+| what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them. `{"data": null}` is how a {dataset} with no governance answers: read it as no rows, not as a failure |
 | a user's name from an id | `/api/users/v1/user/<userId>` — `user.fullName`, `user.userName` |
 | every user, paged | `/api/users/v1/users` — `users[].id`, `.userName`, `.firstName`, `.lastName` |
 | whose access this is | `/api/users/v1/self` — `user.fullName`, `user.userName`, `user.email` |
@@ -412,7 +412,8 @@ GET only, and only these families; anything else answers 403 or 405:
 - **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
   `user.fullName`.
 - **Any field in a platform answer can be `null` or missing**, including ones the table names.
-  Check a value is a dict before indexing into it. A route that raises on one such answer fails
+  A null `data` is read with `body.get("data") or []` — `body.get("data", [])` still returns
+  `None`. Check a value is a dict before indexing into it. A route that raises on one such answer fails
   that request for every viewer.
 - **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
   the listing that gave it. On any other path, the platform does not route that path from inside;

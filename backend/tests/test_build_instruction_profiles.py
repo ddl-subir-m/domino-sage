@@ -328,7 +328,5 @@ def test_the_platform_section_answers_the_request_instead_of_refusing_it(templat
     row = next(line for line in template.read_text().splitlines() if "attachment-overviews" in line)
     assert '{"data": null}' in row
     assert text.count('{"data": null}') == 1
-    if template.name == "AGENTS.md" and "fastapi-antd" in str(template):
-        assert 'body.get("data") or []' in row
-    else:
-        assert "body.data ?? []" in row
+    idiom = 'body.get("data") or []' if "fastapi-antd" in str(template) else "body.data ?? []"
+    assert idiom in text
