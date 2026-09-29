@@ -411,6 +411,10 @@ _DELEGATED_CALLS_MAX = 25
 # not per read, so a Thread reaches this only by touching twenty different tables — and newest
 # first, because the ones a stalled investigation keeps re-reading are the recent ones.
 _ALREADY_READ_MAX = 20
+# How many table names an investigation's prompt carries beside its schema counts (#606). The live
+# warehouse holds 600+ tables, over 21 KB of names for the first 500, so the list is the ones whose
+# names share a word with the question and the rest stay one catalogue query away.
+_CATALOGUE_MATCHES = 40
 # How long the Alias listing a Delegated model call resolves against stays good. Short, because its
 # only job is to keep one classification pass from re-asking the gateway "which models exist" fifty
 # times; it is not a cache anything else reads. See `_alias_listing`.
@@ -3592,6 +3596,32 @@ def _chat_label_is_live_read(label: str) -> bool:
     return _bare_tool_name(str(label).split(" (", 1)[0]) in _LIVE_READ_TOOLS
 
 
+def _catalogue_note(asked: str, source: Binding, tables: list[Candidate]) -> str:
+    """One Data Source's schemas with their table counts, then the tables the question names (#606).
+
+    Ranked by `table_search.rank`, the matcher the table card uses, so the prompt and the card
+    cannot disagree about which names a question reaches.
+    """
+    def dotted(*parts: str) -> str:
+        return ".".join(p for p in parts if p)
+
+    counts: dict[str, int] = {}
+    for c in tables:
+        key = dotted(c.database, c.schema)
+        counts[key] = counts.get(key, 0) + 1
+    ranking = table_search.rank(asked, source, tables)
+    matched = ranking.candidates[:min(ranking.matched, _CATALOGUE_MATCHES)]
+    lines = [f"Tables in {source.display_name}, read from its catalogue (names only):"]
+    lines += [f"- {key}: {n} table" + ("" if n == 1 else "s") for key, n in counts.items()]
+    if matched:
+        lines.append("Tables whose names share a word with the question:")
+        lines += [f"- {dotted(c.database, c.schema, c.table)}" for c in matched]
+    else:
+        lines.append("No table name shares a word with the question.")
+    lines.append("Any other table is one live_read_query of INFORMATION_SCHEMA.TABLES away.")
+    return "\n".join(lines)
+
+
 def _chat_activity(tool: str, subject: str, inp: dict | None = None) -> tuple[str, str]:
     """(the kind of work, the thing it is working on) for a tool call Chat should name."""
     name = _bare_tool_name(tool)
@@ -4639,7 +4669,7 @@ def _columns_text(item: dict) -> str:
 
 def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = "",
                        thread_id: str = "<threadId>", investigating: bool = False,
-                       also: tuple[dict, ...] = ()) -> str:
+                       also: tuple[dict, ...] = (), catalogued: frozenset[str] = frozenset()) -> str:
     """One context row for the Chat turn prompt.
 
     `also` is every other table chip on the same Data Source as a scoped `item`. With any, the one
@@ -4875,13 +4905,20 @@ def _chat_context_line(item: dict, *, file_note: str = "", folder_note: str = ""
             # Same ordering as the scoped row above, for the same reason (#436), and the same reason
             # the old text could not be left alone even where it resolved a source name: "list its
             # tables before you answer" was an instruction to run Python on a turn that has none.
-            return brand.text(
-                "- {dataSource} {name}{extra}. No {scope} is chosen on it, so which tables it holds is "
-                "not recorded here. Discover them before you answer: call `live_read_query` with this "
-                "turn's token, source {quoted}, and one SELECT of at most 50 rows from "
+            discover = (
+                "- {dataSource} {name}{extra}. No {scope} is chosen on it; its tables are listed "
+                "below. Pick from that list and query the table the question needs with "
+                "`live_read_query`, this turn's token and source {quoted}, named in full as "
+                "database.schema.table. "
+                if store in catalogued else
+                "- {dataSource} {name}{extra}. No {scope} is chosen on it, so which tables it holds "
+                "is not recorded here. Discover them before you answer: call `live_read_query` with "
+                "this turn's token, source {quoted}, and one SELECT of at most 50 rows from "
                 "INFORMATION_SCHEMA.TABLES (or the catalog this source uses). "
                 + live_read.session_database_prompt() +
-                " Then query the table the question needs, named in full as database.schema.table. "
+                " Then query the table the question needs, named in full as database.schema.table. ")
+            return brand.text(
+                discover +
                 "To judge text in a table you found, count the candidate rows with "
                 "`live_read_query`, then call `live_read_table` with operation=analyze_text, "
                 "source {quoted}, sql selecting the id and the text (or a snippet around the match) "
@@ -14893,7 +14930,7 @@ class Orchestrator:
             ) if total > 1 else brand.text("Asked {names} once this {turn}.", names=named),
         }
 
-    def _data_use_note(self) -> str:
+    def _data_use_note(self, catalogued: bool = False) -> str:
         """The lines that tell the model `live_read_query` and `live_read_files` exist.
 
         Unconditional since #431. Until then this returned `""` unless the Project carried
@@ -14946,8 +14983,12 @@ class Orchestrator:
                 "A Dataset folder: live_read_files, operation=analyze_text, and the Dataset name. "
                 "Omit path. The reply names the CSV files and their columns. Call again with path "
                 "set to the file name inside the folder, not the public/data path, and text_column. "
-                "A Data Source with no table: one live_read_query of INFORMATION_SCHEMA.TABLES and "
-                "INFORMATION_SCHEMA.COLUMNS. " + live_read.session_database_prompt() + " "
+                + ("A Data Source with no table: pick from its tables where they are listed below, "
+                   "and otherwise one live_read_query of INFORMATION_SCHEMA.TABLES. "
+                   if catalogued else
+                   "A Data Source with no table: one live_read_query of INFORMATION_SCHEMA.TABLES "
+                   "and INFORMATION_SCHEMA.COLUMNS. ")
+                + live_read.session_database_prompt() + " "
                 "For text in a Data Source table: find the candidates with live_read_query (a "
                 "count), then live_read_table, operation=analyze_text, the source, and sql "
                 "selecting the id and the text of just those rows. For long text select a window "
@@ -15316,12 +15357,61 @@ class Orchestrator:
                 lines.append(f"- {entry['source']} — read on {said}")
         return "\n".join(lines)
 
+    def _chat_catalogue(self, thread_id: str, prompt: str) -> dict[str, str]:
+        """The tables each attached Data Source holds, for an open investigation's prompt (#606).
+
+        Read before the prompt is rendered, never during it (`_already_read_note`), and through
+        `_table_catalog`, so a session pays the one database-wide query per database once. A replay
+        spent most of its 25 reads guessing schema names; the names were metadata Sage could read
+        itself (ADR-0041 withholds rows, not names).
+
+        Every Data Source chip counts, a chosen table's too: an investigation is told to look past
+        its starting table. The chip's database narrows the walk, and its schema does only where no
+        table was chosen. Matched against the latest sentence alone: Continue resends the question
+        it continues (`continue_turn_stream`).
+        """
+        ctx = ThreadStore(self._chat_project().record.path).read_context(thread_id)
+        wanted: dict[str, tuple[str, str]] = {}
+        for item in ctx.get("items") or []:
+            if str(item.get("kind") or "") not in ("data_source", "datasource", "table"):
+                continue
+            name = str(item.get("sourceName") or item.get("subtitle") or item.get("name") or "")
+            scope = item.get("scope") if isinstance(item.get("scope"), dict) else {}
+            if name and name not in wanted:
+                wanted[name] = (str(scope.get("database") or ""),
+                                "" if scope.get("table") else str(scope.get("schema") or ""))
+        if not wanted:
+            return {}
+        try:
+            sources = {d.name: d for d in self._resources.list_data_sources()}
+        except Exception:
+            return {}
+        notes: dict[str, str] = {}
+        for name, (database, schema) in wanted.items():
+            source = sources.get(name)
+            if source is None:
+                continue
+            binding = Binding(KIND_DATA_SOURCE, source.id, source.name, name,
+                              database=database or None, schema=schema or None)
+            skipped: list[str] = []
+            try:
+                tables = [c for d in self._databases_to_walk(source, binding)
+                          for c in self._database_candidates(source, binding, d, skipped)]
+            except Exception as e:
+                log.info("catalogue: %s could not be listed — %s", name, e)
+                continue
+            if tables:
+                notes[name] = _catalogue_note(prompt, binding, tables)
+        return notes
+
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
                      urls: list[str] | None = None, workspace: Path | None = None,
                      artifacts: list[dict] | None = None,
                      handoffs: list[dict] | None = None,
                      history: list[dict] | None = None,
-                     declined: bool = False, rebuilt: str = "", investigating: bool = False) -> str:
+                     declined: bool = False, rebuilt: str = "", investigating: bool = False,
+                     catalogue: dict[str, str] | None = None) -> str:
+        catalogue = catalogue or {}
         continuing = _has_earlier_user_turn(history)
         lines = [
             f"Thread id: {thread_id}",
@@ -15361,7 +15451,7 @@ class Orchestrator:
             # browser and unusable from here — and an agent that found it told the person it could
             # not reach the model at all (#370).
             self._delegated_models_note(thread_id),
-            self._data_use_note(),
+            self._data_use_note(catalogued=bool(catalogue)),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
         ]
@@ -15379,8 +15469,13 @@ class Orchestrator:
                  "and dataset=upload. A Dataset folder uses live_read_files with operation=analyze_text "
                  "and the Dataset name, and omits path. The reply names the CSV files and their "
                  "columns. Call again with path set to the file name inside the folder, not the "
-                 "public/data path, and text_column. A Data Source with no table uses one "
-                 "live_read_query of INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS. "
+                 "public/data path, and text_column. "
+                 + ("A Data Source whose tables are listed below: pick from them, and read the "
+                    "columns of the ones you pick with one live_read_query of "
+                    "INFORMATION_SCHEMA.COLUMNS. Any other uses one of INFORMATION_SCHEMA.TABLES. "
+                    if catalogue else
+                    "A Data Source with no table uses one live_read_query of "
+                    "INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS. ")
                  + live_read.session_database_prompt() + " "
                  "Then the statement or the text call the question needs. Do not ask the person to attach "
                  "a file or a table."),
@@ -15394,6 +15489,7 @@ class Orchestrator:
                  "and append that count to the findings file before you refine. A word match or a "
                  "regex finds the candidates; it is not the judgment. One model call per row is not "
                  "the answer and will not finish inside the turn."),
+                *catalogue.values(),
                 "",
             ]
         # The first turn after a summary-scoped clear keeps the promise the offer made: the model
@@ -15445,7 +15541,8 @@ class Orchestrator:
                     folder = _context_folder_state(workspace, it)
                 lines.append(_chat_context_line(it, file_note=note, folder_note=folder,
                                                thread_id=thread_id, investigating=investigating,
-                                               also=tuple(same[1:]) if same[:1] == [it] else ()))
+                                               also=tuple(same[1:]) if same[:1] == [it] else (),
+                                               catalogued=frozenset(catalogue)))
             for url in urls:
                 lines.append(
                     f"- URL {url}. Read this page and answer from what it contains. "
@@ -16380,6 +16477,9 @@ class Orchestrator:
             # open, and carried nothing. Build never saw it because Build's session directory IS the
             # workspace root; Chat inherited the value and not the reason for it.
             tap = _EventTap(client, sid, directory=work)
+            with timing.span("setup.catalogue"):
+                catalogue = (self._chat_catalogue(thread_id, prompt)
+                             if investigating and not source_request else {})
             # Built on its own line rather than inside the call below, so the two costs can be told
             # apart: assembling the prompt reads the Thread's history, artifacts and handoffs off
             # disk, while the dispatch is one HTTP POST. Folded together they were one unnamed gap.
@@ -16406,7 +16506,8 @@ class Orchestrator:
                                                     history=prompt_history,
                                                     declined=declined,
                                                     rebuilt=rebuilt,
-                                                    investigating=investigating)
+                                                    investigating=investigating,
+                                                    catalogue=catalogue)
                 if artifact_token is not None:
                     # Says what to do, never what this turn is or cannot do. The block is
                     # model-facing, so every word in it is a word the model can hand back to the
