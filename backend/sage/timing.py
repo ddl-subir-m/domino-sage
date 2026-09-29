@@ -972,6 +972,11 @@ def render(rec: TurnRecord) -> str:
                       f"ttfb={ttfb}{shim} total={total} chunks={c['chunks']}"
                       f"{req} {tok}{tools}"
                       f"{'' if c['ok'] else '  FAILED ' + c['error']}")))
+    for t in d["tools"]:
+        if t.get("command"):
+            rows.append((t["firstObservedMs"],
+                         (f"  {t['firstObservedMs'] / 1000:7.1f}  {t['observedMs'] / 1000:7.1f}s"
+                          f"      $ {t['tool']}: {t['command']!r}")))
     rows.sort(key=lambda r: r[0])
     lines = [head, "      at    dur", *[r[1] for r in rows]]
     if d["counters"]:

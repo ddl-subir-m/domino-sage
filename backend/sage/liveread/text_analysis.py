@@ -338,7 +338,8 @@ def analyze(args: dict, turn) -> str:
         return f"Concurrency must be between 1 and {MAX_CONCURRENCY}."
     row_limit = args.get("row_limit")
     if row_limit is not None and (type(row_limit) is not int or row_limit < 1):
-        return "The row limit must be a positive integer."
+        return (f"The row limit must be a positive integer, and this call sent "
+                f"{json.dumps(row_limit)[:40]}. Omit row_limit to use every row.")
 
     serving = ""
     asked = str(args.get("model") or "").strip()

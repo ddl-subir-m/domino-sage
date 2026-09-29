@@ -1,10 +1,12 @@
-"""Bounded tool observations. No extra I/O, arguments or content in diagnostic records."""
+"""Bounded tool observations. No extra I/O, arguments or content in diagnostic records, except a
+shell command's text when the workspace sets SAGE_DIAG_COMMANDS=1."""
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
 import math
+import os
 import posixpath
 import re
 import secrets
@@ -14,6 +16,7 @@ MAX_TOOLS = 500
 MAX_INTERVALS = 2000
 MAX_ARGUMENT_KEYS = 16
 MAX_UNKNOWN_ARGUMENT_KEYS = 16
+MAX_COMMAND_CHARS = 2000
 _READS = {"read", "glob", "grep", "list", "live_read_files", "live_read_table"}
 _EDITS = {"edit", "write"}
 _READ_ONLY = _READS | {"todoread", "todowrite"}
@@ -207,6 +210,13 @@ class ToolObserver:
                 pattern = args.get("pattern")
                 if isinstance(pattern, str) and run["tool"] in {"grep", "glob"}:
                     run["queryFingerprint"] = self._fingerprint(pattern)
+                # Opt-in, because a command line carries paths, table names and row values. It
+                # stays out of Build diagnostics by not being in `build_diagnostics.TOOL_FIELDS`.
+                if run["tool"] in _SHELLS and os.environ.get("SAGE_DIAG_COMMANDS") == "1":
+                    command = next((args[key] for key in _COMMAND_KEYS
+                                    if isinstance(args.get(key), str)), None)
+                    if command is not None:
+                        run["command"] = command[:MAX_COMMAND_CHARS]
             # A repeated old running snapshot cannot reopen a completed call.
             if status in {"pending", "running", "in_progress", "completed", "error"} and run["completedObservedMs"] is None:
                 run["status"] = status

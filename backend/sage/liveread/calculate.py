@@ -91,7 +91,8 @@ def calculate(args, turn):
         return "Choose distinct group and numeric columns, and valid result fields."
     scope = args.get("row_limit")
     if scope is not None and (type(scope) is not int or scope < 1):
-        return "The row limit must be a positive integer."
+        return (f"The row limit must be a positive integer, and this call sent "
+                f"{json.dumps(scope)[:40]}. Omit row_limit to use every row.")
     read_limit = (scope or result.CAP_ROWS) + 1
     operation = "du_" + uuid4().hex
     source = str(args.get("path") or args.get("table") or "")
