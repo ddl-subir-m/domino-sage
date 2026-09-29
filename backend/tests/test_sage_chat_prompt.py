@@ -224,6 +224,8 @@ def test_the_turn_is_told_to_do_the_work_in_one_script():
     prompt = json.loads((root / "opencode.json").read_text(encoding="utf-8"))[
         "agent"]["sage-chat"]["prompt"]
     for probe in ("**Do the whole job in one script.**",
+                  "For an ordinary chart or table",
+                  "Once the turn prompt says an investigation is open, this rule",
                   "inside the script you are already running, not in a"):
         assert probe in md, probe
         assert probe in prompt, probe

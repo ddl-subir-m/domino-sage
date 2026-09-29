@@ -306,3 +306,27 @@ def test_a_direct_implement_turn_sends_the_direct_profile(protocol):
     assert "Design system — build a polished product, not a prototype" not in encoded
     assert rewrites["buildInstructionProfile"]["profile"] == "direct"
     assert set(rewrites["buildInstructionProfile"]["removedStageBlocksById"]) == {"design", "platform"}
+
+
+@pytest.mark.parametrize("template", TEMPLATES, ids=("react-vite", "fastapi-antd"))
+def test_the_platform_section_answers_the_request_instead_of_refusing_it(template):
+    """Two refusals were read as the task. A person who asked for rejected, or for the studies
+    they can access, got neither: the prompt forbade the tri-state and forbade "what the current
+    user can access". The same section left `creationTime` unnamed as the header date, and left
+    `{"data": null}` off the governance call that returns it.
+    """
+    text = " ".join(template.read_text().split())
+    assert "approved/pending/rejected" not in text
+    assert "what the current user can access" not in text
+    assert (
+        'An approval is `Approved` or not approved, including when the person said "rejected."'
+        in text
+    )
+    assert "A study list is the publisher's list, and the screen says whose access that is" in text
+    assert "this is the header date" in text
+    assert "<cut date>" in text
+    row = next(line for line in template.read_text().splitlines() if "attachment-overviews" in line)
+    assert '{"data": null}' in row
+    assert text.count('{"data": null}') == 1
+    idiom = 'body.get("data") or []' if "fastapi-antd" in str(template) else "body.data ?? []"
+    assert idiom in text
