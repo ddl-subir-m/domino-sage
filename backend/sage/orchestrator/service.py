@@ -262,6 +262,11 @@ log = logging.getLogger("sage.orchestrator")
 # cannot change Chat behavior.
 _CHAT_POLL_FAILURE_LIMIT = 4
 _CHAT_LIVE_READ_LIMIT = 25
+# How far into a Chat turn a Live read's reply starts asking for the answer (#606). Well inside the
+# work window (`_CHAT_TURN_MAX_S` less `_CHAT_FINDINGS_FLUSH_S`), so the answer still has minutes to
+# be written: measured live, a turn that had its answer spent its last reads on coverage nobody
+# asked for and reached the ceiling without writing it.
+_CHAT_ANSWER_BY_S = 360.0
 _CHAT_EXACT_REPEAT_LIMIT = 3
 _CHAT_STOP_GRACE_SECONDS = 30.0
 
@@ -14531,9 +14536,9 @@ class Orchestrator:
             with self._live_read_lock:
                 n = self._live_reads.get(turn.thread_id, 0) + 1
                 self._live_reads[turn.thread_id] = n
-            limit = (self._build_policy.live_read_limit
-                     if turn.thread_id == self._chat_project().build_conversation
-                     else _CHAT_LIVE_READ_LIMIT)
+                minted = self._live_read.get(turn.thread_id)
+            building = turn.thread_id == self._chat_project().build_conversation
+            limit = self._build_policy.live_read_limit if building else _CHAT_LIVE_READ_LIMIT
             if n > limit:
                 # Loud, and it names the number: an agent told nothing cannot tell a cap from a
                 # store with nothing to say, and the loop this exists to end is one that never
@@ -14551,7 +14556,7 @@ class Orchestrator:
                 serial = self._live_read_serial.setdefault(turn.thread_id, threading.Lock())
             with serial:
                 try:
-                    return live_read.perform(name, args, turn)
+                    reply = live_read.perform(name, args, turn)
                 except Exception as e:
                     # Recorded and re-raised, never handled here: `mcp.handle` owns what the
                     # assistant is told, and what it is told is to answer from Python instead. Never
@@ -14565,6 +14570,17 @@ class Orchestrator:
                     })
                     self._live_read_fell_through_n += 1
                     raise
+            # Chat only: Build has no wall-clock ceiling to answer before. Added to the reply, never
+            # in place of it — the read was worth making, and the answer may need it.
+            ran = time.monotonic() - minted[1] if minted else 0.0
+            if not building and ran >= _CHAT_ANSWER_BY_S:
+                log.info("live read: %s — answer-by nudge at %.0fs", name, ran)
+                reply += brand.text(
+                    "\n\nThis {turn} has run {minutes} minutes. If what you have measured answers "
+                    "the question, write the answer now, with its result table, and list any "
+                    "further checks as follow-ups the person can ask for.",
+                    minutes=str(int(ran // 60)))
+            return reply
 
         if method in ("initialize", "tools/list"):
             # `/api/diag` reaches this route too, and it asks the same `tools/list` OpenCode asks on
@@ -15002,7 +15018,8 @@ class Orchestrator:
                 "conversation names a model, purpose for the judgment, and a bounded batch_size. "
                 "It sends only the selected text and stable task-local IDs "
                 "through the LLM Gateway, rejects missing, duplicate, unknown or malformed returned "
-                "IDs as incomplete, writes a result table, and reports coverage. "
+                "IDs as incomplete, writes a result table, and reports how many records it "
+                "judged; keep that count in the answer as a caveat. "
                 "For an attached text, Markdown, DOCX or searchable PDF requirements document, "
                 "specification or "
                 "shell, use live_read_files with operation=document, dataset=upload, its exact "
@@ -15445,7 +15462,12 @@ class Orchestrator:
              "If they are not in your tool list "
              "this turn, use what you do have; if the answer needs a calculation you have no way to "
              "run, say what you would need in order to answer it and what you would do once it is "
-             "there, rather than improvising a way around it."),
+             "there, rather than improvising a way around it. "
+             "Once your reads answer the question as asked, write the answer and its result table "
+             "before any further read. Checks that would make it more complete but that the person "
+             "did not ask for, such as how many accounts have no records at all, whether the date "
+             "range is complete, or a second source to cross-check, go at the end of the answer as "
+             "follow-ups the person can ask for, not as more reads in this turn."),
             # The same token, said again where the second tool is taught, because a sentence about
             # Live read is not one an agent reading about language models will apply to itself
             # (ADR-0057). What it must not do is go looking: the one auth recipe discoverable in the
