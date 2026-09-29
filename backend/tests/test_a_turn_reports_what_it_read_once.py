@@ -357,10 +357,10 @@ def test_re_persists_multiply_by_read_not_by_model_call():
     assert "Gateway delivery: unknown" not in words
 
 
-def _reopen(running_in: str) -> str | None:
+def _reopen(running_in: str, *, reload: bool = False) -> str | None:
     """Open `thr_1` while a chat turn runs in `running_in`, and say what the line reads."""
     history = [{"type": "user", "text": "q"}]
-    payload = {"thread": {"id": "thr_1", "history": history},
+    payload = {"thread": {"id": "thr_1", "history": history}, "reload": reload,
                "runningTurn": {"kind": "chat", "conversation": running_in, "app": ""}}
     out = subprocess.run(["node", str(_JS / "data_used_grouping_harness.mjs")],
                          input=json.dumps(payload), check=False, capture_output=True,
@@ -376,6 +376,14 @@ def test_coming_back_to_a_running_turn_brings_its_line_back():
     assert _reopen("thr_1") == "Thinking…"
     # And only there: another Conversation's running turn owns its own line, not this view's.
     assert _reopen("thr_other") is None
+
+
+@needs_node
+def test_a_reloaded_tab_shows_the_running_turns_line():
+    """A reloaded tab has no stream; it learns of the turn from the lock after the Conversation is
+    open, so the line has to come from that read (#606)."""
+    assert _reopen("thr_1", reload=True) == "Thinking…"
+    assert _reopen("thr_other", reload=True) is None
 
 
 @needs_node

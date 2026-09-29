@@ -9773,6 +9773,12 @@ window.SW = window.SW || {};
       const running = applyTurnState(turn);
       state.chatRunning = running;
       if (running) {
+        // A tab that reloaded mid-turn has no stream to name the work, so nothing ever put a line
+        // under the question — Stop and nothing else (#606). Build's half is `model_active` above.
+        // Only with no stream of this tab's own: that stream owns the line while it runs.
+        const turn = state.runningTurn;
+        if (!state.typing && liveChatTurns === 0 && turn && turn.kind === 'chat'
+            && state.thread && turn.conversation === state.thread.id) state.typing = 'Thinking…';
         notify();
         store._watchTurn();
         return;

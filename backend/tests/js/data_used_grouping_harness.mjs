@@ -21,7 +21,7 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { thread, block: rawBlock, runningTurn } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { thread, block: rawBlock, runningTurn, reload } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const json = (body) => ({
   ok: true, status: 200,
@@ -34,6 +34,9 @@ function serve(url) {
   const path = String(url).replace(/^\.\/api/, '');
   if (/^\/threads\/[^/]+\/context$/.test(path)) return json({ items: [] });
   if (/^\/threads\/[^/]+$/.test(path)) return json(thread);
+  if (path === '/project/build/state' && runningTurn) {
+    return json({ running: true, running_turn: { ...runningTurn, turnId: 'turn_1' } });
+  }
   return json({});
 }
 
@@ -121,8 +124,10 @@ if (rawBlock) {
 }
 
 // A chat turn already running when the Conversation is opened — the person coming back from Build.
-if (runningTurn) SW.store.set({ chatRunning: true, runningTurn });
+// `reload` is a fresh tab instead: it learns of the turn only from the server's lock, after opening.
+if (runningTurn && !reload) SW.store.set({ chatRunning: true, runningTurn });
 await SW.store.openThread(thread.id);
+if (reload) await SW.store.refreshTurnState();
 const blocks = (SW.store.get().messages || []).flatMap((m) => m.blocks || [])
   .filter((b) => b.type === 'data_used');
 
@@ -139,3 +144,5 @@ console.log(JSON.stringify({
   rendered: blocks.map(draw),
   typing: SW.store.get().typing,
 }));
+// A running turn starts the store's lock watcher, whose interval would keep this process alive.
+process.exit(0);
