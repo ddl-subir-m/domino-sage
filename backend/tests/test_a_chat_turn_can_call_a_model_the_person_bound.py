@@ -142,6 +142,33 @@ def test_a_delegated_model_call_is_named_the_same_either_way():
         "pins those two to each other")
 
 
+def _delegated_bullet(prompt: str) -> str:
+    start = prompt.index("- **To have a language model read text for you")
+    return prompt[start:prompt.index("\n- ", start)]
+
+
+def test_row_text_is_sent_to_analyze_text_rather_than_through_a_delegated_call():
+    """ADR-0041: the chat model never sees row text. Measured 2026-09-28 (#606): told to use this
+    tool on "rows you have already gathered", Gemini read a Data Source's rows into its own context
+    and fed them to four delegated calls, and never called analyze_text once. Every place that
+    teaches this tool has to hand row text to analyze_text instead."""
+    agents = (ROOT / "template" / "chat" / "AGENTS.md").read_text()
+    config = json.loads((ROOT / "opencode.json").read_text())
+    mirrored = [a["prompt"] for a in config["agent"].values()
+                if "- **To have a language model read text for you" in a.get("prompt", "")]
+    ts = (ROOT / "backend" / "sage" / "delegated" / "tools" / f"{delegated.TOOL_NAME}.ts").read_text()
+    teachers = {
+        "AGENTS.md": _delegated_bullet(agents),
+        "opencode.json": _delegated_bullet(mirrored[0]) if mirrored else "",
+        "the MCP description": delegated_mcp.TOOLS[0]["description"],
+        "the custom tool's description": ts,
+    }
+    for where, text in teachers.items():
+        assert "analyze_text" in text, where
+        assert "rows you have already" not in text, where
+    assert teachers["AGENTS.md"] == teachers["opencode.json"]
+
+
 def test_the_custom_tool_is_installed_beside_live_reads_and_posts_the_mcp_call(tmp_path: Path):
     """The tool is a real file OpenCode loads, and it lives in its OWN module's `tools/` directory —
     so the installer has to read both, and a collision between them is refused rather than resolved

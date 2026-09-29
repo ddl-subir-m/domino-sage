@@ -43,9 +43,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": TOOL_NAME,
         "description": (
             "Ask a language model the person added to this conversation. Use this when the work "
-            "needs a model to read text — classifying, summarising or extracting over rows you "
-            "have already gathered — rather than doing it by hand or telling the person you "
-            "cannot reach a model. Name the Alias exactly as this conversation names it: a model "
+            "needs a model to read text — classifying, summarising or extracting over text you "
+            "already hold — rather than doing it by hand or telling the person you cannot reach a "
+            "model. Text in the rows of a Data Source or a Dataset is not that text: pass it to "
+            "analyze_text with this same Alias, which hands the rows to the model without passing "
+            "them through you. Name the Alias exactly as this conversation names it: a model "
             "that is not in this conversation is refused, never swapped for another one. You get "
             "back the model's answer as text."
         ),

@@ -18,6 +18,11 @@ from .scope import _classifier_effort, _classifier_route, _extract, _model_for
 log = logging.getLogger(__name__)
 
 TIMEOUT_S = 5.0
+# An explicit Ask effort above the route's lowest level is honoured (#417), and it reasons before it
+# answers. Measured on mimo-v2.6-pro, 2026-09-28: at `medium` the 160-token cap ran out on reasoning
+# in 2 of 3 calls, and uncapped, low through max took 4.5-12.2s and at most 361 output tokens.
+REASONING_TIMEOUT_S = 15.0
+REASONING_MAX_TOKENS = 1024
 MIN_CONFIDENCE = 0.65
 MAX_PROMPT_CHARS = 1600
 MAX_CONTEXT_CHARS = 1200
@@ -141,7 +146,10 @@ class Pending:
         assert isinstance(self.done, threading.Event)
         assert self.box is not None
         remaining = max(0.0, self.deadline - time.monotonic())
+        extended = 0.0
         if not self.done.wait(remaining):
+            extended = self.box.get("deadline", self.deadline)
+        if extended and not self.done.wait(max(0.0, extended - time.monotonic())):
             # Counted here and possibly again on the worker (#463). The thread is abandoned rather
             # than cancelled — a blocked socket read cannot be interrupted — so a call that lands
             # after the wall reports for itself below, and the turn is credited with two lost
@@ -149,7 +157,7 @@ class Pending:
             # for a thread this class exists to stop waiting for, and the log ring shows both lines.
             degraded.judgement_lost()
             log.warning("chat intent: classify timed out after %.1fs - using current Chat behavior"
-                        " model=%s", self.timeout_s, self.model or "-")
+                        " model=%s", self.timeout_s + extended - self.deadline, self.model or "-")
             return Intent(fallback="timeout")
         if err := self.box.get("error"):
             degraded.judgement_lost()
@@ -206,6 +214,8 @@ def start(
     }
     labels = CostLabels(phase="ask", mode="auto", component="chat-intent",
                         session=session, version=version)
+    started = time.monotonic()
+    box: dict = {}
 
     def _call() -> Intent:
         call = timing.model_call(model, "chat-intent")
@@ -217,6 +227,9 @@ def start(
             route = capability(model)
             if effort := _classifier_effort(route, catalog.ask_effort):
                 request["reasoning_effort"] = effort
+                if effort != route.efforts[0]:
+                    request["max_tokens"] = REASONING_MAX_TOKENS
+                    box["deadline"] = started + REASONING_TIMEOUT_S
             for chunk in _classifier_route(gateway, request, labels, route):
                 call.first_byte()
                 call.chunk()
@@ -243,7 +256,6 @@ def start(
         return intent
 
     done = threading.Event()
-    box: dict = {}
 
     def _worker() -> None:
         try:
@@ -254,5 +266,5 @@ def start(
             done.set()
 
     threading.Thread(target=_worker, name="sage-chat-intent", daemon=True).start()
-    return Pending(done=done, box=box, deadline=time.monotonic() + timeout_s, timeout_s=timeout_s,
+    return Pending(done=done, box=box, deadline=started + timeout_s, timeout_s=timeout_s,
                    model=model)

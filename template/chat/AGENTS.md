@@ -222,8 +222,11 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   answer it and what you would do once it is there.
 - **To have a language model read text for you, use `delegated_model_call`.** When the person has
   put an {llmAlias} in this conversation and the work needs a model — classifying, summarising or
-  extracting over rows you have already gathered — call it: pass this turn's token as `token`, the
+  extracting over text you already hold — call it: pass this turn's token as `token`, the
   model's name as `alias`, and your question as `prompt`. You get the model's answer back as text.
+  Text in the rows of a {dataSource} or a {dataset} is not that text: it is one `analyze_text` call
+  with the same name as `alias`, below, which hands the rows to that model without passing them
+  through you.
   Do not read `src/appLlm.ts` looking for a way to do this. That file is correct, and it is about
   the published app's own call from the viewer's browser — a {turn} here has no browser and no
   cookie, which is why that route reads as a dead end. This tool is the route a {turn} has.

@@ -15,7 +15,8 @@
 //
 // EVERY ARGUMENT COMES OUT REQUIRED. OpenCode marks every key of `args` required and has no reading
 // for a plain schema that says otherwise, so the optional ones are declared nullable and say so,
-// and `execute` drops the nulls before posting — Python then sees the key absent.
+// and `execute` drops the nulls before posting — Python then sees the key absent. Nullable is
+// spelled `anyOf`, never a type list, for the reason at `orNull` in `live_read.ts` (#609).
 //
 // A shim and nothing more. The grant, the per-turn cap, the sensitivity lock and the cost tags all
 // stay in Python, behind the route this posts to. No token and no gateway URL is ever handed to the
@@ -127,8 +128,10 @@ const NOT_ANSWERED = " The request was sent and may still be running, so asking 
 export default {
   description:
     "Ask a language model the person added to this conversation. Use this when the work needs a " +
-    "model to read text — classifying, summarising or extracting over rows you have already " +
-    "gathered — rather than doing it by hand or telling the person you cannot reach a model. " +
+    "model to read text — classifying, summarising or extracting over text you already hold — " +
+    "rather than doing it by hand or telling the person you cannot reach a model. Text in the " +
+    "rows of a Data Source or a Dataset is not that text: pass it to analyze_text with this same " +
+    "Alias, which hands the rows to the model without passing them through you. " +
     "Name the Alias exactly as this conversation names it: a model that is not in this " +
     "conversation is refused, never swapped for another one. You get back the model's answer as " +
     "text.",
@@ -143,11 +146,11 @@ export default {
     },
     prompt: { type: "string", description: "What to ask the model." },
     system: {
-      type: ["string", "null"],
+      anyOf: [{ type: "string" }, { type: "null" }],
       description: "An instruction sent ahead of the prompt." + OPTIONAL,
     },
     max_tokens: {
-      type: ["integer", "null"],
+      anyOf: [{ type: "integer" }, { type: "null" }],
       description: "Answer budget. Null uses the default, and the server caps it either way.",
     },
   },
