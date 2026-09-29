@@ -358,6 +358,25 @@ def test_re_persists_multiply_by_read_not_by_model_call():
 
 
 @needs_node
+def test_identical_model_requests_are_drawn_once_with_every_id():
+    """#606: every turn-model request after a read resends it, so a long turn's card repeated the
+    same "Serving model: unknown" block once per step. A request that differs still stands alone."""
+    same = {"requested_alias": "mimo", "state": "response_completed", "serving_model": None,
+            "provider_receipt": "unknown", "decision_stage": "unknown", "delivery": "unknown",
+            "cache": "unknown", "fallback": "unknown", "failure": None}
+    requests = [{**same, "request_id": f"req_{i}"} for i in range(5)]
+    requests.append({**same, "request_id": "req_bad", "state": "failed", "failure": "policy"})
+    drawn = _draw({"type": "data_used", "turnId": "turn_a", "events": [
+        {**_event("du_1", "turn_a", "live_read", "sales.csv"), "requests": requests}]})
+    words = drawn["words"]
+    assert words.count("Serving model") == 2
+    assert "5 model requests with the same result:" in words
+    assert "Requests: req_0, req_1, req_2, req_3, req_4" in words
+    assert "Request: req_bad" in words
+    assert "Failure: policy." in words
+
+
+@needs_node
 def test_events_carrying_no_turn_keep_their_own_cards():
     """Absence is not a value. Events that share only the ABSENCE of a turn must not be drawn as
     though they shared a turn.

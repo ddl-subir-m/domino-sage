@@ -2391,6 +2391,22 @@ window.SW = window.SW || {};
   //
   // The count is in the summary because the fold is shut when the reader meets it, and "Data used"
   // alone cannot say whether it holds one operation or five.
+  // Every turn-model request after a read resends it, so an operation carries one request per
+  // step of the turn — forty identical blocks on a long one (#606). Identical evidence is drawn
+  // once with every id kept; a request that differs in any field still gets its own block.
+  const REQUEST_EVIDENCE = ['requested_alias', 'serving_model', 'state', 'provider_receipt',
+    'decision_stage', 'delivery', 'cache', 'fallback', 'failure', 'refusal_reason'];
+
+  function requestGroups(requests) {
+    const groups = new Map();
+    for (const request of requests) {
+      const key = JSON.stringify(REQUEST_EVIDENCE.map((field) => request[field] ?? null));
+      if (groups.has(key)) groups.get(key).ids.push(request.request_id);
+      else groups.set(key, { request, ids: [request.request_id] });
+    }
+    return [...groups.values()];
+  }
+
   function DataUsed({ events }) {
     const operations = events || [];
     // Nothing rather than an empty fold. A "Data used" disclosure a reader opens to find no
@@ -2481,7 +2497,8 @@ window.SW = window.SW || {};
             `Selected fields: ${(event.selected_fields || []).join(', ') || 'Structure only'}.`),
           event.artifact && h('p', null, 'Artifact: ',
             h(Tag, { 'aria-label': `Artifact: ${event.artifact}` }, event.artifact.split('/').pop())),
-          ...(event.requests || []).map((request) => h('div', { key: request.request_id },
+          ...requestGroups(event.requests || []).map(({ request, ids }) => h('div', { key: ids[0] },
+            ids.length > 1 && h('p', null, `${ids.length} model requests with the same result:`),
             h('p', null, 'Requested model: ',
               h(Tag, { 'aria-label': `Requested model: ${request.requested_alias}` }, request.requested_alias),
               '. Serving model: ', request.serving_model || 'unknown', '.'),
@@ -2496,7 +2513,7 @@ window.SW = window.SW || {};
               `Fallback: ${request.fallback || 'unknown'}.`),
             request.failure && h('p', null, `Failure: ${request.failure}.`,
               request.refusal_reason ? ` ${request.refusal_reason}.` : ''),
-            h('p', null, `Request: ${request.request_id}`))),
+            h('p', null, `${ids.length > 1 ? 'Requests' : 'Request'}: ${ids.join(', ')}`))),
           !(event.requests || []).length && h('p', null, 'Gateway delivery: unknown.'),
           h('p', null, `Operation: ${event.operation_id}`));
       }));
