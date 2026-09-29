@@ -19,7 +19,8 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history = [], events = [], turnState = {} } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { history = [], events = [], turnState = {}, reloadOnly = false } =
+  JSON.parse(fs.readFileSync(0, 'utf8'));
 
 let healthCalls = 0;
 const typings = [];
@@ -121,7 +122,13 @@ await settle();
 // `refreshProblems` is armed by the boot path too; only the turn's own reads are the question here.
 healthCalls = 0;
 
-await SW.store.sendBuildPrompt('run: env | grep -i canary');
+if (reloadOnly) {
+  // A tab reloaded mid-turn: no send, no stream — only the lock read says a turn is running.
+  typings.length = 0;
+  await SW.store.refreshTurnState();
+} else {
+  await SW.store.sendBuildPrompt('run: env | grep -i canary');
+}
 await settle();
 
 const blocks = SW.store.get().buildMessages.flatMap((m) => m.blocks || []);
@@ -132,3 +139,5 @@ console.log(JSON.stringify({
     .map((b) => ({ pending: !!b.pending, cancelled: !!b.cancelled })),
   typings,
 }));
+// A running turn starts the store's lock watcher, whose interval would keep this process alive.
+if (reloadOnly) process.exit(0);

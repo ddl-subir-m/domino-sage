@@ -296,6 +296,21 @@ def test_refresh_reconstructs_model_active_for_the_same_running_build():
     assert result["typings"][-1] is None
 
 
+def test_refresh_during_a_tool_step_still_shows_the_build_is_working():
+    """#606: a tab reloaded while the Build ran a tool — no model call open, so no `model_active` —
+    drew Stop over an empty line until the next frame."""
+    result = _node({
+        "reloadOnly": True,
+        "turnState": {
+            "running": True,
+            "running_turn": {"kind": "build", "conversation": "conv_1", "app": "app_a",
+                             "turnId": "turn_1", "sequence": 1, "epoch": "epoch_1"},
+        },
+    })
+
+    assert result["typings"][-1] == "Working…"
+
+
 def test_model_active_status_uses_one_clamped_thirty_second_bucket():
     assert _model_active_status(30) == (30, "Still working…")
     assert _model_active_status(59.999) == _model_active_status(30)

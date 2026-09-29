@@ -4470,7 +4470,9 @@ window.SW = window.SW || {};
         state.buildTyping = turn.model_active.message
           || 'Still working…';
       } else if (reconstructing && turn.running_turn.kind !== 'chat') {
-        state.buildTyping = null;
+        // No stream here and no model call open: the turn is in a tool step, and a reloaded tab
+        // showed Stop over nothing until the next frame (#606). The lock says it is working.
+        state.buildTyping = 'Working…';
       }
     }
     else if (liveBuildTurns === 0 && liveChatTurns === 0) state.runningTurn = null;
