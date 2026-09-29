@@ -93,12 +93,21 @@ def test_the_unscoped_source_line_does_not_treat_that_error_as_a_dead_end():
     assert "Do not ask the person to name a table until that lookup has failed" not in line
 
 
-def test_the_pack_and_the_chat_mirror_teach_the_same_repair():
+def test_the_static_chat_prompt_does_not_repeat_the_warehouse_procedure():
+    """The repair stays on the turn line and in the investigation skill.
+
+    A second copy in the always-on chat prompt is what an open investigation followed instead of
+    the skill's four-statement budget. Both copies, because the mirror is what the model is sent.
+    """
     root = Path(__file__).resolve().parents[2]
     pack = " ".join((root / "template" / "chat" / "AGENTS.md").read_text().split())
     mirror = " ".join(json.loads(
         (root / "opencode.json").read_text())["agent"]["sage-chat"]["prompt"].split())
+    skill = " ".join((root / "template" / "skills" / "investigate-weak-signals" / "SKILL.md")
+                     .read_text().split())
     for name, text in (("AGENTS.md", pack), ("sage-chat", mirror)):
-        assert "SHOW DATABASES" in text, name
-        assert "does not apply to the next" in text, name
-        assert "dwh.marts" in text, name
+        assert "SHOW DATABASES" not in text, name
+        assert "INFORMATION_SCHEMA" not in text, name
+        assert "SUBSTR(" not in text, name
+    assert "SHOW DATABASES" in skill
+    assert "SHOW DATABASES" in run.SESSION_DATABASE_REPAIR

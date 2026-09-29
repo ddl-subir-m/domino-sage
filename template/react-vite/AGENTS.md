@@ -378,22 +378,20 @@ GET only, and only these families; anything else answers 403 or 405:
 | Read | Path after `/api/domino` |
 |---|---|
 | every {dataset} this app can see | `/api/datasetrw/v2/datasets?offset=0&limit=200` — paged, and the default page is 10: keep adding `offset` until a page comes back shorter than `limit`; `datasets[].datasetRwDto.id` and `.datasetRwDto.name`; to find one by name, match `.datasetRwDto.name` across every page — the one you want can sit past the first; no `taxonomyTags` here (the taxonomy row carries them), and its `tags` field is a different tagging system, and empty |
-| every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus`; a {dataset} nobody has snapshotted holds only its head, so expect zero committed |
+| every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms; this is the header date — convert it and show it, and do not copy a placeholder such as `<cut date>`), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus`; a {dataset} nobody has snapshotted holds only its head, so expect zero committed |
 | the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
 | one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
 | taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way — the id is the one beside the {dataset}'s name in this file, never the name itself |
 | governance bundles | `/api/governance/v1/bundles` — paged, rows under `data`; per bundle `id`, `name`, `policyName`, `stage`, `stages`, `policies`, `projectName`, `classificationValue`. One bundle on its own: `/api/governance/v1/bundles/<id>` |
 | a bundle's approvals | `/api/governance/v1/bundles/<id>/approvals` — a bare array, not rows under `data`; per approval `name`, `status`, `approvers`, `updatedAt`, `updatedBy` |
-| what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them |
+| what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them. `{"data": null}` is how a {dataset} with no governance answers: `body.data ?? []`, because reading `.length` of `null` crashes the page |
 | a user's name from an id | `/api/users/v1/user/<userId>` — `user.fullName`, `user.userName` |
 | every user, paged | `/api/users/v1/users` — `users[].id`, `.userName`, `.firstName`, `.lastName` |
 | whose access this is | `/api/users/v1/self` — `user.fullName`, `user.userName`, `user.email` |
 
 The answer is the platform's own — status and body unchanged — and nothing is cached. It works in
-the preview (as you) and once published (as whoever published the app), and that second half is a
-rule for what you build: **every viewer reads with the publisher's access, so never present a list
-as "what the current user can access".** Show whose access it is, from `/api/users/v1/self`, or say
-nothing about access at all.
+the preview (as you) and once published (as whoever published the app). A study list is the
+publisher's list, and the screen says whose access that is, from `/api/users/v1/self`.
 
 - **Taxonomy tags come from `datasets-v2` with `includeTaxonomyTags=true`, and nowhere else.**
   Without the flag the rows have no `taxonomyTags`, and `datasetRwDto.tags` is a different system
@@ -405,8 +403,8 @@ nothing about access at all.
   `policyName` prints an empty string beside a governed file.
 - **An approval's field is `status`, and there is no `Rejected`.** Across 875 approvals the values
   were `PendingSubmission`, `PendingReview`, `Approved` and `ConditionallyApproved`;
-  `PendingExpiration` and `Expired` are documented as well. Do not build an
-  approved/pending/rejected tri-state — the third bucket never fills. Treat anything that is not
+  `PendingExpiration` and `Expired` are documented as well. An approval is `Approved` or not
+  approved, including when the person said "rejected." Treat anything that is not
   `Approved` as not approved.
 - **Governance can be attached to the open head.** An attachment whose `identifier.snapshotVersion`
   is missing names the mutable head, not a committed snapshot, so what was approved can change
@@ -414,9 +412,8 @@ nothing about access at all.
   snapshot whose `isReadWrite` is false and read that one.
 - **A user comes wrapped.** `self` and `user/<id>` answer `{"user": {...}}`; the name is
   `user.fullName`.
-- **Any field in a platform answer can be `null` or missing**, including ones the table names:
-  `{"data": null}` is how a {dataset} with no governance answers. Read it as `body.data ?? []`,
-  and use `?.` before indexing into a nested value. A render that reads `.length` of `null`
+- **Any field in a platform answer can be `null` or missing**, including ones the table names.
+  Use `?.` before indexing into a nested value. A render that reads `.length` of `null`
   crashes the whole page, not just the panel that needed it.
 - **A 404 has two readings.** On a path the table names, it is a wrong id — check the id against
   the listing that gave it. On any other path, the platform does not route that path from inside;
