@@ -27,6 +27,7 @@ class Record:
     source_id: str
     text: str
     row_number: int
+    group: str = ""
 
 
 @dataclass(frozen=True)
@@ -297,6 +298,9 @@ def analyze(args: dict, turn) -> str:
         return "Choose the text column to analyze."
     if id_column is not None and not isinstance(id_column, str):
         return "The source ID column must be a column name or null."
+    group_by = args.get("group_by") or None
+    if group_by is not None and not isinstance(group_by, str):
+        return "The group column must be a column name."
 
     labels = args.get("labels")
     if labels is not None:
@@ -304,6 +308,8 @@ def analyze(args: dict, turn) -> str:
                 or any(not isinstance(label, str) or not label for label in labels)):
             return "Labels must be a non-empty list of strings."
         labels = list(dict.fromkeys(labels))
+    if group_by and not labels:
+        return "Grouping counts judgments per group, so it needs labels. Pass labels, or omit group_by."
     output_field = args.get("output_field") or ("label" if labels else "summary")
     if not isinstance(output_field, str) or not output_field:
         return "The output field must be a string."
@@ -338,6 +344,8 @@ def analyze(args: dict, turn) -> str:
     source, raw, columns, rows, watch = loaded
     if text_column not in columns or (id_column and id_column not in columns):
         return "The data must have the selected text column and source ID column."
+    if group_by and group_by not in columns:
+        return f"The data has no {group_by} column to group by. Select it beside the id and the text."
     if len(rows) > MAX_RECORDS and row_limit is None:
         if args.get("source") and args.get("sql"):
             return (f"This statement returned more than {MAX_RECORDS} records, above the analysis "
@@ -350,7 +358,7 @@ def analyze(args: dict, turn) -> str:
                 "No sample was used. Ask for an explicitly labelled sample or add a limit.")
 
     source_sha = hashlib.sha256(raw).hexdigest()
-    records, excluded = _manifest(rows, text_column, id_column, row_limit)
+    records, excluded = _manifest(rows, text_column, id_column, row_limit, group_by)
     if not records:
         return "No records with text were available to analyze. No result was saved."
 
@@ -389,8 +397,13 @@ def analyze(args: dict, turn) -> str:
 
     columns_out = ["Record ID", output_field]
     rows_out = analyzed_rows
+    by_task = {r.task_id: r for r in records}
+    saved_columns = ["Record ID", *([group_by] if group_by else []), output_field]
+    saved_rows = [[by_task[task].source_id or task,
+                   *([by_task[task].group] if group_by else []), value]
+                  for task, value in rows_out]
     receipt = result.record(turn.examples_dir, name, str(args.get("title") or "Text analysis"),
-                            columns_out, rows_out, keep_rows=turn.keep_rows)
+                            saved_columns, saved_rows, keep_rows=turn.keep_rows)
     coverage = {
         "total": len(rows),
         "processed": 0 if source_changed else len(rows_out),
@@ -398,6 +411,12 @@ def analyze(args: dict, turn) -> str:
         "failed": failed,
         "unfinished": (len(records) if source_changed else unfinished),
     }
+    if group_by:
+        selected_fields = [group_by, output_field, "records"]
+        selected = _grouped(saved_rows)
+    else:
+        selected_fields = ["task_id", output_field]
+        selected = _selected(rows_out, columns_out)
     event = {
         "operation_id": operation,
         "operation": "text_analysis",
@@ -407,8 +426,8 @@ def analyze(args: dict, turn) -> str:
         "source": source,
         "source_sha256": source_sha,
         "artifact": receipt.path,
-        "columns": [c for c in [id_column, text_column] if c],
-        "selected_fields": ["task_id", output_field],
+        "columns": [c for c in [id_column, text_column, group_by] if c],
+        "selected_fields": selected_fields,
         "result_rows": len(rows_out),
         "coverage": coverage,
         "manifest": {
@@ -429,15 +448,14 @@ def analyze(args: dict, turn) -> str:
         # literal in a WHERE is a row value (`run._statement`).
         event["statement_sha256"] = hashlib.sha256(
             str(args["sql"]).strip().encode()).hexdigest()
-    selected = _selected(rows_out, columns_out)
     reply = {
         "data_use": operation,
         "operation": "text_analysis",
-        "columns": columns_out,
+        "columns": saved_columns,
         "result_rows": len(rows_out),
         "local_reference": receipt.path,
         "coverage": coverage,
-        "selected_fields": ["task_id", output_field],
+        "selected_fields": selected_fields,
         "selected": selected,
         "kept_rows": receipt.kept,
     }
@@ -479,7 +497,7 @@ def _parse_csv(raw: bytes) -> tuple[list[str], list[dict[str, str]]]:
 
 
 def _manifest(rows: list[dict[str, str]], text_column: str, id_column: str | None,
-              row_limit: int | None) -> tuple[list[Record], int]:
+              row_limit: int | None, group_by: str | None = None) -> tuple[list[Record], int]:
     records = []
     excluded = 0
     stop = row_limit or len(rows)
@@ -489,7 +507,8 @@ def _manifest(rows: list[dict[str, str]], text_column: str, id_column: str | Non
             excluded += 1
             continue
         source_id = row.get(id_column, "").strip() if id_column else ""
-        records.append(Record(f"r{index:06d}", source_id, text[:MAX_TEXT_CHARS], index))
+        group = row.get(group_by, "").strip() if group_by else ""
+        records.append(Record(f"r{index:06d}", source_id, text[:MAX_TEXT_CHARS], index, group))
     excluded += max(0, len(rows) - stop)
     return records, excluded
 
@@ -651,6 +670,20 @@ def _selected(rows: list[list[str]], columns: list[str]) -> dict[str, Any]:
     for row in rows:
         counts[str(row[field_index])] = counts.get(str(row[field_index]), 0) + 1
     return {"counts": counts}
+
+
+def _grouped(saved_rows: list[list[str]]) -> dict[str, Any]:
+    """Judgments counted per group value and label, most first: what a SQL GROUP BY would hand
+    back, so a turn can join judged text to its accounts without a record ID reaching it (#606)."""
+    counts: dict[tuple[str, str], int] = {}
+    for _record, group, value in saved_rows:
+        counts[(group, value)] = counts.get((group, value), 0) + 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    groups = [[group, value, n] for (group, value), n in ordered]
+    kept = len(groups)
+    while kept and len(json.dumps(groups[:kept])) > result.VALUES_BUDGET_CHARS:
+        kept //= 2
+    return {"groups": groups[:kept], "total_groups": len(groups)}
 
 
 def _source_changed(path: Path, expected_sha: str) -> bool:

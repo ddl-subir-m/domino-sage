@@ -198,7 +198,8 @@ export const table = {
     "a text column with a model: find the candidate rows with live_read_query first, then pass " +
     "sql selecting the id and the text of just those rows. Sage runs it and sends only " +
     "text_column and id_column through the LLM Gateway; you get judgments and coverage back, " +
-    "never the text. For long text select a window around the match rather than the whole cell, " +
+    "never the text. To tie judgments to accounts or any other key, select that column too and " +
+    "pass it as group_by: you get label counts per value back. For long text select a window around the match rather than the whole cell, " +
     "such as SUBSTR(t, GREATEST(POSITION('ARM' IN t) - 600, 1), 1500) AS SNIPPET, and filter " +
     "chunked transcripts to the matching chunks rather than joining them together.",
   args: {
@@ -221,7 +222,7 @@ export const table = {
     sql: { anyOf: orNull({ type: "string" }), description:
       "For analyze_text: one SELECT, written for this store's own SQL, returning the id and the " +
       "text (or a snippet) of just the rows to judge. Name tables in full." + OPTIONAL },
-    group_by: { anyOf: orNull({ type: "string" }), description: "The group column for sum." + OPTIONAL },
+    group_by: { anyOf: orNull({ type: "string" }), description: "The group column for sum, or for analyze_text label counts per value." + OPTIONAL },
     sum_column: { anyOf: orNull({ type: "string" }), description: "The numeric column for sum." + OPTIONAL },
     text_column: { anyOf: orNull({ type: "string" }), description: "The column containing text for analyze_text." + OPTIONAL },
     id_column: { anyOf: orNull({ type: "string" }), description: "Optional source id column for analyze_text." + OPTIONAL },
@@ -261,7 +262,7 @@ export const files = {
     dataset: { type: "string", description: "The Dataset name." },
     operation: { anyOf: orNull({ type: "string", enum: ["sum", "analyze_text", "document"] }),
       description: "Calculate CSV totals, analyze CSV text, or select bounded document text." + OPTIONAL },
-    group_by: { anyOf: orNull({ type: "string" }), description: "The group column for sum." + OPTIONAL },
+    group_by: { anyOf: orNull({ type: "string" }), description: "The group column for sum, or for analyze_text label counts per value." + OPTIONAL },
     sum_column: { anyOf: orNull({ type: "string" }), description: "The numeric column for sum." + OPTIONAL },
     text_column: { anyOf: orNull({ type: "string" }), description: "The CSV column containing text for analyze_text." + OPTIONAL },
     id_column: { anyOf: orNull({ type: "string" }), description: "Optional source id column for analyze_text." + OPTIONAL },

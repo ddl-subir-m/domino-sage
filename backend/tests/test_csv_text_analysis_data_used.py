@@ -112,7 +112,8 @@ def test_complaint_analysis_sends_relevant_text_and_reports_complete_coverage(tm
                                  "failed": 0, "unfinished": 0}
     table = json.loads((tmp_path / reply["local_reference"]).read_text())
     assert table["columns"] == ["Record ID", "label"]
-    assert table["rows"] == rows
+    tickets = [line.split(",")[0] for line in COMPLAINTS.splitlines()[1:]]
+    assert table["rows"] == [[ticket, label] for ticket, (_, label) in zip(tickets, rows)]
     event = data.events("turn1")[0]
     assert event["manifest"]["source_sha256"] if "source_sha256" in event["manifest"] else event["source_sha256"]
     assert event["manifest"]["text_column"] == "complaint"
@@ -457,7 +458,7 @@ def test_real_opencode_analyzes_complaints_without_sending_email_column(tmp_path
             tables = list((project.record.path / "examples" / tid).glob("*.table.json"))
             assert len(tables) == 1
             table = json.loads(tables[0].read_text())
-            assert table["rows"].count(["r000005", "damage"]) == 1
+            assert table["rows"].count(["B-1", "damage"]) == 1
             counts = {}
             for _, label in table["rows"]:
                 counts[label] = counts.get(label, 0) + 1

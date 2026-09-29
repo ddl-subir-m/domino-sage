@@ -52,7 +52,8 @@ TOOLS: list[dict[str, Any]] = [
             "a model: find the candidate rows with live_read_query first, then pass sql selecting "
             "the id and the text of just those rows. Sage runs it and sends only text_column and "
             "id_column through the LLM Gateway; you get judgments and coverage back, never the "
-            "text. For long text select a window around the match rather than the whole cell, "
+            "text. To tie judgments to accounts or any other key, select that column too and pass "
+            "it as group_by: you get label counts per value back. For long text select a window around the match rather than the whole cell, "
             "such as SUBSTR(t, GREATEST(POSITION('ARM' IN t) - 600, 1), 1500) AS SNIPPET, and "
             "filter chunked transcripts to the matching chunks rather than joining them together."
         ),
@@ -79,7 +80,8 @@ TOOLS: list[dict[str, Any]] = [
                     "For analyze_text: one SELECT, written for this store's own SQL, returning the "
                     "id and the text (or a snippet) of just the rows to judge. Name tables in full."
                 )},
-                "group_by": {"type": "string"},
+                "group_by": {"type": "string", "description": (
+                    "The group column for sum, or for analyze_text label counts per value.")},
                 "text_column": {"type": "string"},
                 "id_column": {"type": "string"},
                 "labels": {"type": "array", "items": {"type": "string"}},
@@ -178,7 +180,8 @@ TOOLS: list[dict[str, Any]] = [
                 "operation": {"type": "string", "enum": ["sum", "analyze_text", "document"],
                               "description": "Calculate CSV totals, analyze CSV text, or select "
                                              "bounded attached document text."},
-                "group_by": {"type": "string"},
+                "group_by": {"type": "string", "description": (
+                    "The group column for sum, or for analyze_text label counts per value.")},
                 "sum_column": {"type": "string"},
                 "text_column": {"type": "string"},
                 "id_column": {"type": "string"},
