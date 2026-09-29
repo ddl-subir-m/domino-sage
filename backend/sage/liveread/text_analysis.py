@@ -331,7 +331,7 @@ def analyze(args: dict, turn) -> str:
         return f"Batch size must be between 1 and {MAX_BATCH_SIZE}."
     concurrency = args.get("max_concurrency")
     if concurrency is None:
-        concurrency = 1
+        concurrency = MAX_CONCURRENCY
     if type(concurrency) is not int or concurrency < 1 or concurrency > MAX_CONCURRENCY:
         return f"Concurrency must be between 1 and {MAX_CONCURRENCY}."
     row_limit = args.get("row_limit")
