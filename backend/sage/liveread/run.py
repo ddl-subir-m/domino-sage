@@ -346,10 +346,17 @@ def _source(kind: str, binding: str, limit: int, **named: str) -> dict:
     return {"kind": kind, "binding": binding, "limit": limit, **target}
 
 
+def _analyzed(args: dict, turn: Turn) -> str:
+    """An analyze_text pass. Its result is JSON; anything else is a refusal, and is said out loud
+    for the reason `_no_card` gives — a mimo turn lost seven of these in a row with no trace (#606)."""
+    from .text_analysis import analyze
+    said = analyze(args, turn)
+    return said if said.startswith("{") else _no_card(said)
+
+
 def _table(args: dict, turn: Turn) -> str:
     if args.get("operation") == "analyze_text":
-        from .text_analysis import analyze
-        return analyze(args, turn)
+        return _analyzed(args, turn)
     if args.get("operation") == "sum":
         from .calculate import calculate
 
@@ -384,8 +391,7 @@ def _files(args: dict, turn: Turn) -> str:
         from .calculate import calculate
         return calculate(args, turn)
     if args.get("operation") == "analyze_text":
-        from .text_analysis import analyze
-        return analyze(args, turn)
+        return _analyzed(args, turn)
     if args.get("operation") == "document":
         return _document(args, turn)
     name = str(args.get("dataset") or "")

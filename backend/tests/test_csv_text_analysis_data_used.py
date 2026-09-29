@@ -505,6 +505,23 @@ def test_a_dataset_csv_is_judged_without_using_the_upload_path(tmp_path):
     assert "Item arrived broken" in json.dumps(calls)
 
 
+def test_a_refused_analysis_is_said_in_the_log(tmp_path, caplog):
+    """#606: a mimo turn had seven analyze_text calls refused and the log held none of them."""
+    root = tmp_path / "mount" / "support"
+    root.mkdir(parents=True)
+    (root / "complaints.csv").write_text(COMPLAINTS)
+    turn, _data, _journal, _source = setup_turn(tmp_path)
+    turn = replace(turn, upload_for=lambda _path: None, bound={"dataset": ("support",)},
+                   dataset_root=lambda name: root if name == "support" else None)
+
+    with caplog.at_level("INFO", logger="sage.liveread"):
+        said = run.perform("live_read_files", analysis_args(
+            dataset="support", path="complaints.csv", text_column=""), turn)
+
+    assert said == "Choose the text column to analyze."
+    assert "live read: no card — Choose the text column to analyze." in caplog.text
+
+
 def test_a_data_source_table_is_judged_from_the_text_column_only(tmp_path):
     calls = []
     asked = []

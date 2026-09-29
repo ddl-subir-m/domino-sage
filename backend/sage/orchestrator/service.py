@@ -16669,6 +16669,15 @@ class Orchestrator:
                     if flush_rel and _findings_bytes(project.record.path,
                                                      thread_id) > flush_before:
                         kept_findings = flush_rel
+                    # The receipt a finished turn writes, written here too. The slice depends on
+                    # the model answering inside 60s; a mimo turn at 60s a step ran 12 reads and
+                    # kept none of them (#606). The receipt adds only lines not already held.
+                    receipt_before = _findings_bytes(project.record.path, thread_id)
+                    self._record_chat_findings(
+                        project.record.path, thread_id, store.read_history(thread_id))
+                    if _findings_bytes(project.record.path, thread_id) > receipt_before:
+                        kept_findings = findings_file(project.record.path, thread_id).relative_to(
+                            project.record.path).as_posix()
                     # Detect here too, not only after a turn that finished. Asking Chat to build an
                     # app is exactly what runs long — sage-chat writes an Artifact, not an app — so
                     # the turn the person most needs the nudge on is the one that never reaches the

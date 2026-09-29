@@ -426,6 +426,38 @@ def test_a_ceiling_that_measured_nothing_offers_nothing(tmp_path: Path, monkeypa
     assert "number of steps it takes" in said
 
 
+def test_reads_the_turn_ran_are_kept_when_the_slice_writes_nothing(tmp_path: Path, monkeypatch):
+    """#606. A mimo turn at 60s a step ran twelve reads, reached the ceiling, and the slice's one
+    step could not finish inside 60s — so the block said nothing was written down. The reads were
+    on the Thread all along; the receipt a finished turn writes from them is written here too."""
+    from sage.workspace.threads import ThreadStore
+
+    _short_ceiling(monkeypatch)
+    oc = WorksUntilStopped(tmp_path / "mnt" / "code", [Turn(text="working on it")])
+    orch = _orch(tmp_path, oc)
+    tid = orch.create_thread()["id"]
+    root = orch.project(start_preview=False, seed_app=False).record.path
+    oc.turns.append(Turn(text="I have nothing to write down"))
+    real_send = oc.send_prompt
+
+    def read_during_the_work(*args, **kwargs):
+        real_send(*args, **kwargs)
+        if len(oc.prompts) == 1:
+            ThreadStore(root).append_history(tid, {"type": "data_used", "dataUsed": [{
+                "operation_id": "op-1", "operation": "sql", "source": "Snowflake-Data-Warehouse",
+                "coverage": {"total": 89399, "processed": 89399}}]})
+
+    oc.send_prompt = read_during_the_work
+
+    out = _run(orch, tid)
+
+    assert "Snowflake-Data-Warehouse" in findings_file(root, tid).read_text()
+    said = next(e for e in out if e["type"] == "error")["message"]
+    assert "nothing it measured was written down" not in said
+    assert f".sage/threads/{tid}/findings.md" in said
+    assert [e for e in out if e["type"] == "continue-offer"]
+
+
 def test_findings_an_earlier_turn_wrote_are_not_this_turns_measurements(tmp_path: Path,
                                                                         monkeypatch):
     """The offer is about THIS turn's ten minutes, so the file being there cannot be the test.
