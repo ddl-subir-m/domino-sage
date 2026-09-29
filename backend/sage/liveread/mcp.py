@@ -16,6 +16,7 @@ relay the one it was given and has no way to name another Conversation's.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -210,6 +211,26 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 _TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
+_PROPERTIES = {t["name"]: t["inputSchema"]["properties"] for t in TOOLS}
+_JSON_TYPES = {"integer": (int,), "number": (int, float), "boolean": (bool,), "array": (list,)}
+
+
+def _typed(name: str, args: dict) -> dict:
+    """Some models send a typed argument as its JSON text: `"50"` for 50, `'["a"]'` for a list.
+    Text that parses to the declared type is taken as that value; anything else goes on as sent,
+    so the tool's own refusal still describes what arrived."""
+    typed = dict(args)
+    for key, value in args.items():
+        wanted = _JSON_TYPES.get(_PROPERTIES[name].get(key, {}).get("type"))
+        if wanted is None or not isinstance(value, str):
+            continue
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            continue
+        if type(parsed) in wanted:
+            typed[key] = parsed
+    return typed
 
 
 def _failed_text(why: str) -> str:
@@ -284,7 +305,7 @@ def handle(message: dict, *, run: Callable[[str, dict], str]) -> dict | None:
         return _error(mid, -32602, "arguments must be an object")
 
     try:
-        text = run(str(name), args)
+        text = run(str(name), _typed(name, args))
     # Broad on purpose: the assistant reads this, so nothing may escape as a 500.
     except Exception as e:
         # WARNING, so it outlives one turn in `/api/diag`'s warn ring. A raise here reaches the
