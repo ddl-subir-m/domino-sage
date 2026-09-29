@@ -3632,6 +3632,34 @@ def _catalogue_note(asked: str, source: Binding, tables: list[Candidate]) -> str
     return "\n".join(lines)
 
 
+_REMEMBERED_PER_SOURCE = 3
+_REMEMBERED_MAX_CHARS = 1_500
+_QUOTED = re.compile(r"'(?:[^']|'')*'")
+_DOLLAR_QUOTED = re.compile(r"\$\$.*?\$\$", re.DOTALL)
+_LONG_NUMBER = re.compile(r"\b\d{5,}\b")
+
+
+def _elide_literals(sql: str) -> str:
+    """The statement with its string literals and long numbers replaced by `…` (#606).
+
+    What is left is tables, columns, joins and the shape of the filter, which is what a later
+    question on the same source reuses; a literal can be a row value, and an id list certainly is.
+    """
+    sql = _DOLLAR_QUOTED.sub("$$…$$", sql)
+    sql = _QUOTED.sub("'…'", sql)
+    return _LONG_NUMBER.sub("…", sql)[:_REMEMBERED_MAX_CHARS]
+
+
+def _remembered_note(source: str, statements: list[str]) -> str:
+    """The statements that judged text in `source` earlier this session, for an investigation."""
+    lines = [(f"Statements that judged text in {source} earlier in this session, literals elided. "
+              "Their tables, columns, joins and filters are already measured: start from them, "
+              "change only what the question changes, and do not read the catalogue for those "
+              "tables again.")]
+    lines += [f"```sql\n{s}\n```" for s in statements]
+    return "\n".join(lines)
+
+
 def _chat_activity(tool: str, subject: str, inp: dict | None = None) -> tuple[str, str]:
     """(the kind of work, the thing it is working on) for a tool call Chat should name."""
     name = _bare_tool_name(tool)
@@ -7305,6 +7333,9 @@ class Orchestrator:
         # decline stayed per-question, and that mismatch — not the offer — is what reached into
         # #389's one-way door. Nothing here reads or writes investigation state.
         self._other_lane_grants: dict[str, set[str]] = {}
+        # A judging level `analyze_text` refused this turn, and the levels that model takes (#606).
+        # The card is drawn when the turn ends, so the refusal cannot outlive the turn it was in.
+        self._effort_choices: dict[str, dict] = {}
         # The step lines those calls owe the person, waiting for the Chat loop to drain them. The
         # call is served on a route's own thread and the turn is a generator on another, so a queue
         # is what makes the count in the line the count the cap enforced rather than a second one
@@ -7474,6 +7505,10 @@ class Orchestrator:
         # no query at all. A stale LIST is harmless, which is why this may live for a session; a
         # stale CHOICE is not, which is why `confirm_table_candidate` never reads it.
         self._table_catalog: dict[tuple[str, str], list[Table]] = {}
+        # Statements that judged text in each Data Source, newest first, literals elided (#606).
+        # Memory only: a literal in a WHERE is a row value, so none is kept even here, and the
+        # statement itself is never written down (`text_analysis.analyze` records its hash).
+        self._remembered_statements: dict[str, list[str]] = {}
         # The databases one Data Source holds, kept beside the tables in them (#186). The cheaper
         # half of the same question and the same argument: a search that asks what databases exist
         # before every walk pays a query to learn what it already knows, and the answer moves on the
@@ -14308,10 +14343,13 @@ class Orchestrator:
         judging: dict = {}
 
         def text_effort_for(serving: str, named: str | None) -> tuple[str | None, str]:
-            """The level `analyze_text` judges at (#606): the one the person named, else low.
+            """The level `analyze_text` judges at (#606): the one the person named, else none, else
+            low.
 
             Sorting records against labels is narrow work, so it does not inherit the picker's
-            level, which was chosen for the turn's model and may name another model entirely."""
+            level, which was chosen for the turn's model and may name another model entirely.
+            Measured on mimo: batches at low spent up to 2,610 reasoning tokens and 68 s, at none
+            0 tokens and 7 s, with the same labels."""
             model = serving
             if not model:
                 try:
@@ -14329,16 +14367,24 @@ class Orchestrator:
             offered = capability.efforts if capability is not None else ()
             judging["capability"] = capability
             if named is None:
-                effort = "low" if "low" in offered else None
+                effort = next((e for e in ("none", "low") if e in offered), None)
                 judging["decision"] = EffortDecision(
-                    "low", EffortSource.STAGE_DEFAULT, effort,
+                    effort or "none", EffortSource.STAGE_DEFAULT, effort,
                     EffortStatus.APPLIED if effort else EffortStatus.UNSUPPORTED)
                 return effort, ""
             if named not in offered:
-                takes = (f"It takes {', '.join(offered)}." if offered
-                         else "It offers no reasoning level here.")
-                return None, (f"{model} can't judge at reasoning effort {named!r}. {takes} Ask "
-                              "the person which to use. No text was analyzed.")
+                if not offered:
+                    return None, (f"{model} can't judge at reasoning effort {named!r}. It offers "
+                                  "no reasoning level here. Ask the person whether to judge at "
+                                  "its default. No text was analyzed.")
+                with self._live_read_lock:
+                    self._effort_choices[thread_id] = {"model": model, "named": named,
+                                                       "levels": list(offered)}
+                return None, (f"{model} can't judge at reasoning effort {named!r}. It takes "
+                              f"{', '.join(offered)}. The person is shown a card with those "
+                              "levels when this turn ends, so do not ask in prose: say in one "
+                              "sentence that the level needs choosing, and end the turn. No text "
+                              "was analyzed.")
             judging["decision"] = EffortDecision(named, EffortSource.USER, named,
                                                  EffortStatus.APPLIED)
             return named, ""
@@ -14373,6 +14419,12 @@ class Orchestrator:
             with self._live_read_lock:
                 self._live_read_refused[thread_id] = says
 
+        def remember_statement(source: str, sql: str) -> None:
+            elided = _elide_literals(sql)
+            with self._live_read_lock:
+                kept = [s for s in self._remembered_statements.get(source, []) if s != elided]
+                self._remembered_statements[source] = [elided, *kept][:_REMEMBERED_PER_SOURCE]
+
         return live_read.Turn(
             thread_id=thread_id,
             examples_dir=store.examples_dir(thread_id),
@@ -14396,6 +14448,7 @@ class Orchestrator:
             analyze_text_batch=analyze_text_batch,
             text_model_for=text_model_for,
             text_effort_for=text_effort_for,
+            remember_statement=remember_statement,
             record_refusal=record_refusal,
         )
 
@@ -15101,9 +15154,12 @@ class Orchestrator:
                    "A Data Source with no table: one live_read_query of INFORMATION_SCHEMA.TABLES "
                    "and INFORMATION_SCHEMA.COLUMNS. ")
                 + live_read.session_database_prompt() + " "
-                "For text in a Data Source table: find the candidates with live_read_query (a "
-                "count), then live_read_table, operation=analyze_text, the source, and sql "
-                "selecting the id and the text of just those rows. For long text select a window "
+                "For text in a Data Source table: one live_read_table, operation=analyze_text, "
+                "the source, and sql that selects the id and the text of just the matching rows, "
+                "with the account join and any filter the question sets in the same statement. "
+                "Do not count the candidates first: the reply's coverage is that count, and a "
+                "statement over the record limit is refused before anything is judged. For long "
+                "text select a window "
                 "around the match, such as SUBSTR(t, GREATEST(POSITION('ARM' IN t) - 600, 1), 1500) "
                 "AS SNIPPET, rather than the whole cell, and filter chunked transcripts to the "
                 "matching chunks rather than joining them together. "
@@ -15517,6 +15573,12 @@ class Orchestrator:
                 continue
             if tables:
                 notes[name] = _catalogue_note(prompt, binding, tables)
+        for name in wanted:
+            with self._live_read_lock:
+                remembered = list(self._remembered_statements.get(name, []))
+            if remembered:
+                notes[name] = "\n".join(filter(None, [notes.get(name, ""),
+                                                      _remembered_note(name, remembered)]))
         return notes
 
     def _chat_prompt(self, thread_id: str, prompt: str, ctx: dict,
@@ -15591,8 +15653,9 @@ class Orchestrator:
                  "columns. Call again with path set to the file name inside the folder, not the "
                  "public/data path, and text_column. "
                  + ("A Data Source whose tables are listed below: pick from them, and read the "
-                    "columns of the ones you pick with one live_read_query of "
-                    "INFORMATION_SCHEMA.COLUMNS. Any other uses one of INFORMATION_SCHEMA.TABLES. "
+                    "columns of all the ones you pick with one live_read_query of "
+                    "INFORMATION_SCHEMA.COLUMNS, unless a statement below already names them. "
+                    "Any other uses one of INFORMATION_SCHEMA.TABLES. "
                     if catalogue else
                     "A Data Source with no table uses one live_read_query of "
                     "INFORMATION_SCHEMA.TABLES and INFORMATION_SCHEMA.COLUMNS. ")
@@ -15601,9 +15664,11 @@ class Orchestrator:
                  "a file or a table."),
                 ("A number is one live_read_query. Text that needs a model — classifying, "
                  "summarising, extracting, or deciding — is one analyze_text call: live_read_files "
-                 "for a CSV, live_read_table for a Data Source table. For a table, count the "
-                 "candidates with live_read_query, then pass sql selecting the id and the text (or "
-                 "a snippet around the match) of just those rows. Put the question in purpose "
+                 "for a CSV, live_read_table for a Data Source table. For a table, pass sql "
+                 "selecting the id and the text (or a snippet around the match) of just the "
+                 "matching rows, joined to their accounts and filtered as the question asks, in "
+                 "one statement per source. Do not count the candidates first; the reply's "
+                 "coverage is the count. Put the question in purpose "
                  "and labels. Pass alias as a name this conversation can call. The call returns the "
                  "judgments and coverage. It does not return the text or the record ids: to join "
                  "judgments to accounts, select the account column too and pass it as group_by, "
@@ -15922,6 +15987,8 @@ class Orchestrator:
         # Any turn moves past the offers above it, so their grants go with it (#588). The client
         # takes the button off on the same send; this is what makes a stale page's click bounded.
         self._other_lane_grants.pop(thread_id, None)
+        with self._live_read_lock:
+            self._effort_choices.pop(thread_id, None)
         # A replay under a grant joins the three flags below for their reason, not a new one: the
         # turn that drew the card already wrote this question into the Thread, and writing it again
         # prints the person's question twice under one card.
@@ -17669,6 +17736,7 @@ class Orchestrator:
             if not direct and (offer := self._chat_other_lane_offer(
                     store, thread_id, prompt, claimed=asked_for_the_other_lane)):
                 yield from offer
+            yield from self._chat_effort_choice_events(store, thread_id)
             if step_error and not answered:
                 # The turn ended, and the person has nothing. `done ok:True` with an empty Thread is
                 # the shape that sends someone looking for a Sage bug when the provider had already
@@ -19291,6 +19359,22 @@ class Orchestrator:
         if not live:
             self._other_lane_grants.pop(thread_id, None)
         return True
+
+    def _chat_effort_choice_events(self, store: ThreadStore, thread_id: str):
+        """The judging levels to choose from, when `analyze_text` refused the one named (#606).
+
+        Drawn under the answer like the other-lane card, with no `done`. A button sends the choice
+        as the person's next message: it grants nothing, so it needs no token."""
+        with self._live_read_lock:
+            choice = self._effort_choices.pop(thread_id, None)
+        if not choice:
+            return
+        message = brand.text("{model} can't judge text at reasoning effort “{named}”. Choose one "
+                             "it takes:", model=choice["model"], named=choice["named"])
+        ev = {"type": "effort-choice", "message": message, "model": choice["model"],
+              "levels": choice["levels"], "threadId": thread_id}
+        store.append_history(thread_id, ev)
+        yield ev
 
     # ---- the Dataset gate (#196, ADR-0039) -------------------------------------------------------
 

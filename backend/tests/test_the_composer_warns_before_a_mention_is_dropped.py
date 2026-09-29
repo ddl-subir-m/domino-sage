@@ -158,12 +158,13 @@ def test_the_busy_helper_is_shared_rather_than_copied_a_fourth_time():
     context-limit continuation is the eleventh and uses the same helper for the same one-button
     lifecycle. Continue with another model, the one new Attempt a failed turn's card offers (#570),
     is the twelfth. Direct's Keep going, under a turn a volume cap paused (#585), is the
-    thirteenth."""
+    thirteenth. The judging-effort card, one button per level a refused level's model takes (#606),
+    is the fourteenth."""
     assert "useBusyAct() {" in UTIL
     assert "const [busy, run] = SW.util.useBusyAct();" in UI
     blocks = (WB / "js" / "components" / "message-blocks.js").read_text()
     assert "function useBusyAct() {" not in blocks
-    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 13
+    assert blocks.count("const [busy, run] = SW.util.useBusyAct();") == 14
     # And the first caller outside a card: the bar that closes an investigation (#386). It is here
     # because it is the one that nearly did write its own — a hand-rolled `busy` flag with no
     # `catch`, on the control whose whole job is taking a capability back.

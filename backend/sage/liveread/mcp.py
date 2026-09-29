@@ -91,7 +91,8 @@ TOOLS: list[dict[str, Any]] = [
                 "max_concurrency": {"type": "integer"},
                 "effort": {"type": "string",
                            "description": "For analyze_text: the judging model's reasoning level, "
-                                          "only when the person names one. Omit for low."},
+                                          "only when the person names one. Omit for none, or "
+                                          "low where none is not offered."},
                 "alias": {"type": "string",
                           "description": "Model alias from this turn's prompt. Omit for the turn's own model."},
                 "sum_column": {"type": "string"},
@@ -197,7 +198,8 @@ TOOLS: list[dict[str, Any]] = [
                 "max_concurrency": {"type": "integer"},
                 "effort": {"type": "string",
                            "description": "For analyze_text: the judging model's reasoning level, "
-                                          "only when the person names one. Omit for low."},
+                                          "only when the person names one. Omit for none, or "
+                                          "low where none is not offered."},
                 "selected_fields": {"type": "array", "items": {"type": "string"},
                                     "description": "Result columns and/or total. Omit for structure only."},
                 "row_limit": {"type": "integer", "description": "Explicit user row limit; omit for all rows."},

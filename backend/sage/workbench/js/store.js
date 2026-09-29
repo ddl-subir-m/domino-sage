@@ -2023,6 +2023,7 @@ window.SW = window.SW || {};
     dataset_files: shown,
     investigation_offer: shown,
     other_lane_offer: shown,
+    effort_choice: shown,
     continue_offer: shown,
     keep_going: shown,
     // The way back into a failed turn (#570) is an act, not a disclosure of what was read.
@@ -2368,6 +2369,17 @@ window.SW = window.SW || {};
           // harmless: `live` is false so there are no buttons, and the grant was spent on the click
           // that made it useless anyway.
           grant: ev.grant || '',
+          live: !!ev.live,
+        });
+      } else if (ev.type === 'effort-choice' && ev.message) {
+        // The judging levels a model takes, after a named one was refused (#606). Same `live` rule:
+        // a button sends a message, which a transcript being scrolled back through must not do.
+        ensureAssistant().blocks.push({
+          type: 'effort_choice',
+          message: ev.message,
+          model: ev.model || '',
+          levels: Array.isArray(ev.levels) ? ev.levels : [],
+          threadId: ev.threadId || '',
           live: !!ev.live,
         });
       } else if (ev.type === 'continue-offer' && ev.message) {
@@ -8445,6 +8457,14 @@ window.SW = window.SW || {};
       return store.sendMessage(prompt, { echo: false, otherLaneGrant: grant });
     },
 
+    // A judging level chosen from the card a refused one drew (#606). An ordinary message: the
+    // turn reads it like any other sentence, and the level is checked again when it is used.
+    async chooseJudgingEffort(threadId, model, level) {
+      const opened = await store.openThread(threadId);
+      if (!opened || !state.thread || state.thread.id !== threadId) return null;
+      return store.sendMessage(`Use ${model} at reasoning effort ${level} to analyze the text.`);
+    },
+
     // Continue, from the card the ceiling draws (#454). An ORDINARY turn, and that is the whole
     // decision: one resume, a full clock, no grant, no gate skipped. The resumed turn reads what
     // the last one measured because `_findings_note` names this Thread's `findings.md` into every
@@ -9166,10 +9186,11 @@ window.SW = window.SW || {};
       // A calculation offer is about the answer it sits under. Any new turn moves past it, and the
       // server drops its grant at the same moment, so the button goes now rather than on a reload
       // (#588).
-      if (state.messages.some((m) => (m.blocks || []).some((b) => b.type === 'other_lane_offer' && b.live))) {
+      const retired = (b) => (b.type === 'other_lane_offer' || b.type === 'effort_choice') && b.live;
+      if (state.messages.some((m) => (m.blocks || []).some(retired))) {
         state.messages = state.messages.map((m) => ({
           ...m,
-          blocks: (m.blocks || []).map((b) => (b.type === 'other_lane_offer' ? { ...b, live: false } : b)),
+          blocks: (m.blocks || []).map((b) => (retired(b) ? { ...b, live: false } : b)),
         }));
       }
       // A latch, not a live test. Coming back to a conversation you left mid-turn re-reads the
@@ -9642,6 +9663,11 @@ window.SW = window.SW || {};
             ensurePushed();
             assistant.blocks = [...assistant.blocks,
                                 { ...ev, type: 'other_lane_offer', live: true }];
+            notify();
+          } else if (ev.type === 'effort-choice') {
+            // Drawn under the answer while the turn settles, as the frame above is (#606).
+            ensurePushed();
+            assistant.blocks = [...assistant.blocks, { ...ev, type: 'effort_choice', live: true }];
             notify();
           } else if (ev.type === 'continue-offer') {
             // The ceiling's own card (#454). `state.typing` is already null by the time this

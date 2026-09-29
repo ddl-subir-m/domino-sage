@@ -1428,6 +1428,37 @@ window.SW = window.SW || {};
     );
   }
 
+  // The levels a judging model takes, after `analyze_text` refused the one named (#606). One button
+  // per level and no decline: typing anything else moves past it, as with the card above.
+  function EffortChoice({ block }) {
+    const [busy, run] = SW.util.useBusyAct();
+
+    return h(
+      'div',
+      { className: 'sw-nudge' },
+      h('span', { className: 'sw-scope-dot is-hollow', style: { marginTop: 5 } }),
+      h(
+        'div',
+        { className: 'sw-nudge-main' },
+        h('div', null, block.message),
+        block.live && block.levels.length
+          ? h(
+              'div',
+              { style: { marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' } },
+              block.levels.map((level) => h(Button, {
+                key: level,
+                size: 'small',
+                loading: busy === level,
+                disabled: !!busy,
+                onClick: run(level, () => SW.store.chooseJudgingEffort(
+                  block.threadId, block.model, level)),
+              }, level))
+            )
+          : null
+      )
+    );
+  }
+
   // The way back into a turn the ceiling stopped (#454). Drawn UNDER the block that says what
   // happened, like the card above it, and for the same reason: the turn has ended, `done` has been
   // read, and this is an offer rather than a question the turn is waiting on.
@@ -2613,6 +2644,8 @@ window.SW = window.SW || {};
         return h(InvestigationOffer, { block });
       case 'other_lane_offer':
         return h(OtherLaneOffer, { block });
+      case 'effort_choice':
+        return h(EffortChoice, { block });
       case 'continue_offer':
         return h(ContinueAfterTheCeiling, { block });
       case 'keep_going':

@@ -2,7 +2,8 @@
 
 Measured 2026-09-29: with the picker at Low on mimo, the judging batches went through `shim.handle`
 and inherited that Low, while a chipped judging model got no level at all. The picker's level was
-chosen for the picker's model; the person names a judging level in the prompt, or it is low.
+chosen for the picker's model; the person names a judging level in the prompt, or it is none
+(low where the model offers no none).
 """
 
 from __future__ import annotations
@@ -37,15 +38,24 @@ def _judging(tmp_path, capability=LEVELS, picker="high"):
 
 
 @pytest.mark.parametrize("alias, ran_on", [(None, SONNET), (OPUS, OPUS)])
-def test_an_unnamed_level_judges_at_low_whatever_the_picker_says(tmp_path, alias, ran_on):
+def test_an_unnamed_level_judges_at_none_whatever_the_picker_says(tmp_path, alias, ran_on):
     analyze, gateway, orch, project, tid = _judging(tmp_path)
 
     reply = json.loads(analyze(alias=alias))
 
     assert reply["coverage"]["processed"] == 12
-    assert [(b["model"], b.get("reasoning_effort")) for b in gateway.batches] == [(ran_on, "low")] * 2
+    assert [(b["model"], b.get("reasoning_effort")) for b in gateway.batches] == [(ran_on, "none")] * 2
     requests = _events(orch, project, tid)[0]["requests"]
-    assert [r["reasoning_effort"] for r in requests] == ["low", "low"]
+    assert [r["reasoning_effort"] for r in requests] == ["none", "none"]
+
+
+def test_an_unnamed_level_falls_back_to_low_where_none_is_not_offered(tmp_path):
+    analyze, gateway, *_ = _judging(
+        tmp_path, capability=RouteCapability(efforts=("low", "high"), verified=True))
+
+    json.loads(analyze())
+
+    assert [b.get("reasoning_effort") for b in gateway.batches] == ["low", "low"]
 
 
 @pytest.mark.parametrize("alias, ran_on", [(None, SONNET), (OPUS, OPUS)])
@@ -62,14 +72,17 @@ def test_a_named_level_the_model_does_not_take_is_refused_naming_the_ones_it_doe
 
     said = analyze(effort="xhigh")
 
-    assert said == (f"{SONNET} can't judge at reasoning effort 'xhigh'. It takes none, low, high. "
-                    "Ask the person which to use. No text was analyzed."), said
+    assert said.startswith(f"{SONNET} can't judge at reasoning effort 'xhigh'. It takes none, "
+                           "low, high. The person is shown a card with those levels"), said
+    assert said.endswith("No text was analyzed."), said
     assert gateway.batches == []
     assert _events(orch, project, tid) == []
+    assert orch._effort_choices[tid] == {"model": SONNET, "named": "xhigh",
+                                         "levels": ["none", "low", "high"]}
 
 
 def test_a_model_with_no_levels_judges_at_its_default_and_refuses_a_named_one(tmp_path):
-    analyze, gateway, *_ = _judging(tmp_path, capability=RouteCapability(verified=True))
+    analyze, gateway, orch, *_ = _judging(tmp_path, capability=RouteCapability(verified=True))
 
     json.loads(analyze())
     assert [b.get("reasoning_effort") for b in gateway.batches] == [None, None]
@@ -78,6 +91,7 @@ def test_a_model_with_no_levels_judges_at_its_default_and_refuses_a_named_one(tm
     said = analyze(effort="low")
     assert "It offers no reasoning level here." in said, said
     assert gateway.batches == []
+    assert orch._effort_choices == {}
 
 
 def test_the_batch_is_on_the_ledger_with_the_level_it_ran_at(tmp_path):
@@ -89,7 +103,7 @@ def test_the_batch_is_on_the_ledger_with_the_level_it_ran_at(tmp_path):
         record = timing.finish_turn(ok=True, decision="-")
 
     batches = [c for c in record.calls if c.phase == "text-analysis"]
-    assert [(c.effective_effort, c.effort_source) for c in batches] == [("low", "stage_default")] * 2
+    assert [(c.effective_effort, c.effort_source) for c in batches] == [("none", "stage_default")] * 2
 
 
 @pytest.mark.parametrize("named, sent", [(None, None), ("auto", None), ("Default", None),

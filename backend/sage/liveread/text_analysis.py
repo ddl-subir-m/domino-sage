@@ -500,6 +500,8 @@ def analyze(args: dict, turn) -> str:
             "more, or answer from the records that were judged and say how many were not.")
     if turn.record_data_use:
         turn.record_data_use(event, reply)
+    if args.get("source") and args.get("sql") and rows_out and turn.remember_statement:
+        turn.remember_statement(str(args["source"]), str(args["sql"]).strip())
     return json.dumps(reply)
 
 

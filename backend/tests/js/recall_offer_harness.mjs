@@ -56,6 +56,7 @@ const sandbox = {
       dismissPlanSuggestion: (opts) => clicked.push(
         opts && opts.answerHere ? 'dismiss-plan:answer' : 'dismiss-plan'),
       workItOutOnTheOtherLane: (prompt, threadId, grant) => clicked.push(`calculate:${grant}`),
+      chooseJudgingEffort: (threadId, model, level) => clicked.push(`effort:${model}:${level}`),
       get: () => ({ threads: [], touched: [] }),
     },
     util: { useBusyAct: () => [null, (_key, act) => act] },

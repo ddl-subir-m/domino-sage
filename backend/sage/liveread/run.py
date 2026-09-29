@@ -82,6 +82,9 @@ class Turn:
     # None for the model's default, or (None, sentence) refusing it. The picker's level belongs to
     # the picker's model and never reaches a batch.
     text_effort_for: Callable[[str, str | None], tuple[str | None, str]] | None = None
+    # Told the Data Source and the statement of an `analyze_text` that judged records (#606), so a
+    # later question on that source can start from its tables and joins.
+    remember_statement: Callable[[str, str], None] | None = None
     # Told the sentence a `not-in-range` refusal handed the model (#488). The Turn is built fresh
     # per call, so the record cannot live on it; the caller keeps it per Conversation, and a turn
     # the repeat brake stops can then say what the model was told and ignored. A refusal names a

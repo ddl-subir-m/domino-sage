@@ -85,6 +85,11 @@ if (spec.mode === 'reload') {
   SW.store.set({ scope: { id: 'proj', name: 'Demo Project' }, threads: [], attachments: [] });
   await SW.store.openThread('t1');
   console.log(JSON.stringify({ types: blocks().map((b) => b.type) }));
+} else if (spec.mode === 'effort') {
+  // A level clicked on the judging-effort card (#606): what the turn it starts was sent.
+  SW.store.set({ scope: { id: 'proj', name: 'Demo Project' }, threads: [], attachments: [] });
+  await SW.store.chooseJudgingEffort('t1', spec.model, spec.level);
+  console.log(JSON.stringify({ prompts: posted.map((b) => b.prompt) }));
 } else {
   SW.store.set({
     thread: { ...THREAD },

@@ -105,27 +105,36 @@ Support cases, call transcripts, notes. When the question is about what the text
 for", "complained about", "eliminate casual mentions" — a word match finds candidates and is never
 the judgment.
 
-1. **Count candidates** with a cheap match in `live_read_query`: `ILIKE`, or
-   `REGEXP_COUNT(t, '\\bARM\\b', 1, 'i') > 0` for a whole word.
-2. **Measure the candidate set** — rows, distinct accounts, `MAX(LENGTH(t))` — and write it to
-   findings. The length decides between the whole text and a window.
-3. **Judge them in one `analyze_text` call per source**, with `sql` selecting the id and the text
-   for just the candidates. For long text or chunked transcripts, select a window around the match:
+**Do not count the candidates first.** The judging call's coverage IS the count, and a statement
+that selects more than the record limit is refused before anything is judged — so a separate count
+is a step that tells you nothing the judging call will not. Write the coverage to findings instead.
+
+1. **Judge them in one `analyze_text` call per source**, with `sql` that does the whole selection:
+   the match, the join to accounts, and any filter the question sets ("active customers", a date
+   range). Always select a window around the match rather than the whole cell — it is never wrong
+   for short text and it is what keeps long text and chunked transcripts inside a batch:
 
    ```sql
-   SELECT CASE_ID,
-          SUBSTR(BODY, GREATEST(REGEXP_INSTR(BODY, '\\bARM\\b', 1, 1, 0, 'i') - 600, 1), 1500) AS SNIPPET
-   FROM   <db>.<schema>.<CASES>
-   WHERE  REGEXP_COUNT(BODY, '\\bARM\\b', 1, 'i') > 0
+   SELECT c.CASE_ID, a.ACCOUNT_NAME,
+          SUBSTR(c.BODY, GREATEST(REGEXP_INSTR(c.BODY, '\\bARM\\b', 1, 1, 0, 'i') - 600, 1), 1500) AS SNIPPET
+   FROM   <db>.<schema>.<CASES> c
+   JOIN   <db>.<schema>.<ACCOUNTS> a ON a.ACCOUNT_ID = c.ACCOUNT_ID
+   WHERE  REGEXP_COUNT(c.BODY, '\\bARM\\b', 1, 'i') > 0
+     AND  a.<ACTIVE_FILTER>
    ```
 
    `labels` names the decision, e.g. `["substantive_request", "casual_or_unrelated"]`; `purpose`
    states the rule in a sentence ("substantive asks for support on the ARM chip architecture; a
-   passing mention or another sense of the word is casual"). Pass `id_column`, or no ids come back.
-4. **Join the judged ids back** to accounts in one final statement (`WHERE CASE_ID IN (…)`) — but
-   only when the reply carries rows of id and label. A large judged set comes back as `counts` per
-   label with no ids. Then do not invent ids: narrow the candidate set in `sql` (a tighter regex,
-   one source or one account band at a time) until the rows fit, or report the counts only.
+   passing mention or another sense of the word is casual"). Pass the account column as
+   `group_by` and the reply counts labels per account — that IS the per-account answer, with no
+   join-back step. Pass `id_column` too, so the saved table carries the record ids. Without
+   `group_by`, a large judged set comes back as `counts` per label with no ids. Then do not invent
+   ids: call again with `group_by`, or report the counts only.
+2. **Only if the reply is refused as too many records**, narrow the `WHERE` (a tighter regex, a
+   date range, one account band) and call again. Do not fall back to counting.
+3. **If your prompt lists statements that judged text in this source earlier**, start from one:
+   its tables, columns, joins and filters are already measured, so change only the match and the
+   labels, and skip discovery for those tables.
 
 A word search that returns 0 where a looser match found candidates is almost always a trap below.
 Check it before concluding nothing matched. **Snowflake traps:**
@@ -278,12 +287,12 @@ Two traps this example hit, and every warehouse has its own:
 *Shape only, no numbers.* **Question:** active customers who asked for ARM (the chip) support,
 from support cases and call transcripts, with a named model eliminating casual mentions.
 
-1. **Names** filtered `ILIKE ANY ('%CASE%', '%TRANSCRIPT%', '%ACCOUNT%')`, then one filtered
-   columns read. Querying real tables by the third statement.
-2. **"Active":** measure `ACCOUNT_TYPE` on the account table; decide and write it down, or ask.
-3. **Candidates** in each source, `WHERE REGEXP_COUNT(<text>, '\\bARM\\b', 1, 'i') > 0`: counts and
-   distinct accounts, to findings.
-4. **Judge:** one `analyze_text` per source, `sql` selecting id plus snippet, `id_column` set,
-   `alias` as named. A reply with only `counts` means narrow the `sql` and judge again.
-5. **Join** substantive ids to active accounts in one statement. The answer gives each account its
-   evidence per source, and how many cases and transcripts tie to an account at all.
+1. **Columns:** the prompt already lists the table names, so one filtered columns read for the
+   case, transcript and account tables together — or none, when the prompt carries a statement
+   that judged this source before.
+2. **"Active":** the account-type column is in that read; decide and write it down, or ask.
+3. **Judge:** one `analyze_text` per source, `sql` selecting id, account name and a snippet around
+   `REGEXP_COUNT(<text>, '\\bARM\\b', 1, 'i') > 0`, joined to active accounts in the same
+   statement; `group_by` the account, `id_column` set, `alias` as named. No count before it.
+4. **Answer** from the per-account counts the two calls returned, with each call's coverage as the
+   denominator. Three or four statements in all, two of them judging.
