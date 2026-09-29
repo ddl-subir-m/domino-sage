@@ -357,6 +357,27 @@ def test_re_persists_multiply_by_read_not_by_model_call():
     assert "Gateway delivery: unknown" not in words
 
 
+def _reopen(running_in: str) -> str | None:
+    """Open `thr_1` while a chat turn runs in `running_in`, and say what the line reads."""
+    history = [{"type": "user", "text": "q"}]
+    payload = {"thread": {"id": "thr_1", "history": history},
+               "runningTurn": {"kind": "chat", "conversation": running_in, "app": ""}}
+    out = subprocess.run(["node", str(_JS / "data_used_grouping_harness.mjs")],
+                         input=json.dumps(payload), check=False, capture_output=True,
+                         text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])["typing"]
+
+
+@needs_node
+def test_coming_back_to_a_running_turn_brings_its_line_back():
+    """#606: a person went to Build and back mid-turn and saw Stop with nothing above it, because
+    opening the Conversation cleared the line and only the stream's next frame restores it."""
+    assert _reopen("thr_1") == "Thinking…"
+    # And only there: another Conversation's running turn owns its own line, not this view's.
+    assert _reopen("thr_other") is None
+
+
 @needs_node
 def test_identical_model_requests_are_drawn_once_with_every_id():
     """#606: every turn-model request after a read resends it, so a long turn's card repeated the

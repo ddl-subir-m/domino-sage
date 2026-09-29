@@ -21,7 +21,7 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { thread, block: rawBlock } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { thread, block: rawBlock, runningTurn } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const json = (body) => ({
   ok: true, status: 200,
@@ -120,6 +120,8 @@ if (rawBlock) {
   process.exit(0);
 }
 
+// A chat turn already running when the Conversation is opened — the person coming back from Build.
+if (runningTurn) SW.store.set({ chatRunning: true, runningTurn });
 await SW.store.openThread(thread.id);
 const blocks = (SW.store.get().messages || []).flatMap((m) => m.blocks || [])
   .filter((b) => b.type === 'data_used');
@@ -135,4 +137,5 @@ console.log(JSON.stringify({
   // Without the fallback the ids come back `[[null]]` and name the actual breakage.
   operations: blocks.map((b) => (b.events || []).map((e) => e && e.operation_id)),
   rendered: blocks.map(draw),
+  typing: SW.store.get().typing,
 }));

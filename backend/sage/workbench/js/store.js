@@ -7552,7 +7552,12 @@ window.SW = window.SW || {};
         state.assistantTurns = state.messages.filter((m) => m.role === 'assistant').length;
         state.pendingTurn = null;
         state.planViewerId = null;
-        state.typing = null;
+        // Back on the Conversation whose turn is still running — from Build, say — the line has to
+        // come back with it: the stream only repaints it on its next frame, and a slow step left
+        // the Thread showing Stop and nothing else (#606).
+        const turn = state.runningTurn;
+        state.typing = state.chatRunning && turn && turn.kind === 'chat'
+          && turn.conversation === thread.id ? 'Thinking…' : null;
         notify();
         // Half the lock is this Conversation's own (ADR-0043), so the answer standing on screen
         // belongs to the one that was open before. Unawaited beside the attachments read below: the
