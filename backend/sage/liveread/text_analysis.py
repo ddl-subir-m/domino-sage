@@ -443,6 +443,14 @@ def analyze(args: dict, turn) -> str:
     }
     if source_changed:
         reply["warning"] = "The source changed while analysis ran, so this is not a complete result."
+    elif unjudged := failed + unfinished:
+        # Measured 2026-09-28 (#606): told nothing when every batch failed, Gemini read the rows
+        # itself with scripts and fed them to delegated_model_call, which ADR-0041 exists to stop.
+        reply["warning"] = (
+            f"{unjudged} of {len(records)} records were not judged: the model returned no usable "
+            "answer for them. Their text must not pass through you, so do not read those rows "
+            "yourself, script around this, or send them to delegated_model_call. Call this once "
+            "more, or answer from the records that were judged and say how many were not.")
     if turn.record_data_use:
         turn.record_data_use(event, reply)
     return json.dumps(reply)

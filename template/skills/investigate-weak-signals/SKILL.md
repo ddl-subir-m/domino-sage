@@ -237,13 +237,8 @@ invisible deployment, "No" is an unfilled field, not a denial.
 
 **Every rationale names each signal's coverage and its denominator.** A score resting on a
 7.5%-coverage signal says so in its own sentence. Write the rationale so that the reader can see
-which of the two numbers is doing the work:
-
-> Acme — score 3 of 5, confidence LOW. Fired: 12 monitoring-tab events in 90d (coverage: 27.8% of
-> profiles tie to an account, 24,832/89,399); CRM `MODEL_MONITORING = Yes` (coverage: 24.3% of live
-> customers have the field filled, 17/70). Did not fire: no configuration event — but the
-> configuration signal itself fired for only 4 users across the whole warehouse, so its absence
-> here is weak evidence.
+which of the two numbers is doing the work. That rationale, including an account's name, belongs
+in the reply. The findings file stays aggregates and column facts: no account name, no identifier.
 
 ---
 
