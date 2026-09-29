@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from sage.driver import opencode
 from sage.driver.opencode import OpenCodeClient
 from sage.orchestrator import app
 
@@ -52,7 +53,7 @@ def test_location_warmup_uses_v2_and_names_the_chat_directory(monkeypatch, tmp_p
     client.warm_directory(directory)
 
     assert seen == [("http://opencode.test/api/agent", {
-        "params": {"location[directory]": directory}, "timeout": 17,
+        "params": {"location[directory]": directory}, "timeout": 17, "verify": opencode._TLS,
     })]
     assert client._dirs == {}
 

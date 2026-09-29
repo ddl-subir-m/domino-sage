@@ -39,7 +39,7 @@ def test_send_prompt_embeds_the_workspace_relative_path_not_the_mount_path(monke
     # parts). The path must be the in-root symlink path: the read tool hangs on /mnt/data mounts.
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[_ATT])
     assert len(calls) == 1
     text = _text(calls[0])
@@ -52,7 +52,7 @@ def test_send_prompt_embeds_the_workspace_relative_path_not_the_mount_path(monke
 def test_send_prompt_renders_the_summary_and_detail_of_each_attachment(monkeypatch):
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[_ATT])
     text = _text(calls[0])
     assert "q3.csv" in text
@@ -68,7 +68,7 @@ def test_send_prompt_reads_no_files_and_renders_from_the_dicts_alone(monkeypatch
     monkeypatch.setattr("builtins.open", _boom)
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     ghost = {"path": "public/data/x/uploads/nope.csv", "name": "nope.csv",
              "summary": "CSV — 3 columns, 9 rows", "detail": ""}
     OpenCodeClient("http://x").send_prompt("s1", "use this", attachments=[ghost])
@@ -80,7 +80,7 @@ def test_send_prompt_reads_no_files_and_renders_from_the_dicts_alone(monkeypatch
 def test_send_prompt_text_only_when_no_attachments(monkeypatch):
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "just text")
     assert calls[0]["parts"] == [{"type": "text", "text": "just text"}]  # nothing attached
 
@@ -88,7 +88,7 @@ def test_send_prompt_text_only_when_no_attachments(monkeypatch):
 def test_chat_send_prompt_does_not_talk_about_the_built_app(monkeypatch):
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt(
         "s1", "what data is there in @desk.csv",
         attachments=[{"path": ".sage/scratch/desk.csv", "name": "desk.csv",
@@ -149,7 +149,7 @@ def test_an_image_attachment_rides_prompt_files_as_a_data_uri(monkeypatch):
     every file-path form makes OpenCode emit malformed media ("must contain valid base64")."""
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "match this design", attachments=[
         {"path": "public/data/ds/uploads/shot.png", "name": "shot.png",
          "summary": "PNG image — 800x600", "detail": "PNG image, 800x600.",
@@ -163,7 +163,7 @@ def test_an_image_attachment_rides_prompt_files_as_a_data_uri(monkeypatch):
 def test_a_mixed_attachment_set_sends_media_parts_only_for_the_images(monkeypatch):
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "build it", attachments=[
         _ATT,
         {"path": "public/data/ds/uploads/shot.png", "name": "shot.png", "summary": "PNG image",
@@ -178,7 +178,7 @@ def test_an_image_that_could_not_be_inlined_tells_the_agent_it_cannot_see_it(mon
     so the agent assumes it can see the image and guesses instead of saying it can't."""
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "what colour is it?", attachments=[
         {"path": "public/data/ds/uploads/big.png", "name": "big.png",
          "summary": "PNG image — 900x900", "detail": "PNG image, 900x900.", "image_uri": None}])
@@ -191,7 +191,7 @@ def test_an_image_that_could_not_be_inlined_tells_the_agent_it_cannot_see_it(mon
 def test_a_normal_data_attachment_gets_no_image_note(monkeypatch):
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append(json) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append(json) or _Resp(200))
     OpenCodeClient("http://x").send_prompt("s1", "chart it", attachments=[_ATT])
 
     assert "NOT shown to you" not in _text(calls[0])
@@ -200,7 +200,7 @@ def test_a_normal_data_attachment_gets_no_image_note(monkeypatch):
 def test_summarize_posts_provider_and_model(monkeypatch):
     calls = []
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: calls.append((url, json)) or _Resp(200))
+                        lambda url, json, timeout, **_: calls.append((url, json)) or _Resp(200))
     OpenCodeClient("http://x").summarize("s1", "sage-gateway", "sonnet", auto=False)
     url, body = calls[0]
     assert url.endswith("/session/s1/summarize") and "/api/" not in url
@@ -232,7 +232,7 @@ def test_messages_reads_the_surface_the_turns_actually_ran_on(monkeypatch):
     """
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: seen.update(url=url) or _JsonResp([]))
+                        lambda url, params, timeout, **_: seen.update(url=url) or _JsonResp([]))
     OpenCodeClient("http://x").messages("s1")
 
     assert seen["url"].endswith("/session/s1/message")
@@ -249,7 +249,7 @@ def test_messages_sends_no_order_because_v1_is_chronological_already(monkeypatch
     """
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: seen.update(params) or _JsonResp([]))
+                        lambda url, params, timeout, **_: seen.update(params) or _JsonResp([]))
     OpenCodeClient("http://x").messages("s1")
 
     assert seen == {}
@@ -264,7 +264,7 @@ def test_a_bounded_poll_asks_for_the_newest_few_and_hands_them_back_oldest_first
     newest_last = [_v1("m2", "user", "second"), _v1("m3", "assistant", "answer")]
     monkeypatch.setattr(
         "sage.driver.opencode.httpx.get",
-        lambda url, params, timeout: seen.update(params) or _JsonResp(newest_last))
+        lambda url, params, timeout, **_: seen.update(params) or _JsonResp(newest_last))
     out = OpenCodeClient("http://x").messages("s1", limit=2)
 
     assert seen == {"limit": 2}
@@ -276,7 +276,7 @@ def test_a_v1_message_arrives_in_the_flat_shape_every_caller_reads(monkeypatch):
     a part by `m["id"]`. Normalising in the driver is what kept this surface change out of the
     orchestrator AND out of the test double, which stands in at the client's methods."""
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: _JsonResp([_v1("m1", "assistant", "hello")]))
+                        lambda url, params, timeout, **_: _JsonResp([_v1("m1", "assistant", "hello")]))
 
     m = OpenCodeClient("http://x").messages("s1")[0]
 
@@ -383,7 +383,7 @@ def test_session_events_reads_data_frames_and_never_times_out_a_quiet_turn(monke
 
     captured = {}
 
-    def fake_stream(method, url, params, timeout):
+    def fake_stream(method, url, params, timeout, **_):
         captured["url"] = url
         captured["params"] = params
         captured["timeout"] = timeout
@@ -628,15 +628,15 @@ def test_busy_is_read_from_v1_and_carries_the_workspace(monkeypatch):
     returns {} for a plainly running session when the workspace is not named."""
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: _Resp(200))
+                        lambda url, json, timeout, **_: _Resp(200))
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: seen.update(url=url, **params)
+                        lambda url, params, timeout, **_: seen.update(url=url, **params)
                         or _JsonResp({"s1": {"type": "busy"}}))
     c = OpenCodeClient("http://x")
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: _JsonResp({"id": "s1"}))
+                        lambda url, json, timeout, **_: _JsonResp({"id": "s1"}))
     monkeypatch.setattr("sage.driver.opencode.httpx.patch",
-                        lambda url, params, json, timeout: _Resp(200))
+                        lambda url, params, json, timeout, **_: _Resp(200))
     c.create_session("/work/dir")
 
     assert c.is_running("s1") is True
@@ -646,7 +646,7 @@ def test_busy_is_read_from_v1_and_carries_the_workspace(monkeypatch):
 
 def test_an_idle_session_is_not_busy(monkeypatch):
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: _JsonResp({}))
+                        lambda url, params, timeout, **_: _JsonResp({}))
 
     assert OpenCodeClient("http://x").is_running("s1") is False
 
@@ -658,7 +658,7 @@ def test_a_session_this_process_did_not_create_still_answers(monkeypatch):
     tolerates."""
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: seen.update(params) or _JsonResp({}))
+                        lambda url, params, timeout, **_: seen.update(params) or _JsonResp({}))
 
     assert OpenCodeClient("http://x").is_running("unknown") is False
     assert seen == {}
@@ -668,7 +668,7 @@ def test_stop_uses_v1s_abort(monkeypatch):
     """v2's /interrupt knows only about v2 turns: it answers 200 and stops nothing."""
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, timeout: seen.update(url=url) or _Resp(200))
+                        lambda url, timeout, **_: seen.update(url=url) or _Resp(200))
 
     OpenCodeClient("http://x").interrupt("s1")
 
@@ -682,7 +682,7 @@ def test_the_prompt_goes_to_the_path_that_carries_our_tools(monkeypatch):
     tool, and silently drops `agent` and `model` from the body as well."""
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: seen.update(url=url, body=json) or _Resp(200))
+                        lambda url, json, timeout, **_: seen.update(url=url, body=json) or _Resp(200))
 
     OpenCodeClient("http://x").send_prompt("s1", "hello", model={"providerID": "p", "modelID": "m"},
                                            agent="sage-chat")
@@ -701,7 +701,7 @@ def test_child_session_scope_is_verified_from_harness_parentage_and_directory(mo
             'ses_other_dir': {'parentID': 'ses_root', 'directory': '/elsewhere'},
             'ses_cycle': {'parentID': 'ses_cycle', 'directory': '/workspace'}}
     requests = []
-    def get(url, *, params, timeout):
+    def get(url, *, params, timeout, **_):
         requests.append((url, params, timeout))
         return httpx.Response(200, json=tree[url.rsplit('/', 1)[-1]], request=httpx.Request('GET', url))
     monkeypatch.setattr(httpx, 'get', get)
@@ -733,10 +733,10 @@ def test_a_new_session_is_named_so_opencode_does_not_spend_a_call_naming_it(monk
 
     sent = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: sent.update(create=json)
+                        lambda url, json, timeout, **_: sent.update(create=json)
                         or _JsonResp({"id": "s1"}))
     monkeypatch.setattr("sage.driver.opencode.httpx.patch",
-                        lambda url, params, json, timeout: sent.update(
+                        lambda url, params, json, timeout, **_: sent.update(
                             url=url, params=params, patch=json) or _Resp(200))
     OpenCodeClient("http://x").create_session("/mnt/code/apps/app_7f3c")
 
@@ -766,11 +766,11 @@ def test_a_title_the_route_refuses_does_not_take_the_session_with_it(monkeypatch
 
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: _JsonResp({"id": "s1"}))
+                        lambda url, json, timeout, **_: _JsonResp({"id": "s1"}))
     monkeypatch.setattr("sage.driver.opencode.httpx.patch",
-                        lambda url, params, json, timeout: _Resp(500))
+                        lambda url, params, json, timeout, **_: _Resp(500))
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: seen.update(params)
+                        lambda url, params, timeout, **_: seen.update(params)
                         or _JsonResp({"s1": {"type": "busy"}}))
 
     client = OpenCodeClient("http://x")
@@ -788,15 +788,15 @@ def test_a_title_the_server_never_answers_does_not_take_the_session_with_it(monk
     two — it is what the 5s budget produces when OpenCode is wedged."""
     import logging
 
-    def _never_answers(url, params, json, timeout):
+    def _never_answers(url, params, json, timeout, **_):
         raise httpx.ConnectTimeout("no answer in 5s")
 
     seen = {}
     monkeypatch.setattr("sage.driver.opencode.httpx.post",
-                        lambda url, json, timeout: _JsonResp({"id": "s1"}))
+                        lambda url, json, timeout, **_: _JsonResp({"id": "s1"}))
     monkeypatch.setattr("sage.driver.opencode.httpx.patch", _never_answers)
     monkeypatch.setattr("sage.driver.opencode.httpx.get",
-                        lambda url, params, timeout: seen.update(params)
+                        lambda url, params, timeout, **_: seen.update(params)
                         or _JsonResp({"s1": {"type": "busy"}}))
 
     client = OpenCodeClient("http://x")

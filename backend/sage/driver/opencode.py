@@ -30,6 +30,11 @@ from .agent_driver import AgentEvent
 
 log = logging.getLogger("sage.driver")  # "sage.*" -> surfaced by /api/diag's log tail
 
+# Built once and passed as `verify=` on every call below. A bare `httpx.get` reads the CA bundle
+# from disk to build a TLS context even for this plain-HTTP loopback server, and a bundle caught
+# mid-rewrite failed a findings-slice status poll with `[X509] PEM lib` (2026-09-29).
+_TLS = httpx.create_ssl_context()
+
 
 def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: bool = False,
                             tail: str = "") -> str:
@@ -277,7 +282,8 @@ class SessionEvents:
         # every frame of the turn with it. The failure is silent, which is what makes it dangerous:
         # the caller just falls back to polling and the streaming never happens.
         params = {"directory": self.directory} if self.directory else None
-        with httpx.stream("GET", f"{self.base_url}/event", params=params, timeout=timeout) as r:
+        with httpx.stream("GET", f"{self.base_url}/event", params=params, timeout=timeout,
+                          verify=_TLS) as r:
             r.raise_for_status()
             self._response = r
             for line in r.iter_lines():
@@ -388,7 +394,8 @@ class OpenCodeClient:
         The v2 location-aware agent read does, including the first-use watcher cost (#417).
         """
         r = httpx.get(f"{self.base_url}/api/agent",
-                      params={"location[directory]": directory}, timeout=self.timeout_s)
+                      params={"location[directory]": directory}, timeout=self.timeout_s,
+                      verify=_TLS)
         r.raise_for_status()
 
     def create_session(self, directory: str, model: dict | None = None) -> str:
@@ -415,7 +422,7 @@ class OpenCodeClient:
         body: dict = {"location": {"directory": directory}}
         if model:
             body["model"] = model
-        r = httpx.post(f"{self.base_url}/api/session", json=body, timeout=30)
+        r = httpx.post(f"{self.base_url}/api/session", json=body, timeout=30, verify=_TLS)
         r.raise_for_status()
         payload = r.json()
         # /api/* responses wrap the resource in {"data": {...}}.
@@ -439,7 +446,8 @@ class OpenCodeClient:
         # likelier half of the failure surface fatal.
         try:
             named = httpx.patch(f"{self.base_url}/session/{sid}", params={"directory": directory},
-                                json={"title": Path(directory).name or "sage"}, timeout=5)
+                                json={"title": Path(directory).name or "sage"}, timeout=5,
+                                verify=_TLS)
             named.raise_for_status()
         except httpx.HTTPError as error:
             log.warning("session %s kept OpenCode's own title, so OpenCode will spend a model call "
@@ -476,7 +484,7 @@ class OpenCodeClient:
             seen.add(current)
             try:
                 response = httpx.get(f"{self.base_url}/session/{current}",
-                                     params={"directory": directory}, timeout=2)
+                                     params={"directory": directory}, timeout=2, verify=_TLS)
                 response.raise_for_status()
                 info = response.json()
             except (httpx.HTTPError, ValueError):
@@ -508,7 +516,7 @@ class OpenCodeClient:
         """
         params: dict = {"limit": limit} if limit is not None else {}
         r = httpx.get(f"{self.base_url}/session/{session_id}/message",
-                      params=params, timeout=30)
+                      params=params, timeout=30, verify=_TLS)
         r.raise_for_status()
         return [_flatten_message(m) for m in r.json()]
 
@@ -580,7 +588,7 @@ class OpenCodeClient:
         if agent:
             body["agent"] = agent
         r = httpx.post(f"{self.base_url}/session/{session_id}/prompt_async",
-                       json=body, timeout=self.timeout_s)
+                       json=body, timeout=self.timeout_s, verify=_TLS)
         r.raise_for_status()
 
     def summarize(self, session_id: str, provider_id: str, model_id: str, *, auto: bool = False) -> None:
@@ -594,7 +602,7 @@ class OpenCodeClient:
         body = {"providerID": provider_id, "modelID": model_id, "auto": auto}
         r = httpx.post(
             f"{self.base_url}/session/{session_id}/summarize",
-            json=body, timeout=self.timeout_s)
+            json=body, timeout=self.timeout_s, verify=_TLS)
         r.raise_for_status()
 
     def agent_summaries(self) -> list[dict]:
@@ -605,7 +613,7 @@ class OpenCodeClient:
         Field names in the response aren't pinned by us, so keep every short scalar rather than
         picking an identifier key: whatever OpenCode calls it (name/id/...), it survives. Long values
         (agent system prompts) are dropped so the diag payload stays readable."""
-        r = httpx.get(f"{self.base_url}/api/agent", timeout=30)
+        r = httpx.get(f"{self.base_url}/api/agent", timeout=30, verify=_TLS)
         r.raise_for_status()
         payload = r.json()
         agents = payload.get("data", payload) if isinstance(payload, dict) else payload
@@ -630,7 +638,7 @@ class OpenCodeClient:
         # sees only v2 turns, so it reported every v1 turn as finished the instant it started.
         work = directory or self._dirs.get(session_id)
         params = {"directory": work} if work else {}
-        r = httpx.get(f"{self.base_url}/session/status", params=params, timeout=30)
+        r = httpx.get(f"{self.base_url}/session/status", params=params, timeout=30, verify=_TLS)
         r.raise_for_status()
         return str((r.json().get(session_id) or {}).get("type") or "") == "busy"
 
@@ -660,7 +668,7 @@ class OpenCodeClient:
     def interrupt(self, session_id: str) -> None:
         # v1's spelling of interrupt. v2's `/interrupt` only knows about v2 turns, and the turn
         # is a v1 one now, so stopping through it would report success and stop nothing.
-        httpx.post(f"{self.base_url}/session/{session_id}/abort", timeout=30)
+        httpx.post(f"{self.base_url}/session/{session_id}/abort", timeout=30, verify=_TLS)
 
     def session_events(self, session_id: str, *, directory: str | None = None) -> SessionEvents:
         """This session's turn events, live, off the global /event stream. See SessionEvents.
@@ -677,7 +685,8 @@ class OpenCodeClient:
         v1 now and the two APIs do not share a store. Left in place rather than deleted because
         nothing calls it either way — but do not reach for it without reading the class docstring.
         """
-        with httpx.stream("GET", f"{self.base_url}/api/session/{session_id}/event", timeout=None) as r:
+        with httpx.stream("GET", f"{self.base_url}/api/session/{session_id}/event", timeout=None,
+                          verify=_TLS) as r:
             for line in r.iter_lines():
                 if line.startswith("data: "):
                     try:
