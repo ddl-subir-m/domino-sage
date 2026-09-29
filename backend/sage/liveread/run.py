@@ -77,6 +77,11 @@ class Turn:
     # The model an `analyze_text` alias names: (model, "") to send its batches to, ("", "") for the
     # turn's own model, or ("", sentence) refusing it. Asked once, before any row is read (#607).
     text_model_for: Callable[[str], tuple[str, str]] | None = None
+    # The reasoning level those batches run at, for the model `text_model_for` chose ("" for the
+    # turn's own) and the level the person named (None when they named none): (level, "") with
+    # None for the model's default, or (None, sentence) refusing it. The picker's level belongs to
+    # the picker's model and never reaches a batch.
+    text_effort_for: Callable[[str, str | None], tuple[str | None, str]] | None = None
     # Told the sentence a `not-in-range` refusal handed the model (#488). The Turn is built fresh
     # per call, so the record cannot live on it; the caller keeps it per Conversation, and a turn
     # the repeat brake stops can then say what the model was told and ignored. A refusal names a

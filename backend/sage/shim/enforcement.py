@@ -459,10 +459,11 @@ class EnforcementShim:
                 + "\nFix this before you write anything else.")
 
     def handle(self, request: dict[str, Any], project: str, session: str | None = None,
-               on_resolved=None, on_refused=None) -> Iterator[bytes]:
+               on_resolved=None, on_refused=None,
+               effort_choice: EffortDecision | None = None) -> Iterator[bytes]:
         """OpenAI-compatible request in, streamed response out. OpenCode points at this."""
         request, labels, used, capability, _effort = self.prepare(
-            request, project, session, on_resolved)
+            request, project, session, on_resolved, effort_choice=effort_choice)
         image_delivery, strip_current_images = self.data_use.begin_image_delivery(
             request, request["model"], capable=supports_vision(request["model"])
         )
@@ -488,7 +489,8 @@ class EnforcementShim:
         )
 
     def prepare(self, request: dict[str, Any], project: str, session: str | None = None,
-                on_resolved=None, *, native: bool = False, rewrite_counts=None):
+                on_resolved=None, *, native: bool = False, rewrite_counts=None,
+                effort_choice: EffortDecision | None = None):
         """Route the request and resolve its capability, ready for a protocol to stream it.
 
         `project` is kept for the log line only — the gateway captures the caller's Domino project
@@ -814,6 +816,11 @@ class EnforcementShim:
                 configured = self._build_policy.plan_reasoning_effort
             else:
                 configured = self._build_policy.implement_reasoning_effort
+        # Handed in by Sage's own caller, never read off the request: `analyze_text` judges on this
+        # model with a level of its own (#606), and the picker's level belongs to the turn. It still
+        # passes the acceptance check below like any other.
+        if effort_choice is not None:
+            configured, source = effort_choice.configured_effort, effort_choice.source
 
         effort = configured
         status = (EffortStatus.PROVIDER_DEFAULT

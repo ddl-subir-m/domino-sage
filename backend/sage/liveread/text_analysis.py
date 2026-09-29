@@ -328,7 +328,7 @@ def analyze(args: dict, turn) -> str:
         return "The output field must be a string."
     batch_size = args.get("batch_size")
     if batch_size is None:
-        batch_size = 50
+        batch_size = 20
     if type(batch_size) is not int or batch_size < 1 or batch_size > MAX_BATCH_SIZE:
         return f"Batch size must be between 1 and {MAX_BATCH_SIZE}."
     concurrency = args.get("max_concurrency")
@@ -351,6 +351,20 @@ def analyze(args: dict, turn) -> str:
         serving, refused = turn.text_model_for(asked)
         if refused:
             return refused
+
+    named = args.get("effort")
+    if named is not None and not isinstance(named, str):
+        return "The effort must be a reasoning level's name. Omit it for the default."
+    named = (named or "").strip().lower()
+    if named in ("", "auto", "automatic", "default"):
+        named = None
+    effort = None
+    if turn.text_effort_for is not None:
+        effort, refused = turn.text_effort_for(serving, named)
+        if refused:
+            return refused
+    elif named:
+        return f"The reasoning effort {named!r} could not be checked here, so no text was analyzed."
 
     loaded = _load(args, turn, text_column, id_column, row_limit)
     if isinstance(loaded, str):
@@ -393,7 +407,8 @@ def analyze(args: dict, turn) -> str:
     try:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = [
-                pool.submit(_run_batch, i, batch, args, output_field, labels, turn, serving)
+                pool.submit(_run_batch, i, batch, args, output_field, labels, turn, serving,
+                            effort)
                 for i, batch in enumerate(batches)
             ]
             for future in as_completed(futures):
@@ -528,11 +543,13 @@ def _manifest(rows: list[dict[str, str]], text_column: str, id_column: str | Non
 
 
 def _run_batch(index: int, records: list[Record], args: dict, output_field: str,
-               labels: list[str] | None, turn, serving: str = "") -> BatchResult:
+               labels: list[str] | None, turn, serving: str = "",
+               effort: str | None = None) -> BatchResult:
     request_id = "req_" + uuid4().hex
     evidence = {"request_id": request_id,
                 "requested_alias": str(args.get("model") or "auto"),
                 "serving_model": serving or None,
+                "reasoning_effort": effort,
                 "provider_receipt": "unknown",
                 "cache": "unknown",
                 "decision_stage": "unknown",
@@ -542,7 +559,7 @@ def _run_batch(index: int, records: list[Record], args: dict, output_field: str,
     last_error = ""
     for attempt in range(2):
         request = _request(serving or evidence["requested_alias"], records, args, output_field,
-                           labels)
+                           labels, effort)
         try:
             text, state, denied = _collect(turn.analyze_text_batch(request))
         except CancelledError:
@@ -574,7 +591,7 @@ def _run_batch(index: int, records: list[Record], args: dict, output_field: str,
 
 
 def _request(model: str, records: list[Record], args: dict, output_field: str,
-             labels: list[str] | None) -> dict[str, Any]:
+             labels: list[str] | None, effort: str | None = None) -> dict[str, Any]:
     payload = {
         "task": str(args.get("purpose") or "Analyze each record."),
         "output_field": output_field,
@@ -584,10 +601,13 @@ def _request(model: str, records: list[Record], args: dict, output_field: str,
         payload["labels"] = labels
     instruction = ("Return only JSON with a records array. Each item must have id and "
                    f"{output_field}. Use each provided id exactly once. Do not add unknown ids.")
-    return {"model": model, "stream": True, "max_tokens": MAX_OUTPUT_TOKENS, "messages": [
+    request = {"model": model, "stream": True, "max_tokens": MAX_OUTPUT_TOKENS, "messages": [
         {"role": "system", "content": instruction},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
     ]}
+    if effort is not None:
+        request["reasoning_effort"] = effort
+    return request
 
 
 def _collect(stream) -> tuple[str, str, bool]:

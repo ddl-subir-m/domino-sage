@@ -66,6 +66,7 @@ from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
 from ..feedback.runner import FeedbackRunner, check_file
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
+from ..gateway.protocol import Protocol
 from ..liveread import data_use as live_data_use
 from ..liveread import mcp as live_mcp
 from ..liveread import reference as live_reference
@@ -185,6 +186,9 @@ from ..router import llm_router
 from ..router.model_control import ModelControl
 from ..router.models import (
     ASSIGNABLE_SLOTS,
+    EffortDecision,
+    EffortSource,
+    EffortStatus,
     Mode,
     ModelCatalog,
     Phase,
@@ -196,6 +200,7 @@ from ..router.models import (
 from ..router.phase_classifier import SHELL_TOOLS, WRITE_TOOLS
 from ..shim.enforcement import EnforcementShim
 from ..shim.keepalive import cut_off_finish_reason, terminal_finish_reason, upstream_error
+from ..shim.native import text_stream
 from ..tool_timing import MAX_PROGRAMS, program_name
 from ..transient import lost_on_a_short_drop
 from ..workspace import plan_doc
@@ -5460,6 +5465,8 @@ def _timed_batch(stream, call):
         for chunk in stream:
             call.first_byte()
             call.chunk()
+            if isinstance(chunk, bytes) and b'"usage"' in chunk:
+                _batch_usage(chunk, call)
             yield chunk
     except GeneratorExit:
         call.done(ok=False, error="the batch stream ended in an error")
@@ -5468,6 +5475,22 @@ def _timed_batch(stream, call):
         call.done(ok=False, error=f"{type(e).__name__}: {e}")
         raise
     call.done()
+
+
+def _batch_usage(chunk: bytes, call) -> None:
+    """A batch's tokens, from the stop frame of a route that sends them (`native.text_stream`)."""
+    for line in chunk.splitlines():
+        if not line.startswith(b"data:"):
+            continue
+        try:
+            body = json.loads(line[5:])
+        except ValueError:
+            continue
+        usage = body.get("usage") if isinstance(body, dict) else None
+        if isinstance(usage, dict):
+            details = usage.get("completion_tokens_details") or {}
+            call.usage(usage.get("prompt_tokens"), None, usage.get("completion_tokens"),
+                       details.get("reasoning_tokens"))
 
 
 def _unparsed_tool_input(part: dict) -> bool:
@@ -14282,20 +14305,68 @@ class Orchestrator:
             honoured.add(resolved)
             return resolved, ""
 
+        judging: dict = {}
+
+        def text_effort_for(serving: str, named: str | None) -> tuple[str | None, str]:
+            """The level `analyze_text` judges at (#606): the one the person named, else low.
+
+            Sorting records against labels is narrow work, so it does not inherit the picker's
+            level, which was chosen for the turn's model and may name another model entirely."""
+            model = serving
+            if not model:
+                try:
+                    model = llm_router.resolve(project.control.snapshot(),
+                                               project.shim.catalog).model
+                except Exception:
+                    model = ""
+            try:
+                capability = project.shim.resolve_capability(model)
+            except Exception as error:
+                if named:
+                    return None, (f"{model}'s reasoning levels could not be checked, so no text "
+                                  f"was analyzed. {error}")
+                capability = None
+            offered = capability.efforts if capability is not None else ()
+            judging["capability"] = capability
+            if named is None:
+                effort = "low" if "low" in offered else None
+                judging["decision"] = EffortDecision(
+                    "low", EffortSource.STAGE_DEFAULT, effort,
+                    EffortStatus.APPLIED if effort else EffortStatus.UNSUPPORTED)
+                return effort, ""
+            if named not in offered:
+                takes = (f"It takes {', '.join(offered)}." if offered
+                         else "It offers no reasoning level here.")
+                return None, (f"{model} can't judge at reasoning effort {named!r}. {takes} Ask "
+                              "the person which to use. No text was analyzed.")
+            judging["decision"] = EffortDecision(named, EffortSource.USER, named,
+                                                 EffortStatus.APPLIED)
+            return named, ""
+
         def analyze_text_batch(request: dict):
             # On the turn's ledger for the reason `_delegated_generate` gives: neither route below
             # passes the /v1 handler that fills it, so /api/diag/timing missed every batch (#606).
             call = timing.model_call(str(request.get("model") or ""), "text-analysis")
+            decision, capability = judging.get("decision"), judging.get("capability")
+            if decision is not None and capability is not None:
+                call.route(capability.protocol.value, decision, capability.verified)
             if request.get("model") in honoured:
                 # Past the shim, which replaces every request's model with the turn's.
-                upstream = project.shim.gateway.route(request, CostLabels(
+                labels = CostLabels(
                     phase="ask", mode="auto", component="chat-delegated",
-                    session=f"{thread_id}:text-analysis", version=project.shim.version))
+                    session=f"{thread_id}:text-analysis", version=project.shim.version)
+                if capability is not None and capability.protocol is not Protocol.CHAT:
+                    # The shim's own text route, so the level goes out in the form this route
+                    # was measured with rather than as a Chat field it may refuse.
+                    upstream = text_stream(project.shim.gateway, request, labels, capability)
+                else:
+                    upstream = project.shim.gateway.route(request, labels)
             else:
                 upstream = project.shim.handle(
                     request, project=project.id, session=f"{thread_id}:text-analysis",
                     on_resolved=lambda model, _phase, reason: call.model(model, "text-analysis",
-                                                                         reason))
+                                                                         reason),
+                    effort_choice=decision)
             return _timed_batch(upstream, call)
 
         def record_refusal(says: str) -> None:
@@ -14324,6 +14395,7 @@ class Orchestrator:
             record_data_use=record_data_use,
             analyze_text_batch=analyze_text_batch,
             text_model_for=text_model_for,
+            text_effort_for=text_effort_for,
             record_refusal=record_refusal,
         )
 

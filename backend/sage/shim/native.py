@@ -511,6 +511,11 @@ def text_stream(gateway, request, labels, capability):
                     if text:
                         yield b"data: " + json.dumps({"choices": [{"delta": {"content": text}}]}).encode() + b"\n\n"
         parser.finish()
-        yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+        # The usage rides the stop frame because only text deltas cross above, so a caller could
+        # not otherwise tell a slow answer from a long think (#606).
+        usage = {"prompt_tokens": parser.input_tokens, "completion_tokens": parser.output_tokens,
+                 "completion_tokens_details": {"reasoning_tokens": parser.reasoning_tokens}}
+        yield (b"data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}],
+                                       "usage": usage}).encode() + b"\n\ndata: [DONE]\n\n")
     finally:
         upstream.close()
