@@ -216,9 +216,9 @@ _JSON_TYPES = {"integer": (int,), "number": (int, float), "boolean": (bool,), "a
 
 
 def _typed(name: str, args: dict) -> dict:
-    """Some models send a typed argument as its JSON text: `"50"` for 50, `'["a"]'` for a list.
-    Text that parses to the declared type is taken as that value; anything else goes on as sent,
-    so the tool's own refusal still describes what arrived."""
+    """Some models send a typed argument as its JSON text: `"50"` for 50, `'["a"]'` for a list,
+    `"null"` for left out. Text that parses to the declared type or to null is taken as that
+    value; anything else goes on as sent, so the tool's own refusal still describes what arrived."""
     typed = dict(args)
     for key, value in args.items():
         wanted = _JSON_TYPES.get(_PROPERTIES[name].get(key, {}).get("type"))
@@ -228,7 +228,7 @@ def _typed(name: str, args: dict) -> dict:
             parsed = json.loads(value)
         except ValueError:
             continue
-        if type(parsed) in wanted:
+        if parsed is None or type(parsed) in wanted:
             typed[key] = parsed
     return typed
 

@@ -34,7 +34,19 @@ def test_a_typed_argument_sent_as_json_text_arrives_as_its_type(name, key, sent,
     assert _arguments_seen(name, {"token": "t", key: sent})[key] == read
 
 
+@pytest.mark.parametrize(("name", "key"), [
+    ("live_read_table", "row_limit"),
+    ("live_read_table", "batch_size"),
+    ("live_read_files", "pages"),
+])
+def test_null_sent_as_text_arrives_as_left_out(name, key):
+    """On 2026-09-29 mimo sent `row_limit: "null"` and analyze_text refused it as not a
+    positive integer; it meant no limit."""
+    assert _arguments_seen(name, {"token": "t", key: "null"})[key] is None
+
+
 @pytest.mark.parametrize(("name", "key", "sent"), [
+    ("live_read_query", "sql", "null"),
     ("live_read_table", "batch_size", "fifty"),
     ("live_read_table", "batch_size", "50.5"),
     ("live_read_table", "labels", "yes, no"),
