@@ -9427,6 +9427,11 @@ window.SW = window.SW || {};
               streamed = ev.text || '';
               flush(true);
               liveIndex = -1;
+              // A closed text part is not the end of the turn: the next step can think for a
+              // minute before its tool frame arrives, and with the line cleared the Thread showed
+              // nothing at all for it (#606). The record or `done` clears it when the turn is over.
+              state.typing = thought || 'Thinking…';
+              notify();
             } else {
               streamed += ev.text || '';
               paint();

@@ -149,7 +149,22 @@ def test_the_spinner_names_the_slow_work_instead_of_just_spinning():
         "Analyzing text…",           # an analyze call that named no source
         "Thinking…",
         "Saving revenue.png…",       # the path is the server's; the file name is the reader's
+        "Thinking…",                 # a closed text part until the record says the turn is done
     ]
+
+
+def test_the_line_comes_back_after_text_written_between_steps():
+    """#606: a mimo turn wrote "Let me query that." and then reasoned for a minute before its next
+    tool frame. The text cleared the line and nothing restored it, so the Thread looked stopped."""
+    out = _turn([
+        {"type": "user", "text": "q"},
+        {"type": "agent", "kind": "tool", "tool": "bash", "doing": "read", "detail": "cases.csv"},
+        {"type": "delta", "text": "Let me query that.", "final": True},
+        {"type": "agent", "kind": "tool", "tool": "bash", "doing": "query", "detail": "DWH"},
+        {"type": "agent", "kind": "text", "text": "Done."},
+        {"type": "done", "ok": True, "decision": "answered"},
+    ])
+    assert out["typings"] == ["Thinking…", "Reading cases.csv…", "Thinking…", "Querying DWH…"]
 
 
 def test_a_transcript_fallback_still_names_the_analysis():
