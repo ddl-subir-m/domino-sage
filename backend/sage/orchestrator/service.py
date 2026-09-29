@@ -857,6 +857,28 @@ class _TurnQueue:
             self._cond.notify_all()
             return failed
 
+    def name_holder(self, ticket: _TurnTicket) -> None:
+        """Name a lock this caller already holds, so a native model call can see whose it is.
+
+        Doors take the lock without queueing. The native harness refuses a call whose holder
+        has no ticket, which is what keeps a late request from landing on the next turn. A door
+        that itself calls the model — the Chat plan — has to be nameable for that call, or the
+        call is refused before it reaches the gateway.
+        """
+        with self._cond:
+            if self._running is not None:
+                raise RuntimeError("the turn lock already has a named holder")
+            if not ticket.sequence:
+                self._last_sequence += 1
+                ticket.sequence = self._last_sequence
+                ticket.epoch = self._epoch
+            ticket.admitted = True
+            ticket.claimed = True
+            ticket.granted = True
+            ticket.outcome = "ready"
+            ticket.queued = False
+            self._running = ticket
+
     def release(self) -> None:
         """Hand the turn lock back and wake whoever is next in line."""
         with self._cond:
@@ -12025,9 +12047,22 @@ class Orchestrator:
         Idempotent once the Thread's handoff names a plan document. Does not teleport into Build."""
         if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "try again")
+        # The native harness refuses a model call whose lock has no ticket. This door takes the
+        # lock without queueing, and the planner calls the model through that harness, so the
+        # click died with "its Build turn ended before it was ready" before the gateway was
+        # asked. Name the holder for the length of the call. It is a Chat turn: the click is on
+        # the conversation, and Stop has to be able to find it. `stop_requested` is cleared here
+        # because this door is not a stream that unwinds it, and a Stop that set the flag would
+        # otherwise still be set when the next turn starts.
+        ticket = _TurnTicket(new_id("turn"))
+        ticket.kind = "chat"
+        ticket.conversation = thread_id
         try:
+            self._turns.name_holder(ticket)
             return self._draft_handoff_plan(thread_id)
         finally:
+            if self._project is not None:
+                self._project.stop_requested = False
             self._release_turn()
 
     def confirm_handoff(self, thread_id: str, include: dict | None = None,
