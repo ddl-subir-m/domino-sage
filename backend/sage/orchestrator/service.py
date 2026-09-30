@@ -2969,7 +2969,8 @@ _RETRY_ONLY = re.compile(
     r"^(?:ok(?:ay)?|yes|yep|yeah|sure|please)?[\s,.!]*"
     r"(?:(?:please|now|then|just|lets|let's)\s+)*"
     r"(?:try|run|do|build|go)?\s*(?:it|this|that)?\s*"
-    r"(?:again|one more time|once more|retry)[\s,.!]*$",
+    r"(?:again|one more time|once more|retry)"
+    r"(?:[\s,.!]+(?:now|please|then))*[\s,.!]*$",
     re.IGNORECASE,
 )
 

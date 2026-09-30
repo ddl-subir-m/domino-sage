@@ -598,6 +598,17 @@ def test_looks_like_approval_rejects_anything_carrying_a_request():
         assert not _looks_like_approval(prompt), prompt
 
 
+def test_looks_like_retry_accepts_a_trailing_now_or_please():
+    # Live 2026-09-30: "try again now" after a restart missed the retry path and re-planned an
+    # approved build.
+    from sage.orchestrator.service import _looks_like_retry
+    for prompt in ("try again", "now try again", "try again now", "try again please",
+                   "try it again now.", "ok try again then", "retry now"):
+        assert _looks_like_retry(prompt), prompt
+    for prompt in ("try again with a bar chart", "try again now and add a filter", "now", "please"):
+        assert not _looks_like_retry(prompt), prompt
+
+
 def test_read_only_reason_names_the_rule_that_withheld_the_edit_tools():
     # Ask is read-only by mode with no token armed, so it must be reported even though nothing on the
     # turn looks armed — that's the case that made an Ask-mode build read as an unexplained failure.
