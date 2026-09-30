@@ -113,9 +113,11 @@ FASTAPI_ANTD = Stack(
     name="fastapi-antd",
     template_dir=_REPO / "template" / "fastapi-antd",
     sentinel="app.py",
-    # sage_serve.py imports sage_queries.py; app.py imports sage_serve.py; app.sh runs app.py.
+    # sage_serve.py imports sage_queries.py and sage_domino.py; app.py imports sage_serve.py; app.sh
+    # runs app.py.
     deploy_files=(
         "sage_queries.py",
+        "sage_domino.py",
         "sage_serve.py",
         "scripts/rehydrate_data.py",
         "app.sh",

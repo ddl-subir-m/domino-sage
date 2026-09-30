@@ -459,15 +459,14 @@ def test_the_taxonomy_row_says_the_id_is_never_the_name():
         assert "never the name itself" in row, stack
 
 
-def test_the_list_datasets_row_names_datasetRwDto():
-    """Live Domino list payloads nest under datasetRwDto, not dataset."""
+def test_the_list_datasets_row_sends_the_agent_to_the_helper():
+    """The listing's wrapper is `dataset` on dogfood (measured 2026-09-30) where f68787af read
+    `datasetRwDto`; `sage_domino.list_datasets` reads either, so the row names neither."""
     for stack, agents_md in _AGENTS.items():
         row = next(r for r in _reads_table(agents_md)
                    if r.startswith("| every {dataset} this app can see |"))
-        assert "datasets[].datasetRwDto.id" in row, stack
-        assert ".datasetRwDto.name" in row, stack
-        assert "datasets[].dataset.id" not in row, stack
-        assert "match `.dataset.name`" not in row, stack
+        assert row.split("|")[2].strip().startswith("`/sage/datasets`"), stack
+        assert "datasetRwDto" not in row and "datasets[].dataset" not in row, stack
 
 
 def test_every_read_the_instructions_name_passes_the_fence():
