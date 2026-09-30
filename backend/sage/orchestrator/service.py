@@ -3067,6 +3067,42 @@ def _failed_plan_request(history: list[dict], prompt: str) -> str | None:
         end = start
 
 
+# A turn that stopped to ask for something, or stopped without finishing. The next sentence
+# continues that request unless it asks for something else.
+_OPEN_CARD = frozenset({
+    "source-candidates", "table-candidates", "dataset-files", "incoming-changes",
+    "investigation-offer",
+})
+
+
+def _unfinished_request(history: list[dict], prompt: str) -> str | None:
+    """The request the last turn left open, when `prompt` does not ask for something else.
+
+    None when that turn finished, or when this sentence is itself a request. A card stores
+    the request it was asking about; otherwise the person's own words in that turn are it.
+    A chain of continuations walks back to the request they continue.
+    """
+    if chat_task.replaces_open_question(prompt):
+        return None
+    rows = [row for row in (history or []) if isinstance(row, dict)]
+    if rows and rows[-1].get("type") == "user" and str(rows[-1].get("text") or "") == prompt:
+        rows = rows[:-1]
+    end = len(rows)
+    while True:
+        done = next((i for i in range(end - 1, -1, -1) if rows[i].get("type") == "done"), -1)
+        if done < 0 or rows[done].get("ok") is not False:
+            return None
+        start = next((i for i in range(done - 1, -1, -1) if rows[i].get("type") == "done"), -1) + 1
+        window = rows[start:done + 1]
+        card = next((str(row.get("prompt") or "") for row in reversed(window)
+                     if row.get("type") in _OPEN_CARD and str(row.get("prompt") or "").strip()), "")
+        asked = card or next((str(row.get("text") or "") for row in window
+                              if row.get("type") == "user" and str(row.get("text") or "").strip()), "")
+        if asked and asked != prompt and chat_task.replaces_open_question(asked):
+            return asked
+        end = start
+
+
 # What a Continue-with-another-model click writes as the person's bubble (#569). One fixed
 # sentence, not the model's name: the `resolved` field on the new Attempt's `done` row records the
 # model that actually ran (#316), and a bubble naming the pick would disagree with it whenever the
@@ -6945,10 +6981,26 @@ _PLAN_REQUEST_AGAIN = "The request again, in the person's own words:\n"
 # Said at the end of a later turn, Chat or Build. The session already holds an answer to an
 # earlier sentence, and a weaker model continues that answer unless this one is marked as the
 # question. The investigation-card replay is not a later turn: it has one user row.
+#
+# The conversation is already going. Marking the latest sentence is what stops a follow-up
+# from being answered as the first one again. It is not a new conversation, and a short reply
+# is still about what was said.
 _THIS_TURN_QUESTION = (
-    "The question for this turn, in the person's own words. Answer this. "
-    "Do not repeat an earlier reply unless this sentence asks for that same result. "
-    "If it narrows or corrects an earlier result, change the result:"
+    "The latest sentence in this conversation, in the person's own words. "
+    "This conversation is continuing, not starting. Answer this sentence. "
+    "Do not repeat an earlier result unless this sentence asks for that same result. "
+    "If it narrows, corrects, or points at an earlier result, change that result:"
+)
+
+# What a later turn is shown of the conversation Sage already has. The harness session is
+# supposed to remember it and sometimes does not; this is the copy that does. Background for
+# the latest sentence, in Chat and in Build.
+_CONVERSATION_SO_FAR = (
+    "What has already been said in this conversation. This turn continues it. "
+    "Read the latest sentence against this, including a short reply that confirms or "
+    "points at something already said. A greeting belongs to a conversation that has "
+    "not started; this one has. This is background for the latest sentence, not a list "
+    "of work to repeat:"
 )
 
 
@@ -6967,6 +7019,18 @@ def _has_earlier_user_turn(history) -> bool:
             break
     return sum(1 for row in rows
                if row.get("type") == "user" and str(row.get("text") or "").strip()) > 1
+
+
+def _conversation_so_far(history, rebuilt: str = "") -> str:
+    """The conversation a later turn continues, or "" when this turn should not repeat it.
+
+    A rebuilt session already carries the summary under its own heading, and the turn after
+    a summary-scoped clear carries that instead. Every other later turn reads it here, from
+    Sage's transcript, so a follow-up still has what was said when the harness session does not.
+    """
+    if rebuilt or not _has_earlier_user_turn(history) or recall.seed(history or []):
+        return ""
+    return recall.reseed(history or [])
 
 
 # The one sentence the clean no-action retry adds (#561). It names what happened and what to do,
@@ -10343,8 +10407,10 @@ class Orchestrator:
             # rightly finds no app in the word "continue". The bubble keeps what they typed.
             typed = user_text
             if not live_plan:
-                replayed = _failed_plan_request(
-                    plan_app.read_history(project.build_conversation), prompt)
+                build_history = plan_app.read_history(project.build_conversation)
+                replayed = _failed_plan_request(build_history, prompt)
+                if not replayed:
+                    replayed = _unfinished_request(build_history, prompt)
                 if replayed:
                     typed, prompt = prompt, replayed
             # Before the Ask check and the gate: "remove everything you have built" is a change
@@ -15683,6 +15749,7 @@ class Orchestrator:
         # starts over, but is told what was said. Empty on every other turn, including the first
         # turn after a complete clear, where being told nothing is the whole point.
         carried = recall.seed(history or [])
+        earlier = _conversation_so_far(history, rebuilt)
         # A minted session carries nothing while the person goes on reading the whole transcript
         # (ADR-0060). `rebuilt` is that transcript already rendered, passed in because the caller is
         # the only place that knows the session was new — see `_ensure_thread_session`. Checked
@@ -15703,6 +15770,8 @@ class Orchestrator:
         elif carried:
             lines += ["What was said in this Conversation before the model was started over:",
                       carried, ""]
+        elif earlier:
+            lines += [_CONVERSATION_SO_FAR, earlier, ""]
         items = ctx.get("items") or []
         urls = [u for u in (urls or []) if u]
         if items or urls:
@@ -15807,7 +15876,8 @@ class Orchestrator:
         lines.append(prompt)
         return "\n".join(lines)
 
-    def _chat_source_request_prompt(self, thread_id: str, prompt: str, rebuilt: str = "") -> str:
+    def _chat_source_request_prompt(self, thread_id: str, prompt: str, rebuilt: str = "",
+                                    earlier: str = "") -> str:
         """The turn prompt for a known source clarification (#566): ask, and keep the question.
 
         Deliberately not `_chat_prompt` with parts removed. That prompt teaches Live read, the
@@ -15825,6 +15895,8 @@ class Orchestrator:
             lines += [("What was said in this Conversation already, summarised. This conversation "
                        "is continuing, not starting: answer as though you had been part of it."),
                       rebuilt, ""]
+        elif earlier:
+            lines += [_CONVERSATION_SO_FAR, earlier, ""]
         lines += [
             brand.text(
                 "This question needs data from a {dataSource} or a table, and none is attached to "
@@ -16684,9 +16756,10 @@ class Orchestrator:
                 # with nine events and a live session is indistinguishable here from one with nine
                 # events whose session just died. Only `_ensure_thread_session` knows.
                 rebuilt = recall.reseed(prompt_history) if owed else ""
+                earlier = _conversation_so_far(prompt_history, rebuilt)
                 if source_request:
                     turn_prompt = self._chat_source_request_prompt(thread_id, prompt,
-                                                                   rebuilt=rebuilt)
+                                                                   rebuilt=rebuilt, earlier=earlier)
                 else:
                     turn_prompt = self._chat_prompt(thread_id, prompt, ctx, urls,
                                                     workspace=Path(work),
@@ -22091,7 +22164,10 @@ class Orchestrator:
                 elif retry_tail is not None:
                     request_tail = ""
                 elif follow_up:
-                    request_tail = _THIS_TURN_QUESTION + "\n" + prompt
+                    earlier = "" if build_reseed else _conversation_so_far(
+                        project.app_for_turn().read_history(project.build_conversation))
+                    request_tail = ((earlier and _CONVERSATION_SO_FAR + "\n" + earlier + "\n\n")
+                                    + _THIS_TURN_QUESTION + "\n" + prompt)
                 elif first_send and not arch and buried and (gate or owns_turn):
                     # Plan already repeated the request when notes followed it (#537).
                     # Implement and answer-only turns bury it the same way.

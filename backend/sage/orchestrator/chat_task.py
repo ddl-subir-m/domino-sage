@@ -6,26 +6,45 @@ import re
 from ..workspace.threads import ThreadStore, new_id
 
 _SOURCE_KINDS = {"data_source", "datasource", "table"}
-_SOURCE_REPLY_WORDS = {
-    "the", "a", "our", "my", "data", "warehouse", "source", "table", "is", "are", "here",
-    "attached", "added", "this", "that", "it", "use", "please", "now", "have", "i", "provided", "in",
-}
+# A reply that calls off the open question. Anything else that asks for something is caught
+# below; these do not look like questions and would otherwise keep work the person stopped.
+_CANCELS = re.compile(
+    r"^(?:please\s+)?(?:cancel+|never\s*mind|forget\s+it|stop|start\s+over)\b",
+    re.IGNORECASE,
+)
+_QUESTION_LEAD = frozenset({"what", "why", "how", "who", "when", "where", "which", "whose"})
+# A word that makes the sentence its own request. A follow-up that has none of these — "done",
+# "the warehouse is here", "use it" — is still about the question already asked.
+_REQUEST_WORDS = frozenset({
+    "add", "build", "make", "create", "change", "update", "remove", "delete", "fix",
+    "show", "plot", "chart", "list", "count", "compare", "find", "tell", "explain",
+    "analyze", "analyse", "investigate", "look", "check", "filter", "exclude", "include",
+})
 
 
 def _sources(ctx: dict) -> list[dict]:
     return [i for i in ctx.get("items", []) if i.get("kind") in _SOURCE_KINDS and i.get("id")]
 
 
-def _source_reply(prompt: str, sources: list[dict]) -> bool:
-    text = prompt
-    for item in sources:
-        for name in (item.get("name"), item.get("sourceName")):
-            if name:
-                text = re.sub(r"@?" + re.escape(str(name)) + r"(?!\w)", " ", text,
-                              flags=re.IGNORECASE)
-    # An unknown mention is not attachment evidence and must not be stripped.
-    words = re.findall(r"[\w@-]+", text.lower())
-    return set(words) <= _SOURCE_REPLY_WORDS
+def replaces_open_question(prompt: str) -> bool:
+    """True when this sentence asks for something else, rather than continuing what is open.
+
+    An open question stays open until the person asks a different one or calls it off. The
+    words they use to say the missing piece arrived — "done", "here it is", "use it" — are
+    not a list to maintain. A sentence that does not itself ask for anything continues the
+    one already asked.
+    """
+    text = (prompt or "").strip()
+    if not text:
+        return False
+    if _CANCELS.match(text):
+        return True
+    if "?" in text:
+        return True
+    words = re.findall(r"[a-z']+", text.lower())
+    if words and words[0] in _QUESTION_LEAD:
+        return True
+    return any(word in _REQUEST_WORDS for word in words)
 
 
 def _new(question: str, awaiting: str, ctx: dict) -> dict:
@@ -54,8 +73,10 @@ def resolve(store: ThreadStore, thread_id: str, prompt: str, *, task_id: str = "
         elif asking:
             sources = _sources(ctx)
             added = any(i["id"] not in task.get("sourceIds", []) for i in sources)
+            # A source that was missing has arrived. The question that was waiting on it
+            # stays that question, unless this sentence asks for something else.
             if (task.get("awaiting") == "source" and added
-                    and _source_reply(prompt, sources)):
+                    and not replaces_open_question(prompt)):
                 effective = task["question"]
             else:
                 ctx.pop("pendingTask", None)
