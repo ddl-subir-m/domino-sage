@@ -3082,7 +3082,7 @@ def _unfinished_request(history: list[dict], prompt: str) -> str | None:
     the request it was asking about; otherwise the person's own words in that turn are it.
     A chain of continuations walks back to the request they continue.
     """
-    if chat_task.replaces_open_question(prompt):
+    if chat_task.replaces_open_question(prompt) or prompt.strip() == _KEEP_GOING_PROMPT:
         return None
     rows = [row for row in (history or []) if isinstance(row, dict)]
     if rows and rows[-1].get("type") == "user" and str(rows[-1].get("text") or "") == prompt:
@@ -15653,7 +15653,8 @@ class Orchestrator:
                      handoffs: list[dict] | None = None,
                      history: list[dict] | None = None,
                      declined: bool = False, rebuilt: str = "", investigating: bool = False,
-                     catalogue: dict[str, str] | None = None) -> str:
+                     catalogue: dict[str, str] | None = None,
+                     already_asked: bool = False) -> str:
         catalogue = catalogue or {}
         continuing = _has_earlier_user_turn(history)
         lines = [
@@ -15749,7 +15750,10 @@ class Orchestrator:
         # starts over, but is told what was said. Empty on every other turn, including the first
         # turn after a complete clear, where being told nothing is the whole point.
         carried = recall.seed(history or [])
-        earlier = _conversation_so_far(history, rebuilt)
+        # A replay already names the request (`already_asked`: the continue click, a declined
+        # offer). Pasting the transcript beside it puts a different sentence back in front of
+        # the model — the one the pending question replaced.
+        earlier = "" if already_asked else _conversation_so_far(history, rebuilt)
         # A minted session carries nothing while the person goes on reading the whole transcript
         # (ADR-0060). `rebuilt` is that transcript already rendered, passed in because the caller is
         # the only place that knows the session was new — see `_ensure_thread_session`. Checked
@@ -16756,7 +16760,8 @@ class Orchestrator:
                 # with nine events and a live session is indistinguishable here from one with nine
                 # events whose session just died. Only `_ensure_thread_session` knows.
                 rebuilt = recall.reseed(prompt_history) if owed else ""
-                earlier = _conversation_so_far(prompt_history, rebuilt)
+                earlier = ("" if already_asked
+                           else _conversation_so_far(prompt_history, rebuilt))
                 if source_request:
                     turn_prompt = self._chat_source_request_prompt(thread_id, prompt,
                                                                    rebuilt=rebuilt, earlier=earlier)
@@ -16769,7 +16774,8 @@ class Orchestrator:
                                                     declined=declined,
                                                     rebuilt=rebuilt,
                                                     investigating=investigating,
-                                                    catalogue=catalogue)
+                                                    catalogue=catalogue,
+                                                    already_asked=already_asked)
                 if artifact_token is not None:
                     # Says what to do, never what this turn is or cannot do. The block is
                     # model-facing, so every word in it is a word the model can hand back to the

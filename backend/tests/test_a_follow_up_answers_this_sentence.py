@@ -10,6 +10,7 @@ from pathlib import Path
 from sage.driver.opencode import with_attachment_listing
 from sage.orchestrator.service import (
     _CONVERSATION_SO_FAR,
+    _KEEP_GOING_PROMPT,
     _PLAN_REQUEST_AGAIN,
     _THIS_TURN_QUESTION,
     _unfinished_request,
@@ -33,6 +34,7 @@ def test_an_unfinished_request_stays_open_until_the_next_sentence_asks_for_somet
     ]
     assert _unfinished_request(history, "done") == "build me a dashboard of gong calls"
     assert _unfinished_request(history, "make the title blue") is None
+    assert _unfinished_request(history, _KEEP_GOING_PROMPT) is None
     finished = [
         {"type": "user", "text": "build me a dashboard of gong calls"},
         {"type": "done", "ok": True, "decision": "answered"},

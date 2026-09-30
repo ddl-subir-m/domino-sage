@@ -9,7 +9,12 @@ import pytest
 
 from sage import timing
 from sage.orchestrator import chat_intent, handoff, recall
-from sage.orchestrator.service import ChartFontsMissing, Orchestrator, _chat_save_landed
+from sage.orchestrator.service import (
+    _CONVERSATION_SO_FAR,
+    ChartFontsMissing,
+    Orchestrator,
+    _chat_save_landed,
+)
 from sage.router.models import ModelCatalog
 from sage.workspace.threads import ThreadStore
 
@@ -3135,6 +3140,9 @@ def test_an_ordinary_turn_on_a_live_session_rebuilds_nothing(tmp_path: Path):
     turn's session rather than minting beside it. Without it, a `_ensure_thread_session` that minted
     every time would satisfy every other assertion in this file, and every turn of every Thread
     would carry a duplicated summary under a false "Memory rebuilt" divider.
+
+    A later turn does carry a bounded summary of what was already said. That is the conversation,
+    under its own heading, and it is not the rebuild notice.
     """
     orch, oc = _orch(tmp_path, client=_ForgetfulOpenCode)
     tid = orch.create_thread()["id"]
@@ -3142,9 +3150,11 @@ def test_an_ordinary_turn_on_a_live_session_rebuilds_nothing(tmp_path: Path):
 
     events = list(orch.chat_stream(tid, "and by week?"))
 
+    sent = oc.prompts[-1]["text"]
     assert len(oc.sessions) == 1
     assert not any(e.get("type") == recall.REBUILT for e in events)
-    assert "41,002 events" not in oc.prompts[-1]["text"]
+    assert _CONVERSATION_SO_FAR in sent
+    assert "What was said in this Conversation already, summarised" not in sent
 
 
 def test_the_planner_does_not_spend_the_rebuild_a_chat_turn_is_owed(tmp_path: Path):
