@@ -170,7 +170,7 @@ def _no_real_waiting(monkeypatch):
 
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     monkeypatch.setattr(time, "monotonic", lambda: real() + offset["s"])
-    monkeypatch.setattr(svc._EventTap, "wait", lambda self, timeout, floor=0.0: bool(advance(timeout)))
+    monkeypatch.setattr(svc._EventTap, "wait", lambda self, timeout, floor=0.0, thoughts=None: bool(advance(timeout)))
     monkeypatch.setattr(svc._EventTap, "wait_any", lambda self, timeout, floor=0.0: bool(advance(timeout)))
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
 

@@ -166,7 +166,7 @@ def _scripted_clock(monkeypatch):
     # False: nothing arrived. These fakes have no `session_events` at all, which IS the condition
     # under test — a turn whose only sign of life is the gateway stream.
     monkeypatch.setattr(svc._EventTap, "wait",
-                        lambda self, timeout, floor=0.0: bool(advance(timeout)))
+                        lambda self, timeout, floor=0.0, thoughts=None: bool(advance(timeout)))
     monkeypatch.setattr(svc._EventTap, "wait_any",
                         lambda self, timeout, floor=0.0: bool(advance(timeout)))
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
