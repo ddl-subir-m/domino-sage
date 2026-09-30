@@ -3455,7 +3455,7 @@ class _EventTap:
                 self.seen_any = self.seen_any or bool(out)
                 return out
 
-    def wait(self, timeout: float, floor: float = 0.0) -> bool:
+    def wait(self, timeout: float, floor: float = 0.0, thoughts: list | None = None) -> bool:
         """Block until a frame worth re-reading the transcript for, or until `timeout`.
 
         The doorbell for a loop that reads the TRANSCRIPT rather than the stream. What arrives here
@@ -3481,7 +3481,12 @@ class _EventTap:
 
         A tap with no stream sleeps through `time.sleep`, so a test that scripts the clock pays
         the interval in turn-time only. A stream that has died still has an empty queue, and that
-        wait is the same blind timeout the queue already was."""
+        wait is the same blind timeout the queue already was.
+
+        `thoughts` is the one exception to dropping. The transcript holds no reasoning text until
+        the part closes, so a reasoning delta is the only place an open thought can be read. Given
+        a list, the wait returns False early on one, after the floor, with every delta queued by
+        then appended. A frame worth a read found in that sweep still returns True."""
         import time
 
         if self._stream is None:
@@ -3497,6 +3502,21 @@ class _EventTap:
                 ev = self._q.get(timeout=remaining)
             except queue.Empty:
                 return False
+            if thoughts is not None and getattr(ev, "kind", "") == "reasoning" \
+                    and not _worth_a_read(ev):
+                thoughts.append(ev)
+                held = floor - (time.monotonic() - started)
+                if held > 0:
+                    time.sleep(held)
+                while True:
+                    try:
+                        ev = self._q.get_nowait()
+                    except queue.Empty:
+                        return False
+                    if getattr(ev, "kind", "") == "reasoning" and not _worth_a_read(ev):
+                        thoughts.append(ev)
+                    elif _worth_a_read(ev):
+                        return True
             if _worth_a_read(ev):
                 held = floor - (time.monotonic() - started)
                 if held > 0:
@@ -3597,7 +3617,7 @@ def _worth_a_read(ev) -> bool:
     Total by construction. This is the one thing on the reader's output that runs on the TURN's
     thread, and the reader swallows every failure precisely so that a stream can never fail a turn;
     an attribute error raised here would walk straight out of the poll loop and undo that."""
-    if getattr(ev, "kind", "") != "message":
+    if getattr(ev, "kind", "") not in ("message", "reasoning"):
         return True
     payload = getattr(ev, "payload", None)
     return bool(payload.get("final")) if isinstance(payload, dict) else True
@@ -22967,7 +22987,18 @@ class Orchestrator:
                 # did before and is why an unavailable stream is a degradation and not a failure.
                 # `poll.sleep_ms` still measures it, so the before/after is the same number.
                 _sleep_t0 = time.monotonic()
-                tap.wait(1.0, floor=_POLL_FLOOR_S)
+                while True:
+                    thoughts: list = []
+                    woke = tap.wait(max(0.0, _sleep_t0 + 1.0 - time.monotonic()),
+                                    floor=_POLL_FLOOR_S, thoughts=thoughts)
+                    said = None
+                    for ev in thoughts:
+                        said = narration.push(str(ev.payload.get("part") or ""),
+                                              str(ev.payload.get("delta") or "")) or said
+                    if said is not None:
+                        yield {"type": "narration", "text": said}
+                    if woke or not thoughts:
+                        break
                 timing.observe("poll.sleep_ms", (time.monotonic() - _sleep_t0) * 1000)
                 tool_observer.interval("poll.sleep", _sleep_t0)
 
