@@ -113,7 +113,18 @@ window.SW = window.SW || {};
     // answerable without a value nobody thinks to mention. And it can never hide a read that fell
     // short: see `HIDDEN_BY_DATA_ACCESS` in store.js, which is the one reader.
     dataAccessShown: { fallback: false, values: [true, false] },
+
+    // Build's mode picker, per Project. The Builder keeps the mode in memory only, so a restart
+    // answers Auto; boot puts this back. Per Project because Implement skips the first-build plan
+    // gate, and a new Project must not inherit that from another one.
+    buildModes: { fallback: {}, validate: buildModeMap },
   };
+
+  function buildModeMap(value) {
+    const map = asRecord(value);
+    return !!map && Object.entries(map).every(([project, mode]) =>
+      project && ['auto', 'ask', 'plan', 'implement'].includes(mode));
+  }
 
   // Who the record belongs to, or null when nobody knows yet.
   //

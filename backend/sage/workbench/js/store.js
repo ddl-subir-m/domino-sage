@@ -4958,6 +4958,8 @@ window.SW = window.SW || {};
         const status = await SW.api.setBuildMode(mode);
         applyModelStatus(status);
         notify();
+        const project = state.scope && state.scope.id;
+        if (project) SW.prefs.set('buildModes', { ...SW.prefs.get('buildModes'), [project]: mode });
         // Only while the lock is actually holding: an opted-out deployment must not pay a round
         // trip per mode toggle to be told again that nothing narrows. Generation-tagged like the
         // scope load's own read, so a slow answer for the project somebody just left cannot land
@@ -5575,6 +5577,8 @@ window.SW = window.SW || {};
       // the first place, so reading it from `/project` directly loses nothing. Without this, Build's
       // picker would open on the seeded catalog with no slot marked current.
       applyModelStatus(projects[0] || project);
+      const savedMode = state.scope && SW.prefs.get('buildModes')[state.scope.id];
+      if (savedMode && savedMode !== state.buildMode) store.setBuildMode(savedMode);
       state.charts = charts;
       state.starters = starters;
       state.notifications = notifications;
