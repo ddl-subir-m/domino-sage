@@ -133,6 +133,17 @@ def test_the_page_reaches_it_through_the_relay(sd, monkeypatch):
     assert len(datasets) == 214 and sum(1 for d in datasets if d["tags"]) == 4
 
 
+def test_the_joined_list_is_held_to_the_relay_cap(sd, monkeypatch):
+    joined = [{"id": d["id"], "name": d["name"], "project": None, "tags": []} for d in _datasets()]
+    monkeypatch.setattr(sd, "list_datasets", lambda: (200, joined))
+    _, _, whole = sd.relay("sage/datasets")
+    monkeypatch.setattr(sd, "MAX_BYTES", len(whole) - 1)
+    status, _, body = sd.relay("sage/datasets")
+
+    assert status == 502
+    assert json.loads(body) == {"error": sd._TOO_LARGE}
+
+
 @pytest.mark.parametrize("prefix", ["/api/datasetrw/v2/datasets?offset=200",
                                     "/v4/datasetrw/datasets-v2"])
 def test_a_failed_read_is_the_answer_not_a_shorter_list(sd, monkeypatch, prefix):

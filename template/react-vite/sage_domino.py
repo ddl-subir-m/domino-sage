@@ -333,7 +333,10 @@ def relay(path: str, query: str = "") -> tuple[int, dict[str, str], bytes]:
         status, result = list_datasets()
         if status != 200:
             return _problem(status, result)
-        return 200, _headers(_JSON), json.dumps({"datasets": result}).encode("utf-8")
+        body = json.dumps({"datasets": result}).encode("utf-8")
+        if len(body) > MAX_BYTES:
+            return _problem(502, _TOO_LARGE)
+        return 200, _headers(_JSON), body
     return get(path, query)
 
 
