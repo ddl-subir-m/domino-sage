@@ -50,6 +50,22 @@ def test_a_new_question_retires_an_old_card_before_it_can_grant_access(tmp_path:
     assert orch.thread_context(tid).get("investigation", {}).get("state") != "open"
 
 
+@pytest.mark.parametrize("reply", ["done", "the warehouse is attached", "use it"])
+def test_a_follow_up_that_does_not_ask_something_else_keeps_the_open_question(
+        tmp_path: Path, reply):
+    """Attaching the source leaves the question open. The next sentence keeps it unless
+    that sentence asks for something else. "done" is one such sentence, not a special case."""
+    orch, oc, tid = _setup(tmp_path)
+    list(orch.chat_stream(tid, ASK))
+    orch.add_thread_context(tid, SOURCE)
+
+    events = list(orch.chat_stream(tid, reply))
+
+    offer = next(e for e in events if e["type"] == "investigation-offer")
+    assert offer["prompt"] == ASK
+    assert len(oc.prompts) == 1, "the open question is resumed, not answered as a new turn"
+
+
 @pytest.mark.parametrize("replacement", ["What is ARM?", "cancel", "never mind"])
 def test_a_substantive_reply_or_cancel_cannot_revive_the_prior_task(tmp_path: Path, replacement):
     orch, _, tid = _setup(tmp_path)

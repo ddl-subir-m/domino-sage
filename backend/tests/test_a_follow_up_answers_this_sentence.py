@@ -8,7 +8,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from sage.driver.opencode import with_attachment_listing
-from sage.orchestrator.service import _PLAN_REQUEST_AGAIN, _THIS_TURN_QUESTION
+from sage.orchestrator.service import (
+    _CONVERSATION_SO_FAR,
+    _KEEP_GOING_PROMPT,
+    _PLAN_REQUEST_AGAIN,
+    _THIS_TURN_QUESTION,
+    _unfinished_request,
+)
 from sage.router.models import Mode
 from sage.workspace.threads import findings_file
 
@@ -18,6 +24,22 @@ from .test_chat_turn import IntentGateway, _orch
 
 _FIRST = "Fuse cases and transcripts and tell me who asked for ARM support."
 _FOLLOW = "what about carbon arc have they asked?"
+
+
+def test_an_unfinished_request_stays_open_until_the_next_sentence_asks_for_something_else():
+    history = [
+        {"type": "user", "text": "build me a dashboard of gong calls"},
+        {"type": "source-candidates", "prompt": "build me a dashboard of gong calls"},
+        {"type": "done", "ok": False, "decision": "data source candidates"},
+    ]
+    assert _unfinished_request(history, "done") == "build me a dashboard of gong calls"
+    assert _unfinished_request(history, "make the title blue") is None
+    assert _unfinished_request(history, _KEEP_GOING_PROMPT) is None
+    finished = [
+        {"type": "user", "text": "build me a dashboard of gong calls"},
+        {"type": "done", "ok": True, "decision": "answered"},
+    ]
+    assert _unfinished_request(finished, "done") is None
 
 
 def _investigating(tmp_path: Path, turns: list[Turn]):
@@ -57,6 +79,10 @@ def test_a_chat_follow_up_ends_on_the_new_sentence(tmp_path: Path):
 
     prompt = oc.prompts[-1]["text"]
     assert prompt.endswith(_THIS_TURN_QUESTION + "\n" + _FOLLOW)
+    assert _CONVERSATION_SO_FAR in prompt
+    assert _FIRST in prompt
+    assert "334 customers." in prompt
+    assert prompt.index(_FIRST) < prompt.rindex(_FOLLOW)
     assert "take the next step" not in prompt
     assert "classifying, summarising, extracting, or deciding" in prompt
     assert "Read it before you plan this turn" not in prompt
@@ -89,4 +115,7 @@ def test_an_implement_follow_up_with_notes_ends_on_the_new_sentence(tmp_path: Pa
     sent = oc.prompts[-1]
     outgoing = with_attachment_listing(sent["text"], sent["attachments"], tail=sent["tail"])
     assert outgoing.endswith(_THIS_TURN_QUESTION + "\n" + "Exclude placebo rows.")
+    assert _CONVERSATION_SO_FAR in outgoing
+    assert "Add a table of accounts." in outgoing
+    assert outgoing.index("Add a table of accounts.") < outgoing.rindex("Exclude placebo rows.")
     assert outgoing.index("ADSL.csv") < outgoing.rindex("Exclude placebo rows.")
