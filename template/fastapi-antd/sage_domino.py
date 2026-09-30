@@ -123,6 +123,8 @@ def allowed(path: str) -> bool:
     path segment: ids are hex, and a file name rides in the query string.
     """
     decoded = urllib.parse.unquote(path)
+    if decoded == DATASETS_PATH:
+        return True
     if "%" in decoded or "\\" in decoded:
         return False
     segments = decoded.strip("/").split("/")
@@ -240,6 +242,84 @@ def get(path: str, query: str = "") -> tuple[int, dict[str, str], bytes]:
     return status, _headers(ctype or _JSON), body
 
 
+#: The one relay path that is not a platform path: every Dataset with its taxonomy tags, read and
+#: joined here, so a page asks `GET /api/domino/sage/datasets` instead of writing the pager itself.
+DATASETS_PATH = "/sage/datasets"
+_LISTING = "/api/datasetrw/v2/datasets"
+_TAGGED = "/v4/datasetrw/datasets-v2"
+_PAGE = 200
+_MAX_PAGES = 100
+_TAG_BATCH = 40
+
+
+def _read_json(path: str, query: str):
+    """`(status, body)` for one platform read; the body is parsed JSON, or an error sentence."""
+    status, _, raw = get(path, query)
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return 502, f"The platform answered GET {path} with something other than JSON."
+    if status != 200:
+        own = body.get("error") if isinstance(body, dict) else None
+        return status, own or f"The platform answered {status} to GET {path}."
+    return status, body
+
+
+def list_datasets() -> tuple[int, list[dict] | str]:
+    """Every Dataset this app can see: `(200, [{id, name, project, tags}])`, or `(status, error)`.
+
+    `tags` is `[{namespace, label}]` — a study tag reads `{"namespace": "study", "label": "abc123"}`.
+    Both reads under it are easy to get wrong by hand. The listing pages, and a page can come back
+    shorter than the `limit` asked for while more follow, so only an empty page ends it. The tags
+    come from `datasets-v2`, where `taxonomyTags` sits BESIDE `datasetRwDto` on each row, never
+    inside it. A read that fails is the answer: a shorter list would read as "there are no more".
+    """
+    found: list[dict] = []
+    offset = 0
+    for _ in range(_MAX_PAGES):
+        status, body = _read_json(_LISTING, f"includeProjectInfo=true&offset={offset}&limit={_PAGE}")
+        if status != 200:
+            return status, body
+        rows = body.get("datasets") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            return 502, f"The platform's answer to GET {_LISTING} carried no datasets."
+        if not rows:
+            break
+        for row in rows:
+            ds = (row.get("dataset") or row.get("datasetRwDto") or row) if isinstance(row, dict) else {}
+            if not isinstance(ds, dict) or not ds.get("id"):
+                continue
+            project = (row.get("projectInfo") or {}).get("projectName")
+            found.append({"id": str(ds["id"]), "name": str(ds.get("name") or ""),
+                          "project": str(project) if project else None, "tags": []})
+        offset += len(rows)
+    else:
+        return 502, f"GET {_LISTING} did not end after {_MAX_PAGES} pages."
+
+    by_id = {d["id"]: d for d in found}
+    ids = list(by_id)
+    for start in range(0, len(ids), _TAG_BATCH):
+        batch = ",".join(ids[start:start + _TAG_BATCH])
+        status, body = _read_json(_TAGGED, f"datasetIds={batch}&includeTaxonomyTags=true")
+        if status != 200:
+            return status, body
+        rows = body if isinstance(body, list) else (body.get("data") if isinstance(body, dict) else None)
+        if not isinstance(rows, list):
+            return 502, f"The platform's answer to GET {_TAGGED} carried no datasets."
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ds = row.get("datasetRwDto") or row
+            entry = by_id.get(str(ds.get("id"))) if isinstance(ds, dict) else None
+            if entry is None:
+                continue
+            tags = row.get("taxonomyTags") or ds.get("taxonomyTags") or []
+            entry["tags"] = [{"namespace": str(t.get("namespaceLabel") or ""),
+                              "label": str(t.get("label") or "")}
+                             for t in tags if isinstance(t, dict)]
+    return 200, found
+
+
 def relay(path: str, query: str = "") -> tuple[int, dict[str, str], bytes]:
     """`get`, behind the fence: what a page may reach through `GET /api/domino/<path>`.
 
@@ -249,6 +329,11 @@ def relay(path: str, query: str = "") -> tuple[int, dict[str, str], bytes]:
     path = "/" + path.lstrip("/")
     if not allowed(path):
         return _problem(403, _NOT_ALLOWED)
+    if path == DATASETS_PATH:
+        status, result = list_datasets()
+        if status != 200:
+            return _problem(status, result)
+        return 200, _headers(_JSON), json.dumps({"datasets": result}).encode("utf-8")
     return get(path, query)
 
 

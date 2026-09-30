@@ -11,7 +11,7 @@ _DATASETS = "/v4/datasetrw/datasets-v2"
 # The existing sage_domino relay families. This is a diagnostic fence, not request permission.
 _PLATFORM_PATHS = ("/api/datasetrw/", "/api/governance/v1/", "/api/users/v1/self",
                    "/api/users/v1/users", "/api/users/v1/user/", _DATASETS,
-                   "/v4/datasetrw/snapshots/", "/v4/datasetrw/snapshot/")
+                   "/v4/datasetrw/snapshots/", "/v4/datasetrw/snapshot/", "/sage/datasets")
 
 
 def read_request(path: str, query: str = "", *, kind: str = "platform") -> dict:

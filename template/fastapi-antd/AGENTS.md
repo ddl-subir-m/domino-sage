@@ -367,21 +367,24 @@ The page reaches the platform's own API through **`sage.url("api/domino/<path>")
 relay `sage_serve.py` mounts, allow-listed to read-only families: `/api/datasetrw/`,
 `/api/governance/v1/`, `/api/users/v1/self`, `/api/users/v1/users`, `/api/users/v1/user/<id>`,
 `/v4/datasetrw/datasets-v2`, `/v4/datasetrw/snapshots/` and `/v4/datasetrw/snapshot/`. So a list of
-{datasetPlural} or of governance bundles is one `fetch` from the page. A route of your own reaches
-anything else with `from sage_domino import get` — `get("/v4/jobs?projectId=...")` returns
-`(status, headers, body)`, with a fresh token acquired for every call, because the token expires
-quickly. A query string is part of `<path>` — `sage.url("api/domino/api/datasetrw/v2/datasets?offset=0&limit=200")`
-— and passes through unchanged; do not split it off.
+{datasetPlural} or of governance bundles is one `fetch` from the page: every {dataset} with its tags
+is `sage.url("api/domino/sage/datasets")`. A route of your own gets that same list from
+`from sage_domino import list_datasets` — `list_datasets()` returns `(200, datasets)` or
+`(status, error)` — and reaches anything else with `from sage_domino import get` —
+`get("/v4/jobs?projectId=...")` returns `(status, headers, body)`, with a fresh token acquired for
+every call, because the token expires quickly. A query string is part of `<path>` —
+`sage.url("api/domino/v4/datasetrw/snapshot/<id>/files/recursive?path=")` — and passes through
+unchanged; do not split it off.
 
 GET only, and only these families; anything else answers 403 or 405:
 
 | Read | Path after `/api/domino` |
 |---|---|
-| every {dataset} this app can see | `/api/datasetrw/v2/datasets?offset=0&limit=200` — paged, and the default page is 10: keep adding `offset` until a page comes back shorter than `limit`; `datasets[].datasetRwDto.id` and `.datasetRwDto.name`; to find one by name, match `.datasetRwDto.name` across every page — the one you want can sit past the first; no `taxonomyTags` here (the taxonomy row carries them), and its `tags` field is a different tagging system, and empty |
+| every {dataset} this app can see | `/sage/datasets` — one call, and the only way to list them: {assistantName} reads every page of the platform's listing and joins each {dataset}'s taxonomy tags onto it. `datasets[]` of `id`, `name`, `project`, `tags`; `tags[]` is `namespace` and `label`, so a study tag reads `{"namespace": "study", "label": "abc123"}`. To find one by name, match `.name` in this list. A failed read answers its own status with an `error` naming the platform path — never a shorter list. Do not page `/api/datasetrw/v2/datasets` yourself |
 | every snapshot of one | `/v4/datasetrw/snapshots/<datasetId>` — a bare array: `id`, `version`, `creationTime` (epoch ms; this is the header date — convert it and show it, and do not copy a placeholder such as `<cut date>`), `author` (a user id), `isReadWrite` (true on the open head; a committed snapshot has it false), `lifecycleStatus`; a {dataset} nobody has snapshotted holds only its head, so expect zero committed |
 | the files in a snapshot | `/v4/datasetrw/snapshot/<snapshotId>/files/recursive?path=` — `rows[].name.fileName`, `rows[].size.sizeInBytes` |
 | one file's bytes | `/v4/datasetrw/snapshot/<snapshotId>/file/raw?path=<file>` — text, not JSON: `r.text()` |
-| taxonomy tags | `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, `taxonomyTags[].namespaceLabel` and `.label`; labels come back lower-case, so compare them that way — the id is the one beside the {dataset}'s name in this file, never the name itself |
+| taxonomy tags | `/sage/datasets` already carries them for every {dataset}; this row is for a few ids. `/v4/datasetrw/datasets-v2?datasetIds=<id,id>&includeTaxonomyTags=true` — the only platform call that carries them, and only with that flag; per row `datasetRwDto.id`, `datasetRwDto.name`, and BESIDE `datasetRwDto`, not inside it, `taxonomyTags[].namespaceLabel` and `.label`. A study tag is `namespaceLabel` `study` with `label` `abc123`, never one label reading `study:abc123`; labels come back lower-case, so compare them that way — the id is the one beside the {dataset}'s name in this file, never the name itself |
 | governance bundles | `/api/governance/v1/bundles` — paged, rows under `data`; per bundle `id`, `name`, `policyName`, `stage`, `stages`, `policies`, `projectName`, `classificationValue`. One bundle on its own: `/api/governance/v1/bundles/<id>` |
 | a bundle's approvals | `/api/governance/v1/bundles/<id>/approvals` — a bare array, not rows under `data`; per approval `name`, `status`, `approvers`, `updatedAt`, `updatedBy` |
 | what governs a {dataset} file | `/api/governance/v1/attachment-overviews?identifier.datasetId=<id>&identifier.snapshotId=<id>` — rows under `data`; each row is one FILE, `type` `DatasetSnapshotFile`, carrying `identifier.datasetId`, `.datasetName`, `.filename`, `.snapshotId`, `.snapshotVersion`, `.snapshotCreationTime`, and a `bundle`. Unfiltered it lists every attachment, `Report` and `ModelVersion` among them. `{"data": null}` is how a {dataset} with no governance answers: read it as no rows, not as a failure |
@@ -392,7 +395,8 @@ GET only, and only these families; anything else answers 403 or 405:
 - **The app reads the platform as whoever published it, not as the viewer.** The token is the App
   container's own. A study list is the publisher's list, and the screen says whose access that is
   (`/api/users/v1/self` says who).
-- **Taxonomy tags come from `datasets-v2` with `includeTaxonomyTags=true`, and nowhere else.**
+- **Taxonomy tags come from `datasets-v2` with `includeTaxonomyTags=true`, and nowhere else** —
+  `/sage/datasets` is that read, already joined.
   Without the flag the rows have no `taxonomyTags`, and `datasetRwDto.tags` is a different system
   that reads `{}`. Nothing under `/api/governance/v1/` or `/api/taxonomy/` lists tags from inside
   the platform. When a request says tags, use tags — do not derive a label from a name instead.
