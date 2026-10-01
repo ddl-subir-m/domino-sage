@@ -273,8 +273,9 @@ def test_the_view_follows_a_growing_answer_but_only_from_the_bottom():
     never changes and the scroller stops following. It has to follow the text — and stop following
     the moment the reader scrolls up, or reading anything earlier becomes impossible mid-turn."""
     chat = _js("modes", "chat.js")
-    assert "streamedChars" in chat
-    assert "el.scrollHeight - el.scrollTop - el.clientHeight < 120" in chat
+    assert "[messages.length, typing, streamedChars]" in chat
+    follow = _js("components", "follow-latest.js")
+    assert "el.scrollHeight - el.scrollTop - el.clientHeight < 120" in follow
 
 
 def test_build_follows_a_growing_turn_the_same_way_chat_does():
@@ -286,18 +287,15 @@ def test_build_follows_a_growing_turn_the_same_way_chat_does():
     # Not a bare "streamed" — the comment above the code says the word too, so that assertion
     # stayed green with the code deleted.
     assert "const streamed = buildMessages.length" in builder
-    assert "el.scrollHeight - el.scrollTop - el.clientHeight < 120" in builder
     # A build turn is mostly tool cards, whose text is on `code`, not on `value`. Counting Chat's
     # field alone would leave the pane still for every tool step.
     assert "b.value || b.code || b.plan" in builder
     # A candidates or withhold card is REPLACED where it stands (`putTableCard`), so a spinner
     # becoming a list of groups moves no count and no text. Its `searching` flag is what moves.
     assert "(b.searching ? 1 : 0)" in builder
-    # `buildTyping` is re-read on every tool step and mostly carries that step's subject. Left on
-    # the unguarded effect it pulled the pane down on each one, and the threshold below then always
-    # read as "already at the bottom" — the guard was there and did nothing.
-    assert "}, [buildTranscript.length]);" in builder
-    assert "}, [streamed, buildTyping]);" in builder
+    # Everything that grows the pane goes through the one guarded follow, the new row included: an
+    # unguarded effect on any of them pulled a reader who had scrolled up back down.
+    assert "[buildTranscript.length, streamed, buildTyping]" in builder
 
 
 def test_a_build_turn_carries_what_its_mentions_name():

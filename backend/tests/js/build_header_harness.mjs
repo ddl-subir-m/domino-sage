@@ -710,7 +710,7 @@ vm.createContext(sandbox);
 // same `bindings` the header does, so the two surfaces are one claim and belong in one harness.
 for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
                  'components/conversation-list.js', 'components/resource-panel.js',
-                 'components/build-history.js', 'modes/builder.js']) {
+                 'components/build-history.js', 'components/follow-latest.js', 'modes/builder.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

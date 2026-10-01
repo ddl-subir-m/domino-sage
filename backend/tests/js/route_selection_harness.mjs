@@ -211,7 +211,7 @@ function makeTab(name, hash) {
   vm.createContext(sandbox);
   for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
                    'components/conversation-list.js', 'components/resource-panel.js',
-                   'modes/builder.js']) {
+                   'components/follow-latest.js', 'modes/builder.js']) {
     vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
   }
   const SW = sandbox.SW;
