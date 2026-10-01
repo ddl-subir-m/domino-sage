@@ -55,7 +55,7 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
-                 'modes/builder.js', 'modes/chat.js']) {
+                 'components/follow-latest.js', 'modes/builder.js', 'modes/chat.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

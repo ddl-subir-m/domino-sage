@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useEffect, useRef, Fragment } = React;
+  const { createElement: h, useEffect, Fragment } = React;
   const { Button, Skeleton } = antd;
 
   // The rail itself is shared with Build — same component, same behaviour. Chat
@@ -143,8 +143,6 @@ window.SW = window.SW || {};
   SW.ChatMode = function ChatMode({ threadId }) {
     const { thread, messages, typing, pendingTurn, scope, activePlanId, planViewerId,
             turnWedged, openingThreadId } = SW.store.get();
-    const scroller = useRef(null);
-
     // Read during render rather than subscribed to: `Root` already re-renders on every route
     // emission, so this mode is re-rendered with the fresh count without a second subscription to
     // the same router.
@@ -169,26 +167,18 @@ window.SW = window.SW || {};
       if (!threadId && thread) SW.store.clearConversation();
     }, [threadId, nav]);
 
-    useEffect(() => {
-      const el = scroller.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    }, [messages.length, typing]);
-
     // A streaming answer grows the last message rather than adding one, so the length of the list
-    // does not change and the view stops following the text. Follow it — but only from the bottom.
-    // Being yanked back down every frame while reading something further up is worse than not
-    // following at all.
+    // does not change and the view stops following the text.
     const streamedChars = messages.length
       ? (messages[messages.length - 1].blocks || []).reduce((n, b) => n + (b.value || '').length, 0)
       : 0;
 
-    useEffect(() => {
-      const el = scroller.current;
-      if (!el) return;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight;
-    }, [streamedChars]);
+    // `typing` changes on every narration line and tool step of a running turn.
+    const latest = SW.useFollowLatest(thread ? thread.id : null,
+                                      [messages.length, typing, streamedChars]);
 
     const send = async (text) => {
+      latest.follow();
       if (!thread) {
         const created = await SW.store.newThread();
         SW.router.replace(`#/chat/${created.id}`);
@@ -296,7 +286,7 @@ window.SW = window.SW || {};
               null,
               h(
                 'div',
-                { className: 'sw-messages sw-scroll', ref: scroller },
+                { className: 'sw-messages sw-scroll', ref: latest.ref, onScroll: latest.onScroll },
                 h(
                   'div',
                   { className: 'sw-messages-inner' },
@@ -328,7 +318,8 @@ window.SW = window.SW || {};
                         'Open the panel'
                       )
                     )
-                )
+                ),
+                latest.behind && h(SW.JumpToLatest, { onClick: latest.jump })
               ),
               dock
             )

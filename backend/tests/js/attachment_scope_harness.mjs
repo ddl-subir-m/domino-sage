@@ -157,7 +157,7 @@ vm.createContext(sandbox);
 // which is what keeps "one row per scope" a claim about two scopes rather than about one list.
 for (const f of ['util.js', 'api.js', 'store.js', 'prefs.js', 'router.js',
                  'components/resource-tree.js', 'components/resource-panel.js',
-                 'components/composer.js', 'modes/builder.js']) {
+                 'components/composer.js', 'components/follow-latest.js', 'modes/builder.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

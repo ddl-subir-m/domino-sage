@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useEffect, useRef, Fragment } = React;
+  const { createElement: h, useState, useEffect, Fragment } = React;
   const { Button, Tooltip, Input, Dropdown, Modal, Checkbox, Alert, Tag } = antd;
   const {
     ExportOutlined, SearchOutlined, MoreOutlined, PlusOutlined, DownOutlined, LoadingOutlined,
@@ -1506,8 +1506,6 @@ window.SW = window.SW || {};
   SW.BuildMode = function BuildMode({ conversationId, appId }) {
     const { thread, activeApp, buildMessages, buildTranscript, buildTyping, buildRunning, turnWedged,
             projectPlan, runningTurn, buildHistoryLoading, buildHistoryError, selectingAppId } = SW.store.get();
-    const scroller = useRef(null);
-
     // The only thing keeping app state fresh, and it moved here with the rail it used to live in
     // (#82). The badge is the point of the check being a background one (#78): somebody else's push
     // has to reach the screen without anyone opening an app to find out. The server does the
@@ -1584,14 +1582,9 @@ window.SW = window.SW || {};
       SW.store.loadBuild();
     }, [openId, opening]);
 
-    useEffect(() => {
-      const el = scroller.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    }, [buildTranscript.length]);
-
     // A build turn grows the LAST message rather than adding one: every tool card and every
     // streamed sentence is a block pushed onto the open assistant row (`buildHistoryToMessages`),
-    // so `buildTranscript.length` never moves and the effect above does not fire. `buildTyping` is
+    // so `buildTranscript.length` never moves while a turn runs. `buildTyping` is
     // no backup either — a text chunk sets it to null (`applyBuildEvent`), so a whole streamed
     // answer changes nothing, and consecutive bash steps all carry the same label. Count what
     // actually grows. Chat counts `value` alone, which is enough there; a build turn is mostly
@@ -1612,16 +1605,11 @@ window.SW = window.SW || {};
         )
       : 0;
 
-    // `buildTyping` belongs HERE, under the threshold, not on the effect above. It is re-read on
-    // every tool step and mostly carries that step's subject, so an unguarded effect watching it
-    // pulled the pane down on each one — which is the thing this threshold exists to stop.
-    useEffect(() => {
-      const el = scroller.current;
-      if (!el) return;
-      // Only from the bottom. Being yanked back down every frame while reading something further
-      // up is worse than not following at all — the same threshold Chat follows at.
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight;
-    }, [streamed, buildTyping]);
+    // Followed only from the bottom, as Chat is. `buildTyping` is re-read on every tool step, and a
+    // new row is no exception either: a Chat turn landing in another tab adds one to Unified view.
+    // The app is part of the key because each app keeps its own transcript in one conversation.
+    const latest = SW.useFollowLatest(`${openId}:${activeApp ? activeApp.id : ''}`,
+                                      [buildTranscript.length, streamed, buildTyping]);
 
     // The orientation's question, which is NOT "is this pane empty". It asks whether THIS app has
     // turns in this conversation, and since #74 a brand-new Built App can be started inside a
@@ -1734,7 +1722,8 @@ window.SW = window.SW || {};
             { className: 'sw-builder-chat' },
             h(
               'div',
-              { className: 'sw-builder-chat-messages sw-scroll', ref: scroller },
+              { className: 'sw-builder-chat-messages sw-scroll', ref: latest.ref,
+                onScroll: latest.onScroll },
               (opening || (buildHistoryLoading && !buildTranscript.length)) && !buildHistoryError
                 && h('div', { role: 'status' }, 'Loading conversation…'),
               buildHistoryError && h('div', { role: 'alert' }, buildHistoryError,
@@ -1792,7 +1781,8 @@ window.SW = window.SW || {};
                       h('div', { className: 'sw-empty-detail' }, planNote)
                     )
                 ),
-              buildTyping && h(SW.TypingIndicator, { label: buildTyping })
+              buildTyping && h(SW.TypingIndicator, { label: buildTyping }),
+              latest.behind && h(SW.JumpToLatest, { onClick: latest.jump })
             ),
             h(
               'div',
@@ -1827,7 +1817,10 @@ window.SW = window.SW || {};
                     })()
                 ),
               h(SW.Composer, {
-                onSend: (text) => SW.store.sendBuildPrompt(text),
+                onSend: (text) => {
+                  latest.follow();
+                  return SW.store.sendBuildPrompt(text);
+                },
                 // Named, because the header names it. "this app" and a header saying which one are
                 // two voices on the same screen, and only one of them answers the question.
                 placeholder: activeApp

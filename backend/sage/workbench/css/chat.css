@@ -264,6 +264,17 @@
 /* Message list ----------------------------------------------------------- */
 
 .sw-messages { flex: 1; min-height: 0; }
+
+/* Shown only when something arrived below a reader who scrolled up. Sticky inside the scroller,
+   so it stays at the foot of whatever is in view; the strip itself lets clicks through. */
+.sw-jump-latest {
+  position: sticky;
+  bottom: var(--s3);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.sw-jump-latest .ant-btn { pointer-events: auto; box-shadow: var(--shadow-pop); }
 .sw-messages-inner {
   max-width: 760px;
   margin: 0 auto;

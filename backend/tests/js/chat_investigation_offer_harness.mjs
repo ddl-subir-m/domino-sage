@@ -23,7 +23,7 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history, prompt, press } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { history, prompt, press, pendingTask } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const THREAD = { id: 'thr_1', title: 'The adoption question', artifacts: [], handoff: null };
 
@@ -91,7 +91,8 @@ const sandbox = {
     await new Promise((r) => setTimeout(r, 0));
     // The Thread carries its own transcript AND its own record, which is what the bar reads.
     if (path === '/threads/thr_1') {
-      return json({ ...THREAD, history, context: { items: [], investigation: state ? { state } : {} } });
+      return json({ ...THREAD, history, context: {
+        items: [], investigation: state ? { state } : {}, ...(pendingTask ? { pendingTask } : {}) } });
     }
     if (path.startsWith('/threads/thr_1/context')) return json({ items: [] });
     if (path.startsWith('/threads')) return json({ threads: [] });

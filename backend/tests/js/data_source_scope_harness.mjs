@@ -252,7 +252,7 @@ vm.createContext(sandbox);
 // reads of a Data Source is said there now, where the Scope door that chooses it already was.
 for (const f of ['util.js', 'api.js', 'store.js', 'router.js', 'prefs.js',
                  'components/platform-error.js', 'components/resource-tree.js',
-                 'components/resource-panel.js', 'modes/builder.js']) {
+                 'components/resource-panel.js', 'components/follow-latest.js', 'modes/builder.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

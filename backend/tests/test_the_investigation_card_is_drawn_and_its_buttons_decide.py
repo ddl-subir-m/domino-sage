@@ -40,11 +40,12 @@ HISTORY = [
 ]
 
 
-def _run(press: int | str = 0, history: list | None = None) -> dict:
+def _run(press: int | str = 0, history: list | None = None,
+         pending_task: dict | None = None) -> dict:
     out = subprocess.run(
         ["node", str(_HARNESS)],
         input=json.dumps({"history": HISTORY if history is None else history,
-                          "prompt": PROMPT, "press": press}),
+                          "prompt": PROMPT, "press": press, "pendingTask": pending_task}),
         check=False, capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
@@ -68,6 +69,30 @@ def test_a_card_read_back_off_the_thread_carries_no_buttons():
     do both out of a message somebody is only scrolling back through."""
     assert _run()["cards"][0]["live"] is False
     assert _run()["replayedButtons"] == 0
+
+
+_WITH_TASK = [{**ev, "taskId": "task_1"} if ev["type"] == "investigation-offer" else ev
+              for ev in HISTORY]
+
+
+@needs_node
+def test_a_card_the_thread_is_still_waiting_on_keeps_its_buttons_when_read_back():
+    """The card arrived while the reader was in another conversation, so no SSE frame stamped it.
+    The Thread's `pendingTask` says it is still the open question, and the server refuses a click
+    whose task is not that one."""
+    out = _run(history=_WITH_TASK, pending_task={"id": "task_1", "awaiting": "investigation"})
+    assert out["cards"][0]["live"] is True
+
+
+@needs_node
+@pytest.mark.parametrize("task", [
+    {"id": "task_2", "awaiting": "investigation"},
+    {"id": "task_1", "awaiting": ""},
+    {"id": "task_1", "awaiting": "table"},
+])
+def test_a_card_the_thread_has_moved_past_stays_a_record(task):
+    """A newer question, an answer already started, or a different gate: the card is history."""
+    assert _run(history=_WITH_TASK, pending_task=task)["cards"][0]["live"] is False
 
 
 @needs_node
