@@ -24,6 +24,7 @@ What is served, and under what
     highcharts.js                               Highcharts 11.4.8                Highcharts licence
     highcharts-more.js                          Highcharts 11.4.8                Highcharts licence
     highcharts-funnel.js                        Highcharts 11.4.8                Highcharts licence
+    katex/ (katex.min.js, katex.min.css, fonts) KaTeX 0.19.0                     MIT
 
 
 Inter — SIL Open Font License 1.1
@@ -127,14 +128,15 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
-MIT — React, React DOM, Ant Design, @ant-design/icons, Day.js
--------------------------------------------------------------
+MIT — React, React DOM, Ant Design, @ant-design/icons, Day.js, KaTeX
+--------------------------------------------------------------------
 
 Copyright (c) Meta Platforms, Inc. and affiliates.              (React, React DOM — the shipped
 Copyright (c) Facebook, Inc. and its affiliates.                 bundles carry the earlier wording)
 Copyright (c) 2015-present Alipay.com, https://www.alipay.com/  (Ant Design, @ant-design/icons)
 Copyright (c) 2018-present, iamkun                              (Day.js)
 Copyright (c) 2018 Jed Watson                                   (classnames, bundled into antd.min.js)
+Copyright (c) 2013-2020 Khan Academy and other contributors     (KaTeX, with its fonts)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
