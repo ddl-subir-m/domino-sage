@@ -49,10 +49,10 @@ HISTORY = [
 ]
 
 
-def _run() -> dict:
+def _run(history: list[dict] = HISTORY, context: dict | None = None) -> dict:
     out = subprocess.run(
         ["node", str(_HARNESS)],
-        input=json.dumps({"history": HISTORY, "prompt": PROMPT}),
+        input=json.dumps({"history": history, "prompt": PROMPT, "context": context}),
         check=False, capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
@@ -81,6 +81,34 @@ def test_a_card_read_back_off_the_thread_carries_no_buttons():
     load is the record of a decision somebody already made, and its buttons would write a table and
     run a turn out of a message nobody connected them to."""
     assert _run()["cards"][0]["live"] is False
+
+
+def _with_task(task_id: str) -> list[dict]:
+    return [{**ev, "taskId": task_id} if ev["type"] == "table-candidates" else ev
+            for ev in HISTORY]
+
+
+@needs_node
+def test_a_card_the_thread_is_still_waiting_on_keeps_its_tables_when_read_back():
+    """The reader stepped into another conversation while the turn ran, and the card arrived while
+    they were away. Read back off the Thread it drew the sentence with no tables under it — a
+    question nobody could answer. The Thread's `pendingTask` is the server saying this card is the
+    open question, and the server refuses a click whose task is not that one."""
+    out = _run(_with_task("task_1"),
+               {"items": [], "pendingTask": {"id": "task_1", "awaiting": "table"}})
+    assert out["cards"][0]["live"] is True
+
+
+@needs_node
+@pytest.mark.parametrize("task", [
+    {"id": "task_2", "awaiting": "table"},
+    {"id": "task_1", "awaiting": ""},
+    {"id": "task_1", "awaiting": "investigation"},
+])
+def test_a_card_the_thread_has_moved_past_stays_a_record(task):
+    """A newer question, a pick already started, or a different gate: the card is history."""
+    out = _run(_with_task("task_1"), {"items": [], "pendingTask": task})
+    assert out["cards"][0]["live"] is False
 
 
 @needs_node

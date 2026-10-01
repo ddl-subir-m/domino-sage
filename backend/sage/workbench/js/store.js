@@ -2186,7 +2186,16 @@ window.SW = window.SW || {};
     }
   }
 
-  async function historyToMessages(history, handoff, conversation = '') {
+  // Whether a Chat card read back off the Thread is still the question the Thread is waiting on. A
+  // card that arrived while the reader was in another conversation has no SSE frame to stamp it
+  // `live`, and without this it is a question with nothing to answer it with. The server refuses a
+  // click whose task is no longer the pending one (`chat_task.require`).
+  function awaitingThisCard(ev, pendingTask, awaiting) {
+    return !!ev.taskId && !!pendingTask && pendingTask.id === ev.taskId
+      && pendingTask.awaiting === awaiting;
+  }
+
+  async function historyToMessages(history, handoff, conversation = '', pendingTask = null) {
     const messages = [];
     let assistant = null;
     // The one failed row whose Continue with another model action can still be taken (#570).
@@ -2313,7 +2322,7 @@ window.SW = window.SW || {};
           allGroups: ev.allGroups || [],
           total: ev.total || 0,
           matched: ev.matched || 0,
-          live: !!ev.live,
+          live: !!ev.live || awaitingThisCard(ev, pendingTask, 'table'),
         });
       } else if (ev.type === 'dataset-files' && ev.message) {
         // What a Dataset holds, asked about in Chat (#196). The click writes a `dsfile:` chip
@@ -2347,7 +2356,7 @@ window.SW = window.SW || {};
           message: ev.message,
           prompt: ev.prompt || '',
           threadId: ev.threadId || '',
-          live: !!ev.live,
+          live: !!ev.live || awaitingThisCard(ev, pendingTask, 'investigation'),
         });
       } else if (ev.type === 'other-lane-offer' && ev.message) {
         // The door onto the lane that can compute, drawn UNDER an answer rather than instead of one
@@ -3939,11 +3948,11 @@ window.SW = window.SW || {};
     return { chat, build, hidden: folds };
   }
 
-  async function mergedHistoryToMessages(history, handoff, conversation = '') {
+  async function mergedHistoryToMessages(history, handoff, conversation = '', pendingTask = null) {
     const { chat, build } = splitConversationHalves(history);
     // Each half is walked by the reader that already knows how to read it — a build turn's tool
     // cards and plan cards are not chat blocks — and `order` is what puts the two back together.
-    const messages = (await historyToMessages(chat, handoff, conversation))
+    const messages = (await historyToMessages(chat, handoff, conversation, pendingTask))
       .concat(buildRunMessages(build));
     // A plan is long, and here it lands in a transcript that already carries both halves — so the
     // card that reviews it pushed the turns either side of it off the screen. Folded it reads as a
@@ -7480,8 +7489,9 @@ window.SW = window.SW || {};
     // state off it — one read for the whole transcript rather than one per card. Build already
     // loads it; Chat had no reason to until now.
     async conversationMessages(thread) {
-      const chatOnly = () =>
-        historyToMessages(thread.history || thread.messages || [], thread.handoff, thread.id);
+      const pendingTask = (thread.context && thread.context.pendingTask) || null;
+      const chatOnly = () => historyToMessages(
+        thread.history || thread.messages || [], thread.handoff, thread.id, pendingTask);
       if (SW.prefs.get('conversationView') !== 'unified') return chatOnly();
       // A merged read that failed must not read as a Conversation that never happened. The Chat
       // half is already in hand — it came with the thread — so the fallback is the split view,
@@ -7491,7 +7501,7 @@ window.SW = window.SW || {};
         loadAppList().catch(() => {}),
       ]);
       return history === null ? chatOnly()
-        : mergedHistoryToMessages(history, thread.handoff, thread.id);
+        : mergedHistoryToMessages(history, thread.handoff, thread.id, pendingTask);
     },
 
     // Which Built App a `#/build/<id>` link means when it names none: the one this Conversation

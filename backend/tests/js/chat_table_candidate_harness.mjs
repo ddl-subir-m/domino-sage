@@ -16,9 +16,10 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { history, prompt } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { history, prompt, context } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
-const THREAD = { id: 'thr_1', title: 'The gong question', artifacts: [], handoff: null };
+const THREAD = { id: 'thr_1', title: 'The gong question', artifacts: [], handoff: null,
+                 ...(context ? { context } : {}) };
 
 const json = (body) => ({
   ok: true, status: 200,
