@@ -1407,7 +1407,7 @@ window.SW = window.SW || {};
       );
       return parts.filter(Boolean).map((part, i) => {
         if (part.startsWith('**') && part.endsWith('**')) {
-          return h('strong', { key: i }, part.slice(2, -2));
+          return h('strong', { key: i }, SW.util.inline(part.slice(2, -2)));
         }
         if (part.startsWith('`') && part.endsWith('`')) {
           return h('code', { key: i }, part.slice(1, -1));
