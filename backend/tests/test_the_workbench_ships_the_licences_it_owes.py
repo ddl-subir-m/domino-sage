@@ -26,6 +26,9 @@ def test_every_third_party_asset_the_workbench_serves_is_named():
     served.append("inter-latin-var.woff2")
     assert served
     assert [name for name in served if name not in NOTICE] == []
+    # A bundle that needs its own folder (KaTeX, for its relative font paths) is named as one.
+    folders = [f"{p.name}/" for p in VENDOR.iterdir() if p.is_dir()]
+    assert [name for name in folders if name not in NOTICE] == []
 
 
 def test_the_inter_ofl_text_is_there_in_full():

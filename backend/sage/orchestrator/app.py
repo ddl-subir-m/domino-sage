@@ -5037,6 +5037,8 @@ class _RevalidatingStatic(StaticFiles):
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
         response.headers.setdefault("Cache-Control", "no-cache")
+        if path.endswith(".woff2"):
+            response.headers["Content-Type"] = "font/woff2"  # pinned, as font() pins it
         return response
 
 

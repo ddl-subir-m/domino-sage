@@ -346,6 +346,8 @@
 }
 .sw-md-table th { background: var(--gray-100); font-weight: 600; }
 
+.sw-math .katex-display { margin: var(--s2) 0; overflow-x: auto; overflow-y: hidden; }
+
 .sw-msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--s2); }
 
 .sw-msg-actions {

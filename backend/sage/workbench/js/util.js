@@ -7,6 +7,8 @@ window.SW = window.SW || {};
   // times read correctly no matter when the prototype is demoed.
   const TODAY = new Date();
 
+  const texCache = new Map();
+
   // The two rows the pack renames read their label through a getter rather than holding a string:
   // this file is evaluated before /api/brand answers, and `RESOURCE_META[kind].label` is read
   // directly as well as through `labelFor`, so read time is the only point that covers both.
@@ -1395,8 +1397,14 @@ window.SW = window.SW || {};
       return out;
     },
 
+    // TeX in `$…$`, `$$…$$`, `\(…\)` and `\[…\]` is typeset by the vendored KaTeX. A single `$`
+    // opens only before a non-space and closes only after one, never before a digit: that is what
+    // keeps "$5 to $10" and "$1.2M or $3M" as prose. Code spans are matched first, so TeX quoted
+    // in backticks stays code. Without KaTeX on the page the source is left as written.
     inline(text) {
-      const parts = String(text).split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+      const parts = String(text).split(
+        /(`[^`]+`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)[^$\n]*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
+      );
       return parts.filter(Boolean).map((part, i) => {
         if (part.startsWith('**') && part.endsWith('**')) {
           return h('strong', { key: i }, part.slice(2, -2));
@@ -1404,8 +1412,24 @@ window.SW = window.SW || {};
         if (part.startsWith('`') && part.endsWith('`')) {
           return h('code', { key: i }, part.slice(1, -1));
         }
+        if (/^(\$|\\[([])/.test(part)) {
+          const display = part.startsWith('$$') || part.startsWith('\\[');
+          const fence = display || part[0] === '\\' ? 2 : 1;
+          const html = SW.util.tex(part.slice(fence, -fence), display);
+          return html === null ? part : h('span', { key: i, className: 'sw-math', dangerouslySetInnerHTML: { __html: html } });
+        }
         return part;
       });
+    },
+
+    // Every streamed chunk re-renders the transcript, so each formula is typeset once.
+    tex(source, display) {
+      if (!window.katex) return null;
+      const key = `${display ? 'D' : 'I'}${source}`;
+      if (!texCache.has(key)) {
+        texCache.set(key, window.katex.renderToString(source, { displayMode: display, throwOnError: false }));
+      }
+      return texCache.get(key);
     },
 
     // Very small tokenizer so the read-only code view is not a wall of text.
