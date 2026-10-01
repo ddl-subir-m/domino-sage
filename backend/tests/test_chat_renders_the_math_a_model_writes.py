@@ -67,6 +67,14 @@ def test_a_dollar_that_is_money_stays_prose(text):
     assert got["plain"] == text
 
 
+def test_math_inside_a_bold_label_is_typeset():
+    """How the reported conversation actually wrote it: every formula sat in a bold list label."""
+    got = render(r"- **Reverse Divergence $D_{\text{KL}}(Q \parallel P)$:** `1.0702 nats`"
+                 "\n- **Jensen-Shannon Divergence ($JSD$):** `0.1`")
+    assert [m["tex"] for m in got["math"]] == [r"D_{\text{KL}}(Q \parallel P)", "JSD"]
+    assert "$" not in got["plain"]
+
+
 def test_tex_quoted_as_code_stays_code():
     got = render("Write `$x^2$` to get a square.")
     assert got["math"] == []
