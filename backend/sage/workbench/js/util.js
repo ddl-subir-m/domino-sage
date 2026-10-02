@@ -1404,7 +1404,10 @@ window.SW = window.SW || {};
       const parts = String(text).split(
         /(`[^`]+`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)[^$\n]*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
       );
-      return parts.filter(Boolean).map((part, i) => {
+      // Odd indices are what the pattern captured; an even one is prose even when it starts with
+      // `$` — a table cell reading `$420k` is money, not a formula missing its closing dollar.
+      return parts.map((part, i) => {
+        if (i % 2 === 0) return part || null;
         if (part.startsWith('**') && part.endsWith('**')) {
           return h('strong', { key: i }, SW.util.inline(part.slice(2, -2)));
         }
