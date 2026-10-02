@@ -4,9 +4,10 @@
 // so calling the panel returns tree data, and hooks are real per mount. `fetch` records every
 // request and answers from `reply`, so a switch or a removal is proved by what it SENT.
 //
-// Input on stdin: `{ act, hash, thread, app, items, builtinSkills }`.
+// Input on stdin: `{ act, hash, thread, app, items, builtinSkills, builtinSections, replaces }`.
 //   drawn       the skill rows, the Add menu's keys, and whether the dialog is open
-//   press-door  press the Skills group's `+`, then report the dialog's Replaces options
+//   press-door  press the Skills group's `+`, then report the dialog's Replaces options, and the
+//               caption under them once `replaces` is chosen
 //   toggle      switch the first skill off
 //   remove      confirm the first skill's Remove
 //   add-git     `SW.store.addSkills(url, replaces)`
@@ -42,7 +43,8 @@ const sandbox = {
     calls.push({ url: String(url), method: options.method || 'GET',
                  body: typeof options.body === 'string' ? JSON.parse(options.body)
                    : (options.body instanceof Blob ? `<blob ${options.body.size}>` : null) });
-    const body = { items: input.items || [], builtinSkills: input.builtinSkills || [] };
+    const body = { items: input.items || [], builtinSkills: input.builtinSkills || [],
+                   builtinSections: input.builtinSections || [] };
     return { ok: true, status: 200, statusText: 'OK',
              headers: { get: () => 'application/json' },
              json: async () => body, text: async () => JSON.stringify(body) };
@@ -90,7 +92,8 @@ SW.store.set({
   resourceGroups: {}, resourcesLoading: false, resourceErrors: {},
   thread: input.thread ? { id: input.thread } : null,
   activeApp: input.app ? { id: input.app, name: input.app } : null,
-  extensions: { items: input.items || [], builtinSkills: input.builtinSkills || [] },
+  extensions: { items: input.items || [], builtinSkills: input.builtinSkills || [],
+                builtinSections: input.builtinSections || [] },
 });
 
 function flatten(node, out = [], depth = 0) {
@@ -146,8 +149,15 @@ if (act === 'drawn' || act === 'press-door') {
   const modal = nodes.find((n) => n.t === SW.AddSkillModal);
   report.dialogOpen = !!modal;
   if (modal) {
-    const inner = flatten(SW.AddSkillModal(modal.p));
+    const start = cursor;
+    let inner = flatten(SW.AddSkillModal(modal.p));
     report.replacesOptions = inner.find((d) => d.t === 'Select').p.options.map((o) => o.value);
+    if (input.replaces) {
+      inner.find((d) => d.t === 'Select').p.onChange(input.replaces);
+      cursor = start;
+      inner = flatten(SW.AddSkillModal(modal.p));
+      report.replacesCaption = text(inner.filter((d) => d.t === 'p' && cls(d) === 'sw-caption').pop());
+    }
   }
 } else if (act === 'toggle') {
   skillRows(panel())[0].sw.p.onChange(false);

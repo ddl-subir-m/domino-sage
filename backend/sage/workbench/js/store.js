@@ -222,7 +222,7 @@ window.SW = window.SW || {};
     apps: [],
     activeApp: null,
     // The Project's own extensions (ADR-0071), `enabled` as read for `extensionScope`.
-    extensions: { items: [], builtinSkills: [] },
+    extensions: { items: [], builtinSkills: [], builtinSections: [] },
     extensionScope: '',
     selectingAppId: null,
     activePlanId: null,
@@ -6047,7 +6047,8 @@ window.SW = window.SW || {};
       try {
         const read = await SW.api.extensions(target);
         if (state.extensionScope !== scope) return;
-        state.extensions = { items: read.items || [], builtinSkills: read.builtinSkills || [] };
+        state.extensions = { items: read.items || [], builtinSkills: read.builtinSkills || [],
+                             builtinSections: read.builtinSections || [] };
       } catch (err) {
         return;
       }

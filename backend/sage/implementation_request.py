@@ -58,6 +58,9 @@ class InstructionFacts:
     platform_name: str = ""
     local_names: tuple[str, ...] = ()
     dataset_names: tuple[str, ...] = ()
+    # Sections a Project skill enabled for this turn replaces (ADR-0071), withheld whatever the turn
+    # asked for.
+    replaced: frozenset[str] = frozenset()
 
 
 def choose_instruction_sections(facts: InstructionFacts | None = None) -> frozenset[str]:
@@ -74,7 +77,7 @@ def choose_instruction_sections(facts: InstructionFacts | None = None) -> frozen
         sections.add("design")
     if _include_platform(facts):
         sections.add("platform")
-    return frozenset(sections)
+    return frozenset(sections) - facts.replaced
 
 
 def _include_design(facts: InstructionFacts) -> bool:

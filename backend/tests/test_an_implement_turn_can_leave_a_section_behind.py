@@ -216,6 +216,36 @@ def test_the_shim_chooses_platform_and_design_for_the_turn():
         stack="fastapi-antd", ask_and_plan="Add a route in app.py and a chart on the page")
 
 
+@pytest.mark.parametrize("section", ["design", "platform"])
+def test_a_replaced_section_is_dropped_whatever_the_turn_asked(section):
+    """ADR-0071: while a Project skill replacing a section is on, the chooser leaves it out."""
+    from sage.implementation_request import InstructionFacts, choose_instruction_sections
+
+    other = ({"design", "platform"} - {section}).pop()
+    assert choose_instruction_sections(InstructionFacts(replaced=frozenset({section}))) == \
+        frozenset({other})
+    assert choose_instruction_sections(InstructionFacts(replaced=frozenset())) == \
+        frozenset({"design", "platform"})
+
+
+GUARDRAIL = ("hold the app together", "Never hardcode hex values",
+             "quietly falls back to a system font")
+STYLE = ("One clear primary action", "## Design system")
+
+
+@pytest.mark.parametrize("stack", TEMPLATES)
+def test_replacing_design_keeps_the_theme_and_font_guardrail(stack):
+    """The theme variables and the Inter `@font-face` sit outside the replaceable style part."""
+    text = (REPO / "template" / stack / "AGENTS.md").read_text()
+
+    withheld, _ = _run(text, "implement", sections=frozenset({"platform"}))
+
+    for line in GUARDRAIL:
+        assert line in withheld, line
+    for line in STYLE:
+        assert line not in withheld, line
+
+
 def test_api_text_buried_in_an_old_implement_section_still_goes_out():
     """An app seeded before the move has the API table inside implement, and it is never re-seeded."""
     text = V1.replace(

@@ -203,6 +203,13 @@ a route of its own. There is nothing to install, compile, or bundle.
 - **A component carries its own styles** — its own class names in `static/app.css`, prefixed with
   the component's name, or an Ant Design prop. Keep the `:root` tokens and the `@font-face` at the
   top of `static/app.css` as they are.
+- **The theme variables and the font hold the app together, whatever design rules you follow.** The
+  variables in `static/app.css` (`--accent`, `--text`, `--bg`, `--surface`, `--border`, …) are what
+  every hand-styled element reads. **Never hardcode hex values** — an Ant Design component already
+  carries the right ones, and a hand-styled element takes them from the variables; a different
+  palette changes their values. Inter is served from this app's own origin: the `@font-face`
+  at the top of `static/app.css` and the file it points at are {assistantName}'s — leave both alone,
+  or the app quietly falls back to a system font.
 
 ## What exists
 - `static/app.js` — the app (currently a placeholder to replace). `static/app.css` — its styles.
@@ -251,11 +258,7 @@ component draws in the right colours and type without a line of CSS from you. Th
 - **Color:** `var(--accent)` (the {platformName} accent `#543FDE`) for primary actions and links;
   `var(--text)` / `var(--text-muted)` for copy; `var(--border)` for dividers; `var(--bg)` /
   `var(--surface)` for backgrounds; `var(--ok)` / `var(--warn)` / `var(--danger)` for status.
-  **Never hardcode hex values** — an Ant Design component already carries the right ones, and a
-  hand-styled element takes them from the variables.
-- **Type:** Inter, served from this app's own origin. The `@font-face` at the top of
-  `static/app.css` and the file it points at are {assistantName}'s — leave both alone, or the app
-  quietly falls back to a system font. Scale — page title 28–32px/600 (`antd.Typography.Title`
+- **Type:** Inter. Scale — page title 28–32px/600 (`antd.Typography.Title`
   level 2), section heading 20px/600 (level 4), card title 16px/600, body 14px, caption 12px. One
   page title per screen. Left-align body text.
 - **Spacing:** 8px grid (4 / 8 / 12 / 16 / 24 / 32). `antd.Space` and `antd.Flex` carry it. Space

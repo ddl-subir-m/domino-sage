@@ -300,6 +300,44 @@ def test_a_build_turn_carries_what_its_app_switched_off(tmp_path):
     assert project.control.snapshot().extensions_off == frozenset()
 
 
+REACT_AGENTS = (Path(__file__).resolve().parents[2] / "template" / "react-vite" / "AGENTS.md")
+HOUSE_STYLE = "---\nname: house-style\ndescription: Acme's design system.\n---\nUse Acme red.\n"
+
+
+def _next_build_instructions(tmp_path, *, off_for_app: bool) -> str:
+    """The system instructions the shim sends on an implement call, under what the orchestrator
+    armed for the App's next Build turn."""
+    orch, oc, _ = _build(tmp_path, [Turn(text="It shows sales.")])
+    orch.create_app(stack="react-vite")
+    project = orch.project(start_preview=False)
+    orch.add_skills([{"SKILL.md": HOUSE_STYLE}], replaces="design", source={"type": "upload"})
+    if off_for_app:
+        orch.set_extension_enabled("skill:house-style", False, app=project.app_for_turn().app_id)
+    armed = []
+    send = oc.send_prompt
+    oc.send_prompt = lambda *a, **k: (armed.append(project.control.snapshot()), send(*a, **k))[1]
+    project.control.set_mode(Mode.ASK)
+    list(orch.build_stream("What does this app show?"))
+
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    control.set_extensions(armed[0].extensions)
+    control.arm_extensions_off(armed[0].extensions_off)
+    return _sent(control, REACT_AGENTS.read_text())[1]["messages"][0]["content"]
+
+
+def test_a_skill_replacing_design_leaves_the_guardrail_and_drops_the_style_rules(tmp_path):
+    system = _next_build_instructions(tmp_path, off_for_app=False)
+    assert "Never hardcode hex values" in system and "falls back to a system font" in system
+    assert "## Design system" not in system and "One clear primary action" not in system
+    assert "### The {platformName} API" in system
+
+
+def test_switching_it_off_for_the_app_brings_the_style_rules_back(tmp_path):
+    system = _next_build_instructions(tmp_path, off_for_app=True)
+    assert "Never hardcode hex values" in system and "falls back to a system font" in system
+    assert "## Design system" in system and "One clear primary action" in system
+
+
 def test_the_switch_refuses_an_unknown_extension_thread_or_app(tmp_path):
     orch, _, _ = _build(tmp_path, [])
     orch.add_extension(_skill("alpha"))

@@ -2106,11 +2106,13 @@ def unpin_project_resource(
 @control_app.get("/api/project/extensions")
 def list_project_extensions(thread: str = "", app: str = "") -> JSONResponse:
     """The Project's own skills, tools and MCP servers (ADR-0071), each `enabled` or not for the
-    Thread or Built App named, and the skills Sage ships, which a Project skill may replace."""
+    Thread or Built App named, and the skills Sage ships and the sections of its build
+    instructions, either of which a Project skill may replace."""
     return JSONResponse(content={
         "items": orchestrator.list_extensions(thread=thread, app=app),
         "builtinSkills": [{"name": name, "description": description} for name, description
-                          in project_extensions.builtin_skills().items()]})
+                          in project_extensions.builtin_skills().items()],
+        "builtinSections": [{"name": name} for name in project_extensions.BUILTIN_SECTIONS]})
 
 
 @control_app.post("/api/project/extensions/skills")

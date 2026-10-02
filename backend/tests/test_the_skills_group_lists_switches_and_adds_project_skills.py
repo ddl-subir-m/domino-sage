@@ -25,10 +25,12 @@ ITEMS = [
 ]
 BUILTINS = [{"name": "data-table", "description": "Tables."},
             {"name": "investigate-weak-signals", "description": "Investigate."}]
+SECTIONS = [{"name": "design"}, {"name": "platform"}]
 
 
 def _run(act: str, **kw) -> dict:
-    payload = {"act": act, "items": ITEMS, "builtinSkills": BUILTINS, **kw}
+    payload = {"act": act, "items": ITEMS, "builtinSkills": BUILTINS,
+               "builtinSections": SECTIONS, **kw}
     out = subprocess.run(["node", str(_HARNESS)], input=json.dumps(payload), capture_output=True,
                          text=True, timeout=60, check=False)
     assert out.returncode == 0, out.stderr
@@ -80,7 +82,13 @@ def test_the_add_menu_and_the_group_door_both_open_the_dialog():
     assert "skill" in drawn["menuKeys"] and drawn["dialogOpen"] is False
     pressed = _run("press-door", hash="#/chat", thread="t1")
     assert pressed["dialogOpen"] is True
-    assert pressed["replacesOptions"] == ["", "data-table", "investigate-weak-signals"]
+    assert pressed["replacesOptions"] == ["", "data-table", "investigate-weak-signals",
+                                          "design", "platform"]
+
+
+def test_choosing_a_section_says_its_built_in_rules_stand_down():
+    caption = _run("press-door", hash="#/chat", thread="t1", replaces="design")["replacesCaption"]
+    assert "design" in caption and "instructions" in caption
 
 
 def test_each_way_in_reaches_its_route():
