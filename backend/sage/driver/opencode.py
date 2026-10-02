@@ -398,6 +398,17 @@ class OpenCodeClient:
                       verify=_TLS)
         r.raise_for_status()
 
+    def dispose_instance(self, directory: str) -> None:
+        """Drop OpenCode's cached instance for `directory`, so its next use reloads `.opencode/`.
+
+        OpenCode 1.18.4 reads project skills, tools and MCP config once per directory and does not
+        watch them (ADR-0071). Never call it while a turn runs in that directory: measured, a
+        dispose aborts that session's turn with `MessageAbortedError`.
+        """
+        r = httpx.post(f"{self.base_url}/instance/dispose", params={"directory": directory},
+                       timeout=60, verify=_TLS)
+        r.raise_for_status()
+
     def create_session(self, directory: str, model: dict | None = None) -> str:
         # A title, so OpenCode does not spend a model call inventing one (#496). `SessionPrompt.
         # ensureTitle` fires once per session — after the first user message, with `system: []` and

@@ -22,7 +22,6 @@ window.SW = window.SW || {};
     { key: 'datasource', under: 'data' },
     { key: 'model_llm', label: 'Language models' },
     { key: 'model_predictive', label: 'Predictive models' },
-    { key: 'agent', label: 'Agents' },
     { key: 'skill', label: 'Skills' },
     { key: 'mcp', label: 'MCPs' },
   ];
@@ -34,8 +33,8 @@ window.SW = window.SW || {};
   // rule written against the `0` would leave the commoner case unmarked (#368).
   function countState(key, counts, errors) {
     // The join between the two spellings already exists and is already public — `errors` is keyed
-    // `data_sources` where `counts` is keyed `datasource`. It covers four of the seven count keys:
-    // `agent`, `skill` and `mcp` report no error of their own, so they have no refusal to draw and
+    // `data_sources` where `counts` is keyed `datasource`. It covers four of the six count keys:
+    // `skill` and `mcp` report no error of their own, so they have no refusal to draw and
     // this is the whole of the state they can be in.
     const failed = SW.api.LISTING_ERROR_KEY[key];
     if (!failed) return counts[key] === undefined ? 'absent' : 'read';

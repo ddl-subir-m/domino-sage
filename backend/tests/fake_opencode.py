@@ -182,6 +182,11 @@ class FakeOpenCode:
         # When True, interrupt fails the session's last assistant message the way OpenCode
         # reports an abort (#592).
         self.abort_on_interrupt = False
+        # Directories whose cached instance was dropped, in order (ADR-0071).
+        self.disposed: list[str] = []
+
+    def dispose_instance(self, directory: str) -> None:
+        self.disposed.append(directory)
 
     # --- session ---------------------------------------------------------------------------------
 

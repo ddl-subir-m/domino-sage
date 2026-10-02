@@ -52,6 +52,7 @@ _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
 from .. import degraded, timing
+from .. import extensions as project_extensions
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import (
@@ -1639,6 +1640,16 @@ def _opencode_config_diag() -> dict:
             cfg = json.loads(Path(path).read_text())
             row["keys"] = sorted(cfg)[:20] if isinstance(cfg, dict) else type(cfg).__name__
             row["declares_mcp"] = isinstance(cfg, dict) and "mcp" in cfg
+            # The Project's own MCP servers (ADR-0071) are Sage-written when the manifest records
+            # every one of them, none takes a reserved name, and the file says nothing else.
+            if (workspace and path == str(Path(workspace) / project_extensions.MCP_CONFIG)
+                    and isinstance(cfg, dict) and set(cfg) <= {"$schema", "mcp"}
+                    and isinstance(cfg.get("mcp", {}), dict)):
+                recorded = {e["name"] for e in project_extensions.read_manifest(Path(workspace))
+                            if e["kind"] == "mcp"}
+                keys = set(cfg.get("mcp") or {})
+                row["ours"] = bool(keys) and keys <= recorded and not any(
+                    k.startswith(project_extensions.RESERVED_PREFIXES) for k in keys)
             # A `tools` map is the quiet half. It never touches the `mcp` block, so the server still
             # connects, `opencode mcp list` still prints a green tick and `opencode_says` still reads
             # connected — while `"sage-live-read*": false` takes the tools off the agent anyway. That
@@ -2090,6 +2101,90 @@ def unpin_project_resource(
     if not ok:
         return JSONResponse(status_code=404, content={"error": "pin not in this project"})
     return JSONResponse(content={"removed": True})
+
+
+@control_app.get("/api/project/extensions")
+def list_project_extensions(thread: str = "", app: str = "") -> JSONResponse:
+    """The Project's own skills, tools and MCP servers (ADR-0071), each `enabled` or not for the
+    Thread or Built App named, and the skills Sage ships, which a Project skill may replace."""
+    return JSONResponse(content={
+        "items": orchestrator.list_extensions(thread=thread, app=app),
+        "builtinSkills": [{"name": name, "description": description} for name, description
+                          in project_extensions.builtin_skills().items()]})
+
+
+@control_app.post("/api/project/extensions/skills")
+async def upload_project_skills(request: Request) -> JSONResponse:
+    """A `SKILL.md`, or a zip of skill folders, as the raw body; `filename` and `replaces` ride in
+    the query, like `/api/project/upload`."""
+    try:
+        skills = project_extensions.skills_in_upload(request.query_params.get("filename", ""),
+                                                     await request.body())
+        items = orchestrator.add_skills(skills, replaces=request.query_params.get("replaces", ""),
+                                        source={"type": "upload"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"items": items})
+
+
+@control_app.post("/api/project/extensions/skills/dataset")
+def import_project_skills_from_dataset(body: dict) -> JSONResponse:
+    """`dataset`, and `path` inside it: a SKILL.md, a zip, or a folder of skills ("" is the root)."""
+    body = body or {}
+    try:
+        items = orchestrator.add_skills_from_dataset(str(body.get("dataset") or ""),
+                                                     str(body.get("path") or ""),
+                                                     replaces=str(body.get("replaces") or ""))
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"items": items})
+
+
+@control_app.post("/api/project/extensions/skills/git")
+def import_project_skills(body: dict) -> JSONResponse:
+    body = body or {}
+    try:
+        skills, commit = project_extensions.skills_from_git(body.get("url"))
+        items = orchestrator.add_skills(skills, replaces=str(body.get("replaces") or ""),
+                                        source={"type": "git", "url": body["url"],
+                                                "commit": commit})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"items": items})
+
+
+@control_app.post("/api/project/extensions")
+def add_project_extension(body: dict) -> JSONResponse:
+    try:
+        return JSONResponse(content={"item": orchestrator.add_extension(body or {})})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.delete("/api/project/extensions/{ext_id}")
+def remove_project_extension(ext_id: str) -> JSONResponse:
+    if not orchestrator.remove_extension(ext_id):
+        return JSONResponse(status_code=404, content={"error": "not in this project"})
+    return JSONResponse(content={"removed": True})
+
+
+@control_app.put("/api/project/extensions/{ext_id}/enabled")
+def set_project_extension_enabled(ext_id: str, body: dict) -> JSONResponse:
+    """Switch one extension on or off for a Thread (`thread`) or a Built App (`app`)."""
+    body = body or {}
+    try:
+        orchestrator.set_extension_enabled(ext_id, bool(body.get("enabled")),
+                                           thread=str(body.get("thread") or ""),
+                                           app=str(body.get("app") or ""))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "unknown extension, thread or app"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"ok": True})
 
 
 @control_app.get("/api/project/history")
@@ -5384,17 +5479,11 @@ def _skill_description(skill_md: Path) -> str:
     a closing `---` with nothing after it both read too, because a false alarm about a file that is
     fine is a witness not worth having.
     """
-    import re
-
     try:
         text = skill_md.read_text()
     except OSError:
         return ""
-    front = re.match(r"^---\r?\n(.*?)\r?\n---[ \t]*(\r?\n|\Z)", text, re.DOTALL)
-    if not front:
-        return ""
-    found = re.search(r"^description:[ \t]*(.*(?:\n[ \t]+\S.*)*)$", front.group(1), re.MULTILINE)
-    return found.group(1).strip().strip("\"'") if found else ""
+    return project_extensions.skill_description(text)
 
 
 def _release_boot_page(host: str, port: int) -> None:

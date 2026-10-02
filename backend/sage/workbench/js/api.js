@@ -436,7 +436,7 @@ SW.api = {
     const memberIds = new Set(SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
       (k) => ((resourceGroups || {})[k] || []).map((r) => r.id)
     ));
-    const allKeys = ['dataset', 'datasource', 'model_llm', 'model_predictive', 'agent', 'skill', 'mcp'];
+    const allKeys = ['dataset', 'datasource', 'model_llm', 'model_predictive', 'skill', 'mcp'];
     // One kind, several kinds, or none. Several is what a rail group covering two kinds asks for:
     // `Data` is Datasets AND Data Sources, and opening it on Everything was the only answer while
     // this took a single kind (#164).
@@ -510,6 +510,20 @@ SW.api = {
   promoteScratch: (path, datasetId) => post('/project/scratch/promote', { path, dataset: datasetId }),
   // Deletes an Upload's bytes from .sage/scratch/ — the Project-scope door (ADR-0023).
   deleteScratchFile: (path) => post('/project/scratch/delete', { path }),
+  // The Project's own skills, tools and MCP servers (ADR-0071), each `enabled` for one Thread or App.
+  extensions: ({ thread, app } = {}) =>
+    request(`/project/extensions?${new URLSearchParams({ thread: thread || '', app: app || '' })}`),
+  uploadSkills: (file, replaces) =>
+    request(`/project/extensions/skills?${new URLSearchParams({
+      filename: file.name || '', replaces: replaces || '' })}`, { method: 'POST', body: file }),
+  importSkills: (url, replaces) =>
+    post('/project/extensions/skills/git', { url, replaces: replaces || '' }),
+  importSkillsFromDataset: (dataset, path, replaces) =>
+    post('/project/extensions/skills/dataset', { dataset, path, replaces: replaces || '' }),
+  removeExtension: (id) => del(`/project/extensions/${encodeURIComponent(id)}`),
+  setExtensionEnabled: (id, enabled, { thread, app } = {}) =>
+    request(`/project/extensions/${encodeURIComponent(id)}/enabled`, {
+      method: 'PUT', body: { enabled, thread: thread || '', app: app || '' } }),
 
   // The Build tab's crossing door (#275): moves this Conversation's chips into the selected app.
   // Answers per chip, because a crossing can be half refused.

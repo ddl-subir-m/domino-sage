@@ -1538,6 +1538,16 @@ class Workspace:
         settings["displayName"] = name.strip()
         _write_settings_file(self._settings_path, settings)
 
+    def extension_overrides(self) -> dict:
+        """The Project extensions this app switched on or off, by id (ADR-0071)."""
+        stored = _read_settings_file(self._settings_path).get("extensions")
+        return stored if isinstance(stored, dict) else {}
+
+    def set_extension(self, ext_id: str, enabled: bool) -> None:
+        settings = _read_settings_file(self._settings_path)
+        settings["extensions"] = {**self.extension_overrides(), ext_id: bool(enabled)}
+        _write_settings_file(self._settings_path, settings)
+
     def domino_app_id(self) -> str:
         """The Domino App this Built App deploys to, or "" before its first publish.
 

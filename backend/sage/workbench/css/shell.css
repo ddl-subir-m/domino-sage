@@ -691,6 +691,9 @@ a.sw-topnav-link {
 .sw-res-row:hover .sw-res-more, .sw-res-row.is-menu-open .sw-res-more,
 .sw-res-row.is-context .sw-res-more { opacity: 1; }
 .sw-res-more:hover { background: var(--gray-200); color: var(--dark-700); }
+/* A Project skill's row: nothing to open, and a switch for the Conversation or app in view. */
+.sw-skill-main { cursor: default; }
+.sw-skill-switch { flex: none; margin-right: 4px; }
 .sw-res-expand {
   flex: none;
   width: 20px;

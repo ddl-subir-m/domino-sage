@@ -20,7 +20,6 @@ window.SW = window.SW || {};
     model_llm:        { icon: '🧠', label: 'model',          group: 'models' },
     model_predictive: { icon: '🤖', label: 'predictive model', group: 'models' },
     tool:             { icon: '🔧', label: 'tool',           group: 'tools' },
-    agent:            { icon: '✨', label: 'agent',          group: 'agents' },
     file:             { icon: '📄', label: 'file',           group: 'files' },
     artifact:         { icon: '🖼', label: 'artifact',       group: 'artifacts' },
     skill:            { icon: '📘', label: 'skill',          group: 'skills' },

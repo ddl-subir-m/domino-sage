@@ -108,9 +108,11 @@ def test_workbench_is_the_default_ui():
     assert b"Filter this project" not in panel.content
     assert b"addToContext" in panel.content
     assert b"MCPs" in panel.content
-    assert b"Agents" in panel.content
+    # User-defined agents are out of scope, with nothing on screen for them (ADR-0071).
+    assert b"Agents" not in panel.content
     assert b"Skills" in panel.content
-    assert b"Extensions" not in panel.content
+    # Skills and MCPs are their own groups, not one catch-all "Extensions" heading.
+    assert b"label: 'Extensions'" not in panel.content
     assert b"resourcesLoading" in panel.content
     assert b"fromCatalog" not in panel.content
     assert b"membershipParent" in panel.content

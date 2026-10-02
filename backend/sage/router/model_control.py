@@ -62,6 +62,26 @@ class ModelControl:
         # Direct is per turn, same token discipline as read-only (ADR-0070). A stale disarm from
         # the turn that finished must not clear the turn that has already armed the next one.
         self._direct_token: object | None = None
+        # The Project's extensions as OpenCode last loaded them (ADR-0071). Standing, set only
+        # when OpenCode reloads, so the shim never classifies tools against files it has not read.
+        self._extensions = None
+        self._extensions_off: frozenset[str] = frozenset()
+        self._extensions_off_token: object | None = None
+
+    def set_extensions(self, catalog) -> None:
+        self._extensions = catalog or None
+
+    def arm_extensions_off(self, ids: frozenset[str]) -> object:
+        """Pin the extension ids this turn's Thread or App switched off, and return a token."""
+        token = object()
+        self._extensions_off = frozenset(ids)
+        self._extensions_off_token = token
+        return token
+
+    def disarm_extensions_off(self, token: object) -> None:
+        if self._extensions_off_token is token:
+            self._extensions_off_token = None
+            self._extensions_off = frozenset()
 
     def set_mode(self, mode: Mode) -> None:
         """The user's standing mode choice — what the next turn runs as. While a turn is pinned
@@ -299,4 +319,7 @@ class ModelControl:
             ),
             effort_rows_armed=self._saved_effort_slots_token is not None,
             direct=self._direct_token is not None,
+            extensions=self._extensions,
+            extensions_off=(self._extensions_off if self._extensions_off_token is not None
+                            else frozenset()),
         )

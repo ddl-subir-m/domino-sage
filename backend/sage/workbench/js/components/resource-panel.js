@@ -1,7 +1,7 @@
 window.SW = window.SW || {};
 
 (function () {
-  const { createElement: h, useState, useRef, Fragment } = React;
+  const { createElement: h, useState, useRef, useEffect, Fragment } = React;
   const { Tooltip, Button, Tag, Dropdown, Input, Modal, Checkbox } = antd;
 
   // Whether this promote target may be declared sensitive on the way in (ADR-0043).
@@ -57,8 +57,8 @@ window.SW = window.SW || {};
     ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined, EditOutlined,
   } = icons;
 
-  // What the caller can pick now. Agents / Skills / MCPs are still listed because OpenCode config
-  // will wire them; they draw nothing until it does, which is the point of the rule below.
+  // What the caller can pick now. MCPs are still listed because OpenCode config will wire them;
+  // they draw nothing until it does, which is the point of the rule below.
   //
   // A group is drawn only when it HOLDS something, or when its listing failed. Empty headings were
   // the panel's loudest noise: six subheadings over nothing, in a 320px rail whose whole job is to
@@ -93,19 +93,21 @@ window.SW = window.SW || {};
       label: 'Predictive models',
       subgroups: [{ kind: 'model_predictive' }],
     },
+    // The Project's own skills (ADR-0071). Not from the catalog: the rows are `state.extensions`,
+    // and the door opens the Add skill dialog.
+    { key: 'skills', label: 'Skills', extension: true, addLabel: 'Add a skill',
+      subgroups: [{ kind: 'skill' }] },
     // `placeholder` is "no catalog behind this yet", and it is what the group's add door is gated
-    // on (#164). These three draw nothing until OpenCode config wires them, so under the
-    // draw-only-when-held rule below they are invisible today — the flag is what keeps the door
-    // from appearing on the day they are not.
-    { key: 'agents', label: 'Agents', placeholder: true, subgroups: [{ kind: 'agent' }] },
-    { key: 'skills', label: 'Skills', placeholder: true, subgroups: [{ kind: 'skill' }] },
+    // on (#164). This draws nothing until OpenCode config wires it, so under the
+    // draw-only-when-held rule below it is invisible today — the flag is what keeps the door
+    // from appearing on the day it is not.
     { key: 'mcp', label: 'MCPs', placeholder: true, subgroups: [{ kind: 'mcp' }] },
     // The Project's own Uploads. It was a collapsible drawer pinned to the bottom of the panel —
     // its own pattern, its own chevron, its own empty sentence — for a list that behaves like every
     // other group. Folded in here: one pattern, and it disappears when there are no files, which
     // the drawer never did.
     //
-    // `placeholder` for the opposite reason to the three above: a file does not come from the
+    // `placeholder` for the opposite reason to the two above: a file does not come from the
     // catalog at all, it comes from Upload, so `openCatalog('file')` has nothing to open. The head
     // draws no `+`; the panel's own Add menu carries Upload a file.
     { key: 'file', label: 'Files', placeholder: true, subgroups: [{ kind: 'file' }] },
@@ -599,9 +601,10 @@ window.SW = window.SW || {};
   SW.ResourcePanel = function ResourcePanel() {
     const {
       resourceGroups, resourceErrors, activeApp, panelFilter, projectPlan, activePlanId, plans,
-      apps, bindings, attachments, resourcesLoading,
+      apps, bindings, attachments, resourcesLoading, extensions,
     } = SW.store.get();
     const [collapsed, setCollapsed] = useState({});
+    const [addingSkill, setAddingSkill] = useState(false);
     // Whether the Plans group is showing what has been put away (#167). Panel state rather than
     // stored state, like `collapsed` beside it: an archive is a lasting judgement about a document,
     // and "let me see the ones I hid" is a glance, not a preference to carry between sessions.
@@ -625,10 +628,18 @@ window.SW = window.SW || {};
       ? SW.util.RESOURCE_META[panelFilter].group
       : null;
 
-    const rows = (kind) => resourceGroups[kind] || [];
+    const skills = ((extensions && extensions.items) || []).filter((e) => e.kind === 'skill');
+    const rows = (kind) => (kind === 'skill' ? skills : resourceGroups[kind] || []);
 
     const inChat = SW.router.get().mode === 'chat';
     const inBuild = SW.router.get().mode === 'build';
+
+    // A switch answers for the open Conversation or the selected app, so the list is read again
+    // whenever that changes.
+    const extensionTarget = SW.store.extensionTarget();
+    const extensionWhere = extensionTarget.app ? 'app' : (extensionTarget.thread ? 'conversation' : '');
+    const extensionKey = extensionTarget.app || extensionTarget.thread || '';
+    useEffect(() => { SW.store.loadExtensions(); }, [extensionKey]);
 
     const openResource = (resource) => SW.store.previewResource(resource.id);
 
@@ -638,10 +649,12 @@ window.SW = window.SW || {};
       items: [
         { key: 'browse', label: SW.brand.text('Browse {platformName}…') },
         { key: 'upload', label: 'Upload a file' },
+        { key: 'skill', label: 'Add a skill…' },
       ],
       onClick: ({ key }) => {
         if (key === 'browse') return SW.store.openCatalog();
         if (key === 'upload') return fileRef.current && fileRef.current.click();
+        if (key === 'skill') return setAddingSkill(true);
       },
     };
 
@@ -933,14 +946,14 @@ window.SW = window.SW || {};
         group && !group.placeholder &&
           h(
             Tooltip,
-            { title: SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`), placement: 'left' },
+            { title: group.addLabel || SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`), placement: 'left' },
             h(
               'button',
               {
                 type: 'button',
                 className: 'sw-res-group-add',
-                'aria-label': SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`),
-                onClick: () => SW.store.openCatalog(addKind(group)),
+                'aria-label': group.addLabel || SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`),
+                onClick: () => (group.extension ? setAddingSkill(true) : SW.store.openCatalog(addKind(group))),
               },
               h(PlusOutlined, { style: { fontSize: 11 } })
             )
@@ -1130,7 +1143,9 @@ window.SW = window.SW || {};
                             SW.util.dataTypeLabel(sub.kind)
                           )
                         ),
-                      subRows.map(rowFor)
+                      sub.kind === 'skill'
+                        ? subRows.map((skill) => h(SW.SkillRow, { key: skill.id, skill, where: extensionWhere }))
+                        : subRows.map(rowFor)
                     )
                   : null
               )
@@ -1178,6 +1193,12 @@ window.SW = window.SW || {};
             e.target.value = '';
             for (const file of files) await SW.store.uploadFile(file);
           },
+        }),
+
+        addingSkill && h(SW.AddSkillModal, {
+          open: true,
+          builtinSkills: (extensions && extensions.builtinSkills) || [],
+          onClose: () => setAddingSkill(false),
         })
       )
     );

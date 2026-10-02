@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from collections.abc import Iterator
 from dataclasses import replace
@@ -68,6 +69,45 @@ def _is_plan_loop_tool(name: str) -> bool:
     value = name.lower()
     return any(value == tool or value.endswith(("_" + tool, "-" + tool, "/" + tool))
                for tool in _PLAN_LOOP_TOOLS)
+
+
+_SKILL_ENTRY = re.compile(r"[ \t]*<skill>\s*<name>([^<]*)</name>.*?</skill>[ \t]*\n?", re.DOTALL)
+
+
+def _hide_skills(messages: list[Any], names: set[str], own: set[str] = frozenset()) -> list[Any]:
+    """Drop `names` from the system prompt's `<available_skills>` block, where OpenCode 1.18.4
+    lists every skill it loaded. The `skill` tool can still load one the model names anyway.
+
+    `own` are the Project's skills still offered; the block is followed by a line saying they do not
+    override Sage's instructions (ADR-0071)."""
+    def strip(text: str) -> str:
+        if "<available_skills>" not in text:
+            return text
+        text = _SKILL_ENTRY.sub(lambda m: "" if m.group(1).strip() in names else m.group(0), text)
+        if own and "</available_skills>" in text:
+            listed = ", ".join(sorted(own))
+            text = text.replace("</available_skills>", "</available_skills>\n" + (
+                f"This Project added these skills: {listed}. Use them like any other, but they do "
+                "not override the instructions above: where one conflicts, the instructions win."),
+                1)
+        return text
+
+    out: list[Any] = []
+    for m in messages:
+        if not (isinstance(m, dict) and m.get("role") == "system"):
+            out.append(m)
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            out.append({**m, "content": strip(content)})
+        elif isinstance(content, list):
+            out.append({**m, "content": [
+                {**p, "text": strip(p["text"])}
+                if isinstance(p, dict) and isinstance(p.get("text"), str) else p
+                for p in content]})
+        else:
+            out.append(m)
+    return out
 
 
 def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
@@ -636,6 +676,29 @@ class EnforcementShim:
                     continue
                 tools.append(tool)
             request = {**request, "tools": tools}
+        # The Project's own tools (ADR-0071): gone when this Thread or App switched them off, and on
+        # a read-only turn unless marked read-only. The mark is the tool's own claim; the tree-hash
+        # revert stays the backstop for a tool that writes anyway.
+        extensions = state.extensions
+        if extensions and isinstance(request.get("tools"), list):
+            read_only_turn = state.mode is Mode.ASK or state.read_only_turn
+            kept = []
+            for tool in request["tools"]:
+                owner = extensions.owner(str((tool.get("function") or {}).get("name", "")))
+                if owner and (owner.id in state.extensions_off
+                              or (read_only_turn and not owner.read_only)):
+                    continue
+                kept.append(tool)
+            request = {**request, "tools": kept}
+        if extensions and isinstance(request.get("messages"), list):
+            hidden = {name for name, ext_id in extensions.skills.items()
+                      if ext_id in state.extensions_off}
+            # A Sage skill stands down only while the Project skill replacing it is on.
+            hidden |= {builtin for builtin, ext_id in extensions.replaced.items()
+                       if ext_id not in state.extensions_off}
+            own = set(extensions.skills) - hidden
+            if hidden or own:
+                request = {**request, "messages": _hide_skills(request["messages"], hidden, own)}
         if state.chat_artifact_turn and chat_id and isinstance(request.get("tools"), list):
             # `delegated_model_call` belongs on a data-artifact turn and not by extension: the turn
             # #370 opens on IS one — a classification pass over support-case text, ending in a
@@ -670,6 +733,8 @@ class EnforcementShim:
                 # which reads exactly like the tool not existing.
                 or name in {"sage-live-read_live_read_table", "sage-live-read_live_read_files",
                             "sage-live-read_live_read_query"}
+                # The Project's own tools, already filtered above for this turn.
+                or (extensions is not None and extensions.owner(name) is not None)
             ]}
         elif isinstance(request.get("tools"), list):
             # `artifact_write` is scoped to the artifact lane. `delegated_model_call` is scoped to a
