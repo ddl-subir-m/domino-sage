@@ -694,6 +694,9 @@ a.sw-topnav-link {
 /* A Project skill's row: nothing to open, and a switch for the Conversation or app in view. */
 .sw-skill-main { cursor: default; }
 .sw-skill-switch { flex: none; margin-right: 4px; }
+/* A Project tool's row: the same shape as a skill's. */
+.sw-tool-main { cursor: default; }
+.sw-tool-switch { flex: none; margin-right: 4px; }
 .sw-res-expand {
   flex: none;
   width: 20px;

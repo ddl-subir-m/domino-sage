@@ -97,6 +97,9 @@ window.SW = window.SW || {};
     // and the door opens the Add skill dialog.
     { key: 'skills', label: 'Skills', extension: true, addLabel: 'Add a skill',
       subgroups: [{ kind: 'skill' }] },
+    // The Project's own custom tools (ADR-0071), the same way: the door opens Add tool.
+    { key: 'tools', label: 'Tools', extension: true, addLabel: 'Add a tool',
+      subgroups: [{ kind: 'tool' }] },
     // `placeholder` is "no catalog behind this yet", and it is what the group's add door is gated
     // on (#164). This draws nothing until OpenCode config wires it, so under the
     // draw-only-when-held rule below it is invisible today — the flag is what keeps the door
@@ -605,6 +608,7 @@ window.SW = window.SW || {};
     } = SW.store.get();
     const [collapsed, setCollapsed] = useState({});
     const [addingSkill, setAddingSkill] = useState(false);
+    const [addingTool, setAddingTool] = useState(false);
     // Whether the Plans group is showing what has been put away (#167). Panel state rather than
     // stored state, like `collapsed` beside it: an archive is a lasting judgement about a document,
     // and "let me see the ones I hid" is a glance, not a preference to carry between sessions.
@@ -629,7 +633,8 @@ window.SW = window.SW || {};
       : null;
 
     const skills = ((extensions && extensions.items) || []).filter((e) => e.kind === 'skill');
-    const rows = (kind) => (kind === 'skill' ? skills : resourceGroups[kind] || []);
+    const tools = ((extensions && extensions.items) || []).filter((e) => e.kind === 'tool');
+    const rows = (kind) => (kind === 'skill' ? skills : kind === 'tool' ? tools : resourceGroups[kind] || []);
 
     const inChat = SW.router.get().mode === 'chat';
     const inBuild = SW.router.get().mode === 'build';
@@ -650,11 +655,13 @@ window.SW = window.SW || {};
         { key: 'browse', label: SW.brand.text('Browse {platformName}…') },
         { key: 'upload', label: 'Upload a file' },
         { key: 'skill', label: 'Add a skill…' },
+        { key: 'tool', label: 'Add a tool…' },
       ],
       onClick: ({ key }) => {
         if (key === 'browse') return SW.store.openCatalog();
         if (key === 'upload') return fileRef.current && fileRef.current.click();
         if (key === 'skill') return setAddingSkill(true);
+        if (key === 'tool') return setAddingTool(true);
       },
     };
 
@@ -953,7 +960,8 @@ window.SW = window.SW || {};
                 type: 'button',
                 className: 'sw-res-group-add',
                 'aria-label': group.addLabel || SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`),
-                onClick: () => (group.extension ? setAddingSkill(true) : SW.store.openCatalog(addKind(group))),
+                onClick: () => (group.key === 'tools' ? setAddingTool(true)
+                  : group.extension ? setAddingSkill(true) : SW.store.openCatalog(addKind(group))),
               },
               h(PlusOutlined, { style: { fontSize: 11 } })
             )
@@ -1145,7 +1153,9 @@ window.SW = window.SW || {};
                         ),
                       sub.kind === 'skill'
                         ? subRows.map((skill) => h(SW.SkillRow, { key: skill.id, skill, where: extensionWhere }))
-                        : subRows.map(rowFor)
+                        : sub.kind === 'tool'
+                          ? subRows.map((tool) => h(SW.ToolRow, { key: tool.id, tool, where: extensionWhere }))
+                          : subRows.map(rowFor)
                     )
                   : null
               )
@@ -1199,7 +1209,9 @@ window.SW = window.SW || {};
           open: true,
           builtinSkills: (extensions && extensions.builtinSkills) || [],
           onClose: () => setAddingSkill(false),
-        })
+        }),
+
+        addingTool && h(SW.AddToolModal, { open: true, onClose: () => setAddingTool(false) })
       )
     );
   };
