@@ -35,7 +35,8 @@ def _zip(files: dict[str, str | bytes]) -> bytes:
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as archive:
         for path, body in files.items():
-            archive.writestr(path, body)
+            # A fixed timestamp: these bytes land in parametrize ids, and xdist workers must agree.
+            archive.writestr(zipfile.ZipInfo(path, (2020, 1, 1, 0, 0, 0)), body)
     return out.getvalue()
 
 
