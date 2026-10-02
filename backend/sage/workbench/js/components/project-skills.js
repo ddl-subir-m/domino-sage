@@ -1,10 +1,11 @@
 window.SW = window.SW || {};
 
 // The Project's own skills in the resources panel (ADR-0071, #620): one row each, and the dialog
-// that adds them from a SKILL.md, a zip of skill folders, or a git URL.
+// that adds them from .md files, a zip of skill folders, a git URL or a Dataset, after showing what
+// each holds so the person picks which skills to add.
 (function () {
   const { createElement: h, useState, useRef } = React;
-  const { Tooltip, Dropdown, Switch, Modal, Input, Select, Segmented, Alert, Button } = antd;
+  const { Tooltip, Dropdown, Switch, Modal, Input, Select, Segmented, Alert, Button, Checkbox } = antd;
   const { MoreOutlined, UploadOutlined } = icons;
 
   // `where` is what a switch answers for: 'conversation', 'app', or '' when neither exists yet.
@@ -76,14 +77,37 @@ window.SW = window.SW || {};
 
   SW.AddSkillModal = function AddSkillModal({ open, builtinSkills, builtinSections, onClose }) {
     const [how, setHow] = useState('upload');
-    const [file, setFile] = useState(null);
+    const [files, setFiles] = useState([]);
     const [url, setUrl] = useState('');
     const [dataset, setDataset] = useState('');
     const [found, setFound] = useState(null);
     const [picked, setPicked] = useState(null);
+    // What the chosen source holds, as `previewSkills` answers it, and the folders ticked to add.
+    const [skills, setSkills] = useState(null);
+    const [chosen, setChosen] = useState([]);
+    const [previewing, setPreviewing] = useState(false);
     const datasets = (SW.store.get().resourceGroups || {}).dataset || [];
+    const [replaces, setReplaces] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState('');
+    const fileRef = useRef(null);
+
+    const preview = async (src) => {
+      setSkills(null); setChosen([]); setError('');
+      if (!src) return;
+      setPreviewing(true);
+      try {
+        const list = await SW.store.previewSkills(src);
+        setSkills(list);
+        setChosen(list.map((s) => s.folder));
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setPreviewing(false);
+      }
+    };
     const pickDataset = async (id) => {
-      setDataset(id); setFound(null); setPicked(null); setError('');
+      setDataset(id); setFound(null); setPicked(null); setSkills(null); setChosen([]); setError('');
       try {
         const listing = await SW.api.assetFiles(id);
         setFound(SW.skillCandidates(listing.files));
@@ -92,29 +116,39 @@ window.SW = window.SW || {};
         setError(err.message);
       }
     };
-    const [replaces, setReplaces] = useState('');
-    const [busy, setBusy] = useState(false);
-    const [error, setError] = useState('');
-    const fileRef = useRef(null);
+    // One zip goes up as it is; .md files, one or several, go up as their text.
+    const uploadSource = (list) => {
+      if (list.length > 1 && list.some((f) => /\.zip$/i.test(f.name))) return null;
+      return list.length === 1 && /\.zip$/i.test(list[0].name) ? list[0] : (list.length ? list : null);
+    };
+    const pickFiles = (list) => {
+      setFiles(list);
+      if (list.length && !uploadSource(list)) {
+        setSkills(null); setChosen([]);
+        setError('Choose one .zip, or one or more .md files.');
+      } else preview(uploadSource(list));
+    };
 
     const close = () => {
-      setFile(null); setUrl(''); setDataset(''); setFound(null); setPicked(null);
-      setReplaces(''); setError(''); setBusy(false);
+      setFiles([]); setUrl(''); setDataset(''); setFound(null); setPicked(null);
+      setSkills(null); setChosen([]); setReplaces(''); setError(''); setBusy(false);
       onClose();
     };
-    const source = { upload: file, git: url.trim(),
+    const source = { upload: uploadSource(files), git: url.trim(),
                      dataset: picked === null ? null : { dataset, path: picked } }[how];
     const add = async () => {
       setBusy(true);
       setError('');
       try {
-        await SW.store.addSkills(source, replaces);
+        await SW.store.addSkills(source, replaces, chosen);
         close();
       } catch (err) {
         setError(err.message);
         setBusy(false);
       }
     };
+    const toggle = (folder, on) =>
+      setChosen((now) => (on ? now.concat(folder) : now.filter((f) => f !== folder)));
     const replaced = (builtinSkills || []).find((b) => b.name === replaces);
     const replacedSection = (builtinSections || []).find((s) => s.name === replaces);
 
@@ -127,16 +161,17 @@ window.SW = window.SW || {};
         onOk: add,
         onCancel: close,
         confirmLoading: busy,
-        okButtonProps: { disabled: !source },
+        okButtonProps: { disabled: !source || !skills || !chosen.length },
         destroyOnClose: true,
       },
       h('p', { className: 'sw-caption', style: { margin: '0 0 12px' } },
-        'Every conversation and app in this project can use it. Its SKILL.md needs a name and a '
-        + 'description in its frontmatter.'),
+        'Every conversation and app in this project can use it. A skill is a SKILL.md, or a .md '
+        + 'you upload, with a name and a description in its frontmatter. In a zip or a repo, each '
+        + 'folder holding a SKILL.md is a skill, and everything outside those folders is ignored.'),
       h(Segmented, {
         block: true,
         value: how,
-        onChange: (v) => { setHow(v); setError(''); },
+        onChange: (v) => { setHow(v); setError(''); setSkills(null); setChosen([]); },
         options: [{ label: 'Upload', value: 'upload' }, { label: 'Git URL', value: 'git' },
                   { label: SW.brand.text('{dataset}'), value: 'dataset' }],
         style: { marginBottom: 12 },
@@ -159,7 +194,7 @@ window.SW = window.SW || {};
             ? h(Select, {
                 placeholder: 'Pick a skill folder or zip',
                 value: picked === null ? undefined : picked,
-                onChange: setPicked,
+                onChange: (path) => { setPicked(path); preview({ dataset, path }); },
                 style: { width: '100%' },
                 options: found,
               })
@@ -171,21 +206,47 @@ window.SW = window.SW || {};
             'div',
             { style: { marginBottom: 12 } },
             h(Button, { icon: h(UploadOutlined, null), onClick: () => fileRef.current && fileRef.current.click() },
-              file ? file.name : 'Choose a SKILL.md or .zip'),
+              files.length ? files.map((f) => f.name).join(', ') : 'Choose .md files or a .zip'),
             h('input', {
               ref: fileRef,
               type: 'file',
               accept: '.md,.zip',
+              multiple: true,
               style: { display: 'none' },
-              onChange: (e) => { setFile((e.target.files || [])[0] || null); e.target.value = ''; },
+              onChange: (e) => { pickFiles(Array.from(e.target.files || [])); e.target.value = ''; },
             })
           )
-        : h(Input, {
-            placeholder: 'https://github.com/team/skills.git',
-            value: url,
-            onChange: (e) => setUrl(e.target.value),
-            style: { marginBottom: 12 },
-          }),
+        : h(
+            'div',
+            { style: { display: 'flex', gap: 8, marginBottom: 12 } },
+            h(Input, {
+              placeholder: 'https://github.com/team/skills.git',
+              value: url,
+              onChange: (e) => { setUrl(e.target.value); setSkills(null); setChosen([]); },
+              onPressEnter: () => preview(url.trim()),
+            }),
+            h(Button, { onClick: () => preview(url.trim()), disabled: !url.trim(), loading: previewing },
+              'Find skills')
+          ),
+      previewing && how !== 'git' && h('p', { className: 'sw-caption', style: { margin: '0 0 12px' } },
+        'Looking for skills…'),
+      skills && h(
+        'div',
+        { className: 'sw-skill-found', style: { marginBottom: 12 } },
+        h('div', { className: 'sw-caption', style: { marginBottom: 4 } },
+          skills.length === 1 ? 'Found 1 skill' : `Found ${skills.length} skills: tick the ones to add`),
+        skills.map((s) => h(
+          'div',
+          { key: s.folder, style: { marginBottom: 6 } },
+          h(Checkbox, { checked: chosen.includes(s.folder), onChange: (e) => toggle(s.folder, e.target.checked) },
+            h('strong', null, s.name || s.folder),
+            s.folder && s.folder !== '.' && s.folder !== s.name
+              ? h('span', { className: 'sw-caption' }, ` in ${s.folder}/`) : null),
+          h('div', { className: 'sw-caption', style: { marginLeft: 24 } },
+            [s.description || 'No description: it will be refused.',
+             s.files.length === 1 ? '1 file' : `${s.files.length} files`].join(' · '))
+        ))
+      ),
       h('div', { className: 'sw-caption', style: { marginBottom: 4 } }, 'Replaces'),
       h(Select, {
         value: replaces,

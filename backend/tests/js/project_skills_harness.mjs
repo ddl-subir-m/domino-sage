@@ -12,6 +12,8 @@
 //   remove      confirm the first skill's Remove
 //   add-git     `SW.store.addSkills(url, replaces)`
 //   add-file    `SW.store.addSkills(file, replaces)`
+//   preview-md  `SW.store.previewSkills([two .md files])`
+//   add-pick    `SW.store.addSkills(zip, '', [two folders])`
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
@@ -181,6 +183,16 @@ if (act === 'drawn' || act === 'press-door') {
   const file = new Blob(['---\nname: x\n---\n']);
   file.name = 'house.zip';
   await SW.store.addSkills(file, '');
+  report.calls = calls;
+} else if (act === 'preview-md') {
+  const named = (body, name) => Object.assign(new Blob([body]), { name });
+  await SW.store.previewSkills([named('---\nname: house\n---\n', 'house.md'),
+                                named('Teal.', 'colors.md')]);
+  report.calls = calls;
+} else if (act === 'add-pick') {
+  const file = new Blob(['zip']);
+  file.name = 'pack.zip';
+  await SW.store.addSkills(file, '', ['skills/a', 'skills/b']);
   report.calls = calls;
 }
 
