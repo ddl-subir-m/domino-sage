@@ -2229,6 +2229,36 @@ def set_project_extension_enabled(ext_id: str, body: dict) -> JSONResponse:
     return JSONResponse(content={"ok": True})
 
 
+@control_app.post("/api/project/extensions/mcp")
+def add_project_mcp(body: dict) -> JSONResponse:
+    """`name`, and `config` (remote `url` + `headers`, or local `command` + `environment`) or a
+    `git` URL with an optional `server`. A secret is written as `{env:VAR}`, never as a value."""
+    try:
+        return JSONResponse(content={"item": orchestrator.add_mcp(body or {})})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.post("/api/project/extensions/{ext_id}/tools")
+def read_project_mcp_tools(ext_id: str) -> JSONResponse:
+    """Ask an MCP server for its tools again; a tool already known keeps its read-only mark."""
+    try:
+        return JSONResponse(content={"item": orchestrator.read_mcp_tools(ext_id)})
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.put("/api/project/extensions/{ext_id}/tools/{tool}")
+def set_project_mcp_tool_read_only(ext_id: str, tool: str, body: dict) -> JSONResponse:
+    try:
+        item = orchestrator.set_mcp_tool_read_only(ext_id, tool, bool((body or {}).get("readOnly")))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "unknown MCP server or tool"})
+    return JSONResponse(content={"item": item})
+
+
 @control_app.get("/api/project/history")
 def project_history(conversation: str = "", detail: str = "full", app: str = "") -> JSONResponse:
     """The chat transcript persisted in the workspace, so the UI can replay it after a reload or
