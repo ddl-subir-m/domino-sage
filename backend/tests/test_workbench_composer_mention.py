@@ -109,8 +109,10 @@ def test_the_new_group_is_appended_last():
     #
     # `attached` — the selected app's Attachments — joined the working set when the Project stopped
     # listing them (#148). It goes above the catalogue like every other group here, because those
-    # files are already in this Project and picking one joins nothing.
-    assert "groups: [context, produced, resourceGroups.pin || [], project, files, attached]," in UI
+    # files are already in this Project and picking one joins nothing. So do the Project's skills
+    # (#628), for the same reason.
+    assert ("groups: [context, produced, resourceGroups.pin || [], project, skills, files, "
+            "attached],") in UI
     assert "catalogue: catalogueParents," in UI
     assert "[...(groups || []), catalogue || []].forEach(" in UTIL
 

@@ -71,8 +71,11 @@ window.SW = window.SW || {};
   // The app's Attachments are a group of their own because the Project stopped listing them
   // (#148). Without it the menu would go on offering every file it ever offered EXCEPT the app's
   // own data — the one kind a Build prompt names most.
+  //
+  // The Project's skills sit beside its Resources (#628). A skill is not a Resource: naming one
+  // carries no context, and the shim reads `@<name>` off the prompt itself.
   function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents,
-                             appAttachments, collapse) {
+                             appAttachments, collapse, extensions) {
     const context = (attachments || []).map((att) => ({
       id: att.resourceId || att.id,
       name: att.resourceName,
@@ -92,6 +95,9 @@ window.SW = window.SW || {};
     });
 
     const project = PROJECT_MENTION_KINDS.flatMap((kind) => resourceGroups[kind] || []);
+    const skills = ((extensions && extensions.items) || [])
+      .filter((e) => e.kind === 'skill' && !e.shadowed)
+      .map((e) => ({ id: e.id, name: e.name, kind: 'skill' }));
     const files = (resourceGroups.file || []).filter(
       (r) => !SW.util.isHiddenFromExplorer(r.path || r.name)
     );
@@ -109,7 +115,7 @@ window.SW = window.SW || {};
     // where a folder is not a chip, so it is offered a folder nowhere it could not carry one.
     // Chat gains no folder act (ADR-0029), and this is the same line drawn in the menu.
     return SW.util.workingSetFirst({
-      groups: [context, produced, resourceGroups.pin || [], project, files, attached],
+      groups: [context, produced, resourceGroups.pin || [], project, skills, files, attached],
       catalogue: catalogueParents,
       query,
       // The same number as `FOLDER_COLLAPSE_THRESHOLD` in `sage/orchestrator/service.py`, and the
@@ -318,7 +324,7 @@ window.SW = window.SW || {};
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
       catalog, buildModel, buildEffort, buildPhase, openWeightModels, signingSlot,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
-      sensitivity, sensitivityNoticeFor, crossingRefused,
+      sensitivity, sensitivityNoticeFor, crossingRefused, extensions,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -395,7 +401,7 @@ window.SW = window.SW || {};
     const mentionArts = ((thread && thread.artifacts) || []).filter((a) => !a.missing);
     const suggestions = mention
       ? mentionCandidates(attachments, resourceGroups, mention.query, mentionArts,
-                          catalogueParents, appAttachments, showMode)
+                          catalogueParents, appAttachments, showMode, extensions)
       : [];
     const catalogueIds = new Set((catalogueParents || []).map((r) => r.id));
     const buildModes = BUILD_MODES();
@@ -537,7 +543,7 @@ window.SW = window.SW || {};
       // A folder row is not a Resource and has no chip to become: it is offered only because every
       // file under it is already attached to this app, which is the very thing a chip would say
       // (ADR-0030). Adding one would post a `folder:` id no Resource answers to.
-      if (resource.kind === 'folder') return;
+      if (resource.kind === 'folder' || resource.kind === 'skill') return;
       // The @name is already in the box. Unreported, this sends a prompt mentioning a file that
       // was never attached.
       await SW.store.addToContext(resource, { quiet: true }).catch(sayFailed);

@@ -152,11 +152,11 @@ SYSTEM = ("Skills provide specialized instructions.\n<available_skills>\n"
           "</available_skills>\n")
 
 
-def _sent(control: ModelControl, system=SYSTEM) -> tuple[list[str], dict]:
+def _sent(control: ModelControl, system=SYSTEM, user="hi") -> tuple[list[str], dict]:
     gateway = FakeGatewayClient()
     shim = EnforcementShim(control, CATALOG, gateway)
     request = {"messages": [{"role": "system", "content": system},
-                            {"role": "user", "content": "hi"}],
+                            {"role": "user", "content": user}],
                "tools": [{"type": "function", "function": {"name": n}} for n in OFFERED]}
     list(shim.handle(request, project="p"))
     sent = gateway.seen[-1][0]
@@ -189,6 +189,36 @@ def test_a_switched_off_skill_is_hidden_from_available_skills(tmp_path):
     system = sent["messages"][0]["content"]
     assert "<name>alpha</name>" in system and "<name>beta</name>" not in system
     assert system.count("<skill>") == 1 and "</available_skills>" in system
+
+
+NAMED = "Load each with the skill tool before answering"
+
+
+def test_a_skill_named_with_at_is_loaded_and_beats_its_switch_for_that_turn(tmp_path):
+    """#628: the person named it, so it is offered and asked for even while switched off."""
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    control.set_extensions(_catalog(tmp_path))
+    control.arm_extensions_off(frozenset({"skill:beta"}))
+    system = _sent(control, user="Summarize revenue using @beta.")[1]["messages"][0]["content"]
+    assert "<name>alpha</name>" in system and "<name>beta</name>" in system
+    assert f"The person named these skills with @: beta. {NAMED}" in system
+    # The switch itself is untouched: the next turn, which names nothing, hides it again.
+    assert "<name>beta</name>" not in _sent(control)[1]["messages"][0]["content"]
+
+
+@pytest.mark.parametrize("user", ["mail bob@alpha.com", "use @alphabet", "use @alpha-x",
+                                  [{"type": "text", "text": "no mention"}]])
+def test_only_a_whole_at_token_names_a_skill(tmp_path, user):
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    control.set_extensions(_catalog(tmp_path))
+    assert NAMED not in _sent(control, user=user)[1]["messages"][0]["content"]
+
+
+def test_a_mention_in_any_text_part_of_the_prompt_counts(tmp_path):
+    control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
+    control.set_extensions(_catalog(tmp_path))
+    parts = [{"type": "text", "text": "context"}, {"type": "text", "text": "go, @alpha"}]
+    assert "with @: alpha." in _sent(control, user=parts)[1]["messages"][0]["content"]
 
 
 def test_the_switch_is_per_turn_and_drops_with_its_token(tmp_path):
@@ -298,6 +328,23 @@ def test_a_build_turn_carries_what_its_app_switched_off(tmp_path):
 
     assert seen == [{"tool:push"}]
     assert project.control.snapshot().extensions_off == frozenset()
+
+
+def test_a_chat_and_a_build_prompt_reach_opencode_with_their_at_mention_intact(tmp_path):
+    """#628: the shim reads `@<skill>` off the prompt OpenCode sends, so both doors must hand the
+    token through as typed."""
+    orch, oc = _chat_orch(tmp_path, [Turn(text="ok")],
+                          gateway=IntentGateway({"label": "other_chat", "confidence": 0.9}),
+                          client=ObservedControlOpenCode)
+    oc.control = orch.project(start_preview=False).control
+    list(orch.chat_stream(orch.create_thread()["id"], "Summarize revenue using @alpha please"))
+    assert any("@alpha please" in p["text"] for p in oc.prompts)
+
+    orch, oc, _ = _build(tmp_path / "b", [Turn(text="It shows sales.")])
+    orch.create_app(stack="react-vite")
+    orch.project(start_preview=False).control.set_mode(Mode.ASK)
+    list(orch.build_stream("What does this app show? Use @alpha"))
+    assert any("Use @alpha" in p["text"] for p in oc.prompts)
 
 
 REACT_AGENTS = (Path(__file__).resolve().parents[2] / "template" / "react-vite" / "AGENTS.md")
