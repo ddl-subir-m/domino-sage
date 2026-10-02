@@ -156,9 +156,12 @@ class _Http(_Session):
     def _exchange(self, message: dict, reply_id: int | None) -> dict | None:
         headers = {"mcp-session-id": self.session_id} if self.session_id else {}
         try:
-            r = self.client.post(self.url, json=message, headers=headers)
+            with self.client.stream("POST", self.url, json=message, headers=headers) as r:
+                return self._reply(r, reply_id)
         except httpx.HTTPError as e:
             raise ExtensionError(f"{self.url} did not answer: {e}") from e
+
+    def _reply(self, r: httpx.Response, reply_id: int | None) -> dict | None:
         if r.status_code >= 400:
             raise ExtensionError(f"{self.url} answered {r.status_code}"
                                  + (". Check its headers." if r.status_code in (401, 403) else "."))
@@ -166,18 +169,24 @@ class _Http(_Session):
         if reply_id is None:
             return None
         if r.headers.get("content-type", "").startswith("text/event-stream"):
-            for event in r.text.split("\n\n"):
-                data = "\n".join(line[5:].lstrip() for line in event.splitlines()
-                                 if line.startswith("data:"))
-                try:
-                    reply = json.loads(data) if data else None
-                except ValueError:
+            # Read only until the reply: a server may hold the stream open after it.
+            data: list[str] = []
+            for line in r.iter_lines():
+                if line.startswith("data:"):
+                    data.append(line[5:].lstrip())
                     continue
+                if line or not data:
+                    continue
+                try:
+                    reply = json.loads("\n".join(data))
+                except ValueError:
+                    reply = None
+                data = []
                 if isinstance(reply, dict) and reply.get("id") == reply_id:
                     return reply
             raise ExtensionError(f"{self.url} did not answer in its event stream.")
         try:
-            return r.json()
+            return json.loads(r.read())
         except ValueError as e:
             raise ExtensionError(f"{self.url} did not answer with JSON.") from e
 

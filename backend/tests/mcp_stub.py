@@ -82,6 +82,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("content-type", "text/event-stream")
             self.end_headers()
             self.wfile.write(f"event: message\ndata: {body}\n\n".encode())
+            self.wfile.flush()
+            # A server may keep the stream open after its reply; `server.hold` is released by the
+            # test's teardown.
+            hold = getattr(self.server, "hold", None)
+            if hold is not None:
+                hold.wait(10)
         else:
             self.send_header("content-type", "application/json")
             self.end_headers()

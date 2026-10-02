@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -60,6 +61,23 @@ def test_a_remote_server_is_read_with_its_headers_resolved(remote, monkeypatch):
     config = {"type": "remote", "url": remote,
               "headers": {"Authorization": "Bearer {env:STUB_TOKEN_621}"}}
     assert extension_mcp.read_tools(config) == {"echo": True, "write_note": False, "ping": False}
+
+
+def test_a_remote_server_holding_its_stream_open_is_read_without_waiting_for_it(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), mcp_stub.Handler)
+    server.hold = threading.Event()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        started = time.monotonic()
+        tools = extension_mcp.read_tools(
+            {"type": "remote", "url": f"http://127.0.0.1:{server.server_address[1]}/mcp"})
+        assert tools["echo"] is True and time.monotonic() - started < 5
+    finally:
+        server.hold.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_a_remote_server_that_refuses_says_so(remote):
