@@ -19,7 +19,7 @@ from pathlib import Path
 
 import httpx
 
-from .extensions import ENV_REF, ExtensionError, unset_variables
+from .extensions import ENV_REF, ExtensionError, clone, unset_variables
 
 # The revision Sage's own servers negotiate (`delegated/mcp.py`).
 PROTOCOL_VERSION = "2025-06-18"
@@ -248,18 +248,5 @@ def _from_mcp_servers(entry: dict) -> dict:
 
 @contextlib.contextmanager
 def _cloned(url: object) -> Iterator[tuple[Path, str]]:
-    if not isinstance(url, str) or not url.startswith("https://"):
-        raise ExtensionError("A git URL starts with https://.")
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     with tempfile.TemporaryDirectory() as tmp:
-        try:
-            subprocess.run(["git", "clone", "--depth", "1", "--quiet", "--", url, tmp],
-                           check=True, capture_output=True, text=True, timeout=120, env=env)
-        except subprocess.TimeoutExpired as e:
-            raise ExtensionError(f"Cloning {url} took longer than two minutes.") from e
-        except subprocess.CalledProcessError as e:
-            said = (e.stderr or "").strip().splitlines()
-            raise ExtensionError(f"git could not clone {url}: {said[-1] if said else e}") from e
-        commit = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"], capture_output=True,
-                                text=True, check=True, env=env).stdout.strip()
-        yield Path(tmp), commit
+        yield Path(tmp), clone(url, tmp)

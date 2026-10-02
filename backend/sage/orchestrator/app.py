@@ -2192,6 +2192,42 @@ def import_project_skills(body: dict) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
 
+@control_app.get("/api/project/extensions/{ext_id}/files")
+def read_project_skill_files(ext_id: str) -> JSONResponse:
+    """A Project skill's files as written, `{path, text}` each, SKILL.md first."""
+    try:
+        return JSONResponse(content={"files": orchestrator.skill_files(ext_id)})
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not in this project"})
+
+
+@control_app.put("/api/project/extensions/{ext_id}/replaces")
+def set_project_skill_replaces(ext_id: str, body: dict) -> JSONResponse:
+    """What a Project skill stands in for: a skill Sage ships, a build-instruction section, or ""."""
+    try:
+        item = orchestrator.set_skill_replaces(ext_id, str((body or {}).get("replaces") or ""))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not in this project"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"item": item})
+
+
+@control_app.post("/api/project/extensions/{ext_id}/update")
+def update_project_skill(ext_id: str) -> JSONResponse:
+    """Read a git or Dataset skill again from its source and rewrite it in place."""
+    try:
+        return JSONResponse(content=orchestrator.update_skill_from_source(ext_id))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not in this project"})
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
 @control_app.post("/api/project/extensions/tools")
 async def upload_project_tool(request: Request) -> JSONResponse:
     """A `.ts` or `.py` tool as the raw body; `filename` and `readOnly` ride in the query. A Python

@@ -6,8 +6,10 @@
 //
 // Input on stdin: `{ act, hash, thread, app, items, builtinSkills, builtinSections, replaces }`.
 //   drawn       the skill rows, the Add menu's keys, and whether the dialog is open
-//   press-door  press the Skills group's `+`, then report the dialog's Replaces options, and the
-//               caption under them once `replaces` is chosen
+//   press-door  press the Skills group's `+` and report whether the dialog opened
+//   open-skill  press the first skill row, then report the drawer's title, its buttons, its
+//               Replaces options, and — once `replaces` is chosen — what that sent
+//   update      `SW.store.updateSkillFromSource(first skill)`
 //   toggle      switch the first skill off
 //   remove      confirm the first skill's Remove
 //   add-git     `SW.store.addSkills(url, replaces)`
@@ -130,6 +132,7 @@ function skillRows(nodes) {
       tip: (drawn.find((d) => d.t === 'Tooltip' && d.c.includes(sw)) || {}).p?.title,
       sw,
       more: drawn.find((d) => d.t === 'Dropdown'),
+      open: drawn.find((d) => d.t === 'button' && cls(d) === 'sw-res-open'),
     };
   });
 }
@@ -145,22 +148,30 @@ if (act === 'drawn' || act === 'press-door') {
     flatten(head).find((d) => cls(d) === 'sw-res-group-add').p.onClick();
     nodes = panel();
   }
-  report.rows = skillRows(nodes).map(({ sw, more, ...row }) => row);
+  report.rows = skillRows(nodes).map(({ sw, more, open, ...row }) => row);
   report.menuKeys = (nodes.find((n) => n.t === 'Dropdown' && (n.p.menu || {}).items
     && n.p.menu.items.some((i) => i.key === 'browse')).p.menu.items).map((i) => i.key);
-  const modal = nodes.find((n) => n.t === SW.AddSkillModal);
-  report.dialogOpen = !!modal;
-  if (modal) {
-    const start = cursor;
-    let inner = flatten(SW.AddSkillModal(modal.p));
-    report.replacesOptions = inner.find((d) => d.t === 'Select').p.options.map((o) => o.value);
-    if (input.replaces) {
-      inner.find((d) => d.t === 'Select').p.onChange(input.replaces);
-      cursor = start;
-      inner = flatten(SW.AddSkillModal(modal.p));
-      report.replacesCaption = text(inner.filter((d) => d.t === 'p' && cls(d) === 'sw-caption').pop());
-    }
+  report.dialogOpen = !!nodes.find((n) => n.t === SW.AddSkillModal);
+} else if (act === 'open-skill') {
+  skillRows(panel())[0].open.p.onClick();
+  const drawer = panel().find((n) => n.t === SW.SkillDrawer);
+  report.drawerOpen = !!drawer;
+  const inner = flatten(SW.SkillDrawer(drawer.p));
+  const shell = inner.find((d) => d.t === 'Drawer');
+  report.title = shell.p.title;
+  report.buttons = flatten(shell.p.extra).filter((d) => d.t === 'Button').map((d) => text(d));
+  const select = inner.find((d) => d.t === 'Select');
+  report.replacesOptions = select.p.options.map((o) => o.value);
+  report.replacesCaption = text(inner.filter((d) => d.t === 'p' && cls(d) === 'sw-caption').pop());
+  if (input.replaces !== undefined) {
+    select.p.onChange(input.replaces);
+    await settle(); await settle();
+    report.calls = calls;
   }
+} else if (act === 'update') {
+  await SW.store.updateSkillFromSource(input.items[0]);
+  report.calls = calls;
+  report.toasts = toasts;
 } else if (act === 'toggle') {
   skillRows(panel())[0].sw.p.onChange(false);
   await settle(); await settle();

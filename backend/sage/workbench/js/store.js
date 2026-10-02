@@ -6086,6 +6086,38 @@ window.SW = window.SW || {};
       return read.items || [];
     },
 
+    async setSkillReplaces(skill, replaces) {
+      try {
+        await SW.api.setSkillReplaces(skill.id, replaces);
+      } catch (err) {
+        antd.message.error(err.message);
+      }
+      await store.loadExtensions();
+    },
+
+    // Reads a git or Dataset skill again from its source. Answers whether it was rewritten.
+    async updateSkillFromSource(skill) {
+      let read;
+      try {
+        read = await SW.api.updateSkill(skill.id);
+      } catch (err) {
+        antd.message.error(err.message);
+        return false;
+      }
+      await store.loadExtensions();
+      const was = (read.previous || {}).commit;
+      const now = ((read.item || {}).source || {}).commit;
+      antd.message.success(was && now && was === now
+        ? `${skill.name} is already at the latest commit.`
+        : was && now
+        ? `Updated ${skill.name} from ${was.slice(0, 7)} to ${now.slice(0, 7)}. It reaches the next turn.`
+        : `Updated ${skill.name}. It reaches the next turn.`);
+      if ((read.skipped || []).length) {
+        antd.message.warning(`Left out ${read.skipped.join(', ')}: a skill's files are text.`);
+      }
+      return true;
+    },
+
     // `body` is what `SW.mcpBody` builds from the Add MCP server dialog.
     async addMcp(body) {
       const read = await SW.api.addMcp(body);

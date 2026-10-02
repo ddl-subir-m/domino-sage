@@ -691,7 +691,7 @@ a.sw-topnav-link {
 .sw-res-row:hover .sw-res-more, .sw-res-row.is-menu-open .sw-res-more,
 .sw-res-row.is-context .sw-res-more { opacity: 1; }
 .sw-res-more:hover { background: var(--gray-200); color: var(--dark-700); }
-/* A Project skill's row: nothing to open, and a switch for the Conversation or app in view. */
+/* A row with nothing to open, and a switch for the Conversation or app in view. */
 .sw-skill-main { cursor: default; }
 .sw-skill-switch { flex: none; margin-right: 4px; }
 /* An MCP server OpenCode could not load: the row is the only place a person sees it failed. */
@@ -1143,6 +1143,36 @@ a.sw-topnav-link {
   font-size: var(--fs-12);
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* Add skills: the catalogue's layout, with a source in the toolbar where the search box sits. */
+.sw-skill-side-sub { margin-top: var(--s3); }
+.sw-skill-found-main { cursor: default; }
+.sw-skill-git { flex: 1; display: flex; gap: var(--s2); }
+.sw-skill-drop {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px dashed var(--gray-400);
+  border-radius: var(--radius);
+  color: var(--gray-600);
+  font-size: var(--fs-13);
+  min-width: 0;
+}
+.sw-skill-drop > span:not(.anticon) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-skill-drop.is-dragging { border-color: var(--purple-600); background: var(--purple-100); }
+.sw-skill-md {
+  margin: 0;
+  max-height: 50vh;
+  overflow: auto;
+  padding: var(--s3);
+  background: var(--gray-100);
+  border-radius: var(--radius);
+  font-size: var(--fs-12);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .sw-cat-foot {

@@ -530,6 +530,11 @@ SW.api = {
   importSkillsFromDataset: (dataset, path, opts = {}) =>
     post('/project/extensions/skills/dataset', { dataset, path, ...skillOptions(opts) }),
   removeExtension: (id) => del(`/project/extensions/${encodeURIComponent(id)}`),
+  skillFiles: (id) => request(`/project/extensions/${encodeURIComponent(id)}/files`),
+  setSkillReplaces: (id, replaces) =>
+    request(`/project/extensions/${encodeURIComponent(id)}/replaces`, {
+      method: 'PUT', body: { replaces: replaces || '' } }),
+  updateSkill: (id) => post(`/project/extensions/${encodeURIComponent(id)}/update`),
   setExtensionEnabled: (id, enabled, { thread, app } = {}) =>
     request(`/project/extensions/${encodeURIComponent(id)}/enabled`, {
       method: 'PUT', body: { enabled, thread: thread || '', app: app || '' } }),
