@@ -1143,9 +1143,13 @@ class EnforcementShim:
             if state.direct:
                 request, build_profile = apply_instruction_profile(request, "direct")
             else:
+                replaced = frozenset(
+                    name for name, ext_id in (extensions.replaced if extensions else {}).items()
+                    if ext_id not in state.extensions_off)
                 request, build_profile = apply_instruction_profile(
                     request, "implement",
-                    sections=choose_instruction_sections(self._instruction_facts))
+                    sections=choose_instruction_sections(
+                        replace(self._instruction_facts, replaced=replaced)))
         if build_profile and rewrite_counts is not None:
             rewrite_counts["buildInstructionProfile"] = build_profile
         request, assembly = assemble_for_route(

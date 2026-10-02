@@ -103,6 +103,17 @@ def test_a_skill_may_replace_one_built_in_and_only_a_real_one(tmp_path):
     assert [e["name"] for e in extensions.read_manifest(tmp_path)] == ["tables"]
 
 
+@pytest.mark.parametrize("section", ["design", "platform"])
+def test_a_skill_may_replace_an_instruction_section(tmp_path, section):
+    entry = extensions.add(tmp_path, {"kind": "skill", "files": {"SKILL.md": _md("house")},
+                                      "replaces": section})
+    assert entry["replaces"] == section
+    assert extensions.load_catalog(tmp_path).replaced == {section: "skill:house"}
+    with pytest.raises(extensions.ExtensionError, match="already replaces"):
+        extensions.add(tmp_path, {"kind": "skill", "files": {"SKILL.md": _md("other")},
+                                  "replaces": section})
+
+
 # ---- the shim ------------------------------------------------------------------------------------
 
 SYSTEM = ("<available_skills>\n"
@@ -309,3 +320,5 @@ def test_the_routes_upload_import_and_list_per_scope(tmp_path, monkeypatch):
             for e in client.get("/api/project/extensions").json()["items"]} == \
         {"tables": True, "house": True}
     assert "data-table" in {b["name"] for b in listed["builtinSkills"]}
+    from sage.implementation_request import _OPTIONAL_BLOCKS
+    assert [s["name"] for s in listed["builtinSections"]] == list(_OPTIONAL_BLOCKS)

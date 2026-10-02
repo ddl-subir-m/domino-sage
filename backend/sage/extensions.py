@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
+from .implementation_request import _OPTIONAL_BLOCKS as BUILTIN_SECTIONS
 from .router.phase_classifier import READ_TOOLS, SHELL_TOOLS, TODO_TOOLS, WEB_TOOLS, WRITE_TOOLS
 
 SLOT = Path(".opencode")
@@ -67,7 +68,8 @@ class ExtensionCatalog:
     tools: dict[str, ToolOwner] = field(default_factory=dict)
     prefixes: dict[str, str] = field(default_factory=dict)
     skills: dict[str, str] = field(default_factory=dict)
-    # Built-in skill name -> the id of the Project skill that replaces it while enabled.
+    # Built-in skill or instruction section -> the id of the Project skill that replaces it while
+    # enabled.
     replaced: dict[str, str] = field(default_factory=dict)
 
     def owner(self, tool_name: str) -> ToolOwner | None:
@@ -236,8 +238,9 @@ def add(root: Path, body: dict) -> dict:
                        "defaultEnabled": True}
         replaces = body.get("replaces") or ""
         if replaces:
-            if kind != "skill" or replaces not in builtin_skills():
-                raise ExtensionError(f"'{replaces}' is not a skill Sage ships.")
+            if kind != "skill" or replaces not in (*builtin_skills(), *BUILTIN_SECTIONS):
+                raise ExtensionError(f"'{replaces}' is not a skill Sage ships, nor a section of "
+                                     "its build instructions.")
             holder = next((e for e in entries if e.get("replaces") == replaces), None)
             if holder:
                 raise ExtensionError(f"'{holder['name']}' already replaces '{replaces}'.")

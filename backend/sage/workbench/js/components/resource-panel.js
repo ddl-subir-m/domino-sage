@@ -1198,6 +1198,7 @@ window.SW = window.SW || {};
         addingSkill && h(SW.AddSkillModal, {
           open: true,
           builtinSkills: (extensions && extensions.builtinSkills) || [],
+          builtinSections: (extensions && extensions.builtinSections) || [],
           onClose: () => setAddingSkill(false),
         })
       )

@@ -194,6 +194,12 @@ Build the user's app by editing `src/`. There is no install or build step to run
   file that grows with every component just to find somewhere safe to insert, and two components can
   quietly claim the same class name. Editing a token, a font or the reset there is still fine — that
   is what it's for.
+- **The theme variables and the font hold the app together, whatever design rules you follow.** The
+  variables in `src/index.css` (`--accent`, `--text`, `--bg`, `--surface`, `--border`, …) each carry
+  a light and a dark value. **Never hardcode hex values** — use the variables so light and dark
+  themes both work; a different palette changes their values, in both themes. Inter is served from
+  this app's own origin: the `@font-face` at the top of `src/index.css` and the file it points at are
+  {assistantName}'s — leave both alone, or the app quietly falls back to a system font.
 
 ## What exists
 - `src/App.tsx` — entry component (currently a placeholder to replace).
@@ -252,10 +258,8 @@ Every app must look intentional and consistent. These rules are what separate a 
 - **Color:** `var(--accent)` (the {platformName} accent `#543FDE`) for primary actions and links;
   `var(--text)` / `var(--text-muted)` for copy; `var(--border)` for dividers and input borders;
   `var(--bg)` / `var(--surface)` for backgrounds; `var(--ok)` / `var(--warn)` / `var(--danger)`
-  for status. **Never hardcode hex values** — use the variables so light and dark themes both work.
-- **Type:** Inter, served from this app's own origin. The `@font-face` at the top of
-  `src/index.css` and the file it points at are {assistantName}'s — leave both alone, or the app
-  quietly falls back to a system font. Scale — page title 28–32px/600, section heading 20px/600,
+  for status.
+- **Type:** Inter. Scale — page title 28–32px/600, section heading 20px/600,
   card title 16px/600, body 14–15px/400, caption 12px. One `<h1>` per screen. Left-align body text.
 - **Spacing:** 8px grid (4 / 8 / 12 / 16 / 24 / 32). Space **within** a group ≈ half the space
   **between** groups. Be generous; don't crowd elements.

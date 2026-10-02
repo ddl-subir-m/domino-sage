@@ -74,7 +74,7 @@ window.SW = window.SW || {};
     return Array.from(out.values()).sort((a, b) => a.value.localeCompare(b.value));
   };
 
-  SW.AddSkillModal = function AddSkillModal({ open, builtinSkills, onClose }) {
+  SW.AddSkillModal = function AddSkillModal({ open, builtinSkills, builtinSections, onClose }) {
     const [how, setHow] = useState('upload');
     const [file, setFile] = useState(null);
     const [url, setUrl] = useState('');
@@ -116,6 +116,7 @@ window.SW = window.SW || {};
       }
     };
     const replaced = (builtinSkills || []).find((b) => b.name === replaces);
+    const replacedSection = (builtinSections || []).find((s) => s.name === replaces);
 
     return h(
       Modal,
@@ -191,13 +192,19 @@ window.SW = window.SW || {};
         onChange: setReplaces,
         style: { width: '100%' },
         options: [{ value: '', label: SW.brand.text('Nothing: use it alongside {assistantName}\'s skills') }]
-          .concat((builtinSkills || []).map((b) => ({ value: b.name, label: b.name }))),
+          .concat((builtinSkills || []).map((b) => ({ value: b.name, label: b.name })))
+          .concat((builtinSections || []).map((s) => ({
+            value: s.name, label: SW.brand.text('{name} rules in {assistantName}\'s build instructions',
+                                                { name: s.name }) }))),
       }),
       h('p', { className: 'sw-caption', style: { margin: '6px 0 0' } },
         replaced
           ? SW.brand.text('While yours is on, {assistantName} stops offering {name}: {description}',
                           { name: replaced.name, description: replaced.description })
-          : SW.brand.text('Where it conflicts with {assistantName}\'s own instructions, those win.')),
+          : replacedSection
+            ? SW.brand.text('While yours is on, {assistantName} leaves its own {name} rules out of '
+                            + 'the build instructions.', { name: replacedSection.name })
+            : SW.brand.text('Where it conflicts with {assistantName}\'s own instructions, those win.')),
       error && h(Alert, { type: 'error', showIcon: true, message: error, style: { marginTop: 12 } })
     );
   };
