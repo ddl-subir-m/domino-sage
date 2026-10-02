@@ -32,8 +32,11 @@ that root (`backend/sage/driver/server.py`), so one folder serves both. The proj
 `OPENCODE_CONFIG`. Whether two `mcp` blocks merge key by key or the project's replaces the global
 one is not yet measured; the global copy declares none today, so nothing is lost either way yet.
 
-**Three ways in:** a file or zip (a skill folder, a `.ts` or `.py` tool), a git URL (cloned,
-recognised pieces copied in, commit recorded), and a form for MCP servers. The form takes a name,
+**Four ways in:** a file or zip (a skill folder, a `.ts` or `.py` tool), a git URL (cloned,
+recognised pieces copied in, commit recorded), a Dataset in the Project (a skill folder, a
+`SKILL.md` or a zip in it, read through the same asset provider as an attach, so mounted and
+unmounted Datasets both work), and a form for MCP servers. A git or Dataset source is copied, not
+linked: a later change there reaches the Project only when the skill is added again. The form takes a name,
 then either a remote URL plus headers or a local command plus environment.
 
 **Credentials are referenced, never stored.** Headers and environment values are written as
@@ -115,9 +118,11 @@ and the model picks one, both or neither from turn to turn.
   variables and the Inter `@font-face`: breaking them breaks light and dark mode and the font, not
   only the look. The section is split into a replaceable style part and an always-on guardrail.
 
-**A built-in that arrives after a user's skill of the same name does not take it over.** When a
-Sage release ships a skill whose name a Project already uses, the Project's skill wins there and
-the panel says it shadows the built-in. Neither copy overwrites the other on re-seed.
+**A built-in that arrives after a Project skill of the same name wins, and the panel says so.**
+OpenCode offers one skill per name, and Sage's copy is the one it picks (measured below), so the
+Project's cannot win by where it sits. The panel marks it hidden behind the built-in and asks for a
+rename; the shim leaves it out of its catalogue, so switching it off cannot hide Sage's. The files
+live in different folders, so neither copy overwrites the other.
 
 ## Measured (OpenCode 1.18.4, isolated config home, 2026-10-02)
 
@@ -134,6 +139,9 @@ the panel says it shadows the built-in. Neither copy overwrites the other on re-
   stops at once, and its assistant message ends in `MessageAbortedError` with the partial text.
   Measured on 1.18.4, 2026-10-02 (#619). Waiting for the turn lock is therefore required, not
   caution.
+- Two skills with one name: the model is offered exactly one. With copies in the global slot, an
+  app's `.opencode/` and the Project root, Chat and Build both get the global copy; without the
+  global one, Chat gets the Project root's and Build the app's (#620).
 
 ## Rejected
 
@@ -158,8 +166,9 @@ built-in usually wins and sometimes blends with the user's.
 the kind of scanner that cannot tell a skill about design from one that mentions it. The person
 knows what their skill replaces; the upload asks.
 
-**A new built-in wins over an existing user skill of the same name.** It silently changes a
-Project that worked yesterday, on an upgrade the person did not choose.
+**The Project's skill wins a name collision.** Chosen first, then measured impossible: OpenCode
+keeps Sage's copy, and the only ways round it are renaming one of them or not installing Sage's,
+which for the global slot means every Project on the machine.
 
 ## Consequences
 
