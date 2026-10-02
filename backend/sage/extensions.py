@@ -43,6 +43,24 @@ _FRONTMATTER_NAME = re.compile(r"\A---\s*\n(?:.*\n)*?name:\s*['\"]?([^'\"\n]*?)[
 # What one upload or git import may bring in, across every skill it holds.
 _MAX_SKILL_BYTES = 5 * 1024 * 1024
 _MAX_SKILL_FILES = 200
+# The interpreter a Python tool runs under, when Sage reads its SPEC and from its bridge alike: the
+# first `python3` on the PATH Sage and OpenCode share, which in Domino is the Project's environment.
+_PYTHON = "python3"
+# Loads a Python tool by path. With `--spec` it prints the SPEC as its last line; otherwise it calls
+# `run(**args)` with the JSON object on stdin and prints the result. Python 3.9 is the floor.
+_PY_RUNNER = """\
+import importlib.util, json, sys
+loader = importlib.util.spec_from_file_location("sage_tool", sys.argv[1])
+tool = importlib.util.module_from_spec(loader)
+loader.loader.exec_module(tool)
+if sys.argv[2:] == ["--spec"]:
+    if not callable(getattr(tool, "run", None)):
+        sys.exit("It declares no run(**args).")
+    print(json.dumps(getattr(tool, "SPEC", None)))
+else:
+    result = tool.run(**json.loads(sys.stdin.read() or "{}"))
+    print(result if isinstance(result, str) else json.dumps(result))
+"""
 _LOCK = threading.Lock()
 # How OpenCode substitutes a variable from its own environment into config text.
 ENV_REF = re.compile(r"\{env:([^}]*)\}")
@@ -230,6 +248,12 @@ def add(root: Path, body: dict) -> dict:
     if kind == "skill" and name is None and isinstance(files, dict) \
             and isinstance(files.get("SKILL.md"), str):
         name = _frontmatter_name(files["SKILL.md"]) or None
+    spec = _python_spec(body["python"]) if kind == "tool" and "python" in body else None
+    if spec is not None:
+        if name is not None and name != spec["name"]:
+            raise ExtensionError(f"The name '{name}' is not the one its SPEC declares, "
+                                 f"'{spec['name']}'.")
+        name = spec["name"]
     with _LOCK:
         entries = read_manifest(root)
         name = _check_name(name, kind, entries)
@@ -247,6 +271,9 @@ def add(root: Path, body: dict) -> dict:
             entry["replaces"] = replaces
         if kind == "skill":
             entry["files"] = _write_skill(root, name, files)
+        elif spec is not None:
+            entry["files"] = _write_python_tool(root, name, body["python"], spec)
+            entry["readOnly"] = spec["readOnly"]
         elif kind == "tool":
             entry["files"] = _write_tool(root, name, body.get("code"))
             entry["readOnly"] = bool(body.get("readOnly"))
@@ -285,6 +312,21 @@ def remove(root: Path, ext_id: str) -> bool:
         return True
 
 
+def set_read_only(root: Path, ext_id: str, read_only: bool) -> bool:
+    """The panel's override of a custom tool's `readOnly`. False when there is no such extension."""
+    root = Path(root)
+    with _LOCK:
+        entries = read_manifest(root)
+        entry = next((e for e in entries if e["id"] == ext_id), None)
+        if entry is None:
+            return False
+        if entry["kind"] != "tool":
+            raise ExtensionError("Only a custom tool takes a read-only flag here.")
+        entry["readOnly"] = bool(read_only)
+        _write_manifest(root, entries)
+        return True
+
+
 def _write_skill(root: Path, name: str, files: object) -> list[str]:
     if not isinstance(files, dict) or not isinstance(files.get("SKILL.md"), str):
         raise ExtensionError("A skill needs a SKILL.md.")
@@ -319,6 +361,89 @@ def _write_tool(root: Path, name: str, source: object) -> list[str]:
     (root / rel).parent.mkdir(parents=True, exist_ok=True)
     (root / rel).write_text(source)
     return [rel.as_posix()]
+
+
+def _python_spec(source: object) -> dict:
+    """Run a Python tool with `--spec` and check the SPEC it declares. Running it runs its top level:
+    user code is trusted (ADR-0071)."""
+    if not isinstance(source, str) or not source.strip():
+        raise ExtensionError("A Python tool needs its source.")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "tool.py"
+        path.write_text(source)
+        try:
+            ran = subprocess.run([_PYTHON, "-c", _PY_RUNNER, str(path), "--spec"], cwd=tmp,
+                                 capture_output=True, text=True, timeout=30, check=False)
+        except FileNotFoundError as e:
+            raise ExtensionError(f"There is no {_PYTHON} here to run a Python tool with.") from e
+        except subprocess.TimeoutExpired as e:
+            raise ExtensionError("Reading its SPEC took longer than 30 seconds.") from e
+    if ran.returncode != 0:
+        said = ran.stderr.strip().splitlines()
+        raise ExtensionError(f"Running it with --spec failed: "
+                             f"{said[-1] if said else f'exit status {ran.returncode}'}")
+    try:
+        spec = json.loads(ran.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        spec = None
+    if not isinstance(spec, dict):
+        raise ExtensionError("It declares no SPEC. A Python tool declares SPEC = {name, "
+                             "description, args} and run(**args).")
+    if not isinstance(spec.get("description"), str) or not spec["description"].strip():
+        raise ExtensionError("Its SPEC needs a description: it is what the model reads.")
+    args = spec.get("args", {})
+    if not isinstance(args, dict) or not all(isinstance(v, dict) for v in args.values()):
+        raise ExtensionError("Its SPEC's args map each argument's name to a JSON schema, like "
+                             "{\"city\": {\"type\": \"string\"}}.")
+    if not isinstance(spec.get("readOnly", False), bool):
+        raise ExtensionError("Its SPEC's readOnly is True or False.")
+    return {"name": spec.get("name"), "description": spec["description"], "args": args,
+            "readOnly": spec.get("readOnly", False)}
+
+
+def _write_python_tool(root: Path, name: str, source: str, spec: dict) -> list[str]:
+    script, bridge = SLOT / "tools" / f"{name}.py", SLOT / "tools" / f"{name}.ts"
+    for rel in (script, bridge):
+        if (root / rel).exists():
+            raise ExtensionError(f"{rel} already exists and is not Sage's.")
+    (root / script).parent.mkdir(parents=True, exist_ok=True)
+    (root / script).write_text(source)
+    (root / bridge).write_text(_python_bridge(name, spec))
+    return [script.as_posix(), bridge.as_posix()]
+
+
+def _python_bridge(name: str, spec: dict) -> str:
+    """The TypeScript tool OpenCode loads for `<name>.py`. Plain JS and Node built-ins only: an npm
+    import makes OpenCode fetch the package at runtime, and a workspace may have no egress."""
+    return f"""\
+// Generated by Sage from {name}.py (ADR-0071). Add the .py again to change it.
+import {{ spawn }} from "node:child_process"
+import {{ fileURLToPath }} from "node:url"
+
+const SCRIPT = fileURLToPath(new URL({json.dumps(f"./{name}.py")}, import.meta.url))
+const RUNNER = {json.dumps(_PY_RUNNER)}
+
+export default {{
+  description: {json.dumps(spec["description"])},
+  args: {json.dumps(spec["args"])},
+  async execute(args) {{
+    const child = spawn({json.dumps(_PYTHON)}, ["-c", RUNNER, SCRIPT])
+    let out = ""
+    let err = ""
+    child.stdout.on("data", (chunk) => {{ out += chunk }})
+    child.stderr.on("data", (chunk) => {{ err += chunk }})
+    // A script that exits before reading stdin breaks the pipe; its exit status says why.
+    child.stdin.on("error", () => {{}})
+    const code = await new Promise((resolve, reject) => {{
+      child.on("error", reject)
+      child.on("close", resolve)
+      child.stdin.end(JSON.stringify(args ?? {{}}))
+    }})
+    if (code !== 0) throw new Error(err.trim() || "{name}.py exited with status " + code)
+    return out.replace(/\\n$/, "")
+  }},
+}}
+"""
 
 
 def _read_mcp_config(root: Path) -> dict:
@@ -457,6 +582,65 @@ def skills_from_git(url: object) -> tuple[list[dict[str, str]], str]:
         files = {p.relative_to(base).as_posix(): p.read_bytes for p in sorted(base.rglob("*"))
                  if p.is_file() and ".git" not in p.relative_to(base).parts}
         return skills_in_files(files, url), commit
+
+
+def tool_in_upload(filename: str, data: bytes) -> dict:
+    """An uploaded `.ts` tool, named by its filename as OpenCode names it, or a `.py` one, named by
+    its SPEC."""
+    path = PurePosixPath(filename or "")
+    if path.suffix.lower() not in (".ts", ".py"):
+        raise ExtensionError("Upload a .ts or a .py tool.")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ExtensionError(f"{filename} is not a text file.") from e
+    if path.suffix.lower() == ".py":
+        return {"kind": "tool", "python": text}
+    return {"kind": "tool", "name": path.stem, "code": text}
+
+
+def tools_from_git(url: object, path: object = "") -> tuple[list[dict], str]:
+    """Clone `url` and answer the tools at `path` in it, with the commit they were read at: one
+    `.ts` or `.py` file, or each one directly inside a folder ("" is the root)."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise ExtensionError("A git URL starts with https://.")
+    where = str(path or "").strip("/")
+    rel = _relative(where) if where else PurePosixPath(".")
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            subprocess.run(["git", "clone", "--depth", "1", "--quiet", "--", url, tmp],
+                           check=True, capture_output=True, text=True, timeout=120, env=env)
+        except subprocess.TimeoutExpired as e:
+            raise ExtensionError(f"Cloning {url} took longer than two minutes.") from e
+        except subprocess.CalledProcessError as e:
+            said = (e.stderr or "").strip().splitlines()
+            raise ExtensionError(f"git could not clone {url}: {said[-1] if said else e}") from e
+        commit = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"], capture_output=True,
+                                text=True, check=True, env=env).stdout.strip()
+        target = Path(tmp) / rel
+        files = [target] if target.is_file() else sorted(target.glob("*")) if target.is_dir() else []
+        bodies = [tool_in_upload(f.name, f.read_bytes()) for f in files
+                  if f.is_file() and f.suffix.lower() in (".ts", ".py")]
+    if not bodies:
+        raise ExtensionError(f"There is no .ts or .py tool in {url}{'/' + where if where else ''}.")
+    return bodies, commit
+
+
+def add_tools(root: Path, tools: list[dict], *, read_only: bool = False,
+              source: dict | None = None) -> list[dict]:
+    """Add every tool one upload or import holds, or none of them. `read_only` marks the TypeScript
+    ones; a Python tool's SPEC says its own."""
+    added: list[dict] = []
+    try:
+        for body in tools:
+            added.append(add(root, {**body, "readOnly": read_only,
+                                    "source": source or {"type": "upload"}}))
+    except ExtensionError:
+        for entry in added:
+            remove(root, entry["id"])
+        raise
+    return added
 
 
 def skills_in_files(files: dict[str, Callable[[], bytes]], where: str) -> list[dict[str, str]]:

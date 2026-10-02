@@ -96,6 +96,9 @@ window.SW = window.SW || {};
     // and the door opens the Add skill dialog.
     { key: 'skills', label: 'Skills', extension: true, addLabel: 'Add a skill',
       subgroups: [{ kind: 'skill' }] },
+    // The Project's own custom tools (ADR-0071), the same way: the door opens Add tool.
+    { key: 'tools', label: 'Tools', extension: true, addLabel: 'Add a tool',
+      subgroups: [{ kind: 'tool' }] },
     // The Project's own MCP servers (ADR-0071), the same way: rows from `state.extensions`, each
     // with OpenCode's status, and the door opens the Add MCP server dialog.
     { key: 'mcp', label: 'MCPs', extension: true, addLabel: 'Add an MCP server',
@@ -604,6 +607,7 @@ window.SW = window.SW || {};
     const [collapsed, setCollapsed] = useState({});
     const [addingSkill, setAddingSkill] = useState(false);
     const [addingMcp, setAddingMcp] = useState(false);
+    const [addingTool, setAddingTool] = useState(false);
     // Whether the Plans group is showing what has been put away (#167). Panel state rather than
     // stored state, like `collapsed` beside it: an archive is a lasting judgement about a document,
     // and "let me see the ones I hid" is a glance, not a preference to carry between sessions.
@@ -628,8 +632,10 @@ window.SW = window.SW || {};
       : null;
 
     const skills = ((extensions && extensions.items) || []).filter((e) => e.kind === 'skill');
+    const tools = ((extensions && extensions.items) || []).filter((e) => e.kind === 'tool');
     const mcps = ((extensions && extensions.items) || []).filter((e) => e.kind === 'mcp');
-    const rows = (kind) => (kind === 'skill' ? skills : kind === 'mcp' ? mcps : resourceGroups[kind] || []);
+    const rows = (kind) => (kind === 'skill' ? skills : kind === 'tool' ? tools
+      : kind === 'mcp' ? mcps : resourceGroups[kind] || []);
 
     const inChat = SW.router.get().mode === 'chat';
     const inBuild = SW.router.get().mode === 'build';
@@ -651,12 +657,14 @@ window.SW = window.SW || {};
         { key: 'upload', label: 'Upload a file' },
         { key: 'skill', label: 'Add a skill…' },
         { key: 'mcp', label: 'Add an MCP server…' },
+        { key: 'tool', label: 'Add a tool…' },
       ],
       onClick: ({ key }) => {
         if (key === 'browse') return SW.store.openCatalog();
         if (key === 'upload') return fileRef.current && fileRef.current.click();
         if (key === 'skill') return setAddingSkill(true);
         if (key === 'mcp') return setAddingMcp(true);
+        if (key === 'tool') return setAddingTool(true);
       },
     };
 
@@ -955,7 +963,8 @@ window.SW = window.SW || {};
                 type: 'button',
                 className: 'sw-res-group-add',
                 'aria-label': group.addLabel || SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`),
-                onClick: () => (group.key === 'mcp' ? setAddingMcp(true)
+                onClick: () => (group.key === 'tools' ? setAddingTool(true)
+                  : group.key === 'mcp' ? setAddingMcp(true)
                   : group.extension ? setAddingSkill(true) : SW.store.openCatalog(addKind(group))),
               },
               h(PlusOutlined, { style: { fontSize: 11 } })
@@ -1148,6 +1157,8 @@ window.SW = window.SW || {};
                         ),
                       sub.kind === 'skill'
                         ? subRows.map((skill) => h(SW.SkillRow, { key: skill.id, skill, where: extensionWhere }))
+                        : sub.kind === 'tool'
+                          ? subRows.map((tool) => h(SW.ToolRow, { key: tool.id, tool, where: extensionWhere }))
                         : sub.kind === 'mcp'
                           ? subRows.map((server) => h(SW.McpRow, { key: server.id, server, where: extensionWhere }))
                           : subRows.map(rowFor)
@@ -1206,7 +1217,8 @@ window.SW = window.SW || {};
           onClose: () => setAddingSkill(false),
         }),
 
-        addingMcp && h(SW.AddMcpModal, { open: true, onClose: () => setAddingMcp(false) })
+        addingMcp && h(SW.AddMcpModal, { open: true, onClose: () => setAddingMcp(false) }),
+        addingTool && h(SW.AddToolModal, { open: true, onClose: () => setAddingTool(false) })
       )
     );
   };

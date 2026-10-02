@@ -529,6 +529,14 @@ SW.api = {
   setMcpToolReadOnly: (id, tool, readOnly) =>
     request(`/project/extensions/${encodeURIComponent(id)}/tools/${encodeURIComponent(tool)}`, {
       method: 'PUT', body: { readOnly } }),
+  uploadTool: (file, readOnly) =>
+    request(`/project/extensions/tools?${new URLSearchParams({
+      filename: file.name || '', readOnly: readOnly ? 'true' : 'false' })}`, { method: 'POST', body: file }),
+  importTools: (url, path, readOnly) =>
+    post('/project/extensions/tools/git', { url, path: path || '', readOnly: !!readOnly }),
+  setExtensionReadOnly: (id, readOnly) =>
+    request(`/project/extensions/${encodeURIComponent(id)}/readOnly`, {
+      method: 'PUT', body: { readOnly } }),
 
   // The Build tab's crossing door (#275): moves this Conversation's chips into the selected app.
   // Answers per chip, because a crossing can be half refused.
