@@ -524,6 +524,11 @@ SW.api = {
   setExtensionEnabled: (id, enabled, { thread, app } = {}) =>
     request(`/project/extensions/${encodeURIComponent(id)}/enabled`, {
       method: 'PUT', body: { enabled, thread: thread || '', app: app || '' } }),
+  addMcp: (body) => post('/project/extensions/mcp', body),
+  readMcpTools: (id) => post(`/project/extensions/${encodeURIComponent(id)}/tools`),
+  setMcpToolReadOnly: (id, tool, readOnly) =>
+    request(`/project/extensions/${encodeURIComponent(id)}/tools/${encodeURIComponent(tool)}`, {
+      method: 'PUT', body: { readOnly } }),
 
   // The Build tab's crossing door (#275): moves this Conversation's chips into the selected app.
   // Answers per chip, because a crossing can be half refused.

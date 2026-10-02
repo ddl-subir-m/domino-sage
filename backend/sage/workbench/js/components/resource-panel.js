@@ -57,8 +57,7 @@ window.SW = window.SW || {};
     ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined, EditOutlined,
   } = icons;
 
-  // What the caller can pick now. MCPs are still listed because OpenCode config will wire them;
-  // they draw nothing until it does, which is the point of the rule below.
+  // What the caller can pick now.
   //
   // A group is drawn only when it HOLDS something, or when its listing failed. Empty headings were
   // the panel's loudest noise: six subheadings over nothing, in a 320px rail whose whole job is to
@@ -97,11 +96,10 @@ window.SW = window.SW || {};
     // and the door opens the Add skill dialog.
     { key: 'skills', label: 'Skills', extension: true, addLabel: 'Add a skill',
       subgroups: [{ kind: 'skill' }] },
-    // `placeholder` is "no catalog behind this yet", and it is what the group's add door is gated
-    // on (#164). This draws nothing until OpenCode config wires it, so under the
-    // draw-only-when-held rule below it is invisible today — the flag is what keeps the door
-    // from appearing on the day it is not.
-    { key: 'mcp', label: 'MCPs', placeholder: true, subgroups: [{ kind: 'mcp' }] },
+    // The Project's own MCP servers (ADR-0071), the same way: rows from `state.extensions`, each
+    // with OpenCode's status, and the door opens the Add MCP server dialog.
+    { key: 'mcp', label: 'MCPs', extension: true, addLabel: 'Add an MCP server',
+      subgroups: [{ kind: 'mcp' }] },
     // The Project's own Uploads. It was a collapsible drawer pinned to the bottom of the panel —
     // its own pattern, its own chevron, its own empty sentence — for a list that behaves like every
     // other group. Folded in here: one pattern, and it disappears when there are no files, which
@@ -605,6 +603,7 @@ window.SW = window.SW || {};
     } = SW.store.get();
     const [collapsed, setCollapsed] = useState({});
     const [addingSkill, setAddingSkill] = useState(false);
+    const [addingMcp, setAddingMcp] = useState(false);
     // Whether the Plans group is showing what has been put away (#167). Panel state rather than
     // stored state, like `collapsed` beside it: an archive is a lasting judgement about a document,
     // and "let me see the ones I hid" is a glance, not a preference to carry between sessions.
@@ -629,7 +628,8 @@ window.SW = window.SW || {};
       : null;
 
     const skills = ((extensions && extensions.items) || []).filter((e) => e.kind === 'skill');
-    const rows = (kind) => (kind === 'skill' ? skills : resourceGroups[kind] || []);
+    const mcps = ((extensions && extensions.items) || []).filter((e) => e.kind === 'mcp');
+    const rows = (kind) => (kind === 'skill' ? skills : kind === 'mcp' ? mcps : resourceGroups[kind] || []);
 
     const inChat = SW.router.get().mode === 'chat';
     const inBuild = SW.router.get().mode === 'build';
@@ -650,11 +650,13 @@ window.SW = window.SW || {};
         { key: 'browse', label: SW.brand.text('Browse {platformName}…') },
         { key: 'upload', label: 'Upload a file' },
         { key: 'skill', label: 'Add a skill…' },
+        { key: 'mcp', label: 'Add an MCP server…' },
       ],
       onClick: ({ key }) => {
         if (key === 'browse') return SW.store.openCatalog();
         if (key === 'upload') return fileRef.current && fileRef.current.click();
         if (key === 'skill') return setAddingSkill(true);
+        if (key === 'mcp') return setAddingMcp(true);
       },
     };
 
@@ -953,7 +955,8 @@ window.SW = window.SW || {};
                 type: 'button',
                 className: 'sw-res-group-add',
                 'aria-label': group.addLabel || SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`),
-                onClick: () => (group.extension ? setAddingSkill(true) : SW.store.openCatalog(addKind(group))),
+                onClick: () => (group.key === 'mcp' ? setAddingMcp(true)
+                  : group.extension ? setAddingSkill(true) : SW.store.openCatalog(addKind(group))),
               },
               h(PlusOutlined, { style: { fontSize: 11 } })
             )
@@ -1145,7 +1148,9 @@ window.SW = window.SW || {};
                         ),
                       sub.kind === 'skill'
                         ? subRows.map((skill) => h(SW.SkillRow, { key: skill.id, skill, where: extensionWhere }))
-                        : subRows.map(rowFor)
+                        : sub.kind === 'mcp'
+                          ? subRows.map((server) => h(SW.McpRow, { key: server.id, server, where: extensionWhere }))
+                          : subRows.map(rowFor)
                     )
                   : null
               )
@@ -1199,7 +1204,9 @@ window.SW = window.SW || {};
           open: true,
           builtinSkills: (extensions && extensions.builtinSkills) || [],
           onClose: () => setAddingSkill(false),
-        })
+        }),
+
+        addingMcp && h(SW.AddMcpModal, { open: true, onClose: () => setAddingMcp(false) })
       )
     );
   };

@@ -44,6 +44,9 @@ _FRONTMATTER_NAME = re.compile(r"\A---\s*\n(?:.*\n)*?name:\s*['\"]?([^'\"\n]*?)[
 _MAX_SKILL_BYTES = 5 * 1024 * 1024
 _MAX_SKILL_FILES = 200
 _LOCK = threading.Lock()
+# How OpenCode substitutes a variable from its own environment into config text.
+ENV_REF = re.compile(r"\{env:([^}]*)\}")
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ExtensionError(ValueError):
@@ -338,12 +341,68 @@ def _write_mcp(root: Path, name: str, config: object) -> None:
             isinstance(config.get("command"), list) and config["command"]
             and all(isinstance(a, str) for a in config["command"])):
         raise ExtensionError("A local MCP server needs a command, as a list of strings.")
+    for key in ("headers", "environment"):
+        values = config.get(key)
+        if values is not None and not (isinstance(values, dict) and all(
+                isinstance(k, str) and isinstance(v, str) for k, v in values.items())):
+            raise ExtensionError(f"An MCP server's {key} maps names to text.")
+    bad = [name for name in variables(config) if not _ENV_NAME.match(name)]
+    if bad:
+        raise ExtensionError(f"'{bad[0]}' is not a variable name: letters, digits and '_'.")
     current = _read_mcp_config(root)
     servers = current.setdefault("mcp", {})
     if name in servers:
         raise ExtensionError(f"{MCP_CONFIG} already declares '{name}' and it is not Sage's.")
     servers[name] = config
     _write_json(root / MCP_CONFIG, current)
+
+
+def variables(value: object) -> list[str]:
+    """Every `{env:VAR}` name `value` references, once each, in order."""
+    if isinstance(value, str):
+        return list(dict.fromkeys(ENV_REF.findall(value)))
+    items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else []
+    return list(dict.fromkeys(name for item in items for name in variables(item)))
+
+
+def unset_variables(config: object) -> list[str]:
+    """The variables `config` names that this process's environment, which OpenCode inherits,
+    does not set. OpenCode substitutes nothing for one and loads the server anyway."""
+    return [name for name in variables(config) if name not in os.environ]
+
+
+def mcp_servers(root: Path) -> dict:
+    """The `mcp` block of the project slot's config, as written."""
+    servers = _read_mcp_config(Path(root)).get("mcp")
+    return servers if isinstance(servers, dict) else {}
+
+
+def _update_mcp_tools(root: Path, ext_id: str, change: Callable[[dict], dict]) -> dict:
+    root = Path(root)
+    with _LOCK:
+        entries = read_manifest(root)
+        entry = next((e for e in entries if e["id"] == ext_id and e["kind"] == "mcp"), None)
+        if entry is None:
+            raise KeyError(ext_id)
+        entry["tools"] = change(dict(entry.get("tools") or {}))
+        _write_manifest(root, entries)
+        return entry
+
+
+def set_tool_read_only(root: Path, ext_id: str, tool: str, read_only: bool) -> dict:
+    """The panel's override of one MCP tool's mark. Raises KeyError for an unknown server or tool."""
+    def change(tools: dict) -> dict:
+        if tool not in tools:
+            raise KeyError(tool)
+        return {**tools, tool: bool(read_only)}
+    return _update_mcp_tools(root, ext_id, change)
+
+
+def replace_mcp_tools(root: Path, ext_id: str, listed: dict[str, bool]) -> dict:
+    """The tools a server listed when read. One already known keeps its mark, which may be the
+    person's override; one the server no longer lists is dropped."""
+    return _update_mcp_tools(root, ext_id, lambda known: {
+        name: bool(known.get(name, read_only)) for name, read_only in listed.items()})
 
 
 def add_skills(root: Path, skills: list[dict[str, str]], *, replaces: str = "",

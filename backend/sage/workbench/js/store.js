@@ -6069,6 +6069,34 @@ window.SW = window.SW || {};
       return read.items || [];
     },
 
+    // `body` is what `SW.mcpBody` builds from the Add MCP server dialog.
+    async addMcp(body) {
+      const read = await SW.api.addMcp(body);
+      await store.loadExtensions();
+      const item = read.item || {};
+      if (item.warning) antd.message.warning(item.warning);
+      else antd.message.success(`Added the MCP server ${item.name}. It reaches the next turn.`);
+      return item;
+    },
+
+    async setMcpToolReadOnly(server, tool, readOnly) {
+      try {
+        await SW.api.setMcpToolReadOnly(server.id, tool, readOnly);
+      } catch (err) {
+        antd.message.error(err.message);
+      }
+      await store.loadExtensions();
+    },
+
+    async readMcpTools(server) {
+      try {
+        await SW.api.readMcpTools(server.id);
+      } catch (err) {
+        antd.message.error(err.message);
+      }
+      await store.loadExtensions();
+    },
+
     async setExtensionEnabled(ext, enabled) {
       const target = store.extensionTarget();
       if (!target.app && !target.thread) return;
