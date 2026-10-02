@@ -144,13 +144,19 @@ def skill_description(text: str) -> str:
     The one field OpenCode filters on. Read with a regex rather than a YAML parser because there is
     no YAML dependency declared in `backend/pyproject.toml`. A block indicator (`>`/`|`) counts as
     present, as do the indented lines of a plain multi-line scalar; CRLF and a closing `---` with
-    nothing after it both read too.
+    nothing after it both read too. Multi-line values come back unwrapped: `|` keeps its line
+    breaks, `>` and a plain scalar fold onto one line.
     """
     front = re.match(r"^---\r?\n(.*?)\r?\n---[ \t]*(\r?\n|\Z)", text, re.DOTALL)
     if not front:
         return ""
     found = re.search(r"^description:[ \t]*(.*(?:\n[ \t]+\S.*)*)$", front.group(1), re.MULTILINE)
-    return found.group(1).strip().strip("\"'") if found else ""
+    if not found:
+        return ""
+    head, *rest = [line.strip() for line in found.group(1).split("\n")]
+    if re.fullmatch(r"[>|]([-+]?\d?|\d[-+])", head):
+        return ("\n" if head[0] == "|" else " ").join(rest).strip()
+    return " ".join([head, *rest]).strip().strip("\"'")
 
 
 def _frontmatter_name(text: str) -> str:
