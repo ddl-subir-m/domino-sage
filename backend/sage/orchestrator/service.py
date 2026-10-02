@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
     from ..workspace.chat_tables import ChatTables
 
-from .. import build_diagnostics, degraded, timing
+from .. import build_diagnostics, degraded, extension_mcp, timing
 from .. import extensions as project_extensions
 from ..assets.provider import (
     Asset,
@@ -26264,7 +26264,10 @@ class Orchestrator:
             overrides = self._wm.app_workspace(self._project_id, app).extension_overrides()
         items = project_extensions.list_extensions(root)
         off = project_extensions.disabled(items, overrides)
-        return [{**e, "enabled": e["id"] not in off} for e in items]
+        listed = [{**e, "enabled": e["id"] not in off} for e in items]
+        if any(e["kind"] == "mcp" for e in listed):
+            listed = self._with_mcp_status(listed, app=app)
+        return listed
 
     def add_extension(self, body: dict) -> dict:
         """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
@@ -26311,6 +26314,20 @@ class Orchestrator:
         return self.add_skills(skills, replaces=replaces, source={
             "type": "dataset", "dataset": asset.id, "name": asset.name, "path": path})
 
+    def add_tools(self, tools: list[dict], *, read_only: bool, source: dict) -> list[dict]:
+        """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
+        entries = project_extensions.add_tools(self._chat_project().record.path, tools,
+                                               read_only=read_only, source=source)
+        self._reload_extensions()
+        return entries
+
+    def set_extension_read_only(self, ext_id: str, read_only: bool) -> None:
+        """Raises KeyError for an unknown extension, `ExtensionError` for one that is not a tool."""
+        if not project_extensions.set_read_only(self._chat_project().record.path, ext_id,
+                                                read_only):
+            raise KeyError(ext_id)
+        self._reload_extensions()
+
     def remove_extension(self, ext_id: str) -> bool:
         removed = project_extensions.remove(self._chat_project().record.path, ext_id)
         if removed:
@@ -26332,6 +26349,86 @@ class Orchestrator:
             if app not in self._wm.app_ids():
                 raise KeyError(app)
             self._wm.app_workspace(self._project_id, app).set_extension(ext_id, enabled)
+
+    def add_mcp(self, body: dict) -> dict:
+        """An MCP server from the panel: `name`, and either `config` in OpenCode's shape or `git`, a
+        repo declaring its own (`server` picks one of several). Its tools are read once added; a
+        server that cannot be read yet is kept, with a `warning`, and can be read again later.
+
+        Raises `ExtensionError` (a ValueError) for anything the person has to change."""
+        root = self._chat_project().record.path
+        if body.get("git"):
+            config, commit = extension_mcp.server_from_git(body["git"], str(body.get("server") or ""))
+            source = {"type": "git", "url": body["git"], "commit": commit}
+        else:
+            config, source = body.get("config"), {"type": "form"}
+        entry = project_extensions.add(root, {"kind": "mcp", "name": body.get("name"),
+                                              "config": config, "source": source})
+        try:
+            entry = project_extensions.replace_mcp_tools(root, entry["id"],
+                                                         extension_mcp.read_tools(config))
+        except project_extensions.ExtensionError as e:
+            entry = {**entry, "warning": f"Added, but Sage could not list its tools, so none is "
+                                         f"offered on Ask or plan turns yet: {e}"}
+        self._reload_extensions()
+        return entry
+
+    def read_mcp_tools(self, ext_id: str) -> dict:
+        """Ask a server for its tools again. Raises KeyError for an unknown server and
+        `ExtensionError` when it cannot be read."""
+        root = self._chat_project().record.path
+        entry = next((e for e in project_extensions.read_manifest(root)
+                      if e["id"] == ext_id and e["kind"] == "mcp"), None)
+        if entry is None:
+            raise KeyError(ext_id)
+        listed = extension_mcp.read_tools(project_extensions.mcp_servers(root).get(entry["name"]) or {})
+        entry = project_extensions.replace_mcp_tools(root, ext_id, listed)
+        self._reload_extensions()
+        return entry
+
+    def set_mcp_tool_read_only(self, ext_id: str, tool: str, read_only: bool) -> dict:
+        """Raises KeyError for an unknown server or tool."""
+        entry = project_extensions.set_tool_read_only(self._chat_project().record.path, ext_id,
+                                                      tool, read_only)
+        self._reload_extensions()
+        return entry
+
+    def _with_mcp_status(self, items: list[dict], *, app: str) -> list[dict]:
+        """Each MCP server with OpenCode's own status for the directory the switches answer for.
+
+        OpenCode drops a server it cannot load from `GET /mcp`, and loads one naming an unset
+        variable with nothing in its place, so both read here as failed rather than absent or fine.
+        """
+        root = Path(self._chat_project().record.path)
+        directory = (self._wm.app_workspace(self._project_id, app).path
+                     if app and app in self._wm.app_ids() else root / CHAT_WORK)
+        said = self.opencode_mcp_status(str(directory))
+        servers = said.get("servers") if said.get("ok") and isinstance(said.get("servers"), dict) \
+            else None
+        configs = project_extensions.mcp_servers(root)
+        out = []
+        for e in items:
+            if e["kind"] != "mcp":
+                out.append(e)
+                continue
+            unset = project_extensions.unset_variables(configs.get(e["name"]) or {})
+            if unset:
+                status = {"status": "failed", "error": (
+                    f"{', '.join(unset)} {'is' if len(unset) == 1 else 'are'} not set. Add it to "
+                    "the project's environment variables, then restart the app.")}
+            elif servers is None:
+                status = {"status": "unknown",
+                          "error": str(said.get("why") or said.get("error")
+                                       or f"OpenCode answered {said.get('status')}")}
+            elif isinstance(servers.get(e["name"]), dict):
+                status = servers[e["name"]]
+            elif self._extensions_pending:
+                status = {"status": "pending"}
+            else:
+                status = {"status": "failed",
+                          "error": "OpenCode did not load it. Check its command or URL."}
+            out.append({**e, "status": status})
+        return out
 
     def _extensions_off(self, overrides: dict) -> frozenset[str]:
         """The ids one Thread's or App's record switched off, read at the turn boundary."""
