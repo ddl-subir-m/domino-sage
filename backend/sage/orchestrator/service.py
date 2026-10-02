@@ -26282,10 +26282,12 @@ class Orchestrator:
         self._reload_extensions()
         return entries
 
-    def add_skills_from_dataset(self, dataset_id: str, path: str, *, replaces: str) -> list[dict]:
-        """Copy the skills at `path` in a Dataset: a SKILL.md, a zip, or a folder ("" is the root)
-        holding one or more skill folders. A copy, like an upload: a later change to the Dataset
-        does not reach the Project until the skill is added again.
+    @contextlib.contextmanager
+    def dataset_skill_files(self, dataset_id: str, path: str):
+        """Yield the files at `path` in a Dataset, by path, readable while the block runs: a skill
+        .md, a zip, or a folder ("" is the root) holding skill folders. With where they are, for a
+        message, and the source an added skill records. A copy, like an upload: a later change to
+        the Dataset does not reach the Project until the skill is added again.
 
         Raises LookupError for an unknown Dataset, `ResourceUnavailable` when it cannot be read, and
         `ExtensionError` for anything the person has to change."""
@@ -26300,19 +26302,17 @@ class Orchestrator:
                 return dest.read_bytes()
 
             if path in known:
-                skills = project_extensions.skills_in_upload(path, read(path))
+                files = project_extensions.upload_files(path, read(path))
             else:
                 if listing.truncated:
                     raise project_extensions.ExtensionError(
                         f"{asset.name} is too large to list whole, so a folder in it may be "
                         "incomplete. Pick its SKILL.md or a zip instead.")
                 prefix = f"{path}/" if path else ""
-                skills = project_extensions.skills_in_files(
-                    {rel[len(prefix):]: (lambda rel=rel: read(rel))
-                     for rel in sorted(known) if rel.startswith(prefix)},
-                    f"{asset.name}/{path}" if path else asset.name)
-        return self.add_skills(skills, replaces=replaces, source={
-            "type": "dataset", "dataset": asset.id, "name": asset.name, "path": path})
+                files = {rel[len(prefix):]: (lambda rel=rel: read(rel))
+                         for rel in sorted(known) if rel.startswith(prefix)}
+            yield files, f"{asset.name}/{path}" if path else asset.name, {
+                "type": "dataset", "dataset": asset.id, "name": asset.name, "path": path}
 
     def add_tools(self, tools: list[dict], *, read_only: bool, source: dict) -> list[dict]:
         """Raises `ExtensionError` (a ValueError) for anything the person has to change."""

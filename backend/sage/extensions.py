@@ -16,7 +16,8 @@ import subprocess
 import tempfile
 import threading
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -550,23 +551,40 @@ def add_skills(root: Path, skills: list[dict[str, str]], *, replaces: str = "",
     return added
 
 
-def skills_in_upload(filename: str, data: bytes) -> list[dict[str, str]]:
-    """The skills in an uploaded `SKILL.md`, or in a zip of one or more skill folders."""
+def upload_files(filename: str, data: bytes) -> dict[str, Callable[[], bytes]]:
+    """The files of an uploaded skill `.md`, or of a zip of skill folders, by path."""
     lowered = filename.lower()
     if lowered.endswith(".md"):
-        return skills_in_files({"SKILL.md": lambda: data}, filename)
+        return md_files({PurePosixPath(filename).name: data})
     if not lowered.endswith(".zip"):
-        raise ExtensionError("Upload a SKILL.md, or a .zip of a skill folder.")
+        raise ExtensionError("Upload .md files, or a .zip of skill folders.")
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as e:
         raise ExtensionError(f"{filename} is not a zip file.") from e
-    return skills_in_files({info.filename: (lambda info=info: archive.read(info))
-                           for info in archive.infolist() if not info.is_dir()}, filename)
+    return {info.filename: (lambda info=info: archive.read(info))
+            for info in archive.infolist() if not info.is_dir()}
 
 
-def skills_from_git(url: object) -> tuple[list[dict[str, str]], str]:
-    """Clone `url` and answer the skill folders in it, with the commit they were read at."""
+def md_files(named: dict[str, bytes]) -> dict[str, Callable[[], bytes]]:
+    """Loose `.md` files laid out as skill folders. Each one whose frontmatter names it is a skill,
+    in a folder of its own; the rest are that skill's files, so they need exactly one skill."""
+    skills = [n for n, data in named.items() if _frontmatter_name(data.decode("utf-8", "replace"))]
+    if not skills:
+        raise ExtensionError("None of these .md files has a name in its frontmatter, so none is a "
+                             "skill.")
+    rest = [n for n in named if n not in skills]
+    if rest and len(skills) > 1:
+        raise ExtensionError(f"{', '.join(rest)} could belong to any of {len(skills)} skills. Add "
+                             "each skill with its own files, or zip them in skill folders.")
+    files = {f"{PurePosixPath(n).stem}/SKILL.md": (lambda n=n: named[n]) for n in skills}
+    files.update({f"{PurePosixPath(skills[0]).stem}/{n}": (lambda n=n: named[n]) for n in rest})
+    return files
+
+
+@contextmanager
+def git_files(url: object) -> Iterator[tuple[dict[str, Callable[[], bytes]], str]]:
+    """Clone `url` and yield its files by path, readable while the block runs, with the commit."""
     if not isinstance(url, str) or not url.startswith("https://"):
         raise ExtensionError("A git URL starts with https://.")
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -582,9 +600,8 @@ def skills_from_git(url: object) -> tuple[list[dict[str, str]], str]:
         commit = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"], capture_output=True,
                                 text=True, check=True, env=env).stdout.strip()
         base = Path(tmp)
-        files = {p.relative_to(base).as_posix(): p.read_bytes for p in sorted(base.rglob("*"))
-                 if p.is_file() and ".git" not in p.relative_to(base).parts}
-        return skills_in_files(files, url), commit
+        yield {p.relative_to(base).as_posix(): p.read_bytes for p in sorted(base.rglob("*"))
+               if p.is_file() and ".git" not in p.relative_to(base).parts}, commit
 
 
 def tool_in_upload(filename: str, data: bytes) -> dict:
@@ -646,32 +663,82 @@ def add_tools(root: Path, tools: list[dict], *, read_only: bool = False,
     return added
 
 
-def skills_in_files(files: dict[str, Callable[[], bytes]], where: str) -> list[dict[str, str]]:
-    """Each folder holding a SKILL.md, as a map of its files by path inside it."""
+def _skill_folders(files: dict[str, Callable[[], bytes]], where: str) -> dict[str, list[str]]:
+    """Each folder holding a SKILL.md, in any case, with the paths of the files it owns: that
+    SKILL.md first. Anything outside every such folder is not a skill's, and a file in nested ones
+    belongs to the deepest."""
     paths = [p for p in files if not p.startswith("__MACOSX/")]
-    folders = sorted({str(PurePosixPath(p).parent) for p in paths
-                      if PurePosixPath(p).name == "SKILL.md"})
+    markers = [p for p in paths if PurePosixPath(p).name.lower() == "skill.md"]
+    folders = sorted({str(PurePosixPath(p).parent) for p in markers})
     if not folders:
         raise ExtensionError(f"There is no SKILL.md in {where}.")
     deepest_first = sorted(folders, key=len, reverse=True)
+    owned: dict[str, list[str]] = {folder: [] for folder in folders}
+    for path in paths:
+        folder = next((f for f in deepest_first if f == "." or path.startswith(f + "/")), None)
+        if folder:
+            owned[folder].append(path)
+    for folder in folders:
+        mine = [p for p in markers if str(PurePosixPath(p).parent) == folder]
+        if len(mine) > 1:
+            raise ExtensionError(f"{' and '.join(mine)} are the same file to OpenCode. Keep one.")
+        owned[folder].remove(mine[0])
+        owned[folder].insert(0, mine[0])
+    return owned
 
-    def owner(path: str) -> str | None:
-        return next((f for f in deepest_first if f == "." or path.startswith(f + "/")), None)
 
-    chosen = [(folder, p) for p in paths if (folder := owner(p))]
+def _inside(folder: str, path: str) -> str:
+    return path if folder == "." else path[len(folder) + 1:]
+
+
+def _skill_rel(folder: str, paths: list[str], path: str) -> str:
+    """`path`'s place in its skill. The SKILL.md is written as OpenCode spells it, whatever case it
+    came in, because OpenCode loads only that spelling."""
+    return "SKILL.md" if path == paths[0] else _inside(folder, path)
+
+
+def found_skills(files: dict[str, Callable[[], bytes]], where: str) -> list[dict]:
+    """What `skills_in_files` could add, read from each SKILL.md alone: per folder, the skill's
+    name, its description, and its files."""
+    found = []
+    for folder, paths in _skill_folders(files, where).items():
+        text = files[paths[0]]().decode("utf-8", "replace")
+        found.append({"folder": folder, "name": _frontmatter_name(text),
+                      "description": skill_description(text),
+                      "files": [_skill_rel(folder, paths, p) for p in paths]})
+    return found
+
+
+def skills_in_files(files: dict[str, Callable[[], bytes]], where: str,
+                    pick: list[str] | None = None) -> tuple[list[dict[str, str]], list[str]]:
+    """The skills in the folders `pick` names (every one when it is None), each as a map of its
+    files by path inside it, and the paths of the files left out because they are not text."""
+    folders = _skill_folders(files, where)
+    if pick is not None:
+        unknown = sorted(set(pick) - set(folders))
+        if unknown:
+            raise ExtensionError(f"There is no skill folder {', '.join(unknown)} in {where}.")
+        folders = {f: paths for f, paths in folders.items() if f in pick}
+        if not folders:
+            raise ExtensionError("Pick at least one skill to add.")
+    chosen = [(folder, p) for folder, paths in folders.items() for p in paths]
     if len(chosen) > _MAX_SKILL_FILES:
         raise ExtensionError(f"{where} holds more than {_MAX_SKILL_FILES} skill files.")
     skills: dict[str, dict[str, str]] = {folder: {} for folder in folders}
+    skipped: list[str] = []
     total = 0
     for folder, path in chosen:
         data = files[path]()
-        total += len(data)
-        if total > _MAX_SKILL_BYTES:
-            raise ExtensionError(f"The skills in {where} are larger than 5 MB.")
+        rel = _skill_rel(folder, folders[folder], path)
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError as e:
-            raise ExtensionError(f"{path} is not a text file. A skill's files are text.") from e
-        rel = path if folder == "." else path[len(folder) + 1:]
+            if rel == "SKILL.md":
+                raise ExtensionError(f"{path} is not a text file.") from e
+            skipped.append(path)
+            continue
+        total += len(data)
+        if total > _MAX_SKILL_BYTES:
+            raise ExtensionError(f"The skills in {where} are larger than 5 MB.")
         skills[folder][rel] = text
-    return list(skills.values())
+    return list(skills.values()), skipped

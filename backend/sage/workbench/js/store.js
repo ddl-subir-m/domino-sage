@@ -4892,6 +4892,17 @@ window.SW = window.SW || {};
     return carryingHowSageWorks(payload);
   }
 
+  // `source` is a git URL, `{ dataset, path }`, one zip or .md File, or an array of .md Files.
+  async function skillRequest(source, opts) {
+    if (typeof source === 'string') return SW.api.importSkills(source, opts);
+    if (Array.isArray(source)) {
+      const named = await Promise.all(source.map(async (f) => [f.name, await f.text()]));
+      return SW.api.uploadSkillFiles(Object.fromEntries(named), opts);
+    }
+    if (source && source.dataset) return SW.api.importSkillsFromDataset(source.dataset, source.path, opts);
+    return SW.api.uploadSkills(source, opts);
+  }
+
   const store = {
 
     get: () => state,
@@ -6056,17 +6067,22 @@ window.SW = window.SW || {};
     },
 
     // `source` is a File (a SKILL.md or a .zip), a git URL, or `{ dataset, path }`.
-    async addSkills(source, replaces) {
-      let read;
-      if (typeof source === 'string') read = await SW.api.importSkills(source, replaces);
-      else if (source && source.dataset) {
-        read = await SW.api.importSkillsFromDataset(source.dataset, source.path, replaces);
-      } else read = await SW.api.uploadSkills(source, replaces);
+    // What `source` holds, adding nothing: per skill folder, its name, description and files.
+    async previewSkills(source) {
+      return (await skillRequest(source, { preview: true })).found || [];
+    },
+
+    // `pick` names the skill folders to add, as `previewSkills` answered them; every one when unset.
+    async addSkills(source, replaces, pick) {
+      const read = await skillRequest(source, { replaces, pick });
       await store.loadExtensions();
       const names = (read.items || []).map((e) => e.name);
       antd.message.success(names.length === 1
         ? `Added the skill ${names[0]}. It reaches the next turn.`
         : `Added ${names.length} skills. They reach the next turn.`);
+      if ((read.skipped || []).length) {
+        antd.message.warning(`Left out ${read.skipped.join(', ')}: a skill's files are text.`);
+      }
       return read.items || [];
     },
 

@@ -24,7 +24,7 @@ import signal
 import threading
 import time
 from mimetypes import guess_type
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -2115,48 +2115,81 @@ def list_project_extensions(thread: str = "", app: str = "") -> JSONResponse:
         "builtinSections": [{"name": name} for name in project_extensions.BUILTIN_SECTIONS]})
 
 
+def _skills_from(files: dict, where: str, *, preview: bool, pick: object, replaces: str,
+                 source: dict) -> JSONResponse:
+    """With `preview`, the skills `files` holds, adding none. Otherwise adds those in `pick`, every
+    one when it is None, and answers them with the files left out for not being text."""
+    if preview:
+        return JSONResponse(content={"found": project_extensions.found_skills(files, where)})
+    if pick is not None and not (isinstance(pick, list) and all(isinstance(p, str) for p in pick)):
+        raise project_extensions.ExtensionError("pick is a list of skill folders.")
+    skills, skipped = project_extensions.skills_in_files(files, where, pick)
+    items = orchestrator.add_skills(skills, replaces=replaces, source=source)
+    return JSONResponse(content={"items": items, "skipped": skipped})
+
+
 @control_app.post("/api/project/extensions/skills")
 async def upload_project_skills(request: Request) -> JSONResponse:
-    """A `SKILL.md`, or a zip of skill folders, as the raw body; `filename` and `replaces` ride in
-    the query, like `/api/project/upload`."""
+    """A skill `.md`, or a zip of skill folders, as the raw body; `filename`, `replaces`, `preview`
+    and each `pick` ride in the query, like `/api/project/upload`."""
+    query = request.query_params
+    filename = query.get("filename", "")
     try:
-        skills = project_extensions.skills_in_upload(request.query_params.get("filename", ""),
-                                                     await request.body())
-        items = orchestrator.add_skills(skills, replaces=request.query_params.get("replaces", ""),
-                                        source={"type": "upload"})
+        return _skills_from(project_extensions.upload_files(filename, await request.body()),
+                            filename, preview=query.get("preview") == "true",
+                            pick=query.getlist("pick") or None, replaces=query.get("replaces", ""),
+                            source={"type": "upload"})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
-    return JSONResponse(content={"items": items})
+
+
+@control_app.post("/api/project/extensions/skills/files")
+def upload_project_skill_files(body: dict) -> JSONResponse:
+    """Several `.md` files picked together, as `files`: their text by filename."""
+    body = body or {}
+    files = body.get("files")
+    try:
+        if not (isinstance(files, dict) and files and all(
+                isinstance(n, str) and n.lower().endswith(".md") and isinstance(t, str)
+                for n, t in files.items())):
+            raise project_extensions.ExtensionError("files is the text of each .md, by filename.")
+        named = {PurePosixPath(n).name: t.encode() for n, t in files.items()}
+        return _skills_from(project_extensions.md_files(named), "these files",
+                            preview=bool(body.get("preview")), pick=body.get("pick"),
+                            replaces=str(body.get("replaces") or ""), source={"type": "upload"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
 
 
 @control_app.post("/api/project/extensions/skills/dataset")
 def import_project_skills_from_dataset(body: dict) -> JSONResponse:
-    """`dataset`, and `path` inside it: a SKILL.md, a zip, or a folder of skills ("" is the root)."""
+    """`dataset`, and `path` inside it: a skill .md, a zip, or a folder of skills ("" is the
+    root)."""
     body = body or {}
     try:
-        items = orchestrator.add_skills_from_dataset(str(body.get("dataset") or ""),
-                                                     str(body.get("path") or ""),
-                                                     replaces=str(body.get("replaces") or ""))
+        with orchestrator.dataset_skill_files(str(body.get("dataset") or ""),
+                                              str(body.get("path") or "")) as (files, where, source):
+            return _skills_from(files, where, preview=bool(body.get("preview")),
+                                pick=body.get("pick"), replaces=str(body.get("replaces") or ""),
+                                source=source)
     except LookupError:
         return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
     except ResourceUnavailable as e:
         return JSONResponse(status_code=502, content={"error": str(e)})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
-    return JSONResponse(content={"items": items})
 
 
 @control_app.post("/api/project/extensions/skills/git")
 def import_project_skills(body: dict) -> JSONResponse:
     body = body or {}
     try:
-        skills, commit = project_extensions.skills_from_git(body.get("url"))
-        items = orchestrator.add_skills(skills, replaces=str(body.get("replaces") or ""),
-                                        source={"type": "git", "url": body["url"],
-                                                "commit": commit})
+        with project_extensions.git_files(body.get("url")) as (files, commit):
+            return _skills_from(files, body["url"], preview=bool(body.get("preview")),
+                                pick=body.get("pick"), replaces=str(body.get("replaces") or ""),
+                                source={"type": "git", "url": body["url"], "commit": commit})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
-    return JSONResponse(content={"items": items})
 
 
 @control_app.post("/api/project/extensions/tools")

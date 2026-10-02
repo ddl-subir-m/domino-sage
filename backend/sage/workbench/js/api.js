@@ -104,6 +104,8 @@ async function throughStartup(read, options = {}) {
 const post = (path, body) => request(path, { method: 'POST', body });
 const patch = (path, body) => request(path, { method: 'PATCH', body });
 const del = (path) => request(path, { method: 'DELETE' });
+const skillOptions = ({ replaces, preview, pick }) => ({
+  replaces: replaces || '', ...(preview ? { preview: true } : {}), ...(pick ? { pick } : {}) });
 
 function empty() {
   return Promise.resolve([]);
@@ -513,13 +515,20 @@ SW.api = {
   // The Project's own skills, tools and MCP servers (ADR-0071), each `enabled` for one Thread or App.
   extensions: ({ thread, app } = {}) =>
     request(`/project/extensions?${new URLSearchParams({ thread: thread || '', app: app || '' })}`),
-  uploadSkills: (file, replaces) =>
-    request(`/project/extensions/skills?${new URLSearchParams({
-      filename: file.name || '', replaces: replaces || '' })}`, { method: 'POST', body: file }),
-  importSkills: (url, replaces) =>
-    post('/project/extensions/skills/git', { url, replaces: replaces || '' }),
-  importSkillsFromDataset: (dataset, path, replaces) =>
-    post('/project/extensions/skills/dataset', { dataset, path, replaces: replaces || '' }),
+  // Each skill route takes `{ replaces, preview, pick }`: `preview` answers what it holds and adds
+  // nothing, and `pick` names the skill folders to add, every one when it is left out.
+  uploadSkills: (file, { replaces, preview, pick } = {}) => {
+    const query = new URLSearchParams({ filename: file.name || '', replaces: replaces || '' });
+    if (preview) query.set('preview', 'true');
+    (pick || []).forEach((folder) => query.append('pick', folder));
+    return request(`/project/extensions/skills?${query}`, { method: 'POST', body: file });
+  },
+  uploadSkillFiles: (files, opts = {}) =>
+    post('/project/extensions/skills/files', { files, ...skillOptions(opts) }),
+  importSkills: (url, opts = {}) =>
+    post('/project/extensions/skills/git', { url, ...skillOptions(opts) }),
+  importSkillsFromDataset: (dataset, path, opts = {}) =>
+    post('/project/extensions/skills/dataset', { dataset, path, ...skillOptions(opts) }),
   removeExtension: (id) => del(`/project/extensions/${encodeURIComponent(id)}`),
   setExtensionEnabled: (id, enabled, { thread, app } = {}) =>
     request(`/project/extensions/${encodeURIComponent(id)}/enabled`, {

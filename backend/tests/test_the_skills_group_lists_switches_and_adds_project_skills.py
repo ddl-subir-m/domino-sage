@@ -104,11 +104,26 @@ def test_each_way_in_reaches_its_route():
     assert dataset["body"] == {"dataset": "dataset:ds1", "path": "skills/house", "replaces": ""}
 
 
+def test_several_md_files_are_sent_as_their_text_for_a_preview():
+    [call] = _run("preview-md", hash="#/chat")["calls"]
+    assert call["url"] == "./api/project/extensions/skills/files"
+    assert call["body"] == {"files": {"house.md": "---\nname: house\n---\n", "colors.md": "Teal."},
+                            "replaces": "", "preview": True}
+
+
+def test_adding_sends_only_the_picked_skill_folders():
+    call = _run("add-pick", hash="#/chat")["calls"][0]
+    assert call["url"] == ("./api/project/extensions/skills?filename=pack.zip&replaces="
+                           "&pick=skills%2Fa&pick=skills%2Fb")
+
+
 def test_a_dataset_offers_each_skill_folder_and_each_zip():
     files = [{"path": p} for p in ("SKILL.md", "skills/house/SKILL.md", "skills/house/ref.md",
-                                   "packs/brand.ZIP", "data.csv", "notes/SKILL.md.bak")]
+                                   "packs/brand.ZIP", "data.csv", "notes/SKILL.md.bak",
+                                   "lower/skill.md")]
     assert _run("candidates", files=files)["candidates"] == [
         {"value": "", "label": "The whole dataset"},
+        {"value": "lower", "label": "lower/"},
         {"value": "packs/brand.ZIP", "label": "packs/brand.ZIP"},
         {"value": "skills/house", "label": "skills/house/"},
     ]
