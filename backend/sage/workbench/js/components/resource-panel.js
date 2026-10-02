@@ -644,7 +644,7 @@ window.SW = window.SW || {};
     // A switch answers for the open Conversation or the selected app, so the list is read again
     // whenever that changes.
     const extensionTarget = SW.store.extensionTarget();
-    const extensionWhere = extensionTarget.app ? 'app' : (extensionTarget.thread ? 'conversation' : '');
+    const extensionWhere = extensionTarget.app ? 'app' : (SW.router.get().mode === 'build' ? '' : 'conversation');
     const extensionKey = extensionTarget.app || extensionTarget.thread || '';
     useEffect(() => { SW.store.loadExtensions(); }, [extensionKey]);
 

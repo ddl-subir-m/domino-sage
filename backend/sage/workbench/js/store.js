@@ -6147,6 +6147,8 @@ window.SW = window.SW || {};
     },
 
     async setExtensionEnabled(ext, enabled) {
+      // A switch is intent, the same as `attach`: in Chat it opens the conversation it is for.
+      if (SW.router.get().mode !== 'build' && !conversationId()) await store.newThread();
       const target = store.extensionTarget();
       if (!target.app && !target.thread) return;
       try {

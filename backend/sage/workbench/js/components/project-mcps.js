@@ -18,7 +18,7 @@ window.SW = window.SW || {};
   };
   const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-  // `where` is what a switch answers for: 'conversation', 'app', or '' when neither exists yet.
+  // `where` is what a switch answers for: 'conversation', 'app', or '' in Build with no app picked.
   SW.McpRow = function McpRow({ server, where }) {
     const status = server.status || {};
     const said = STATUS[status.status] || status.status || STATUS.unknown;
@@ -27,7 +27,7 @@ window.SW = window.SW || {};
       server.source && server.source.type === 'git' ? 'From git' : '',
       `${tools.length} tool${tools.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
     const tip = !where
-      ? 'Start a conversation or pick an app to switch this off for it.'
+      ? 'Pick an app to switch this off for it.'
       : `${server.enabled ? 'On' : 'Off'} for this ${where}`;
     const menu = {
       items: [

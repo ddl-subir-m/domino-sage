@@ -9,13 +9,13 @@ window.SW = window.SW || {};
 
   const isPython = (tool) => (tool.files || []).some((f) => /\.py$/.test(f));
 
-  // `where` is what a switch answers for: 'conversation', 'app', or '' when neither exists yet.
+  // `where` is what a switch answers for: 'conversation', 'app', or '' in Build with no app picked.
   SW.ToolRow = function ToolRow({ tool, where }) {
     const subtitle = [isPython(tool) ? 'Python' : 'TypeScript', tool.readOnly ? 'Read-only' : '',
                       tool.source && tool.source.type === 'git' ? 'From git' : 'Uploaded']
       .filter(Boolean).join(' · ');
     const tip = !where
-      ? 'Start a conversation or pick an app to switch this off for it.'
+      ? 'Pick an app to switch this off for it.'
       : `${tool.enabled ? 'On' : 'Off'} for this ${where}`;
     return h(
       'div',
