@@ -120,5 +120,8 @@ manages.
   because the `skill` tool runs inside OpenCode, not in the shim.
 - Each local MCP server is one process per directory instance, so Chat plus N Built Apps can mean
   N+1 copies.
-- An Ask or plan turn can change files through a user tool that writes. Ask's "never builds"
-  holds for Sage's own tools only.
+- Offering a user tool on Ask and plan does not mean its writes are kept. A Build turn that is
+  gated or answer-only and changes the working tree is reverted and reported as a read-only
+  violation (`agent_wrote()` then `discard_changes()`, `backend/sage/orchestrator/service.py`). The
+  check reads the tree hash, not the tool name, so a user tool's write trips it like any other.
+  Read-only user tools work there; writing ones are undone. Changing that is a separate decision.
