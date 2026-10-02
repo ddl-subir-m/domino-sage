@@ -60,26 +60,30 @@ def test_a_group_with_rows_in_it_still_offers_a_way_in():
 
 
 def test_a_group_with_no_catalog_behind_it_offers_nothing():
-    """Skills and MCPs are placeholders until OpenCode config wires them, and Files come
-    from Upload rather than from the catalog at all.
+    """MCPs are a placeholder until OpenCode config wires them, and Files come from Upload rather
+    than from the catalog at all.
 
     A door onto a catalog that cannot answer is worse than no door: it is a dead end with a
     label on it.
 
-    Asked of a group that HOLDS something, which it could not be before: an empty placeholder group
-    is now simply absent (ADR-0035), and "no door" would pass on a group that was not drawn. The
-    fixture gives Skills a row so the group exists and the missing door is the placeholder rule.
+    Asked of a group that HOLDS something: an empty placeholder group is simply absent
+    (ADR-0035), and "no door" would pass on a group that was not drawn.
     """
     heads = _heads()
-    assert "Skills (1)" in heads, "the placeholder group was not drawn, so nothing was tested"
-    assert not heads["Skills (1)"]["hasAdd"]
-    # Files is the other kind of doorless group, and a new one: `openCatalog('file')` has nothing
-    # to open, because a file arrives by Upload.
+    # Files is a doorless group: `openCatalog('file')` has nothing to open, because a file
+    # arrives by Upload.
     assert not heads["Files (1)"]["hasAdd"]
     # And a group nobody has put anything in is not on screen to be asked.
     assert "MCPs (0)" not in heads
     # Agents are out of scope (ADR-0071), so the panel has no group for them at all.
     assert not any(label.startswith("Agents") for label in heads)
+
+
+def test_the_skills_door_adds_a_skill_rather_than_opening_the_catalog():
+    """Skills are the Project's own (ADR-0071, #620), so the door is the Add skill dialog."""
+    head = _heads()["Skills (1)"]
+    assert head["hasAdd"] and head["addIsButton"]
+    assert head["addLabel"] == "Add a skill"
 
 
 def test_the_door_is_a_real_button_that_says_what_it_does():

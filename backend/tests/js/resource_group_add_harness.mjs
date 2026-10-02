@@ -30,16 +30,13 @@ const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
 // anything any more — and the claim that mattered, a group with ROWS still offering the door, is
 // asked of three groups here instead of one.
 //
-// `skill` holds a row for the opposite reason: Skills is a `placeholder` group, and the rule that
-// it gets no door was previously only ever exercised on an empty group, which is now indis-
-// tinguishable from a group that is absent. With a row it is drawn, and the absence of the door is
-// the placeholder rule rather than the group being gone.
+// Skills are the Project's own (ADR-0071) and come from `state.extensions`, not from here; the
+// one below is set on the store after it loads.
 const GROUPS = {
   dataset: [{ id: 'dataset:d1', name: 'Sales rows', kind: 'dataset' }],
   datasource: [{ id: 'data_source:s1', name: 'Warehouse', kind: 'datasource' }],
   model_llm: [{ id: 'llm_alias:m1', name: 'Risk scorer', kind: 'model_llm', alias: 'risk-scorer' }],
   model_predictive: [{ id: 'model_api:p1', name: 'Churn risk', kind: 'model_predictive' }],
-  skill: [{ id: 'skill:s1', name: 'Desk skill', kind: 'skill' }],
   file: [{ id: 'file:.sage/scratch/notes.csv', name: 'notes.csv', kind: 'file',
            path: '.sage/scratch/notes.csv', source: 'scratch' }],
 };
@@ -83,6 +80,7 @@ const sandbox = {
     Input: Object.assign(function Input() {}, { TextArea: 'Input.TextArea' }),
     Button: 'Button', Dropdown: 'Dropdown', Tag: 'Tag', Tooltip: 'Tooltip', Space: 'Space',
     Drawer: 'Drawer', Skeleton: 'Skeleton', Empty: 'Empty', Checkbox: 'Checkbox', Alert: 'Alert',
+    Switch: 'Switch', Select: 'Select', Segmented: 'Segmented',
     Modal: Object.assign(function Modal() {}, { confirm: () => {}, info: () => {} }),
     message: { info: () => {}, success: () => {}, error: () => {}, warning: () => {} },
   },
@@ -94,14 +92,19 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 for (const f of ['util.js', 'prefs.js', 'router.js', 'store.js', 'api.js',
-                 'components/resource-tree.js', 'components/resource-panel.js']) {
+                 'components/resource-tree.js', 'components/resource-panel.js',
+                 'components/project-skills.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;
 
 // The listing has landed — `resourcesLoading` false — because a loading panel draws '…' for every
 // count and the empty branch says "Loading this project…", which is neither of the states here.
-SW.store.set({ resourceGroups: GROUPS, resourcesLoading: false, resourceErrors: {} });
+SW.store.set({
+  resourceGroups: GROUPS, resourcesLoading: false, resourceErrors: {},
+  extensions: { items: [{ id: 'skill:desk', kind: 'skill', name: 'desk', enabled: true }],
+                builtinSkills: [] },
+});
 
 function flatten(node, out = [], depth = 0) {
   if (!node || depth > 60) return out;

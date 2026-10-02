@@ -2104,9 +2104,57 @@ def unpin_project_resource(
 
 
 @control_app.get("/api/project/extensions")
-def list_project_extensions() -> JSONResponse:
-    """The Project's own skills, tools and MCP servers (ADR-0071)."""
-    return JSONResponse(content={"items": orchestrator.list_extensions()})
+def list_project_extensions(thread: str = "", app: str = "") -> JSONResponse:
+    """The Project's own skills, tools and MCP servers (ADR-0071), each `enabled` or not for the
+    Thread or Built App named, and the skills Sage ships, which a Project skill may replace."""
+    return JSONResponse(content={
+        "items": orchestrator.list_extensions(thread=thread, app=app),
+        "builtinSkills": [{"name": name, "description": description} for name, description
+                          in project_extensions.builtin_skills().items()]})
+
+
+@control_app.post("/api/project/extensions/skills")
+async def upload_project_skills(request: Request) -> JSONResponse:
+    """A `SKILL.md`, or a zip of skill folders, as the raw body; `filename` and `replaces` ride in
+    the query, like `/api/project/upload`."""
+    try:
+        skills = project_extensions.skills_in_upload(request.query_params.get("filename", ""),
+                                                     await request.body())
+        items = orchestrator.add_skills(skills, replaces=request.query_params.get("replaces", ""),
+                                        source={"type": "upload"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"items": items})
+
+
+@control_app.post("/api/project/extensions/skills/dataset")
+def import_project_skills_from_dataset(body: dict) -> JSONResponse:
+    """`dataset`, and `path` inside it: a SKILL.md, a zip, or a folder of skills ("" is the root)."""
+    body = body or {}
+    try:
+        items = orchestrator.add_skills_from_dataset(str(body.get("dataset") or ""),
+                                                     str(body.get("path") or ""),
+                                                     replaces=str(body.get("replaces") or ""))
+    except LookupError:
+        return JSONResponse(status_code=404, content={"error": brand_text("{dataset} not found")})
+    except ResourceUnavailable as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"items": items})
+
+
+@control_app.post("/api/project/extensions/skills/git")
+def import_project_skills(body: dict) -> JSONResponse:
+    body = body or {}
+    try:
+        skills, commit = project_extensions.skills_from_git(body.get("url"))
+        items = orchestrator.add_skills(skills, replaces=str(body.get("replaces") or ""),
+                                        source={"type": "git", "url": body["url"],
+                                                "commit": commit})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"items": items})
 
 
 @control_app.post("/api/project/extensions")
@@ -5431,17 +5479,11 @@ def _skill_description(skill_md: Path) -> str:
     a closing `---` with nothing after it both read too, because a false alarm about a file that is
     fine is a witness not worth having.
     """
-    import re
-
     try:
         text = skill_md.read_text()
     except OSError:
         return ""
-    front = re.match(r"^---\r?\n(.*?)\r?\n---[ \t]*(\r?\n|\Z)", text, re.DOTALL)
-    if not front:
-        return ""
-    found = re.search(r"^description:[ \t]*(.*(?:\n[ \t]+\S.*)*)$", front.group(1), re.MULTILINE)
-    return found.group(1).strip().strip("\"'") if found else ""
+    return project_extensions.skill_description(text)
 
 
 def _release_boot_page(host: str, port: int) -> None:

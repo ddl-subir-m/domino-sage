@@ -221,6 +221,9 @@ window.SW = window.SW || {};
     // other (ADR-0008).
     apps: [],
     activeApp: null,
+    // The Project's own extensions (ADR-0071), `enabled` as read for `extensionScope`.
+    extensions: { items: [], builtinSkills: [] },
+    extensionScope: '',
     selectingAppId: null,
     activePlanId: null,
     activePlan: null,
@@ -6021,6 +6024,76 @@ window.SW = window.SW || {};
             );
             await refreshWorkingSet();
             antd.message.info(`${resource.name} is out of ${scopeName}.`);
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+
+    // Which record a switch in the Skills group writes to: the open Conversation in Chat, the
+    // selected Built App in Build. Empty before either exists, when the switches show defaults.
+    extensionTarget() {
+      if (SW.router.get().mode === 'build') {
+        return state.activeApp ? { app: state.activeApp.id } : {};
+      }
+      return state.thread ? { thread: state.thread.id } : {};
+    },
+
+    async loadExtensions() {
+      const target = store.extensionTarget();
+      const scope = target.app ? `app:${target.app}` : (target.thread ? `thread:${target.thread}` : '');
+      state.extensionScope = scope;
+      try {
+        const read = await SW.api.extensions(target);
+        if (state.extensionScope !== scope) return;
+        state.extensions = { items: read.items || [], builtinSkills: read.builtinSkills || [] };
+      } catch (err) {
+        return;
+      }
+      notify();
+    },
+
+    // `source` is a File (a SKILL.md or a .zip), a git URL, or `{ dataset, path }`.
+    async addSkills(source, replaces) {
+      let read;
+      if (typeof source === 'string') read = await SW.api.importSkills(source, replaces);
+      else if (source && source.dataset) {
+        read = await SW.api.importSkillsFromDataset(source.dataset, source.path, replaces);
+      } else read = await SW.api.uploadSkills(source, replaces);
+      await store.loadExtensions();
+      const names = (read.items || []).map((e) => e.name);
+      antd.message.success(names.length === 1
+        ? `Added the skill ${names[0]}. It reaches the next turn.`
+        : `Added ${names.length} skills. They reach the next turn.`);
+      return read.items || [];
+    },
+
+    async setExtensionEnabled(ext, enabled) {
+      const target = store.extensionTarget();
+      if (!target.app && !target.thread) return;
+      try {
+        await SW.api.setExtensionEnabled(ext.id, enabled, target);
+      } catch (err) {
+        antd.message.error(err.message);
+      }
+      await store.loadExtensions();
+    },
+
+    async removeExtension(ext) {
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Remove ${ext.name}?`,
+          content: 'Removes it from this project for everyone, in every conversation and app.',
+          okText: 'Remove',
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            try {
+              await SW.api.removeExtension(ext.id);
+            } catch (err) {
+              antd.message.error(err.message);
+            }
+            await store.loadExtensions();
             resolve(true);
           },
           onCancel: () => resolve(false),

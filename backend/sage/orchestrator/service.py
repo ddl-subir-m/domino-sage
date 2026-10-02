@@ -26254,14 +26254,62 @@ class Orchestrator:
 
     # ---- the Project's own skills, tools and MCP servers (ADR-0071) ------------------------------
 
-    def list_extensions(self) -> list[dict]:
-        return project_extensions.list_extensions(self._chat_project().record.path)
+    def list_extensions(self, *, thread: str = "", app: str = "") -> list[dict]:
+        """Every extension, each `enabled` for the Thread or App named, or by default for neither."""
+        root = self._chat_project().record.path
+        overrides: dict = {}
+        if thread:
+            overrides = (ThreadStore(root).get(thread) or {}).get("extensions") or {}
+        elif app and app in self._wm.app_ids():
+            overrides = self._wm.app_workspace(self._project_id, app).extension_overrides()
+        items = project_extensions.list_extensions(root)
+        off = project_extensions.disabled(items, overrides)
+        return [{**e, "enabled": e["id"] not in off} for e in items]
 
     def add_extension(self, body: dict) -> dict:
         """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
         entry = project_extensions.add(self._chat_project().record.path, body)
         self._reload_extensions()
         return entry
+
+    def add_skills(self, skills: list[dict], *, replaces: str, source: dict) -> list[dict]:
+        """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
+        entries = project_extensions.add_skills(self._chat_project().record.path, skills,
+                                                replaces=replaces, source=source)
+        self._reload_extensions()
+        return entries
+
+    def add_skills_from_dataset(self, dataset_id: str, path: str, *, replaces: str) -> list[dict]:
+        """Copy the skills at `path` in a Dataset: a SKILL.md, a zip, or a folder ("" is the root)
+        holding one or more skill folders. A copy, like an upload: a later change to the Dataset
+        does not reach the Project until the skill is added again.
+
+        Raises LookupError for an unknown Dataset, `ResourceUnavailable` when it cannot be read, and
+        `ExtensionError` for anything the person has to change."""
+        asset = self._find_asset(dataset_id)
+        listing = self._assets.list_files(asset)
+        known = {f.path for f in listing.files}
+        path = str(path or "").strip("/")
+        with tempfile.TemporaryDirectory() as tmp:
+            def read(rel: str) -> bytes:
+                dest = Path(tmp) / "file"
+                self._assets.download_file(asset, rel, dest)
+                return dest.read_bytes()
+
+            if path in known:
+                skills = project_extensions.skills_in_upload(path, read(path))
+            else:
+                if listing.truncated:
+                    raise project_extensions.ExtensionError(
+                        f"{asset.name} is too large to list whole, so a folder in it may be "
+                        "incomplete. Pick its SKILL.md or a zip instead.")
+                prefix = f"{path}/" if path else ""
+                skills = project_extensions.skills_in_files(
+                    {rel[len(prefix):]: (lambda rel=rel: read(rel))
+                     for rel in sorted(known) if rel.startswith(prefix)},
+                    f"{asset.name}/{path}" if path else asset.name)
+        return self.add_skills(skills, replaces=replaces, source={
+            "type": "dataset", "dataset": asset.id, "name": asset.name, "path": path})
 
     def remove_extension(self, ext_id: str) -> bool:
         removed = project_extensions.remove(self._chat_project().record.path, ext_id)

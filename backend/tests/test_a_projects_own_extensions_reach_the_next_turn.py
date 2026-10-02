@@ -168,7 +168,9 @@ def test_every_enabled_extension_tool_reaches_an_ordinary_turn(tmp_path):
     control.set_extensions(_catalog(tmp_path))
     names, sent = _sent(control)
     assert names == list(OFFERED)
-    assert sent["messages"][0]["content"] == SYSTEM
+    # Every skill still listed; the line after the block is #620's "Sage's instructions win".
+    assert sent["messages"][0]["content"].startswith(SYSTEM.rstrip("\n"))
+    assert "This Project added these skills: alpha, beta." in sent["messages"][0]["content"]
 
 
 def test_a_switched_off_tool_or_server_is_not_offered(tmp_path):

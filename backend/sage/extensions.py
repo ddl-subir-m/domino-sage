@@ -7,10 +7,16 @@ which files it owns, and which of its tools are read-only. The shim reads the ma
 """
 from __future__ import annotations
 
+import io
 import json
+import os
 import re
 import shutil
+import subprocess
+import tempfile
 import threading
+import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -29,10 +35,14 @@ _BUILTIN_TOOLS = frozenset({
     "todoread", "webfetch", "websearch", "codesearch", "skill", "question", "lsp", "batch",
     "invalid", "live_read", "artifact_write", "delegated_model_call",
 }) | READ_TOOLS | WRITE_TOOLS | SHELL_TOOLS | TODO_TOOLS | WEB_TOOLS
-# The skills Sage ships (`template/skills`, and each stack's `.opencode/skills`).
-_BUILTIN_SKILLS = frozenset({"data-table", "investigate-weak-signals"})
+_REPO = Path(__file__).resolve().parents[2]
+# Where the skills Sage ships live: installed globally, or seeded into each Built App.
+_BUILTIN_SKILL_GLOBS = ("template/skills/*/SKILL.md", "template/*/.opencode/skills/*/SKILL.md")
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 _FRONTMATTER_NAME = re.compile(r"\A---\s*\n(?:.*\n)*?name:\s*['\"]?([^'\"\n]*?)['\"]?\s*\n")
+# What one upload or git import may bring in, across every skill it holds.
+_MAX_SKILL_BYTES = 5 * 1024 * 1024
+_MAX_SKILL_FILES = 200
 _LOCK = threading.Lock()
 
 
@@ -57,6 +67,8 @@ class ExtensionCatalog:
     tools: dict[str, ToolOwner] = field(default_factory=dict)
     prefixes: dict[str, str] = field(default_factory=dict)
     skills: dict[str, str] = field(default_factory=dict)
+    # Built-in skill name -> the id of the Project skill that replaces it while enabled.
+    replaced: dict[str, str] = field(default_factory=dict)
 
     def owner(self, tool_name: str) -> ToolOwner | None:
         name = tool_name.lower()
@@ -78,10 +90,13 @@ def catalog_of(entries: list[dict]) -> ExtensionCatalog:
     tools: dict[str, ToolOwner] = {}
     prefixes: dict[str, str] = {}
     skills: dict[str, str] = {}
+    replaced: dict[str, str] = {}
     for entry in entries:
         ext_id, name = entry["id"], entry["name"]
         if entry["kind"] == "skill":
             skills[name] = ext_id
+            if isinstance(entry.get("replaces"), str) and entry["replaces"]:
+                replaced[entry["replaces"]] = ext_id
         elif entry["kind"] == "tool":
             tools[name] = ToolOwner(ext_id, bool(entry.get("readOnly")))
             prefixes[name + "_"] = ext_id
@@ -89,7 +104,43 @@ def catalog_of(entries: list[dict]) -> ExtensionCatalog:
             prefixes[name + "_"] = ext_id
             for tool, read_only in (entry.get("tools") or {}).items():
                 tools[f"{name}_{tool}".lower()] = ToolOwner(ext_id, bool(read_only))
-    return ExtensionCatalog(tools, prefixes, skills)
+    return ExtensionCatalog(tools, prefixes, skills, replaced)
+
+
+def skill_description(text: str) -> str:
+    """The frontmatter `description` of a SKILL.md's text, or "" when there is none.
+
+    The one field OpenCode filters on. Read with a regex rather than a YAML parser because there is
+    no YAML dependency declared in `backend/pyproject.toml`. A block indicator (`>`/`|`) counts as
+    present, as do the indented lines of a plain multi-line scalar; CRLF and a closing `---` with
+    nothing after it both read too.
+    """
+    front = re.match(r"^---\r?\n(.*?)\r?\n---[ \t]*(\r?\n|\Z)", text, re.DOTALL)
+    if not front:
+        return ""
+    found = re.search(r"^description:[ \t]*(.*(?:\n[ \t]+\S.*)*)$", front.group(1), re.MULTILINE)
+    return found.group(1).strip().strip("\"'") if found else ""
+
+
+def _frontmatter_name(text: str) -> str:
+    declared = _FRONTMATTER_NAME.match(text)
+    return declared.group(1).strip() if declared else ""
+
+
+def builtin_skills(repo: Path | None = None) -> dict[str, str]:
+    """The skills Sage ships, by the name OpenCode gives them, with their descriptions.
+
+    Read from the template rather than listed, so a skill Sage adds is reserved and replaceable
+    without an edit here. Measured on OpenCode 1.18.4 (#620): when two skills share a name, Sage's
+    copy is the one offered, from the global slot and from an app's own `.opencode/` alike.
+    """
+    found: dict[str, str] = {}
+    for pattern in _BUILTIN_SKILL_GLOBS:
+        for skill_md in sorted((repo or _REPO).glob(pattern)):
+            text = skill_md.read_text(errors="replace")
+            found.setdefault(_frontmatter_name(text) or skill_md.parent.name,
+                             skill_description(text))
+    return found
 
 
 def read_manifest(root: Path) -> list[dict]:
@@ -103,7 +154,9 @@ def read_manifest(root: Path) -> list[dict]:
 
 
 def load_catalog(root: Path) -> ExtensionCatalog:
-    return catalog_of(read_manifest(root))
+    """Without shadowed skills: the entry OpenCode offers under that name is Sage's, so switching
+    the Project's off must not hide it, nor may it be described as the Project's."""
+    return catalog_of([e for e in list_extensions(root) if not e.get("shadowed")])
 
 
 def disabled(entries: list[dict], overrides: dict) -> frozenset[str]:
@@ -132,8 +185,9 @@ def _check_name(name: object, kind: str, entries: list[dict]) -> str:
         raise ExtensionError(f"'{name}' starts with 'sage-' or 'sage_', which Sage keeps for its own.")
     if kind != "skill" and name in _BUILTIN_TOOLS:
         raise ExtensionError(f"'{name}' is the name of a built-in tool.")
-    if kind == "skill" and name in _BUILTIN_SKILLS:
-        raise ExtensionError(f"'{name}' is the name of a skill Sage ships.")
+    if kind == "skill" and name in builtin_skills():
+        raise ExtensionError(f"'{name}' is the name of a skill Sage ships. Rename yours, or keep "
+                             f"the name you like and choose 'Replaces {name}'.")
     for entry in entries:
         other = entry["name"]
         if entry["kind"] == kind == "skill" and other == name:
@@ -155,7 +209,11 @@ def _relative(path: object) -> PurePosixPath:
 
 
 def list_extensions(root: Path) -> list[dict]:
-    return read_manifest(root)
+    """The manifest, with each skill that a skill Sage ships has since taken the name of marked
+    `shadowed`: OpenCode offers Sage's copy, so the Project's is never seen until renamed."""
+    builtins = builtin_skills()
+    return [{**e, "shadowed": True} if e["kind"] == "skill" and e["name"] in builtins else e
+            for e in read_manifest(root)]
 
 
 def add(root: Path, body: dict) -> dict:
@@ -164,15 +222,28 @@ def add(root: Path, body: dict) -> dict:
     kind = body.get("kind")
     if kind not in KINDS:
         raise ExtensionError("kind is one of: skill, tool, mcp.")
+    name = body.get("name")
+    files = body.get("files")
+    if kind == "skill" and name is None and isinstance(files, dict) \
+            and isinstance(files.get("SKILL.md"), str):
+        name = _frontmatter_name(files["SKILL.md"]) or None
     with _LOCK:
         entries = read_manifest(root)
-        name = _check_name(body.get("name"), kind, entries)
+        name = _check_name(name, kind, entries)
         entry: dict = {"id": f"{kind}:{name}", "kind": kind, "name": name,
                        "source": body.get("source") if isinstance(body.get("source"), dict)
                        else {"type": "upload"},
                        "defaultEnabled": True}
+        replaces = body.get("replaces") or ""
+        if replaces:
+            if kind != "skill" or replaces not in builtin_skills():
+                raise ExtensionError(f"'{replaces}' is not a skill Sage ships.")
+            holder = next((e for e in entries if e.get("replaces") == replaces), None)
+            if holder:
+                raise ExtensionError(f"'{holder['name']}' already replaces '{replaces}'.")
+            entry["replaces"] = replaces
         if kind == "skill":
-            entry["files"] = _write_skill(root, name, body.get("files"))
+            entry["files"] = _write_skill(root, name, files)
         elif kind == "tool":
             entry["files"] = _write_tool(root, name, body.get("code"))
             entry["readOnly"] = bool(body.get("readOnly"))
@@ -216,9 +287,11 @@ def _write_skill(root: Path, name: str, files: object) -> list[str]:
         raise ExtensionError("A skill needs a SKILL.md.")
     # OpenCode names a skill from its frontmatter, so a different name there would get past the
     # checks on `name`.
-    declared = _FRONTMATTER_NAME.match(files["SKILL.md"])
-    if not declared or declared.group(1).strip() != name:
+    if _frontmatter_name(files["SKILL.md"]) != name:
         raise ExtensionError(f"SKILL.md's frontmatter must say 'name: {name}'.")
+    if not skill_description(files["SKILL.md"]):
+        raise ExtensionError(f"'{name}' has no description in its SKILL.md frontmatter. OpenCode "
+                             "loads a skill without one and never offers it to the model.")
     paths = {_relative(p): text for p, text in files.items()}
     if not all(isinstance(text, str) for text in paths.values()):
         raise ExtensionError("Every skill file is text.")
@@ -271,3 +344,88 @@ def _write_mcp(root: Path, name: str, config: object) -> None:
         raise ExtensionError(f"{MCP_CONFIG} already declares '{name}' and it is not Sage's.")
     servers[name] = config
     _write_json(root / MCP_CONFIG, current)
+
+
+def add_skills(root: Path, skills: list[dict[str, str]], *, replaces: str = "",
+               source: dict | None = None) -> list[dict]:
+    """Add every skill one upload or import holds, or none of them."""
+    if replaces and len(skills) != 1:
+        raise ExtensionError(f"This holds {len(skills)} skills. Only one can replace '{replaces}'.")
+    added: list[dict] = []
+    try:
+        for files in skills:
+            added.append(add(root, {"kind": "skill", "files": files, "replaces": replaces,
+                                    "source": source or {"type": "upload"}}))
+    except ExtensionError:
+        for entry in added:
+            remove(root, entry["id"])
+        raise
+    return added
+
+
+def skills_in_upload(filename: str, data: bytes) -> list[dict[str, str]]:
+    """The skills in an uploaded `SKILL.md`, or in a zip of one or more skill folders."""
+    lowered = filename.lower()
+    if lowered.endswith(".md"):
+        return skills_in_files({"SKILL.md": lambda: data}, filename)
+    if not lowered.endswith(".zip"):
+        raise ExtensionError("Upload a SKILL.md, or a .zip of a skill folder.")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as e:
+        raise ExtensionError(f"{filename} is not a zip file.") from e
+    return skills_in_files({info.filename: (lambda info=info: archive.read(info))
+                           for info in archive.infolist() if not info.is_dir()}, filename)
+
+
+def skills_from_git(url: object) -> tuple[list[dict[str, str]], str]:
+    """Clone `url` and answer the skill folders in it, with the commit they were read at."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise ExtensionError("A git URL starts with https://.")
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            subprocess.run(["git", "clone", "--depth", "1", "--quiet", "--", url, tmp],
+                           check=True, capture_output=True, text=True, timeout=120, env=env)
+        except subprocess.TimeoutExpired as e:
+            raise ExtensionError(f"Cloning {url} took longer than two minutes.") from e
+        except subprocess.CalledProcessError as e:
+            said = (e.stderr or "").strip().splitlines()
+            raise ExtensionError(f"git could not clone {url}: {said[-1] if said else e}") from e
+        commit = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"], capture_output=True,
+                                text=True, check=True, env=env).stdout.strip()
+        base = Path(tmp)
+        files = {p.relative_to(base).as_posix(): p.read_bytes for p in sorted(base.rglob("*"))
+                 if p.is_file() and ".git" not in p.relative_to(base).parts}
+        return skills_in_files(files, url), commit
+
+
+def skills_in_files(files: dict[str, Callable[[], bytes]], where: str) -> list[dict[str, str]]:
+    """Each folder holding a SKILL.md, as a map of its files by path inside it."""
+    paths = [p for p in files if not p.startswith("__MACOSX/")]
+    folders = sorted({str(PurePosixPath(p).parent) for p in paths
+                      if PurePosixPath(p).name == "SKILL.md"})
+    if not folders:
+        raise ExtensionError(f"There is no SKILL.md in {where}.")
+    deepest_first = sorted(folders, key=len, reverse=True)
+
+    def owner(path: str) -> str | None:
+        return next((f for f in deepest_first if f == "." or path.startswith(f + "/")), None)
+
+    chosen = [(folder, p) for p in paths if (folder := owner(p))]
+    if len(chosen) > _MAX_SKILL_FILES:
+        raise ExtensionError(f"{where} holds more than {_MAX_SKILL_FILES} skill files.")
+    skills: dict[str, dict[str, str]] = {folder: {} for folder in folders}
+    total = 0
+    for folder, path in chosen:
+        data = files[path]()
+        total += len(data)
+        if total > _MAX_SKILL_BYTES:
+            raise ExtensionError(f"The skills in {where} are larger than 5 MB.")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise ExtensionError(f"{path} is not a text file. A skill's files are text.") from e
+        rel = path if folder == "." else path[len(folder) + 1:]
+        skills[folder][rel] = text
+    return list(skills.values())
