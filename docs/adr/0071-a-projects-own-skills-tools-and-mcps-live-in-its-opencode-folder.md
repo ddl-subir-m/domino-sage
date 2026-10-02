@@ -91,8 +91,33 @@ once per directory instance and does not watch the files. After any add or remov
 no turn holds that Project's turn lock.
 
 **Names are checked at the door.** The `sage-` and `sage_` prefixes are reserved, and so are the
-names of built-in tools. A user MCP named `sage-live-read` would otherwise replace Live read in
-the merged config.
+names of built-in tools and skills. A user MCP named `sage-live-read` would otherwise replace Live
+read in the merged config. The built-in skill names are read from what Sage ships
+(`template/skills/*` and each stack's `.opencode/skills/*`), not from a list kept by hand, so a
+skill added to Sage later is reserved without anyone remembering to.
+
+**A user extension overlapping a built-in adds to it unless it says it replaces it.** Sage's
+built-ins come in two shapes: skills, which reach the model the same way a user's do, and the
+always-on sections of the app's `AGENTS.md` (`design`, `platform`), which are in every turn they
+apply to. A user skill with a different name but the same purpose (a company design system, a
+house table component) would otherwise sit beside the built-in with nothing saying which wins,
+and the model picks one, both or neither from turn to turn.
+
+- **By default it adds.** User skills are framed like the Project's standing instructions: on a
+  conflict, Sage's rules win.
+- **A skill may declare `replaces: <built-in>`**, chosen on upload from the derived list of
+  built-ins and recorded in the manifest. While the replacing skill is enabled for a turn, the
+  built-in is hidden: a replaced skill is stripped from `available_skills` by the same shim path
+  as a switched-off one, and a replaced section is dropped by the implement-section chooser
+  (`choose_instruction_sections`, `backend/sage/implementation_request.py`). Switching the user's
+  skill off brings the built-in back.
+- **A replaceable section keeps a core that cannot be replaced.** For `design` that is the theme
+  variables and the Inter `@font-face`: breaking them breaks light and dark mode and the font, not
+  only the look. The section is split into a replaceable style part and an always-on guardrail.
+
+**A built-in that arrives after a user's skill of the same name does not take it over.** When a
+Sage release ships a skill whose name a Project already uses, the Project's skill wins there and
+the panel says it shadows the built-in. Neither copy overwrites the other on re-seed.
 
 ## Measured (OpenCode 1.18.4, isolated config home, 2026-10-02)
 
@@ -124,6 +149,17 @@ who wrote one function to write a server.
 
 **Storing credentials in Sage.** It would make Sage a secret store for a value Domino already
 manages.
+
+**Leave overlaps to the model.** It costs nothing, and the result changes from turn to turn: an
+always-on section is in every prompt while a skill loads only if the model asks for it, so the
+built-in usually wins and sometimes blends with the user's.
+
+**Guess the overlap from the skill's text.** Matching a description against "design system" is
+the kind of scanner that cannot tell a skill about design from one that mentions it. The person
+knows what their skill replaces; the upload asks.
+
+**A new built-in wins over an existing user skill of the same name.** It silently changes a
+Project that worked yesterday, on an upgrade the person did not choose.
 
 ## Consequences
 
