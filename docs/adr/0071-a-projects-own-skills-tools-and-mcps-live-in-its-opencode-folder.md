@@ -53,10 +53,23 @@ container. It means such code can reach the control port and read the process en
 **On by default, toggled per Thread and per Built App.** A new extension is enabled for new
 Threads and Apps. A person can switch any one off for a Thread or an App.
 
-**Every lane gets what is enabled, read-only ones included.** Ask and plan turns are offered the
-enabled user tools and MCP tools like any other turn. `READ_ONLY_DENIED` keeps stripping Sage's own
-write and shell tools there; it does not reach a person's extensions, even one that writes, because
-attaching it is the person's say-so.
+**Read-only turns get the enabled tools that are marked read-only.** Every user tool and MCP tool
+carries a `readOnly` flag in the manifest. An MCP tool's comes from its `readOnlyHint` annotation,
+read by Sage when the server is added; a custom tool's from its spec (`readOnly` in a Python
+`SPEC`, or set on upload for TypeScript). The person can override either in the panel. Ask and plan
+turns (Build's gated and answer-only turns) are offered only enabled tools marked read-only; every
+other turn is offered every enabled tool. `READ_ONLY_DENIED` keeps stripping Sage's own write and
+shell tools as before.
+
+The flag is self-declared, which fits trusting user code. The existing revert stays as the
+backstop: a Build turn that is gated or answer-only and changes the app's tree is reverted and
+reported (`agent_wrote()` then `discard_changes()`, `backend/sage/orchestrator/service.py`). That
+check reads the tree hash, not the tool name, so a mislabelled tool trips it like any other write.
+When a user tool ran on that turn, the message names it rather than blaming "the agent".
+
+**Chat stays confined to its Thread's folders.** Every Chat turn already undoes workspace writes
+outside `examples/<thread>/`, `.sage/threads/<thread>/` and `.sage/scratch/<thread>/`
+(`revert_denied_writes`, `backend/sage/workspace/threads.py`). User tools get no exemption.
 
 **User-defined agents are out of scope.** No agent extension kind, and nothing on screen for one:
 the resources panel's Agents placeholder and the catalog's Agents filter are removed.
@@ -120,8 +133,15 @@ manages.
   because the `skill` tool runs inside OpenCode, not in the shim.
 - Each local MCP server is one process per directory instance, so Chat plus N Built Apps can mean
   N+1 copies.
-- Offering a user tool on Ask and plan does not mean its writes are kept. A Build turn that is
-  gated or answer-only and changes the working tree is reverted and reported as a read-only
-  violation (`agent_wrote()` then `discard_changes()`, `backend/sage/orchestrator/service.py`). The
-  check reads the tree hash, not the tool name, so a user tool's write trips it like any other.
-  Read-only user tools work there; writing ones are undone. Changing that is a separate decision.
+- Neither revert reaches what a tool does outside the tree it scans: an API call, a database
+  write, a message sent, or a file on a Dataset mount, in `/tmp` or gitignored. "Read-only" for a
+  user tool means its flag, and nothing Sage checks.
+
+## Rejected (read-only turns)
+
+**Offer every enabled tool and let the revert catch it.** A writing tool then fails the turn, with
+a message blaming the agent, and its effects outside the tree happen anyway.
+
+**Keep file writes a user tool made.** It needs a tree hash around every user tool call, gets
+ambiguous when the model runs tools in parallel, and changes Ask from "never builds" to "Sage never
+builds, your tools might".
