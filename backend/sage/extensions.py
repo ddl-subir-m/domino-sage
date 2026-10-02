@@ -664,11 +664,12 @@ def add_tools(root: Path, tools: list[dict], *, read_only: bool = False,
 
 
 def _skill_folders(files: dict[str, Callable[[], bytes]], where: str) -> dict[str, list[str]]:
-    """Each folder holding a SKILL.md, with the paths of the files it owns. Anything outside every
-    such folder is not a skill's, and a file in nested ones belongs to the deepest."""
+    """Each folder holding a SKILL.md, in any case, with the paths of the files it owns: that
+    SKILL.md first. Anything outside every such folder is not a skill's, and a file in nested ones
+    belongs to the deepest."""
     paths = [p for p in files if not p.startswith("__MACOSX/")]
-    folders = sorted({str(PurePosixPath(p).parent) for p in paths
-                      if PurePosixPath(p).name == "SKILL.md"})
+    markers = [p for p in paths if PurePosixPath(p).name.lower() == "skill.md"]
+    folders = sorted({str(PurePosixPath(p).parent) for p in markers})
     if not folders:
         raise ExtensionError(f"There is no SKILL.md in {where}.")
     deepest_first = sorted(folders, key=len, reverse=True)
@@ -677,6 +678,12 @@ def _skill_folders(files: dict[str, Callable[[], bytes]], where: str) -> dict[st
         folder = next((f for f in deepest_first if f == "." or path.startswith(f + "/")), None)
         if folder:
             owned[folder].append(path)
+    for folder in folders:
+        mine = [p for p in markers if str(PurePosixPath(p).parent) == folder]
+        if len(mine) > 1:
+            raise ExtensionError(f"{' and '.join(mine)} are the same file to OpenCode. Keep one.")
+        owned[folder].remove(mine[0])
+        owned[folder].insert(0, mine[0])
     return owned
 
 
@@ -684,16 +691,21 @@ def _inside(folder: str, path: str) -> str:
     return path if folder == "." else path[len(folder) + 1:]
 
 
+def _skill_rel(folder: str, paths: list[str], path: str) -> str:
+    """`path`'s place in its skill. The SKILL.md is written as OpenCode spells it, whatever case it
+    came in, because OpenCode loads only that spelling."""
+    return "SKILL.md" if path == paths[0] else _inside(folder, path)
+
+
 def found_skills(files: dict[str, Callable[[], bytes]], where: str) -> list[dict]:
     """What `skills_in_files` could add, read from each SKILL.md alone: per folder, the skill's
     name, its description, and its files."""
     found = []
     for folder, paths in _skill_folders(files, where).items():
-        skill_md = "SKILL.md" if folder == "." else f"{folder}/SKILL.md"
-        text = files[skill_md]().decode("utf-8", "replace")
+        text = files[paths[0]]().decode("utf-8", "replace")
         found.append({"folder": folder, "name": _frontmatter_name(text),
                       "description": skill_description(text),
-                      "files": [_inside(folder, p) for p in paths]})
+                      "files": [_skill_rel(folder, paths, p) for p in paths]})
     return found
 
 
@@ -717,15 +729,16 @@ def skills_in_files(files: dict[str, Callable[[], bytes]], where: str,
     total = 0
     for folder, path in chosen:
         data = files[path]()
+        rel = _skill_rel(folder, folders[folder], path)
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError as e:
-            if PurePosixPath(path).name == "SKILL.md":
+            if rel == "SKILL.md":
                 raise ExtensionError(f"{path} is not a text file.") from e
             skipped.append(path)
             continue
         total += len(data)
         if total > _MAX_SKILL_BYTES:
             raise ExtensionError(f"The skills in {where} are larger than 5 MB.")
-        skills[folder][_inside(folder, path)] = text
+        skills[folder][rel] = text
     return list(skills.values()), skipped

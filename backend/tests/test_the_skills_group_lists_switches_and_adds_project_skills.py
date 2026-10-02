@@ -119,9 +119,11 @@ def test_adding_sends_only_the_picked_skill_folders():
 
 def test_a_dataset_offers_each_skill_folder_and_each_zip():
     files = [{"path": p} for p in ("SKILL.md", "skills/house/SKILL.md", "skills/house/ref.md",
-                                   "packs/brand.ZIP", "data.csv", "notes/SKILL.md.bak")]
+                                   "packs/brand.ZIP", "data.csv", "notes/SKILL.md.bak",
+                                   "lower/skill.md")]
     assert _run("candidates", files=files)["candidates"] == [
         {"value": "", "label": "The whole dataset"},
+        {"value": "lower", "label": "lower/"},
         {"value": "packs/brand.ZIP", "label": "packs/brand.ZIP"},
         {"value": "skills/house", "label": "skills/house/"},
     ]

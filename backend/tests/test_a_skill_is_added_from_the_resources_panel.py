@@ -243,6 +243,24 @@ def test_only_the_picked_skills_are_added_and_a_binary_file_is_left_out(tmp_path
                               ".opencode/skills/house/ref/colors.md"]
 
 
+def test_a_skill_md_in_any_case_is_a_skill_and_is_written_as_opencode_spells_it(tmp_path):
+    files = extensions.upload_files("pack.zip", _zip({
+        "a/skill.md": _md("a"), "a/ref.md": "R", "b/Skill.MD": _md("b")}))
+    assert [s["files"] for s in extensions.found_skills(files, "pack.zip")] == [
+        ["SKILL.md", "ref.md"], ["SKILL.md"]]
+    added = extensions.add_skills(tmp_path, extensions.skills_in_files(files, "pack.zip")[0])
+    assert {e["name"]: e["files"] for e in added} == {
+        "a": [".opencode/skills/a/SKILL.md", ".opencode/skills/a/ref.md"],
+        "b": [".opencode/skills/b/SKILL.md"]}
+
+
+def test_two_spellings_of_skill_md_in_one_folder_are_refused():
+    files = extensions.upload_files("pack.zip", _zip({"a/SKILL.md": _md("a"),
+                                                      "a/skill.md": _md("a")}))
+    with pytest.raises(extensions.ExtensionError, match="same file to OpenCode"):
+        extensions.found_skills(files, "pack.zip")
+
+
 @pytest.mark.parametrize(("pick", "said"), [(["skills/nope"], "no skill folder skills/nope"),
                                             ([], "Pick at least one")])
 def test_a_pick_that_names_no_skill_is_refused(pick, said):

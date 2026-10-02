@@ -65,7 +65,7 @@ window.SW = window.SW || {};
     const out = new Map();
     (files || []).forEach(({ path }) => {
       const parts = String(path || '').split('/');
-      if (parts[parts.length - 1] === 'SKILL.md') {
+      if (parts[parts.length - 1].toLowerCase() === 'skill.md') {
         const folder = parts.slice(0, -1).join('/');
         out.set(folder, { value: folder, label: folder ? `${folder}/` : 'The whole dataset' });
       } else if (/\.zip$/i.test(path)) {
