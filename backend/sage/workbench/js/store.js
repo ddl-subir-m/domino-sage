@@ -6080,6 +6080,30 @@ window.SW = window.SW || {};
       await store.loadExtensions();
     },
 
+    // `source` is a File (a .ts or a .py) or `{ url, path }` for git. `readOnly` marks the
+    // TypeScript tools; a Python tool's SPEC says its own.
+    async addTools(source, readOnly) {
+      const read = source && typeof source.url === 'string'
+        ? await SW.api.importTools(source.url, source.path, readOnly)
+        : await SW.api.uploadTool(source, readOnly);
+      await store.loadExtensions();
+      const names = (read.items || []).map((e) => e.name);
+      antd.message.success(names.length === 1
+        ? `Added the tool ${names[0]}. It reaches the next turn.`
+        : `Added ${names.length} tools. They reach the next turn.`);
+      return read.items || [];
+    },
+
+    // For the whole Project, unlike the switch beside it.
+    async setExtensionReadOnly(ext, readOnly) {
+      try {
+        await SW.api.setExtensionReadOnly(ext.id, readOnly);
+      } catch (err) {
+        antd.message.error(err.message);
+      }
+      await store.loadExtensions();
+    },
+
     async removeExtension(ext) {
       return new Promise((resolve) => {
         antd.Modal.confirm({

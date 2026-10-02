@@ -26311,6 +26311,20 @@ class Orchestrator:
         return self.add_skills(skills, replaces=replaces, source={
             "type": "dataset", "dataset": asset.id, "name": asset.name, "path": path})
 
+    def add_tools(self, tools: list[dict], *, read_only: bool, source: dict) -> list[dict]:
+        """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
+        entries = project_extensions.add_tools(self._chat_project().record.path, tools,
+                                               read_only=read_only, source=source)
+        self._reload_extensions()
+        return entries
+
+    def set_extension_read_only(self, ext_id: str, read_only: bool) -> None:
+        """Raises KeyError for an unknown extension, `ExtensionError` for one that is not a tool."""
+        if not project_extensions.set_read_only(self._chat_project().record.path, ext_id,
+                                                read_only):
+            raise KeyError(ext_id)
+        self._reload_extensions()
+
     def remove_extension(self, ext_id: str) -> bool:
         removed = project_extensions.remove(self._chat_project().record.path, ext_id)
         if removed:
