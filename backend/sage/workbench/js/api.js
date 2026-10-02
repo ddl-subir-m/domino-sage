@@ -436,7 +436,7 @@ SW.api = {
     const memberIds = new Set(SW.util.MEMBERSHIP_PARENT_KINDS.flatMap(
       (k) => ((resourceGroups || {})[k] || []).map((r) => r.id)
     ));
-    const allKeys = ['dataset', 'datasource', 'model_llm', 'model_predictive', 'agent', 'skill', 'mcp'];
+    const allKeys = ['dataset', 'datasource', 'model_llm', 'model_predictive', 'skill', 'mcp'];
     // One kind, several kinds, or none. Several is what a rail group covering two kinds asks for:
     // `Data` is Datasets AND Data Sources, and opening it on Everything was the only answer while
     // this took a single kind (#164).

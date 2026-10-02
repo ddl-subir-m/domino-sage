@@ -30,7 +30,7 @@ const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
 // anything any more — and the claim that mattered, a group with ROWS still offering the door, is
 // asked of three groups here instead of one.
 //
-// `agent` holds a row for the opposite reason: Agents is a `placeholder` group, and the rule that
+// `skill` holds a row for the opposite reason: Skills is a `placeholder` group, and the rule that
 // it gets no door was previously only ever exercised on an empty group, which is now indis-
 // tinguishable from a group that is absent. With a row it is drawn, and the absence of the door is
 // the placeholder rule rather than the group being gone.
@@ -39,7 +39,7 @@ const GROUPS = {
   datasource: [{ id: 'data_source:s1', name: 'Warehouse', kind: 'datasource' }],
   model_llm: [{ id: 'llm_alias:m1', name: 'Risk scorer', kind: 'model_llm', alias: 'risk-scorer' }],
   model_predictive: [{ id: 'model_api:p1', name: 'Churn risk', kind: 'model_predictive' }],
-  agent: [{ id: 'agent:a1', name: 'Desk agent', kind: 'agent' }],
+  skill: [{ id: 'skill:s1', name: 'Desk skill', kind: 'skill' }],
   file: [{ id: 'file:.sage/scratch/notes.csv', name: 'notes.csv', kind: 'file',
            path: '.sage/scratch/notes.csv', source: 'scratch' }],
 };

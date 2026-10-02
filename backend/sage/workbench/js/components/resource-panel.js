@@ -57,7 +57,7 @@ window.SW = window.SW || {};
     ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined, EditOutlined,
   } = icons;
 
-  // What the caller can pick now. Agents / Skills / MCPs are still listed because OpenCode config
+  // What the caller can pick now. Skills / MCPs are still listed because OpenCode config
   // will wire them; they draw nothing until it does, which is the point of the rule below.
   //
   // A group is drawn only when it HOLDS something, or when its listing failed. Empty headings were
@@ -94,10 +94,9 @@ window.SW = window.SW || {};
       subgroups: [{ kind: 'model_predictive' }],
     },
     // `placeholder` is "no catalog behind this yet", and it is what the group's add door is gated
-    // on (#164). These three draw nothing until OpenCode config wires them, so under the
+    // on (#164). These two draw nothing until OpenCode config wires them, so under the
     // draw-only-when-held rule below they are invisible today — the flag is what keeps the door
     // from appearing on the day they are not.
-    { key: 'agents', label: 'Agents', placeholder: true, subgroups: [{ kind: 'agent' }] },
     { key: 'skills', label: 'Skills', placeholder: true, subgroups: [{ kind: 'skill' }] },
     { key: 'mcp', label: 'MCPs', placeholder: true, subgroups: [{ kind: 'mcp' }] },
     // The Project's own Uploads. It was a collapsible drawer pinned to the bottom of the panel —
@@ -105,7 +104,7 @@ window.SW = window.SW || {};
     // other group. Folded in here: one pattern, and it disappears when there are no files, which
     // the drawer never did.
     //
-    // `placeholder` for the opposite reason to the three above: a file does not come from the
+    // `placeholder` for the opposite reason to the two above: a file does not come from the
     // catalog at all, it comes from Upload, so `openCatalog('file')` has nothing to open. The head
     // draws no `+`; the panel's own Add menu carries Upload a file.
     { key: 'file', label: 'Files', placeholder: true, subgroups: [{ kind: 'file' }] },

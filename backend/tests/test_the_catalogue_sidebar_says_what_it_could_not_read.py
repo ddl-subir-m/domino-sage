@@ -92,8 +92,8 @@ def test_a_whole_read_that_faulted_marks_every_kind_that_could_have_refused():
     side = _side(errors=_WHOLE_READ_FAULTED, groups={})
     for label in ("Data", "File volume", "Data connection", "Language models", "Predictive models"):
         assert side[label]["count"] == "—", label
-    # Three kinds report no error key and cannot fail this way, so they are left as they were.
-    for label in ("Agents", "Skills", "MCPs"):
+    # Two kinds report no error key and cannot fail this way, so they are left as they were.
+    for label in ("Skills", "MCPs"):
         assert side[label]["count"] == 0, label
 
 
@@ -131,7 +131,7 @@ def test_a_filter_with_no_parent_still_says_a_count_it_could_not_read():
     `0` announced before it. A row with nothing to explain still says nothing."""
     side = _side(errors={"llm_aliases": "Couldn't read language models."}, groups={})
     assert side["Language models"]["aria"] == "Language models, not read"
-    assert side["Agents"]["aria"] is None
+    assert side["Skills"]["aria"] is None
 
 
 def test_a_child_that_could_not_be_read_says_so_in_words():

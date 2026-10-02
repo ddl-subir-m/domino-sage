@@ -53,6 +53,14 @@ container. It means such code can reach the control port and read the process en
 **On by default, toggled per Thread and per Built App.** A new extension is enabled for new
 Threads and Apps. A person can switch any one off for a Thread or an App.
 
+**Every lane gets what is enabled, read-only ones included.** Ask and plan turns are offered the
+enabled user tools and MCP tools like any other turn. `READ_ONLY_DENIED` keeps stripping Sage's own
+write and shell tools there; it does not reach a person's extensions, even one that writes, because
+attaching it is the person's say-so.
+
+**User-defined agents are out of scope.** No agent extension kind, and nothing on screen for one:
+the resources panel's Agents placeholder and the catalog's Agents filter are removed.
+
 **The toggle is enforced in the shim, per turn.** Config cannot do it: every Chat Thread in a
 Project shares `.sage/chat-work`, so one config answers for all of them. The orchestrator passes
 the turn's enabled set to the shim (`backend/sage/shim/enforcement.py`), which:
@@ -112,9 +120,5 @@ manages.
   because the `skill` tool runs inside OpenCode, not in the shim.
 - Each local MCP server is one process per directory instance, so Chat plus N Built Apps can mean
   N+1 copies.
-
-## Open
-
-- Should read-only turns (Ask, plan) be offered enabled user tools? The read-only lane strips by
-  denylist, so today they would survive, and a user tool may write.
-- Should a user-defined agent (the Agents placeholder) be in this ADR or its own?
+- An Ask or plan turn can change files through a user tool that writes. Ask's "never builds"
+  holds for Sage's own tools only.
