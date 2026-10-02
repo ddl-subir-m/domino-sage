@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 extends: ADR-0052 (the LLM Gateway is the trusted enforcement point), ADR-0041 (a live read
   reaches the person without reaching the model)
 reverses: docs/workbench/chat.md §8 "MCP connector UI" out of scope
@@ -105,7 +105,10 @@ the merged config.
   tool, prefixed with its key) in its tool list.
 - `permission.skill: {"beta": "deny"}` removed `beta` from the system prompt's `available_skills`,
   while `GET /skill` still listed it.
-- Not measured: a dispose while a session is mid-turn.
+- A dispose while a session is mid-turn **aborts the turn**: the model stream is cut, the session
+  stops at once, and its assistant message ends in `MessageAbortedError` with the partial text.
+  Measured on 1.18.4, 2026-10-02 (#619). Waiting for the turn lock is therefore required, not
+  caution.
 
 ## Rejected
 

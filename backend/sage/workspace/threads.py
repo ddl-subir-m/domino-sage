@@ -498,6 +498,15 @@ class ThreadStore:
 
         return self._edit_meta(thread_id, edit)
 
+    def set_extension(self, thread_id: str, ext_id: str, enabled: bool) -> dict | None:
+        """Switch one of the Project's extensions on or off for this Thread (ADR-0071)."""
+        def edit(row: dict) -> None:
+            overrides = row.get("extensions")
+            row["extensions"] = {**(overrides if isinstance(overrides, dict) else {}),
+                                 ext_id: bool(enabled)}
+
+        return self._edit_meta(thread_id, edit)
+
     def record_attempt(self, thread_id: str, *, app_id: str, app_name: str) -> dict | None:
         """Associate an admitted turn with its app even when no files change (#557).
 

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from ..workspace.chat_tables import ChatTables
 
 from .. import build_diagnostics, degraded, timing
+from .. import extensions as project_extensions
 from ..assets.provider import (
     Asset,
     AssetProvider,
@@ -215,6 +216,7 @@ from ..workspace.snapshot import TurnSnapshot
 from ..workspace.stack import default_stack_name, preview_stack_of, resolve_stack, stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
+    CHAT_WORK,
     FINDINGS_MAX,
     HistoryRows,
     ThreadStore,
@@ -7560,6 +7562,11 @@ class Orchestrator:
         # Held around the rebind alone, never around a network call or a turn: a rail click must
         # not wait on Domino (see delete_app).
         self._app_lock = threading.Lock()
+        # An extension change OpenCode has not reloaded yet (ADR-0071), and the thread waiting for
+        # the turn lock to reload it.
+        self._extensions_lock = threading.Lock()
+        self._extensions_pending = False
+        self._extensions_waiter: threading.Thread | None = None
         # What the remote has that this workspace does not (#78). Refreshed off the request path so
         # the rail can badge it without anyone clicking, and read again by a turn on its way in.
         # `None` until the first check lands, which is why the rail badges nothing before then.
@@ -8301,6 +8308,7 @@ class Orchestrator:
         if seed_app and resolve_stack(workspace.path).ready:
             self._prepare_app_files()
         control = ModelControl(mode=Mode.AUTO, phase=Phase.PLAN)
+        control.set_extensions(project_extensions.load_catalog(record.path))
         shim = EnforcementShim(control, self._effective_catalog(record), self._gateway,
                                project_name=self._cost_project_label,
                                build_policy=self._build_policy)
@@ -16419,6 +16427,8 @@ class Orchestrator:
         # because the poison survives one too: `_recover_session` reads the session id back off disk,
         # and an un-armed restart would refuse every turn all over again.
         withheld_token = project.control.arm_withheld(recall.withheld(history))
+        extensions_token = project.control.arm_extensions_off(
+            self._extensions_off((store.get(thread_id) or {}).get("extensions")))
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         # `investigating` exempts this Thread from both bounded lanes, and that is a SCOPE decision
         # before it is a latency one. #364 bounds a turn that only answers a question; while an
@@ -16501,6 +16511,7 @@ class Orchestrator:
         if chat_refusal:
             project.control.disarm_chat(chat_token)
             project.control.disarm_withheld(withheld_token)
+            project.control.disarm_extensions_off(extensions_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
             if plain_answer_token is not None:
@@ -16526,6 +16537,7 @@ class Orchestrator:
                 log.exception("sensitivity: couldn't record the lock on this conversation")
                 project.control.disarm_chat(chat_token)
                 project.control.disarm_withheld(withheld_token)
+                project.control.disarm_extensions_off(extensions_token)
                 if web_token is not None:
                     project.control.disarm_web(web_token)
                 if plain_answer_token is not None:
@@ -17913,6 +17925,7 @@ class Orchestrator:
                 tap.close()
             project.control.disarm_chat(chat_token)
             project.control.disarm_withheld(withheld_token)
+            project.control.disarm_extensions_off(extensions_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
             if plain_answer_token is not None:
@@ -20835,6 +20848,8 @@ class Orchestrator:
         build_history_for_turn = project.app_for_turn().read_history(project.build_conversation)
         _warn_if_history_lossy(build_history_for_turn, "_build_stream (withheld)")
         withheld_token = project.control.arm_withheld(recall.withheld(build_history_for_turn))
+        extensions_token = project.control.arm_extensions_off(
+            self._extensions_off(project.app_for_turn().extension_overrides()))
         # The token that lets this turn read a bound table (ADR-0041). Unlike the notes below it
         # rides EVERY send and is never cleared: the nudge/fix follow-ups run in the same session,
         # and a compaction that dropped the first send would otherwise leave the agent holding a
@@ -21132,6 +21147,7 @@ class Orchestrator:
             # below withholds against the payload it captured, not against the armed set, and every
             # request this turn will make has already been made.
             project.control.disarm_withheld(withheld_token)
+            project.control.disarm_extensions_off(extensions_token)
             if escalated_pick:
                 project.control.pick(original_pick, original_effort)
             if ro_token is not None:
@@ -21443,6 +21459,8 @@ class Orchestrator:
         # it to implement instead of declaring success. Capped so a model that refuses to write
         # can't loop forever.
         made_edits = False
+        # The Project's own tools that ran (ADR-0071), so a reverted read-only turn names them.
+        user_tools_ran: list[str] = []
         # One follow-up each, for the whole turn. A reasoning-only implement call is interrupted
         # at its budget, and a reasoning stream that then dies is retried once. The attempt after
         # both is the stall that already ends a quiet turn. A plan call is not part of this.
@@ -22530,6 +22548,10 @@ class Orchestrator:
                                 stop_for_invalid = False
                             last_active = None  # completed: let the next running tool re-announce
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
+                            extensions = project.control.snapshot().extensions
+                            if (extensions and extensions.owner(tool)
+                                    and tool not in user_tools_ran):
+                                user_tools_ran.append(tool)
                             args = (part.get("state") or {}).get("input") \
                                 if isinstance(part.get("state"), dict) else None
                             if not looped and brake.saw(_repeat_fingerprint(tool, args),
@@ -23644,9 +23666,14 @@ class Orchestrator:
                 log.error("%s turn wrote code — reverting; read-only enforcement was bypassed", kind)
                 project.snapshot.discard_changes()
                 restore_mode()
-                msg = ("Planning was expected, but the agent edited files — nothing was applied. "
+                # A Project tool that ran is the likelier writer: Sage's own write tools are not
+                # offered on this turn, and a user tool's read-only mark is its own claim.
+                who = ("the agent" if not user_tools_ran else
+                       ("your tool " if len(user_tools_ran) == 1 else "your tools ")
+                       + ", ".join(f"`{t}`" for t in user_tools_ran))
+                msg = (f"Planning was expected, but {who} edited files — nothing was applied. "
                        "Send the request again, or switch to Implement to build directly." if gate else
-                       "That was a question, but the agent edited files — nothing was applied. Ask "
+                       f"That was a question, but {who} edited files — nothing was applied. Ask "
                        "again, or switch to Implement to build directly.")
                 yield persist({"type": "error", "message": msg})
                 yield persist({"type": "done", "ok": False,
@@ -26224,6 +26251,95 @@ class Orchestrator:
         history = workspace.read_history(conversation, tool_detail=tool_detail)
         _warn_if_history_lossy(history, "Orchestrator.history")
         return history
+
+    # ---- the Project's own skills, tools and MCP servers (ADR-0071) ------------------------------
+
+    def list_extensions(self) -> list[dict]:
+        return project_extensions.list_extensions(self._chat_project().record.path)
+
+    def add_extension(self, body: dict) -> dict:
+        """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
+        entry = project_extensions.add(self._chat_project().record.path, body)
+        self._reload_extensions()
+        return entry
+
+    def remove_extension(self, ext_id: str) -> bool:
+        removed = project_extensions.remove(self._chat_project().record.path, ext_id)
+        if removed:
+            self._reload_extensions()
+        return removed
+
+    def set_extension_enabled(self, ext_id: str, enabled: bool, *, thread: str = "",
+                              app: str = "") -> None:
+        """Raises KeyError for an unknown extension, Thread or App."""
+        root = self._chat_project().record.path
+        if ext_id not in {e["id"] for e in project_extensions.read_manifest(root)}:
+            raise KeyError(ext_id)
+        if bool(thread) == bool(app):
+            raise ValueError("name a thread or an app")
+        if thread:
+            if ThreadStore(root).set_extension(thread, ext_id, enabled) is None:
+                raise KeyError(thread)
+        else:
+            if app not in self._wm.app_ids():
+                raise KeyError(app)
+            self._wm.app_workspace(self._project_id, app).set_extension(ext_id, enabled)
+
+    def _extensions_off(self, overrides: dict) -> frozenset[str]:
+        """The ids one Thread's or App's record switched off, read at the turn boundary."""
+        root = self._chat_project().record.path
+        return project_extensions.disabled(project_extensions.read_manifest(root), overrides)
+
+    def _reload_extensions(self) -> None:
+        """Have OpenCode reload `.opencode/` now, or as soon as no turn holds the lock.
+
+        Never under a running turn: a dispose aborts it (measured, ADR-0071), and the shim's
+        catalogue must not move while a turn's requests are being classified against it.
+        """
+        with self._extensions_lock:
+            self._extensions_pending = True
+            if self._extensions_waiter is not None:
+                return
+        if self._try_reload_extensions():
+            return
+        with self._extensions_lock:
+            if self._extensions_waiter is not None or not self._extensions_pending:
+                return
+            self._extensions_waiter = threading.Thread(
+                target=self._await_extensions_reload, name="extensions-reload", daemon=True)
+            self._extensions_waiter.start()
+
+    def _await_extensions_reload(self) -> None:
+        while True:
+            time.sleep(0.2)
+            with self._extensions_lock:
+                if not self._extensions_pending:
+                    self._extensions_waiter = None
+                    return
+            self._try_reload_extensions()
+
+    def _try_reload_extensions(self) -> bool:
+        if not self._turn_lock.acquire(blocking=False):
+            return False
+        try:
+            with self._extensions_lock:
+                self._extensions_pending = False
+            project = self._chat_project()
+            root = Path(project.record.path)
+            client = self._oc_client
+            if client is not None:
+                directories = [root / CHAT_WORK] + [
+                    self._wm.app_workspace(self._project_id, app_id).path
+                    for app_id in self._wm.app_ids()]
+                for directory in directories:
+                    try:
+                        client.dispose_instance(str(directory))
+                    except Exception:
+                        log.exception("extensions: OpenCode did not reload %s", directory)
+            project.control.set_extensions(project_extensions.load_catalog(root))
+        finally:
+            self._turn_lock.release()
+        return True
 
     def list_project_resources(self) -> list[dict]:
         """Domino Resources the creator added to this project — the rail, not the catalogue.

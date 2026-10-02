@@ -52,6 +52,7 @@ _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
 from .. import degraded, timing
+from .. import extensions as project_extensions
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
 from ..gateway.client import (
@@ -1639,6 +1640,16 @@ def _opencode_config_diag() -> dict:
             cfg = json.loads(Path(path).read_text())
             row["keys"] = sorted(cfg)[:20] if isinstance(cfg, dict) else type(cfg).__name__
             row["declares_mcp"] = isinstance(cfg, dict) and "mcp" in cfg
+            # The Project's own MCP servers (ADR-0071) are Sage-written when the manifest records
+            # every one of them, none takes a reserved name, and the file says nothing else.
+            if (workspace and path == str(Path(workspace) / project_extensions.MCP_CONFIG)
+                    and isinstance(cfg, dict) and set(cfg) <= {"$schema", "mcp"}
+                    and isinstance(cfg.get("mcp", {}), dict)):
+                recorded = {e["name"] for e in project_extensions.read_manifest(Path(workspace))
+                            if e["kind"] == "mcp"}
+                keys = set(cfg.get("mcp") or {})
+                row["ours"] = bool(keys) and keys <= recorded and not any(
+                    k.startswith(project_extensions.RESERVED_PREFIXES) for k in keys)
             # A `tools` map is the quiet half. It never touches the `mcp` block, so the server still
             # connects, `opencode mcp list` still prints a green tick and `opencode_says` still reads
             # connected — while `"sage-live-read*": false` takes the tools off the agent anyway. That
@@ -2090,6 +2101,42 @@ def unpin_project_resource(
     if not ok:
         return JSONResponse(status_code=404, content={"error": "pin not in this project"})
     return JSONResponse(content={"removed": True})
+
+
+@control_app.get("/api/project/extensions")
+def list_project_extensions() -> JSONResponse:
+    """The Project's own skills, tools and MCP servers (ADR-0071)."""
+    return JSONResponse(content={"items": orchestrator.list_extensions()})
+
+
+@control_app.post("/api/project/extensions")
+def add_project_extension(body: dict) -> JSONResponse:
+    try:
+        return JSONResponse(content={"item": orchestrator.add_extension(body or {})})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.delete("/api/project/extensions/{ext_id}")
+def remove_project_extension(ext_id: str) -> JSONResponse:
+    if not orchestrator.remove_extension(ext_id):
+        return JSONResponse(status_code=404, content={"error": "not in this project"})
+    return JSONResponse(content={"removed": True})
+
+
+@control_app.put("/api/project/extensions/{ext_id}/enabled")
+def set_project_extension_enabled(ext_id: str, body: dict) -> JSONResponse:
+    """Switch one extension on or off for a Thread (`thread`) or a Built App (`app`)."""
+    body = body or {}
+    try:
+        orchestrator.set_extension_enabled(ext_id, bool(body.get("enabled")),
+                                           thread=str(body.get("thread") or ""),
+                                           app=str(body.get("app") or ""))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "unknown extension, thread or app"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(content={"ok": True})
 
 
 @control_app.get("/api/project/history")
