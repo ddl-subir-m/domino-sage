@@ -26334,6 +26334,53 @@ class Orchestrator:
             self._reload_extensions()
         return removed
 
+    def skill_files(self, ext_id: str) -> list[dict]:
+        """Raises KeyError for an unknown skill."""
+        return project_extensions.skill_files(self._chat_project().record.path, ext_id)
+
+    def set_skill_replaces(self, ext_id: str, replaces: str) -> dict:
+        """Raises KeyError for an unknown skill, `ExtensionError` for a `replaces` it cannot take."""
+        entry = project_extensions.set_replaces(self._chat_project().record.path, ext_id, replaces)
+        self._reload_extensions()
+        return entry
+
+    def update_skill_from_source(self, ext_id: str) -> dict:
+        """Read a git or Dataset skill again from where it came from and rewrite it in place. Answers
+        the entry, the source it had before, and the files left out for not being text.
+
+        Raises KeyError for an unknown skill, and `ExtensionError` for an uploaded one or a source
+        that no longer holds a skill of its name."""
+        root = self._chat_project().record.path
+        entry = next((e for e in project_extensions.read_manifest(root)
+                      if e["id"] == ext_id and e["kind"] == "skill"), None)
+        if entry is None:
+            raise KeyError(ext_id)
+        source = entry.get("source") or {}
+        if source.get("type") == "git":
+            reading = project_extensions.git_files(source.get("url"))
+        elif source.get("type") == "dataset":
+            reading = self.dataset_skill_files(str(source.get("dataset") or ""),
+                                               str(source.get("path") or ""))
+        else:
+            raise project_extensions.ExtensionError(
+                f"{entry['name']} was uploaded, so there is nowhere to read it from again. "
+                "Remove it and upload the new copy.")
+        with reading as read:
+            if source["type"] == "git":
+                files, commit = read
+                where, fresh = source["url"], {**source, "commit": commit}
+            else:
+                files, where, fresh = read
+            folder = next((s["folder"] for s in project_extensions.found_skills(files, where)
+                           if s["name"] == entry["name"]), None)
+            if folder is None:
+                raise project_extensions.ExtensionError(
+                    f"{where} no longer holds a skill called '{entry['name']}'.")
+            [skill], skipped = project_extensions.skills_in_files(files, where, [folder])
+        updated = project_extensions.update_skill(root, ext_id, skill, fresh)
+        self._reload_extensions()
+        return {"item": updated, "previous": source, "skipped": skipped}
+
     def set_extension_enabled(self, ext_id: str, enabled: bool, *, thread: str = "",
                               app: str = "") -> None:
         """Raises KeyError for an unknown extension, Thread or App."""

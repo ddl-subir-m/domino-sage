@@ -99,3 +99,28 @@ def test_a_block_description_counts_as_present(tmp_path):
     call a perfectly good skill undescribed, which is a false alarm in the loudest place."""
     (tmp_path / "SKILL.md").write_text("---\nname: b\ndescription: >-\n  Does a thing.\n---\n")
     assert _skill_description(tmp_path / "SKILL.md")
+
+
+def test_a_folded_description_reads_as_its_text_not_its_indicator(tmp_path):
+    """The picker and the drawer show this string, so a stray `>-` in front of it is on screen."""
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: b\ndescription: >-\n  Does a thing,\n  at some length.\n---\n")
+    assert _skill_description(tmp_path / "SKILL.md") == "Does a thing, at some length."
+
+
+def test_a_literal_description_keeps_its_line_breaks(tmp_path):
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: b\ndescription: |-\n  Does a thing.\n  Then another.\n---\n")
+    assert _skill_description(tmp_path / "SKILL.md") == "Does a thing.\nThen another."
+
+
+def test_a_plain_multiline_description_is_folded_onto_one_line(tmp_path):
+    (tmp_path / "SKILL.md").write_text(
+        "---\nname: m\ndescription:\n  Does a thing,\n  at some length.\n---\n")
+    assert _skill_description(tmp_path / "SKILL.md") == "Does a thing, at some length."
+
+
+def test_a_crlf_folded_description_is_unwrapped_too(tmp_path):
+    (tmp_path / "SKILL.md").write_bytes(
+        b"---\r\nname: b\r\ndescription: >\r\n  Does a thing,\r\n  at length.\r\n---\r\n")
+    assert _skill_description(tmp_path / "SKILL.md") == "Does a thing, at length."

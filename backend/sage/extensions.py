@@ -21,8 +21,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
+from urllib.parse import urlsplit
 
 from .implementation_request import _OPTIONAL_BLOCKS as BUILTIN_SECTIONS
+from .provision.credentials import extract_token
 from .router.phase_classifier import READ_TOOLS, SHELL_TOOLS, TODO_TOOLS, WEB_TOOLS, WRITE_TOOLS
 
 SLOT = Path(".opencode")
@@ -64,6 +66,11 @@ else:
     print(result if isinstance(result, str) else json.dumps(result))
 """
 _LOCK = threading.Lock()
+# A clone's credential helper prints the token from its environment, so only the variable's name
+# is ever in argv.
+_CLONE_TOKEN_ENV = "SAGE_CLONE_TOKEN"
+_CLONE_HELPER = (f'!f() {{ test "$1" = get && '
+                 f'printf "username=x-access-token\\npassword=%s\\n" "${_CLONE_TOKEN_ENV}"; }}; f')
 # How OpenCode substitutes a variable from its own environment into config text.
 ENV_REF = re.compile(r"\{env:([^}]*)\}")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -137,13 +144,19 @@ def skill_description(text: str) -> str:
     The one field OpenCode filters on. Read with a regex rather than a YAML parser because there is
     no YAML dependency declared in `backend/pyproject.toml`. A block indicator (`>`/`|`) counts as
     present, as do the indented lines of a plain multi-line scalar; CRLF and a closing `---` with
-    nothing after it both read too.
+    nothing after it both read too. Multi-line values come back unwrapped: `|` keeps its line
+    breaks, `>` and a plain scalar fold onto one line.
     """
     front = re.match(r"^---\r?\n(.*?)\r?\n---[ \t]*(\r?\n|\Z)", text, re.DOTALL)
     if not front:
         return ""
     found = re.search(r"^description:[ \t]*(.*(?:\n[ \t]+\S.*)*)$", front.group(1), re.MULTILINE)
-    return found.group(1).strip().strip("\"'") if found else ""
+    if not found:
+        return ""
+    head, *rest = [line.strip() for line in found.group(1).split("\n")]
+    if re.fullmatch(r"[>|]([-+]?\d?|\d[-+])", head):
+        return ("\n" if head[0] == "|" else " ").join(rest).strip()
+    return " ".join([head, *rest]).strip().strip("\"'")
 
 
 def _frontmatter_name(text: str) -> str:
@@ -266,12 +279,10 @@ def add(root: Path, body: dict) -> dict:
                        "defaultEnabled": True}
         replaces = body.get("replaces") or ""
         if replaces:
-            if kind != "skill" or replaces not in (*builtin_skills(), *BUILTIN_SECTIONS):
+            if kind != "skill":
                 raise ExtensionError(f"'{replaces}' is not a skill Sage ships, nor a section of "
                                      "its build instructions.")
-            holder = next((e for e in entries if e.get("replaces") == replaces), None)
-            if holder:
-                raise ExtensionError(f"'{holder['name']}' already replaces '{replaces}'.")
+            _check_replaces(replaces, entry["id"], entries)
             entry["replaces"] = replaces
         if kind == "skill":
             entry["files"] = _write_skill(root, name, files)
@@ -314,6 +325,80 @@ def remove(root: Path, ext_id: str) -> bool:
                 _write_json(root / MCP_CONFIG, config)
         _write_manifest(root, [e for e in entries if e["id"] != ext_id])
         return True
+
+
+def _check_replaces(replaces: str, ext_id: str, entries: list[dict]) -> None:
+    if replaces not in (*builtin_skills(), *BUILTIN_SECTIONS):
+        raise ExtensionError(f"'{replaces}' is not a skill Sage ships, nor a section of its build "
+                             "instructions.")
+    holder = next((e for e in entries if e.get("replaces") == replaces and e["id"] != ext_id), None)
+    if holder:
+        raise ExtensionError(f"'{holder['name']}' already replaces '{replaces}'.")
+
+
+def set_replaces(root: Path, ext_id: str, replaces: str) -> dict:
+    """What a Project skill stands in for, changed after it was added; "" for nothing. Raises
+    KeyError for an unknown skill."""
+    root = Path(root)
+    with _LOCK:
+        entries = read_manifest(root)
+        entry = next((e for e in entries if e["id"] == ext_id and e["kind"] == "skill"), None)
+        if entry is None:
+            raise KeyError(ext_id)
+        if replaces:
+            _check_replaces(replaces, ext_id, entries)
+            entry["replaces"] = replaces
+        else:
+            entry.pop("replaces", None)
+        _write_manifest(root, entries)
+        return entry
+
+
+def skill_files(root: Path, ext_id: str) -> list[dict]:
+    """A Project skill's files as written, each `{path, text}` with `path` inside the skill,
+    SKILL.md first. Raises KeyError for an unknown skill."""
+    root = Path(root)
+    entry = next((e for e in read_manifest(root) if e["id"] == ext_id and e["kind"] == "skill"),
+                 None)
+    if entry is None:
+        raise KeyError(ext_id)
+    prefix = (SLOT / "skills" / entry["name"]).as_posix() + "/"
+    out = []
+    for rel in entry.get("files") or []:
+        try:
+            text = (root / _relative(rel)).read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        out.append({"path": rel.removeprefix(prefix), "text": text})
+    return sorted(out, key=lambda f: (f["path"] != "SKILL.md", f["path"]))
+
+
+def update_skill(root: Path, ext_id: str, files: dict[str, str], source: dict) -> dict:
+    """Rewrite a Project skill's files from a fresh read of its source, keeping its id, what it
+    replaces, and every switch on it. Raises KeyError for an unknown skill."""
+    root = Path(root)
+    with _LOCK:
+        entries = read_manifest(root)
+        entry = next((e for e in entries if e["id"] == ext_id and e["kind"] == "skill"), None)
+        if entry is None:
+            raise KeyError(ext_id)
+        folder = root / SLOT / "skills" / entry["name"]
+        # Outside `skills/`, so OpenCode never loads the old copy as a second skill meanwhile.
+        aside = Path(tempfile.mkdtemp(dir=root / SLOT)) / entry["name"]
+        if folder.exists():
+            folder.rename(aside)
+        try:
+            entry["files"] = _write_skill(root, entry["name"], files)
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            if aside.exists():
+                aside.rename(folder)
+            raise
+        finally:
+            shutil.rmtree(aside.parent, ignore_errors=True)
+        entry["source"] = source
+        _write_manifest(root, entries)
+        return entry
 
 
 def set_read_only(root: Path, ext_id: str, read_only: bool) -> bool:
@@ -582,23 +667,44 @@ def md_files(named: dict[str, bytes]) -> dict[str, Callable[[], bytes]]:
     return files
 
 
+def _host_token(host: str) -> str | None:
+    return extract_token(host)
+
+
+def clone(url: object, dest: str) -> str:
+    """Shallow-clone `url` into `dest` and answer the commit it is at.
+
+    A private repo is read with the git credential this container holds for the URL's host, the
+    one Domino wired for the Project's checkout. It reaches git through a one-shot credential
+    helper and the child's environment, never argv, disk, the manifest or a message."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise ExtensionError("A git URL starts with https://.")
+    host = (urlsplit(url).hostname or "").lower()
+    token = _host_token(host) if host else None
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    auth: list[str] = []
+    if token:
+        env[_CLONE_TOKEN_ENV] = token
+        auth = ["-c", "credential.helper=", "-c", f"credential.helper={_CLONE_HELPER}"]
+    try:
+        subprocess.run(["git", *auth, "clone", "--depth", "1", "--quiet", "--", url, dest],
+                       check=True, capture_output=True, text=True, timeout=120, env=env)
+    except subprocess.TimeoutExpired as e:
+        raise ExtensionError(f"Cloning {url} took longer than two minutes.") from e
+    except subprocess.CalledProcessError as e:
+        said = (e.stderr or "").strip().splitlines()
+        hint = "" if token else (f" Sage holds no git credential for {host} here, so only a "
+                                 "public repo there can be read.")
+        raise ExtensionError(f"git could not clone {url}: {said[-1] if said else e}.{hint}") from e
+    return subprocess.run(["git", "-C", dest, "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True, env=env).stdout.strip()
+
+
 @contextmanager
 def git_files(url: object) -> Iterator[tuple[dict[str, Callable[[], bytes]], str]]:
     """Clone `url` and yield its files by path, readable while the block runs, with the commit."""
-    if not isinstance(url, str) or not url.startswith("https://"):
-        raise ExtensionError("A git URL starts with https://.")
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     with tempfile.TemporaryDirectory() as tmp:
-        try:
-            subprocess.run(["git", "clone", "--depth", "1", "--quiet", "--", url, tmp],
-                           check=True, capture_output=True, text=True, timeout=120, env=env)
-        except subprocess.TimeoutExpired as e:
-            raise ExtensionError(f"Cloning {url} took longer than two minutes.") from e
-        except subprocess.CalledProcessError as e:
-            said = (e.stderr or "").strip().splitlines()
-            raise ExtensionError(f"git could not clone {url}: {said[-1] if said else e}") from e
-        commit = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"], capture_output=True,
-                                text=True, check=True, env=env).stdout.strip()
+        commit = clone(url, tmp)
         base = Path(tmp)
         yield {p.relative_to(base).as_posix(): p.read_bytes for p in sorted(base.rglob("*"))
                if p.is_file() and ".git" not in p.relative_to(base).parts}, commit
@@ -622,22 +728,10 @@ def tool_in_upload(filename: str, data: bytes) -> dict:
 def tools_from_git(url: object, path: object = "") -> tuple[list[dict], str]:
     """Clone `url` and answer the tools at `path` in it, with the commit they were read at: one
     `.ts` or `.py` file, or each one directly inside a folder ("" is the root)."""
-    if not isinstance(url, str) or not url.startswith("https://"):
-        raise ExtensionError("A git URL starts with https://.")
     where = str(path or "").strip("/")
     rel = _relative(where) if where else PurePosixPath(".")
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     with tempfile.TemporaryDirectory() as tmp:
-        try:
-            subprocess.run(["git", "clone", "--depth", "1", "--quiet", "--", url, tmp],
-                           check=True, capture_output=True, text=True, timeout=120, env=env)
-        except subprocess.TimeoutExpired as e:
-            raise ExtensionError(f"Cloning {url} took longer than two minutes.") from e
-        except subprocess.CalledProcessError as e:
-            said = (e.stderr or "").strip().splitlines()
-            raise ExtensionError(f"git could not clone {url}: {said[-1] if said else e}") from e
-        commit = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"], capture_output=True,
-                                text=True, check=True, env=env).stdout.strip()
+        commit = clone(url, tmp)
         target = Path(tmp) / rel
         files = [target] if target.is_file() else sorted(target.glob("*")) if target.is_dir() else []
         bodies = [tool_in_upload(f.name, f.read_bytes()) for f in files

@@ -80,15 +80,37 @@ def test_remove_asks_first_then_deletes():
 def test_the_add_menu_and_the_group_door_both_open_the_dialog():
     drawn = _run("drawn", hash="#/chat", thread="t1")
     assert "skill" in drawn["menuKeys"] and drawn["dialogOpen"] is False
-    pressed = _run("press-door", hash="#/chat", thread="t1")
-    assert pressed["dialogOpen"] is True
-    assert pressed["replacesOptions"] == ["", "data-table", "investigate-weak-signals",
-                                          "design", "platform"]
+    assert _run("press-door", hash="#/chat", thread="t1")["dialogOpen"] is True
 
 
-def test_choosing_a_section_says_its_built_in_rules_stand_down():
-    caption = _run("press-door", hash="#/chat", thread="t1", replaces="design")["replacesCaption"]
-    assert "design" in caption and "instructions" in caption
+def test_a_skill_from_a_dataset_says_which_one():
+    items = [{"id": "skill:house", "kind": "skill", "name": "house", "enabled": True,
+              "source": {"type": "dataset", "dataset": "ds1", "name": "team-skills", "path": "s"}}]
+    [row] = _run("drawn", hash="#/chat", thread="t1", items=items)["rows"]
+    assert row["subtitle"] == "From team-skills"
+
+
+def test_a_skill_row_opens_its_drawer_where_replaces_is_chosen():
+    opened = _run("open-skill", hash="#/chat", thread="t1")
+    assert opened["drawerOpen"] is True and opened["title"] == "tables"
+    # An uploaded skill has nowhere to be read from again, so only Remove is offered.
+    assert opened["buttons"] == ["Remove"]
+    assert opened["replacesOptions"] == ["", "data-table", "investigate-weak-signals",
+                                         "design", "platform"]
+    assert "stops offering data-table" in opened["replacesCaption"]
+    sent = _run("open-skill", hash="#/chat", thread="t1", replaces="design")["calls"]
+    assert sent[0] == {"url": "./api/project/extensions/skill%3Atables/replaces", "method": "PUT",
+                       "body": {"replaces": "design"}}
+
+
+def test_a_git_skill_offers_update_from_source_and_it_reaches_its_route():
+    items = [ITEMS[1] | {"shadowed": False}]
+    assert _run("open-skill", hash="#/chat", thread="t1", items=items)["buttons"] == [
+        "Update from source", "Remove"]
+    out = _run("update", hash="#/chat", thread="t1", items=items)
+    assert out["calls"][0] == {"url": "./api/project/extensions/skill%3Acharts/update",
+                               "method": "POST", "body": None}
+    assert out["toasts"] == ["Updated charts. It reaches the next turn."]
 
 
 def test_each_way_in_reaches_its_route():

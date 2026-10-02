@@ -606,6 +606,7 @@ window.SW = window.SW || {};
     } = SW.store.get();
     const [collapsed, setCollapsed] = useState({});
     const [addingSkill, setAddingSkill] = useState(false);
+    const [openSkillId, setOpenSkillId] = useState(null);
     const [addingMcp, setAddingMcp] = useState(false);
     const [addingTool, setAddingTool] = useState(false);
     // Whether the Plans group is showing what has been put away (#167). Panel state rather than
@@ -1156,7 +1157,9 @@ window.SW = window.SW || {};
                           )
                         ),
                       sub.kind === 'skill'
-                        ? subRows.map((skill) => h(SW.SkillRow, { key: skill.id, skill, where: extensionWhere }))
+                        ? subRows.map((skill) => h(SW.SkillRow, {
+                            key: skill.id, skill, where: extensionWhere,
+                            onOpen: () => setOpenSkillId(skill.id) }))
                         : sub.kind === 'tool'
                           ? subRows.map((tool) => h(SW.ToolRow, { key: tool.id, tool, where: extensionWhere }))
                         : sub.kind === 'mcp'
@@ -1211,11 +1214,14 @@ window.SW = window.SW || {};
           },
         }),
 
-        addingSkill && h(SW.AddSkillModal, {
-          open: true,
+        addingSkill && h(SW.AddSkillModal, { open: true, onClose: () => setAddingSkill(false) }),
+
+        // Read off the list each draw, so an update or a new Replaces shows without reopening.
+        openSkillId && h(SW.SkillDrawer, {
+          skill: skills.find((s) => s.id === openSkillId) || null,
           builtinSkills: (extensions && extensions.builtinSkills) || [],
           builtinSections: (extensions && extensions.builtinSections) || [],
-          onClose: () => setAddingSkill(false),
+          onClose: () => setOpenSkillId(null),
         }),
 
         addingMcp && h(SW.AddMcpModal, { open: true, onClose: () => setAddingMcp(false) }),

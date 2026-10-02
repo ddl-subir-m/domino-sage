@@ -36,7 +36,10 @@ one is not yet measured; the global copy declares none today, so nothing is lost
 recognised pieces copied in, commit recorded), a Dataset in the Project (a skill folder, a
 `SKILL.md` or a zip in it, read through the same asset provider as an attach, so mounted and
 unmounted Datasets both work), and a form for MCP servers. A git or Dataset source is copied, not
-linked: a later change there reaches the Project only when the skill is added again. The form takes a name,
+linked: a later change there reaches the Project only when the skill is updated from its source
+(#625), which rewrites its files in place and keeps its id, its switches and what it replaces. A
+private repo is cloned with the git credential the container holds for its host — the one Domino
+wired for the Project's checkout — passed to git by a one-shot helper and never stored. The form takes a name,
 then either a remote URL plus headers or a local command plus environment.
 
 **Credentials are referenced, never stored.** Headers and environment values are written as
