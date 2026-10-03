@@ -74,8 +74,8 @@ def _is_plan_loop_tool(name: str) -> bool:
 _SKILL_ENTRY = re.compile(r"[ \t]*<skill>\s*<name>([^<]*)</name>.*?</skill>[ \t]*\n?", re.DOTALL)
 
 
-def _named_skills(messages: list[Any], skills: Iterable[str]) -> set[str]:
-    """The Project skills the turn's prompt — its last user message — names as a whole `@<name>`."""
+def _named(messages: list[Any], names: Iterable[str]) -> set[str]:
+    """The `names` the turn's prompt — its last user message — mentions as a whole `@<name>`."""
     last = next((m for m in reversed(messages)
                  if isinstance(m, dict) and m.get("role") == "user"), None)
     content = last.get("content") if last else None
@@ -84,7 +84,32 @@ def _named_skills(messages: list[Any], skills: Iterable[str]) -> set[str]:
                            if isinstance(p, dict) and isinstance(p.get("text"), str))
     if not isinstance(content, str):
         return set()
-    return {n for n in skills if re.search(rf"(?<![\w@])@{re.escape(n)}(?![\w-])", content)}
+    return {n for n in names if re.search(rf"(?<![\w@])@{re.escape(n)}(?![\w-])", content)}
+
+
+def _note_named_tools(messages: list[Any], tools: set[str], servers: set[str]) -> list[Any]:
+    """Tell the model, at the end of the system prompt, to use the tools and MCP servers the
+    person @-mentioned."""
+    said = []
+    if tools:
+        said.append(f"The person named these tools with @: {', '.join(sorted(tools))}. "
+                    "Call them to answer.")
+    if servers:
+        said.append(f"The person named these MCP servers with @: {', '.join(sorted(servers))}. "
+                    "Use their tools to answer.")
+    note = " ".join(said)
+    for i, m in enumerate(messages):
+        if not (isinstance(m, dict) and m.get("role") == "system"):
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            content = content.rstrip("\n") + "\n" + note
+        elif isinstance(content, list):
+            content = [*content, {"type": "text", "text": note}]
+        else:
+            continue
+        return [*messages[:i], {**m, "content": content}, *messages[i + 1:]]
+    return [{"role": "system", "content": note}, *messages]
 
 
 def _hide_skills(messages: list[Any], names: set[str], own: set[str] = frozenset(),
@@ -698,20 +723,29 @@ class EnforcementShim:
         # a read-only turn unless marked read-only. The mark is the tool's own claim; the tree-hash
         # revert stays the backstop for a tool that writes anyway.
         extensions = state.extensions
+        messages = request.get("messages") if isinstance(request.get("messages"), list) else []
+        # An @-mention is explicit intent, so what it names is on for this turn whatever its switch
+        # says (#628), and a named tool is offered on a read-only turn too (#633).
+        named_tools = _named(messages, extensions.named_tools) if extensions else set()
+        named_servers = _named(messages, extensions.servers) if extensions else set()
+        named_ids = ({extensions.named_tools[n] for n in named_tools}
+                     | {extensions.servers[n] for n in named_servers})
         if extensions and isinstance(request.get("tools"), list):
             read_only_turn = state.mode is Mode.ASK or state.read_only_turn
             kept = []
             for tool in request["tools"]:
                 owner = extensions.owner(str((tool.get("function") or {}).get("name", "")))
-                if owner and (owner.id in state.extensions_off
-                              or (read_only_turn and not owner.read_only)):
+                if owner and owner.id not in named_ids and (
+                        owner.id in state.extensions_off
+                        or (read_only_turn and not owner.read_only)):
                     continue
                 kept.append(tool)
             request = {**request, "tools": kept}
+            if named_ids:
+                request = {**request, "messages": _note_named_tools(messages, named_tools,
+                                                                    named_servers)}
         if extensions and isinstance(request.get("messages"), list):
-            # An @-mention is explicit intent, so a named skill is on for this turn whatever its
-            # switch says (#628).
-            named = _named_skills(request["messages"], extensions.skills)
+            named = _named(request["messages"], extensions.skills)
             off = state.extensions_off - {extensions.skills[n] for n in named}
             hidden = {name for name, ext_id in extensions.skills.items() if ext_id in off}
             # A Sage skill stands down only while the Project skill replacing it is on.

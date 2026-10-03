@@ -206,6 +206,27 @@ def test_a_skill_named_with_at_is_loaded_and_beats_its_switch_for_that_turn(tmp_
     assert "<name>beta</name>" not in _sent(control)[1]["messages"][0]["content"]
 
 
+@pytest.mark.parametrize("user, offered, said", [
+    ("Push it with @push.", ["read", "lookup", "push", "push_many"],
+     "The person named these tools with @: push. Call them to answer."),
+    ("Ask @crm who owns it.", ["read", "lookup", "crm_search", "crm_update", "crm_other"],
+     "The person named these MCP servers with @: crm. Use their tools to answer."),
+])
+def test_a_tool_or_server_named_with_at_beats_its_switch_and_the_read_only_rule(
+        tmp_path, user, offered, said):
+    """#633: both switched off, on a read-only turn; named, each is offered and asked for — for
+    that turn only."""
+    control = ModelControl(mode=Mode.AUTO)
+    control.set_extensions(_catalog(tmp_path))
+    control.arm_read_only("question")
+    control.arm_extensions_off(frozenset({"tool:push", "mcp:crm"}))
+    names, sent = _sent(control, user=user)
+    assert names == offered
+    assert said in sent["messages"][0]["content"]
+    names, sent = _sent(control)
+    assert names == ["read", "lookup"] and "with @:" not in sent["messages"][0]["content"]
+
+
 @pytest.mark.parametrize("user", ["mail bob@alpha.com", "use @alphabet", "use @alpha-x",
                                   [{"type": "text", "text": "no mention"}]])
 def test_only_a_whole_at_token_names_a_skill(tmp_path, user):

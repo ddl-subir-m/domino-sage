@@ -17,8 +17,9 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not on PATH (it is in the Sage image)")
 
 
-def _run(mode: str, query: str) -> dict:
-    out = subprocess.run(["node", str(_HARNESS)], input=json.dumps({"mode": mode, "query": query}),
+def _run(mode: str, query: str, pick: str = "report-style") -> dict:
+    out = subprocess.run(["node", str(_HARNESS)],
+                         input=json.dumps({"mode": mode, "query": query, "pick": pick}),
                          capture_output=True, text=True, timeout=60, check=False)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout.strip().splitlines()[-1])
@@ -30,7 +31,18 @@ def test_the_menu_offers_a_skill_and_picking_it_attaches_nothing(mode):
     names = [r["name"] for r in got["rows"]]
     # Switched off for this conversation and still offered: a mention beats the switch.
     assert "report-style" in names and "reports" in names
-    # A shadowed skill is not the one OpenCode loads, and a tool is not mentionable.
-    assert "report-old" not in names and "report_tool" not in names
+    # A shadowed skill is not the one OpenCode loads.
+    assert "report-old" not in names
     assert got["inserted"].strip() == "@report-style"
+    assert got["posts"] == []
+
+
+@pytest.mark.parametrize("mode", ["chat", "build"])
+@pytest.mark.parametrize("pick", ["report_tool", "reports-wiki"])
+def test_the_menu_offers_a_tool_and_an_mcp_server_and_picking_one_attaches_nothing(mode, pick):
+    """#633: the Project's tools and MCP servers are named like its skills; the MCP server here is
+    switched off for this conversation and still offered."""
+    got = _run(mode, "rep", pick)
+    assert {"report_tool", "reports-wiki"} <= {r["name"] for r in got["rows"]}
+    assert got["inserted"].strip() == f"@{pick}"
     assert got["posts"] == []
