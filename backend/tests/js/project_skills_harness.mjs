@@ -16,6 +16,8 @@
 //   add-file    `SW.store.addSkills(file, replaces)`
 //   preview-md  `SW.store.previewSkills([two .md files])`
 //   add-pick    `SW.store.addSkills(zip, '', [two folders])`
+//   picker      open Add skills, find `input.found` in a git URL, and report each row's Add button
+//               and the Add all count
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
@@ -50,7 +52,7 @@ const sandbox = {
     const body = String(url).endsWith('/threads') && options.method === 'POST'
       ? { id: 't-new' }
       : { items: input.items || [], builtinSkills: input.builtinSkills || [],
-          builtinSections: input.builtinSections || [] };
+          builtinSections: input.builtinSections || [], found: input.found || [] };
     return { ok: true, status: 200, statusText: 'OK',
              headers: { get: () => 'application/json' },
              json: async () => body, text: async () => JSON.stringify(body) };
@@ -207,6 +209,25 @@ if (act === 'drawn' || act === 'press-door') {
   file.name = 'pack.zip';
   await SW.store.addSkills(file, '', ['skills/a', 'skills/b']);
   report.calls = calls;
+} else if (act === 'picker') {
+  const modal = () => { cursor = 0; return flatten(SW.AddSkillModal({ open: true, onClose() {} })); };
+  modal().find((n) => n.t === 'button' && text(n) === 'Git repository').p.onClick();
+  await settle();
+  modal().find((n) => n.t === sandbox.antd.Input).p.onChange({ target: { value: 'https://x/s.git' } });
+  modal().find((n) => n.t === 'Button' && text(n) === 'Find skills').p.onClick();
+  await settle(); await settle();
+  const nodes = modal();
+  report.rows = nodes.filter((n) => cls(n).startsWith('sw-cat-row')).map((row) => {
+    const drawn = flatten(row);
+    const add = drawn.find((d) => d.t === 'Button');
+    return {
+      name: text(drawn.find((d) => cls(d) === 'sw-cat-name')),
+      text: text(drawn.find((d) => cls(d) === 'sw-cat-main')),
+      add: add ? { disabled: !!add.p.disabled,
+                   tip: drawn.find((d) => d.t === 'Tooltip' && d.c.includes(add)).p.title } : null,
+    };
+  });
+  report.addAll = text(nodes.find((n) => n.t === 'Button' && text(n).startsWith('Add all')));
 }
 
 console.log(JSON.stringify(report));

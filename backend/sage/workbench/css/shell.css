@@ -1121,6 +1121,7 @@ a.sw-topnav-link {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.sw-cat-refused { font-size: var(--fs-12); color: var(--error); line-height: 1.45; }
 .sw-cat-meta {
   display: flex;
   flex-wrap: wrap;

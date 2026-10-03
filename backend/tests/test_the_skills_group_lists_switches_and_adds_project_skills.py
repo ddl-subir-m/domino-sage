@@ -150,6 +150,29 @@ def test_adding_sends_only_the_picked_skill_folders():
                            "&pick=skills%2Fa&pick=skills%2Fb")
 
 
+def test_the_picker_holds_back_every_skill_the_preview_refuses_and_says_why():
+    """#629: a skill with no description was greyed out while `sage-helper` offered Add and was
+    refused on the click. Whatever the reason, the preview's `refused` is what the row says."""
+    reserved = "'sage-helper' starts with 'sage-' or 'sage_', which Sage keeps for its own."
+    found = [
+        {"folder": "ok", "name": "ok", "description": "Fine.", "files": ["SKILL.md"],
+         "refused": ""},
+        {"folder": "two", "name": "two", "description": "Also fine.", "files": ["SKILL.md"],
+         "refused": ""},
+        {"folder": "bare", "name": "bare", "description": "", "files": ["SKILL.md"],
+         "refused": "'bare' has no description in its SKILL.md frontmatter."},
+        {"folder": "mine", "name": "sage-helper", "description": "Helps.", "files": ["SKILL.md"],
+         "refused": reserved},
+    ]
+    report = _run("picker", hash="#/chat", thread="t1", found=found)
+    rows = {r["name"]: r for r in report["rows"]}
+    assert rows["ok"]["add"] == {"disabled": False, "tip": ""}
+    assert rows["bare"]["add"] == {"disabled": True, "tip": found[2]["refused"]}
+    assert rows["sage-helper"]["add"] == {"disabled": True, "tip": reserved}
+    assert reserved in rows["sage-helper"]["text"]
+    assert report["addAll"] == "Add all 2"
+
+
 def test_a_dataset_offers_each_skill_folder_and_each_zip():
     files = [{"path": p} for p in ("SKILL.md", "skills/house/SKILL.md", "skills/house/ref.md",
                                    "packs/brand.ZIP", "data.csv", "notes/SKILL.md.bak",
