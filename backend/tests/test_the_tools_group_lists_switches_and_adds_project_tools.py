@@ -47,9 +47,10 @@ def test_each_project_tool_is_a_row_in_its_own_group_and_says_what_it_is():
     assert rows[0]["menu"][0] == "Mark not read-only" and rows[1]["menu"][0] == "Mark read-only"
 
 
-def test_with_no_conversation_or_app_yet_the_switch_is_off_limits():
-    for hash_ in ("#/chat", "#/build"):
-        assert _run("drawn", hash=hash_)["rows"][0]["disabled"] is True
+def test_only_build_with_no_app_picked_keeps_the_switch_off_limits():
+    """#627: a new Chat conversation opens on the first switch, so only Build waits for an app."""
+    assert _run("drawn", hash="#/build")["rows"][0]["disabled"] is True
+    assert _run("drawn", hash="#/chat")["rows"][0]["disabled"] is False
 
 
 def test_a_switch_in_chat_writes_to_the_conversation_and_in_build_to_the_app():

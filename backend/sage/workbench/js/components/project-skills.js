@@ -17,14 +17,14 @@ window.SW = window.SW || {};
     return 'Uploaded';
   };
 
-  // `where` is what a switch answers for: 'conversation', 'app', or '' when neither exists yet.
+  // `where` is what a switch answers for: 'conversation', 'app', or '' in Build with no app picked.
   SW.SkillRow = function SkillRow({ skill, where, onOpen }) {
     const subtitle = skill.shadowed
       ? SW.brand.text('Hidden: {assistantName} now ships a skill with this name. Rename yours.')
       : [skill.replaces ? `Replaces ${skill.replaces}` : '', sourceLabel(skill.source)]
           .filter(Boolean).join(' · ');
     const tip = !where
-      ? 'Start a conversation or pick an app to switch this off for it.'
+      ? 'Pick an app to switch this off for it.'
       : `${skill.enabled ? 'On' : 'Off'} for this ${where}`;
     return h(
       'div',

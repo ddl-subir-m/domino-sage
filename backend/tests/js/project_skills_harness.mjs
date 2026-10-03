@@ -47,8 +47,10 @@ const sandbox = {
     calls.push({ url: String(url), method: options.method || 'GET',
                  body: typeof options.body === 'string' ? JSON.parse(options.body)
                    : (options.body instanceof Blob ? `<blob ${options.body.size}>` : null) });
-    const body = { items: input.items || [], builtinSkills: input.builtinSkills || [],
-                   builtinSections: input.builtinSections || [] };
+    const body = String(url).endsWith('/threads') && options.method === 'POST'
+      ? { id: 't-new' }
+      : { items: input.items || [], builtinSkills: input.builtinSkills || [],
+          builtinSections: input.builtinSections || [] };
     return { ok: true, status: 200, statusText: 'OK',
              headers: { get: () => 'application/json' },
              json: async () => body, text: async () => JSON.stringify(body) };

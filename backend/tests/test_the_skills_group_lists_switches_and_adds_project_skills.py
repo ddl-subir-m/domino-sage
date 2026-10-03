@@ -1,7 +1,7 @@
 """The resources panel's Skills group: the Project's own skills, a switch each, and a way in (#620).
 
-ADR-0071. A switch answers for the Conversation open in Chat or the app selected in Build, and is
-off-limits before either exists. Drawn through `tests/js/project_skills_harness.mjs`, which records
+ADR-0071. A switch answers for the Conversation open in Chat or the app selected in Build. In Chat
+the first switch opens the Conversation (#627); in Build it waits for an app. Drawn through `tests/js/project_skills_harness.mjs`, which records
 every request the panel sends, so a switch or a removal is proved by what reached the server.
 """
 import json
@@ -51,10 +51,21 @@ def test_a_shadowed_skill_says_to_rename_it_and_cannot_be_switched_on():
     assert charts["checked"] is False and charts["disabled"] is True
 
 
-def test_with_no_conversation_or_app_yet_the_switch_is_off_limits_and_says_why():
-    for hash_ in ("#/chat", "#/build"):
-        row = _run("drawn", hash=hash_)["rows"][0]
-        assert row["disabled"] is True and "Start a conversation" in row["tip"]
+def test_in_build_with_no_app_picked_the_switch_is_off_limits_and_says_why():
+    row = _run("drawn", hash="#/build")["rows"][0]
+    assert row["disabled"] is True and row["tip"] == "Pick an app to switch this off for it."
+
+
+def test_a_switch_in_a_new_conversation_opens_it_and_writes_to_it():
+    """#627: a new Chat conversation has no Thread until its first message, and the switch used to
+    be off-limits until then. Flipping it is intent, like attaching a resource, so it opens one."""
+    row = _run("drawn", hash="#/chat")["rows"][0]
+    assert row["disabled"] is False and row["label"] == "Use tables in this conversation"
+    calls = _run("toggle", hash="#/chat")["calls"]
+    writes = [c for c in calls if c["method"] in ("POST", "PUT")]
+    assert [c["url"] for c in writes] == ["./api/threads",
+                                          "./api/project/extensions/skill%3Atables/enabled"]
+    assert writes[1]["body"] == {"enabled": False, "thread": "t-new", "app": ""}
 
 
 def test_a_switch_in_chat_writes_to_the_conversation_and_in_build_to_the_app():
