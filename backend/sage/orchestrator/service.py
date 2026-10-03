@@ -16475,7 +16475,9 @@ class Orchestrator:
         source_request = (
             intent.valid and intent.label in {"data_answer", "data_artifact"} and not unbounded
             and chat_task.awaiting_source(store, thread_id, prompt)
-            and not any(e["kind"] in {"tool", "mcp"} and e["id"] not in extensions_off
+            and not any(e["kind"] in {"tool", "mcp"} and (
+                            e["id"] not in extensions_off
+                            or re.search(rf"(?<![\w@])@{re.escape(e['name'])}(?![\w-])", prompt))
                         for e in project_extensions.read_manifest(project.record.path))
         )
         artifact_token = (
