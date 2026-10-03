@@ -248,3 +248,12 @@ def test_virtual_env_is_null_when_unset_rather_than_an_empty_string(diag, monkey
 
     monkeypatch.setenv("VIRTUAL_ENV", "/opt/sage/.venv")
     assert diag()["python"]["virtual_env"] == "/opt/sage/.venv"
+
+
+def test_the_page_names_the_interpreter_python_tools_run_under(diag, monkeypatch):
+    """Sage answers from its own venv; a Project's Python tools do not (#634). Both on one page."""
+    monkeypatch.delenv("SAGE_PROJECT_PYTHON", raising=False)
+    assert diag()["python"]["project_python"] is None
+
+    monkeypatch.setenv("SAGE_PROJECT_PYTHON", "/mnt/artifacts/.domino/.persistence/packages/venv/bin/python3")
+    assert diag()["python"]["project_python"].endswith("/packages/venv/bin/python3")

@@ -6,6 +6,12 @@
 # was baked — so cold start is just "boot the server".
 set -euo pipefail
 
+# The interpreter a Project's Python tools run under (#634). Read first, because both the PATH
+# rewrite below and `uv run` put a python3 ahead of it that is not the Project's. In a Domino
+# workspace this is the Project's package venv, which inherits the image's conda site-packages: it
+# sees what the Environment bakes in and what a user pip-installs, and none of Sage's own venv.
+export SAGE_PROJECT_PYTHON="${SAGE_PROJECT_PYTHON:-$(command -v python3 || true)}"
+
 # Where Sage's own code lives. Point this at a mount for a fast inner dev loop (edit on /mnt/code,
 # no image rebuild): e.g. SAGE_APP_HOME=/mnt/code in a git-based sage-source project.
 export SAGE_APP_HOME="${SAGE_APP_HOME:-/opt/sage}"

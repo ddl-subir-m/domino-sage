@@ -15,6 +15,10 @@ import pytest
 from sage.router.models import Mode
 
 from .opencode_server import BINARY
+from .test_a_custom_tool_is_added_in_typescript_or_python import (  # noqa: F401  (fixture)
+    PROJECT_ONLY,
+    project_python,
+)
 from .test_fragmented_tool_arguments_reach_real_opencode import Rig
 from .test_turn_keepalive import _served
 
@@ -85,4 +89,39 @@ def test_a_project_tools_answer_is_in_the_next_chat_request(tmp_path, monkeypatc
     assert part["state"]["output"] == ANSWER
     told = [m for m in rig.gateway.seen[1]["messages"] if m.get("role") == "tool"]
     assert [(m.get("tool_call_id"), m.get("content")) for m in told] == [("call_fx", ANSWER)], told
+    assert not rig.gateway.scripts and not rig.gateway.failures
+
+
+@pytest.mark.opencode
+@pytest.mark.skipif(not BINARY.exists(), reason="the pinned OpenCode binary is not installed")
+def test_a_python_tool_runs_under_the_projects_python_inside_opencode(tmp_path, monkeypatch,
+                                                                     project_python):  # noqa: F811
+    """The bridge OpenCode loads reads `SAGE_PROJECT_PYTHON` from the environment OpenCode inherits,
+    so a package only the Project's interpreter has is importable when the model calls it (#634)."""
+    monkeypatch.setenv("SAGE_PROJECT_PYTHON", str(project_python))
+    rig = Rig(tmp_path, monkeypatch)
+    rig.project.control.pick("domino/gemini-3.7-flash")
+    rig.project.control.set_mode(Mode.IMPLEMENT)
+    rig.orch.add_extension({"kind": "tool", "python": PROJECT_ONLY})
+    answer = '{"rate": 0.92}'
+
+    def call_rate(request):
+        offered = {t["function"]["name"] for t in request.get("tools", [])}
+        assert "rate" in offered, sorted(offered)
+        yield from _chat({"tool_calls": [{"index": 0, "id": "call_rate", "type": "function",
+                                          "function": {"name": "rate", "arguments": "{}"},
+                                          "extra_content": {"google": {"thought_signature": "sig"}}}]},
+                         "tool_calls")
+
+    rig.gateway.expect(call_rate)
+    rig.gateway.expect(lambda request: _chat({"content": "0.92."}, "stop"))
+    with _served(rig.app) as sage_url, rig.opencode(sage_url):
+        with rig.turn():
+            messages = rig.prompt("What is the planning rate? Use rate.", inferences=2)
+
+    [part] = [p for p in rig.tool_parts(messages) if p.get("tool") == "rate"]
+    assert part["state"]["status"] == "completed", part
+    assert part["state"]["output"] == answer
+    told = [m for m in rig.gateway.seen[1]["messages"] if m.get("role") == "tool"]
+    assert [(m.get("tool_call_id"), m.get("content")) for m in told] == [("call_rate", answer)], told
     assert not rig.gateway.scripts and not rig.gateway.failures

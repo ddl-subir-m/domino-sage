@@ -9,8 +9,10 @@ on a TypeScript upload, and the panel can change either.
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -105,11 +107,11 @@ def test_a_python_tool_never_overwrites_a_file_sage_did_not_write(tmp_path):
     assert not (tmp_path / ".opencode" / "tools" / "adder.py").exists()
 
 
-def _call_bridge(tmp_path: Path, args: dict) -> subprocess.CompletedProcess:
+def _call_bridge(tmp_path: Path, args: dict, name: str = "adder") -> subprocess.CompletedProcess:
     """Run the generated `execute` under node: the bridge is plain JS apart from its extension."""
     tools = tmp_path / ".opencode" / "tools"
-    shutil.copy(tools / "adder.ts", tools / "adder.mjs")
-    script = (f"import('./adder.mjs').then((m) => m.default.execute({json.dumps(args)}))"
+    shutil.copy(tools / f"{name}.ts", tools / f"{name}.mjs")
+    script = (f"import('./{name}.mjs').then((m) => m.default.execute({json.dumps(args)}))"
               ".then((out) => process.stdout.write('OK:' + out),"
               " (err) => process.stdout.write('ERR:' + err.message))")
     return subprocess.run(["node", "-e", script], cwd=tools, capture_output=True, text=True,
@@ -131,6 +133,86 @@ def test_an_exception_in_run_is_the_tools_error(tmp_path):
     out = _call_bridge(tmp_path, {"a": -1, "b": 3})
     assert out.stdout.startswith("ERR:"), out.stdout + out.stderr
     assert "ValueError: adder refuses negative numbers" in out.stdout
+
+
+# ---- the Project's interpreter, not Sage's (#634) ------------------------------------------------
+
+PROJECT_ONLY = '''\
+import only_in_project_634
+
+SPEC = {"name": "rate", "description": "The planning rate.", "args": {}, "readOnly": True}
+
+
+def run():
+    return {"rate": only_in_project_634.RATE}
+'''
+
+
+@pytest.fixture()
+def project_python(tmp_path_factory):
+    """A `python3` that imports a module Sage's own interpreter cannot, as Domino's Project venv
+    imports what the Environment and the user installed while Sage runs in `/opt/sage/backend/.venv`."""
+    root = tmp_path_factory.mktemp("project-python")
+    (root / "site").mkdir()
+    (root / "site" / "only_in_project_634.py").write_text("RATE = 0.92\n")
+    exe = root / "bin" / "python3"
+    exe.parent.mkdir()
+    exe.write_text(f"#!/bin/sh\nPYTHONPATH={shlex.quote(str(root / 'site'))} "
+                   f"exec {shlex.quote(sys.executable)} \"$@\"\n")
+    exe.chmod(0o755)
+    return exe
+
+
+def test_without_the_projects_python_a_tool_sees_only_sages(tmp_path, monkeypatch):
+    monkeypatch.delenv("SAGE_PROJECT_PYTHON", raising=False)
+    with pytest.raises(extensions.ExtensionError, match="only_in_project_634"):
+        extensions.add(tmp_path, {"kind": "tool", "python": PROJECT_ONLY})
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not on PATH")
+def test_a_python_tool_is_read_and_run_by_the_projects_python(tmp_path, monkeypatch,
+                                                              project_python):
+    monkeypatch.setenv("SAGE_PROJECT_PYTHON", str(project_python))
+    entry = extensions.add(tmp_path, {"kind": "tool", "python": PROJECT_ONLY})
+    assert entry["id"] == "tool:rate"
+    out = _call_bridge(tmp_path, {}, "rate")
+    assert out.stdout == 'OK:{"rate": 0.92}', out.stdout + out.stderr
+
+
+def test_the_bridge_names_no_interpreter_path(tmp_path, monkeypatch, project_python):
+    """The bridge is committed with the Project, and the interpreter's path differs per image."""
+    monkeypatch.setenv("SAGE_PROJECT_PYTHON", str(project_python))
+    extensions.add(tmp_path, {"kind": "tool", "python": PROJECT_ONLY})
+    bridge = (tmp_path / ".opencode" / "tools" / "rate.ts").read_text()
+    assert str(project_python) not in bridge
+    assert "process.env.SAGE_PROJECT_PYTHON" in bridge
+
+
+APP_SH = Path(__file__).resolve().parents[2] / "environment" / "app.sh"
+
+
+def test_app_sh_records_the_projects_python_before_it_moves_path():
+    """Line by line, `/usr/local/bin:/usr/bin` and then `uv run` each put a python3 that is not the
+    Project's ahead of it, so the capture has to come first."""
+    sh = APP_SH.read_text()
+    [line] = [ln for ln in sh.splitlines() if ln.startswith("export SAGE_PROJECT_PYTHON=")]
+    assert sh.index(line) < sh.index('export PATH="/usr/local/bin:/usr/bin:${PATH}"')
+    assert sh.index(line) < sh.index("exec uv run")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not on PATH")
+def test_app_sh_takes_the_first_python3_unless_one_is_named(project_python):
+    [line] = [ln for ln in APP_SH.read_text().splitlines()
+              if ln.startswith("export SAGE_PROJECT_PYTHON=")]
+    run = f'set -euo pipefail\n{line}\nprintf %s "$SAGE_PROJECT_PYTHON"'
+    path = f"{project_python.parent}:/usr/bin:/bin"
+    found = subprocess.run(["bash", "-c", run], env={"PATH": path},
+                           capture_output=True, text=True, check=True)
+    assert found.stdout == str(project_python)
+    named = subprocess.run(["bash", "-c", run], env={"PATH": path,
+                                                     "SAGE_PROJECT_PYTHON": "/named/python3"},
+                           capture_output=True, text=True, check=True)
+    assert named.stdout == "/named/python3"
 
 
 # ---- upload and git ------------------------------------------------------------------------------
