@@ -6135,7 +6135,7 @@ window.SW = window.SW || {};
       return new Promise((resolve) => {
         antd.Modal.confirm({
           title: `Remove ${ext.name}?`,
-          content: 'Removes it from this project for everyone, in every conversation and app.',
+          content: 'Deletes its files from this project, for everyone. To stop using it without losing it, switch it off instead.',
           okText: 'Remove',
           okButtonProps: { danger: true },
           onOk: async () => {

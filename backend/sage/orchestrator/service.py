@@ -26262,6 +26262,7 @@ class Orchestrator:
         """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
         entry = project_extensions.add(self._chat_project().record.path, body)
         self._reload_extensions()
+        self._save_project_record("project skills")
         return entry
 
     def add_skills(self, skills: list[dict], *, replaces: str, source: dict) -> list[dict]:
@@ -26269,6 +26270,7 @@ class Orchestrator:
         entries = project_extensions.add_skills(self._chat_project().record.path, skills,
                                                 replaces=replaces, source=source)
         self._reload_extensions()
+        self._save_project_record("project skills")
         return entries
 
     @contextlib.contextmanager
@@ -26309,6 +26311,7 @@ class Orchestrator:
         removed = project_extensions.remove(self._chat_project().record.path, ext_id)
         if removed:
             self._reload_extensions()
+            self._save_project_record("project skills")
         return removed
 
     def skill_files(self, ext_id: str) -> list[dict]:
@@ -26319,6 +26322,7 @@ class Orchestrator:
         """Raises KeyError for an unknown skill, `ExtensionError` for a `replaces` it cannot take."""
         entry = project_extensions.set_replaces(self._chat_project().record.path, ext_id, replaces)
         self._reload_extensions()
+        self._save_project_record("project skills")
         return entry
 
     def update_skill_from_source(self, ext_id: str) -> dict:
@@ -26356,6 +26360,7 @@ class Orchestrator:
             [skill], skipped = project_extensions.skills_in_files(files, where, [folder])
         updated = project_extensions.update_skill(root, ext_id, skill, fresh)
         self._reload_extensions()
+        self._save_project_record("project skills")
         return {"item": updated, "previous": source, "skipped": skipped}
 
     def set_extension_enabled(self, ext_id: str, enabled: bool, *, thread: str = "",
