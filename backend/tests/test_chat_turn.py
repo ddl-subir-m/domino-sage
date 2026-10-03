@@ -3066,11 +3066,16 @@ class _ForgetfulOpenCode(FakeOpenCode):
     Overriding `messages` is the whole point: `FakeOpenCode` answers `[]` for an unknown id, and an
     empty list is a LIVE session with nothing in it. A test without this override would take the
     reuse path and pass while proving nothing (#427).
+
+    The answers run past one turn's share of the summary, so a rebuild has to cut them and the
+    person is told (#635). `_ShortForgetfulOpenCode` is the chat that is carried whole.
     """
 
+    ANSWERS = ("There were 41,002 events from 3,118 users. " + "By day, " * 60,
+               "Here it is again. " + "By day, " * 60)
+
     def __init__(self, workspace: Path) -> None:
-        super().__init__(workspace, [Turn(text="There were 41,002 events from 3,118 users."),
-                                     Turn(text="Here it is again.")])
+        super().__init__(workspace, [Turn(text=a) for a in self.ANSWERS])
         self.forgotten: set[str] = set()
 
     def restart(self) -> None:
@@ -3083,6 +3088,29 @@ class _ForgetfulOpenCode(FakeOpenCode):
                 "404 Not Found", request=request,
                 response=httpx.Response(404, request=request))
         return super().messages(session_id, limit=limit)
+
+
+class _ShortForgetfulOpenCode(_ForgetfulOpenCode):
+    ANSWERS = ("There were 41,002 events from 3,118 users.", "Here it is again.")
+
+
+def test_a_short_chat_is_carried_whole_after_a_restart_and_no_line_says_otherwise(tmp_path: Path):
+    """#635: two short turns, a workspace restart, and the transcript said "This chat was
+    summarized, so some details may be missing" — about a chat the new session got word for word."""
+    orch, oc = _orch(tmp_path, client=_ShortForgetfulOpenCode)
+    tid = orch.create_thread()["id"]
+    list(orch.chat_stream(tid, "how many mixpanel events in the last 30 days?"))
+
+    oc.restart()
+    events = list(orch.chat_stream(tid, "now try again"))
+
+    assert len(oc.sessions) == 2
+    sent = oc.prompts[-1]["text"]
+    assert "how many mixpanel events in the last 30 days?" in sent
+    assert "There were 41,002 events from 3,118 users." in sent
+    assert not any(e.get("type") == recall.REBUILT for e in events)
+    store = ThreadStore(orch.project(start_preview=False).record.path)
+    assert not any(e.get("type") == recall.REBUILT for e in store.read_history(tid))
 
 
 def test_a_lost_session_is_rebuilt_from_the_transcript_and_the_person_is_told(tmp_path: Path):

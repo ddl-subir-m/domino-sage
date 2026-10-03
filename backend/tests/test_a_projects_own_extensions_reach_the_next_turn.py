@@ -264,6 +264,20 @@ def test_a_read_only_turn_gets_only_tools_marked_read_only(tmp_path, arm):
     assert names == ["read", "lookup", "crm_search"]
 
 
+def test_a_chat_question_keeps_every_switched_on_extension_tool_whatever_its_mark(tmp_path):
+    """#635: "Who owns Globex?" with `acme_lookup` on, and "use deepwiki" with DeepWiki on, were
+    both read-only Chat questions, and neither tool carried the mark, so neither was offered."""
+    control = ModelControl(mode=Mode.AUTO)
+    control.set_extensions(_catalog(tmp_path))
+    control.arm_chat("thr_1")
+    control.arm_read_only("question")
+    names, _ = _sent(control)
+    assert names == ["read", "lookup", "push", "push_many", "crm_search", "crm_update", "crm_other"]
+
+    control.arm_extensions_off(frozenset({"tool:push", "mcp:crm"}))
+    assert _sent(control)[0] == ["read", "lookup"]
+
+
 def test_a_data_artifact_turn_keeps_its_enabled_extension_tools(tmp_path):
     """That lane is an allowlist, which otherwise strips any tool it does not name, silently."""
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)

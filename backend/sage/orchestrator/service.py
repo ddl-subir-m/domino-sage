@@ -16873,7 +16873,7 @@ class Orchestrator:
                 # decide they were worth carrying, and tell the person a memory had been rebuilt on
                 # a session that never lost one.
                 store.clear_rebuild_pending(thread_id)
-            if rebuilt:
+            if rebuilt and recall.reseed_dropped(prompt_history):
                 # The half that is not about the model (ADR-0060). A repair nobody is told about is
                 # the same defect one level quieter: the person asks a follow-up that leans on a
                 # detail the summary dropped, gets a second confusing answer, and now has LESS to go
@@ -16897,6 +16897,9 @@ class Orchestrator:
                 # An empty `rebuilt` means there was nothing to carry — a Thread on its first turn,
                 # or one whose session was dropped by a clear of either scope, which has already
                 # drawn its own divider. Neither is a seam, and neither gets a row.
+                #
+                # Nor does a rebuild that carried everything said (#635): the row's whole message is
+                # "some details may be missing", which on a two-turn chat is untrue.
                 rebuilt_ev = {"type": recall.REBUILT}
                 store.append_history(thread_id, rebuilt_ev)
                 yield rebuilt_ev

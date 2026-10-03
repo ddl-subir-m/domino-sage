@@ -594,8 +594,8 @@ window.SW = window.SW || {};
 
     const attachMenu = {
       items: [
-        { key: 'upload', label: 'Upload a file' },
-        { key: 'browse', label: SW.brand.text('Browse {platformName}…') },
+        { key: 'upload', label: 'Upload file' },
+        { key: 'browse', label: SW.brand.text('Browse {platformName}') },
         ...(showMode
           ? [
               { type: 'divider' },

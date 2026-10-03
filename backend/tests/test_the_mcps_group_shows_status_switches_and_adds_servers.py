@@ -75,7 +75,7 @@ def test_the_add_menu_and_the_group_door_open_the_mcp_dialog():
     drawn = _run("drawn", hash="#/chat", thread="t1")
     assert "mcp" in drawn["menuKeys"] and drawn["mcpDialogOpen"] is False
     pressed = _run("press-door", hash="#/chat", thread="t1")
-    assert pressed["doorLabel"] == "Add an MCP server"
+    assert pressed["doorLabel"] == "Add MCP server"
     assert pressed["mcpDialogOpen"] is True and pressed["skillDialogOpen"] is False
 
 

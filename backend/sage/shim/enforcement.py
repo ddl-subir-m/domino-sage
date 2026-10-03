@@ -720,8 +720,10 @@ class EnforcementShim:
                 tools.append(tool)
             request = {**request, "tools": tools}
         # The Project's own tools (ADR-0071): gone when this Thread or App switched them off, and on
-        # a read-only turn unless marked read-only. The mark is the tool's own claim; the tree-hash
-        # revert stays the backstop for a tool that writes anyway.
+        # an Ask or plan turn unless marked read-only. The mark is the tool's own claim; the tree-hash
+        # revert stays the backstop for a tool that writes anyway. A Chat question keeps every one
+        # that is switched on (#635): most never carry the mark — DeepWiki's server sends no
+        # `readOnlyHint` — and a question is exactly what a lookup tool is for.
         extensions = state.extensions
         messages = request.get("messages") if isinstance(request.get("messages"), list) else []
         # An @-mention is explicit intent, so what it names is on for this turn whatever its switch
@@ -731,7 +733,8 @@ class EnforcementShim:
         named_ids = ({extensions.named_tools[n] for n in named_tools}
                      | {extensions.servers[n] for n in named_servers})
         if extensions and isinstance(request.get("tools"), list):
-            read_only_turn = state.mode is Mode.ASK or state.read_only_turn
+            read_only_turn = state.mode is Mode.ASK or (
+                state.read_only_turn and not (chat_id and state.read_only_reason == "question"))
             kept = []
             for tool in request["tools"]:
                 owner = extensions.owner(str((tool.get("function") or {}).get("name", "")))

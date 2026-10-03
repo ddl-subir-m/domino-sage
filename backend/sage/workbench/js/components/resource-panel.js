@@ -94,14 +94,14 @@ window.SW = window.SW || {};
     },
     // The Project's own skills (ADR-0071). Not from the catalog: the rows are `state.extensions`,
     // and the door opens the Add skill dialog.
-    { key: 'skills', label: 'Skills', extension: true, addLabel: 'Add a skill',
+    { key: 'skills', label: 'Skills', extension: true, addLabel: 'Add skill',
       subgroups: [{ kind: 'skill' }] },
     // The Project's own custom tools (ADR-0071), the same way: the door opens Add tool.
-    { key: 'tools', label: 'Tools', extension: true, addLabel: 'Add a tool',
+    { key: 'tools', label: 'Tools', extension: true, addLabel: 'Add tool',
       subgroups: [{ kind: 'tool' }] },
     // The Project's own MCP servers (ADR-0071), the same way: rows from `state.extensions`, each
     // with OpenCode's status, and the door opens the Add MCP server dialog.
-    { key: 'mcp', label: 'MCPs', extension: true, addLabel: 'Add an MCP server',
+    { key: 'mcp', label: 'MCPs', extension: true, addLabel: 'Add MCP server',
       subgroups: [{ kind: 'mcp' }] },
     // The Project's own Uploads. It was a collapsible drawer pinned to the bottom of the panel —
     // its own pattern, its own chevron, its own empty sentence — for a list that behaves like every
@@ -110,7 +110,7 @@ window.SW = window.SW || {};
     //
     // `placeholder` for the opposite reason to the two above: a file does not come from the
     // catalog at all, it comes from Upload, so `openCatalog('file')` has nothing to open. The head
-    // draws no `+`; the panel's own Add menu carries Upload a file.
+    // draws no `+`; the panel's own Add menu carries Upload file.
     { key: 'file', label: 'Files', placeholder: true, subgroups: [{ kind: 'file' }] },
   ];
 
@@ -654,11 +654,11 @@ window.SW = window.SW || {};
 
     const addMenu = {
       items: [
-        { key: 'browse', label: SW.brand.text('Browse {platformName}…') },
-        { key: 'upload', label: 'Upload a file' },
-        { key: 'skill', label: 'Add a skill…' },
-        { key: 'mcp', label: 'Add an MCP server…' },
-        { key: 'tool', label: 'Add a tool…' },
+        { key: 'browse', label: SW.brand.text('Browse {platformName}') },
+        { key: 'upload', label: 'Upload file' },
+        { key: 'skill', label: 'Add skill' },
+        { key: 'mcp', label: 'Add MCP server' },
+        { key: 'tool', label: 'Add tool' },
       ],
       onClick: ({ key }) => {
         if (key === 'browse') return SW.store.openCatalog();
