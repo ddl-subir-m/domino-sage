@@ -28,10 +28,12 @@ vm.runInContext(fs.readFileSync(ROOT + 'js/util.js', 'utf8'), sandbox, { filenam
 const math = [];
 const plain = [];
 const code = [];
+const lists = [];
 function collect(node) {
   if (node === null || node === undefined || node === false || node === true) return;
   if (Array.isArray(node)) { node.forEach(collect); return; }
   if (typeof node === 'string') { plain.push(node); return; }
+  if (node.t === 'ul' || node.t === 'ol') lists.push(node.c.flat(Infinity).length);
   if (node.t === 'code') { code.push(node.c.flat(Infinity).join('')); return; }
   if (node.p && node.p.className === 'sw-math') {
     const html = node.p.dangerouslySetInnerHTML.__html;
@@ -46,4 +48,4 @@ function collect(node) {
   collect(node.c);
 }
 collect(sandbox.SW.util.markdown(text));
-console.log(JSON.stringify({ math, plain: plain.join(''), code }));
+console.log(JSON.stringify({ math, plain: plain.join(''), code, lists }));

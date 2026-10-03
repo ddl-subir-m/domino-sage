@@ -5911,6 +5911,25 @@ def _tool_detail(tool: str, part: dict) -> str:
     return ""
 
 
+def _extension_tool_detail(part: dict) -> str:
+    """A Project tool's arguments as `key=value`, clipped to one line: the call is the Project's own
+    and its arguments are the only thing that tells one call from the next. Nested values are
+    elided, not dumped."""
+    state = part.get("state")
+    inp = (state or {}).get("input") if isinstance(state, dict) else None
+    if not isinstance(inp, dict):
+        return ""
+    pairs = []
+    for key, value in inp.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            text = value if isinstance(value, str) else json.dumps(value)
+            pairs.append(f"{key}={' '.join(text.split())}")
+        else:
+            pairs.append(f"{key}=…")
+    detail = ", ".join(pairs)
+    return detail if len(detail) <= _TOOL_DETAIL_MAX else detail[:_TOOL_DETAIL_MAX - 1] + "…"
+
+
 def _tool_duration_ms(part: dict) -> int | None:
     """How long a tool call took, in ms, or None when OpenCode did not time it.
 
@@ -16427,8 +16446,8 @@ class Orchestrator:
         # because the poison survives one too: `_recover_session` reads the session id back off disk,
         # and an un-armed restart would refuse every turn all over again.
         withheld_token = project.control.arm_withheld(recall.withheld(history))
-        extensions_token = project.control.arm_extensions_off(
-            self._extensions_off((store.get(thread_id) or {}).get("extensions")))
+        extensions_off = self._extensions_off((store.get(thread_id) or {}).get("extensions"))
+        extensions_token = project.control.arm_extensions_off(extensions_off)
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         # `investigating` exempts this Thread from both bounded lanes, and that is a SCOPE decision
         # before it is a latency one. #364 bounds a turn that only answers a question; while an
@@ -16471,9 +16490,14 @@ class Orchestrator:
         # loading a skill and listing folders before it asked. The attach → offer → accept path is
         # untouched: `resolve` matches the reply to the kept question, the funnel draws the one
         # card, and the accepted replay runs the question under the grant.
+        # A Project tool or MCP server switched on for this Thread may be the source (#631).
         source_request = (
             intent.valid and intent.label in {"data_answer", "data_artifact"} and not unbounded
             and chat_task.awaiting_source(store, thread_id, prompt)
+            and not any(e["kind"] in {"tool", "mcp"} and (
+                            e["id"] not in extensions_off
+                            or re.search(rf"(?<![\w@])@{re.escape(e['name'])}(?![\w-])", prompt))
+                        for e in project_extensions.read_manifest(project.record.path))
         )
         artifact_token = (
             project.control.arm_chat_artifact()
@@ -22654,7 +22678,9 @@ class Orchestrator:
                             if tool in WRITE_TOOLS and status == "completed":
                                 _note_written_file_errors(project, args)
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
-                                  "detail": _tool_detail(tool, part)}
+                                  "detail": (_extension_tool_detail(part)
+                                             if extensions and extensions.owner(tool)
+                                             else _tool_detail(tool, part))}
                             ms = _tool_duration_ms(part)
                             if ms is not None:
                                 ev["durationMs"] = ms

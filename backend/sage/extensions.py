@@ -100,6 +100,9 @@ class ExtensionCatalog:
     # Built-in skill or instruction section -> the id of the Project skill that replaces it while
     # enabled.
     replaced: dict[str, str] = field(default_factory=dict)
+    # Custom tools and MCP servers by the name a person @-mentions, -> their ids.
+    named_tools: dict[str, str] = field(default_factory=dict)
+    servers: dict[str, str] = field(default_factory=dict)
 
     def owner(self, tool_name: str) -> ToolOwner | None:
         name = tool_name.lower()
@@ -122,6 +125,8 @@ def catalog_of(entries: list[dict]) -> ExtensionCatalog:
     prefixes: dict[str, str] = {}
     skills: dict[str, str] = {}
     replaced: dict[str, str] = {}
+    named_tools: dict[str, str] = {}
+    servers: dict[str, str] = {}
     for entry in entries:
         ext_id, name = entry["id"], entry["name"]
         if entry["kind"] == "skill":
@@ -131,11 +136,13 @@ def catalog_of(entries: list[dict]) -> ExtensionCatalog:
         elif entry["kind"] == "tool":
             tools[name] = ToolOwner(ext_id, bool(entry.get("readOnly")))
             prefixes[name + "_"] = ext_id
+            named_tools[name] = ext_id
         elif entry["kind"] == "mcp":
             prefixes[name + "_"] = ext_id
+            servers[name] = ext_id
             for tool, read_only in (entry.get("tools") or {}).items():
                 tools[f"{name}_{tool}".lower()] = ToolOwner(ext_id, bool(read_only))
-    return ExtensionCatalog(tools, prefixes, skills, replaced)
+    return ExtensionCatalog(tools, prefixes, skills, replaced, named_tools, servers)
 
 
 def skill_description(text: str) -> str:

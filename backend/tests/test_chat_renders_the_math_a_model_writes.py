@@ -48,6 +48,9 @@ def test_the_reported_line_is_typeset():
     (r"so \(x^2\) grows", False, "x^2"),
     ("$$\n\\sum_i p_i \\log \\frac{p_i}{q_i}\n$$", True, "\\sum_i p_i \\log \\frac{p_i}{q_i}"),
     (r"\[ \sigma = 1 \]", True, r"\sigma = 1"),
+    # #632: an escaped dollar inside a formula is part of it, not where it ends.
+    (r"Margin: $\frac{\$130,000}{\$420,000} \approx 30.95\%$ overall", False,
+     r"\frac{\$130,000}{\$420,000} \approx 30.95\%"),
 ])
 def test_each_delimiter_a_model_uses(text, display, tex):
     got = render(text)
@@ -107,6 +110,16 @@ def test_tex_quoted_as_code_stays_code():
 def test_math_inside_a_table_cell_and_a_list_item():
     got = render("| metric | value |\n|---|---|\n| $\\alpha$ | 0.05 |\n\n- $\\beta = 0.2$")
     assert [m["tex"] for m in got["math"]] == [r"\alpha", r"\beta = 0.2"]
+
+
+def test_a_list_right_under_its_lead_in_line_is_a_list():
+    # The reported answer: no blank line between the lead-in and its bullets.
+    got = render("If the -$5k was intended as a positive cost of $5k:\n"
+                 "* **Profit:** **$95k** ($100,000 \u2212 $5,000)\n"
+                 "* **Gross Margin:** **95.0%** ($\\frac{\\$95,000}{\\$100,000}$)")
+    assert got["lists"] == [2]
+    assert "* " not in got["plain"]
+    assert [m["tex"] for m in got["math"]] == [r"\frac{\$95,000}{\$100,000}"]
 
 
 def test_bad_tex_is_shown_as_an_error_not_a_crash():

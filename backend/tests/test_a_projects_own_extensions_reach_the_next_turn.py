@@ -206,6 +206,27 @@ def test_a_skill_named_with_at_is_loaded_and_beats_its_switch_for_that_turn(tmp_
     assert "<name>beta</name>" not in _sent(control)[1]["messages"][0]["content"]
 
 
+@pytest.mark.parametrize("user, offered, said", [
+    ("Push it with @push.", ["read", "lookup", "push", "push_many"],
+     "The person named these tools with @: push. Call them to answer."),
+    ("Ask @crm who owns it.", ["read", "lookup", "crm_search", "crm_update", "crm_other"],
+     "The person named these MCP servers with @: crm. Use their tools to answer."),
+])
+def test_a_tool_or_server_named_with_at_beats_its_switch_and_the_read_only_rule(
+        tmp_path, user, offered, said):
+    """#633: both switched off, on a read-only turn; named, each is offered and asked for — for
+    that turn only."""
+    control = ModelControl(mode=Mode.AUTO)
+    control.set_extensions(_catalog(tmp_path))
+    control.arm_read_only("question")
+    control.arm_extensions_off(frozenset({"tool:push", "mcp:crm"}))
+    names, sent = _sent(control, user=user)
+    assert names == offered
+    assert said in sent["messages"][0]["content"]
+    names, sent = _sent(control)
+    assert names == ["read", "lookup"] and "with @:" not in sent["messages"][0]["content"]
+
+
 @pytest.mark.parametrize("user", ["mail bob@alpha.com", "use @alphabet", "use @alpha-x",
                                   [{"type": "text", "text": "no mention"}]])
 def test_only_a_whole_at_token_names_a_skill(tmp_path, user):
@@ -420,6 +441,27 @@ def test_a_reverted_read_only_turn_names_the_extension_tool_that_ran(tmp_path, r
     error = next(e for e in events if e["type"] == "error")
     assert "your tool `lookup` edited files" in error["message"]
     assert "the agent" not in error["message"]
+
+
+def test_a_build_log_row_for_a_project_tool_carries_its_arguments(tmp_path):
+    """A Build turn called `fx_rate` ten times and every row read `fx_rate` alone, so a run of
+    identical calls and a run of different ones looked the same in "Show the turns"."""
+    args = {"amount": 1, "from": "USD", "to": "EUR", "opts": {"round": 2}}
+    turn = Turn(text="Done.", tools=["fx_rate", "glob"],
+                tool_inputs={"fx_rate": args, "glob": {"amount": 1}})
+    orch, _, _ = _build(tmp_path, [turn])
+    orch.create_app(stack="react-vite")
+    project = orch.project(start_preview=False)
+    orch.add_extension({"kind": "tool", "name": "fx_rate", "code": TOOL_TS, "readOnly": True})
+    project.control.set_mode(Mode.ASK)
+
+    events = list(orch.build_stream("What is 1 USD in EUR?"))
+
+    rows = {e["tool"]: e["detail"] for e in events if e.get("kind") == "tool"}
+    assert rows["fx_rate"] == "amount=1, from=USD, to=EUR, opts=…"
+    assert rows["glob"] == "", "a built-in tool keeps its own label"
+    logged = [r for r in project.workspace.read_history() if r.get("tool") == "fx_rate"]
+    assert [r["detail"] for r in logged] == ["amount=1, from=USD, to=EUR, opts=…"]
 
 
 # ---- /api/project/extensions and /api/diag -----------------------------------------------------

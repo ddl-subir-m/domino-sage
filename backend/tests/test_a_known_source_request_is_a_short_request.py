@@ -136,6 +136,34 @@ def test_the_known_source_request_carries_no_tools_and_a_short_prompt(tmp_path: 
     assert pending == {**pending, "question": ASK, "awaiting": "source"}
 
 
+LOOKUP_TS = "export default { description: 'Who owns an account.', args: {}, async execute() { return '' } }\n"
+
+
+def test_a_project_tool_switched_on_may_be_the_source_so_the_turn_is_an_ordinary_question(
+        tmp_path: Path, monkeypatch):
+    """#631: "Who owns the Globex account?" with `acme_lookup` added was asked for a CRM, and the
+    tool was never offered. A Project tool can be the source; switched off, it cannot."""
+    monkeypatch.setitem(globals(), "OFFERED", OFFERED + ("acme_lookup",))
+    orch, oc, tid = _setup(tmp_path, turns=[Turn(text="Priya Shah."), Turn(text="Attach it."),
+                                            Turn(text="Priya Shah.")])
+    orch.add_extension({"kind": "tool", "name": "acme_lookup", "code": LOOKUP_TS,
+                        "readOnly": True})
+    list(orch.chat_stream(tid, ASK))
+    assert "acme_lookup" in oc.profiles[-1]["tools"]
+
+    other = orch.create_thread()["id"]
+    orch.set_extension_enabled("tool:acme_lookup", False, thread=other)
+    list(orch.chat_stream(other, ASK))
+    assert oc.profiles[-1]["tools"] == []
+
+    # Named with @, a switched-off tool is offered for that turn (#633), so it may be the source.
+    named = orch.create_thread()["id"]
+    orch.set_extension_enabled("tool:acme_lookup", False, thread=named)
+    list(orch.chat_stream(named, f"@acme_lookup {ASK}"))
+    assert oc.profiles[-1]["tools"] != []
+    assert oc.profiles[-1]["bytes"] > 1200
+
+
 def test_the_known_source_request_spends_the_classifier_and_one_toolless_turn(tmp_path: Path):
     """Two model calls, as before: the classifier is the second signal the lane needs (the pending
     task alone admits "Investigate why the sky is blue"), and then one send with no tools, so the

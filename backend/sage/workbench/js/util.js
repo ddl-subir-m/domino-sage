@@ -1315,6 +1315,17 @@ window.SW = window.SW || {};
             )
           );
         }
+        // A list may start right under a lead-in line with no blank line between them.
+        const item = (l) => /^\s*(\d+\.|[-*])\s/.test(l);
+        const start = lines.findIndex(item);
+        if (start > 0 && lines.slice(start).every(item)) {
+          return h(
+            'div',
+            { key: blockIndex },
+            h('p', null, SW.util.inline(lines.slice(0, start).join('\n'))),
+            SW.util.markdown(lines.slice(start).join('\n'))
+          );
+        }
         return h('p', { key: blockIndex }, SW.util.inline(block));
       });
     },
@@ -1402,7 +1413,7 @@ window.SW = window.SW || {};
     // in backticks stays code. Without KaTeX on the page the source is left as written.
     inline(text) {
       const parts = String(text).split(
-        /(`[^`]+`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)[^$\n]*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
+        /(`[^`]+`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)(?:\\\$|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
       );
       // Odd indices are what the pattern captured; an even one is prose even when it starts with
       // `$` — a table cell reading `$420k` is money, not a formula missing its closing dollar.
