@@ -2,8 +2,8 @@
 
 ADR-0071. The files go in OpenCode's project slot, `.opencode/` at the Project root; OpenCode reads
 them once per directory, so Sage disposes the instance after a change — never under a running turn.
-The shim then decides per turn: a Thread or App can switch an extension off, and a read-only turn
-gets only the tools marked read-only.
+The shim then decides per turn: a Thread or App can switch an extension off. There is no read-only
+mark (#636): a switched-on tool is offered on every turn.
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def test_each_kind_lands_in_the_project_slot_and_the_manifest(tmp_path):
     extensions.add(tmp_path, {"kind": "mcp", "name": "crm",
                               "config": {"type": "remote", "url": "https://crm.example/mcp",
                                          "headers": {"Authorization": "Bearer {env:CRM_TOKEN}"}},
-                              "tools": {"search": True, "update": False}})
+                              "tools": ["update", "search"]})
 
     slot = tmp_path / ".opencode"
     assert (slot / "skills" / "alpha" / "SKILL.md").read_text().startswith("---\nname: alpha")
@@ -64,8 +64,8 @@ def test_each_kind_lands_in_the_project_slot_and_the_manifest(tmp_path):
     assert set(entries) == {"skill:alpha", "tool:lookup", "mcp:crm"}
     assert entries["skill:alpha"]["files"] == [".opencode/skills/alpha/SKILL.md",
                                                ".opencode/skills/alpha/ref/a.md"]
-    assert entries["tool:lookup"]["readOnly"] is True
-    assert entries["mcp:crm"]["tools"] == {"search": True, "update": False}
+    assert "readOnly" not in entries["tool:lookup"]
+    assert entries["mcp:crm"]["tools"] == ["search", "update"]
     assert all(e["defaultEnabled"] is True for e in entries.values())
 
 
@@ -80,8 +80,8 @@ def test_each_kind_lands_in_the_project_slot_and_the_manifest(tmp_path):
     (_skill("data-table"), "Sage ships"),
     ({"kind": "skill", "name": "alpha", "files": {"SKILL.md": SKILL.format(name="sage-x")}},
      "frontmatter"),
-    ({"kind": "mcp", "name": "crm", "config": {"type": "remote", "url": "u"}, "tools": ["x"]},
-     "read-only"),
+    ({"kind": "mcp", "name": "crm", "config": {"type": "remote", "url": "u"}, "tools": {"x": True}},
+     "tool names"),
     ({"kind": "agent", "name": "x"}, "kind"),
 ])
 def test_a_name_or_path_sage_must_not_write_is_refused_at_the_door(tmp_path, body, said):
@@ -136,10 +136,10 @@ def test_removing_the_last_mcp_server_leaves_no_empty_block(tmp_path):
 # ---- the shim ----------------------------------------------------------------------------------
 
 def _catalog(tmp_path: Path) -> extensions.ExtensionCatalog:
-    extensions.add(tmp_path, {"kind": "tool", "name": "lookup", "code": TOOL_TS, "readOnly": True})
+    extensions.add(tmp_path, {"kind": "tool", "name": "lookup", "code": TOOL_TS})
     extensions.add(tmp_path, {"kind": "tool", "name": "push", "code": TOOL_TS})
     extensions.add(tmp_path, {"kind": "mcp", "name": "crm", "config": {"type": "remote", "url": "u"},
-                              "tools": {"search": True, "update": False}})
+                              "tools": ["search", "update"]})
     extensions.add(tmp_path, _skill("alpha"))
     extensions.add(tmp_path, _skill("beta"))
     return extensions.load_catalog(tmp_path)
@@ -212,10 +212,8 @@ def test_a_skill_named_with_at_is_loaded_and_beats_its_switch_for_that_turn(tmp_
     ("Ask @crm who owns it.", ["read", "lookup", "crm_search", "crm_update", "crm_other"],
      "The person named these MCP servers with @: crm. Use their tools to answer."),
 ])
-def test_a_tool_or_server_named_with_at_beats_its_switch_and_the_read_only_rule(
-        tmp_path, user, offered, said):
-    """#633: both switched off, on a read-only turn; named, each is offered and asked for — for
-    that turn only."""
+def test_a_tool_or_server_named_with_at_beats_its_switch(tmp_path, user, offered, said):
+    """#633: both switched off; named, each is offered and asked for — for that turn only."""
     control = ModelControl(mode=Mode.AUTO)
     control.set_extensions(_catalog(tmp_path))
     control.arm_read_only("question")
@@ -252,16 +250,23 @@ def test_the_switch_is_per_turn_and_drops_with_its_token(tmp_path):
     assert "push" in _sent(control)[0]
 
 
-@pytest.mark.parametrize("arm", ["ask", "plan", "question"])
-def test_a_read_only_turn_gets_only_tools_marked_read_only(tmp_path, arm):
-    """Ask, a gated plan and an answer-only turn. An MCP tool the manifest does not list
-    (`crm_other`) and an export under a tool's prefix (`push_many`) are not marked read-only."""
+@pytest.mark.parametrize("arm", ["ask", "plan", "question", "chat question"])
+def test_a_read_only_turn_gets_every_switched_on_extension_tool(tmp_path, arm):
+    """#636: Ask, a gated plan, an answer-only turn and a Chat question. There is no read-only mark
+    to keep a tool out — #635 was "Who owns Globex?" with `acme_lookup` on, and DeepWiki on,
+    neither offered for lack of one. Write and shell tools still go (`edit`); a switch still
+    holds."""
     control = ModelControl(mode=Mode.ASK if arm == "ask" else Mode.AUTO)
     control.set_extensions(_catalog(tmp_path))
+    if arm == "chat question":
+        control.arm_chat("thr_1")
     if arm != "ask":
-        control.arm_read_only(arm)
+        control.arm_read_only(arm.split()[-1])
     names, _ = _sent(control)
-    assert names == ["read", "lookup", "crm_search"]
+    assert names == ["read", "lookup", "push", "push_many", "crm_search", "crm_update", "crm_other"]
+
+    control.arm_extensions_off(frozenset({"tool:push", "mcp:crm"}))
+    assert _sent(control)[0] == ["read", "lookup"]
 
 
 def test_a_data_artifact_turn_keeps_its_enabled_extension_tools(tmp_path):
@@ -283,12 +288,12 @@ def test_an_added_extension_reloads_chat_and_every_app_and_reaches_the_shim(tmp_
     project = orch.project(start_preview=False)
     root = Path(project.record.path)
 
-    orch.add_extension({"kind": "tool", "name": "lookup", "code": TOOL_TS, "readOnly": True})
+    orch.add_extension({"kind": "tool", "name": "lookup", "code": TOOL_TS})
 
     apps = {str(orch._wm.app_workspace(orch._project_id, a).path) for a in orch._wm.app_ids()}
     assert len(apps) == 2
     assert set(oc.disposed) == {str(root / ".sage" / "chat-work")} | apps
-    assert project.control.snapshot().extensions.owner("lookup") == ("tool:lookup", True)
+    assert project.control.snapshot().extensions.owner("lookup") == "tool:lookup"
 
     orch.remove_extension("tool:lookup")
     assert len(oc.disposed) == 6
@@ -431,7 +436,7 @@ def test_a_reverted_read_only_turn_names_the_extension_tool_that_ran(tmp_path, r
     orch.create_app(stack="react-vite")
     project = orch.project(start_preview=False)
     project.control.pick("a", "low")
-    orch.add_extension({"kind": "tool", "name": "lookup", "code": TOOL_TS, "readOnly": True})
+    orch.add_extension({"kind": "tool", "name": "lookup", "code": TOOL_TS})
     if read_only_kind == "answer":
         project.control.set_mode(Mode.ASK)
     prompt = "Build a sales dashboard." if read_only_kind == "gate" else "What does this app show?"
@@ -452,7 +457,7 @@ def test_a_build_log_row_for_a_project_tool_carries_its_arguments(tmp_path):
     orch, _, _ = _build(tmp_path, [turn])
     orch.create_app(stack="react-vite")
     project = orch.project(start_preview=False)
-    orch.add_extension({"kind": "tool", "name": "fx_rate", "code": TOOL_TS, "readOnly": True})
+    orch.add_extension({"kind": "tool", "name": "fx_rate", "code": TOOL_TS})
     project.control.set_mode(Mode.ASK)
 
     events = list(orch.build_stream("What is 1 USD in EUR?"))

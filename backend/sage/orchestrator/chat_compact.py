@@ -293,9 +293,19 @@ def chat_summary(history: list[dict]) -> str:
     Empty string for a Conversation with no Chat turns, so the caller can leave the section out
     entirely rather than write an empty heading.
     """
+    return _summarise(history)[0]
+
+
+def chat_summary_dropped(history: list[dict]) -> bool:
+    """Whether `chat_summary` cut a turn short or left an older one out to fit its budget."""
+    return _summarise(history)[1]
+
+
+def _summarise(history: list[dict]) -> tuple[str, bool]:
     restrictions = _summary_restrictions(history)
     lines: list[str] = []
     used = 0
+    dropped = False
     for entry in reversed(history or []):
         line = _said(entry, restrictions)
         if not line:
@@ -304,11 +314,13 @@ def chat_summary(history: list[dict]) -> str:
         # this returns, so the budget is the real cap and not the cap minus one line's worth.
         cost = len(line) + (1 if lines else 0)
         if used + cost > SUMMARY_BUDGET:
+            dropped = True
             break
+        dropped = dropped or line != _said(entry, restrictions, cap=None)
         lines.append(line)
         used += cost
     lines.reverse()
-    return "\n".join(lines)
+    return "\n".join(lines), dropped
 
 
 def _summary_restrictions(history: list[dict]) -> dict[str, set[str]]:
@@ -339,7 +351,8 @@ def _withheld_summary_label(text: str, restrictions: dict[str, set[str]]) -> str
     return ""
 
 
-def _said(entry: dict, restrictions: dict[str, set[str]] | None = None) -> str:
+def _said(entry: dict, restrictions: dict[str, set[str]] | None = None,
+          cap: int | None = SUMMARY_TURN_CHARS) -> str:
     """One transcript line, or "" for an entry that is not something somebody said."""
     if not isinstance(entry, dict):
         return ""
@@ -360,6 +373,6 @@ def _said(entry: dict, restrictions: dict[str, set[str]] | None = None) -> str:
                  or _withheld_summary_label(text, restrictions))
         if label:
             text = withheld_result(label)
-    if len(text) > SUMMARY_TURN_CHARS:
-        text = text[: SUMMARY_TURN_CHARS - 1].rstrip() + "…"
+    if cap is not None and len(text) > cap:
+        text = text[: cap - 1].rstrip() + "…"
     return f"- {who}: {text}"

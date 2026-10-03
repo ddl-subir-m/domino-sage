@@ -60,7 +60,7 @@ def test_a_local_and_a_remote_server_connect_and_reach_chat_and_build(tmp_path, 
                  "headers": {"Authorization": "Bearer {env:STUB_TOKEN_621}"}}}),
              orch.add_mcp({"name": "bad", "config": {"type": "local", "command": stub,
                                                      "environment": {"K": "{env:UNSET_621}"}}})]
-    assert [e["tools"].get("echo") for e in added] == [True, True, None]
+    assert ["echo" in e["tools"] for e in added] == [True, True, False]
 
     runtime = tmp_path / "runtime"
     runtime.mkdir()

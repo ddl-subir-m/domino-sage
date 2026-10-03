@@ -54,7 +54,7 @@ def test_a_python_tool_is_read_by_its_spec_and_gets_a_generated_bridge(tmp_path)
     entry = extensions.add(tmp_path, {"kind": "tool", "python": ADDER})
     assert entry["id"] == "tool:adder"
     assert entry["files"] == [".opencode/tools/adder.py", ".opencode/tools/adder.ts"]
-    assert entry["readOnly"] is True, "readOnly comes from the SPEC"
+    assert "readOnly" not in entry, "a SPEC's readOnly is accepted and means nothing (#636)"
     tools = tmp_path / ".opencode" / "tools"
     assert (tools / "adder.py").read_text() == ADDER
     bridge = (tools / "adder.ts").read_text()
@@ -64,9 +64,8 @@ def test_a_python_tool_is_read_by_its_spec_and_gets_a_generated_bridge(tmp_path)
 
 
 @needs_python
-def test_read_only_defaults_to_false_and_a_python_tool_is_removed_whole(tmp_path):
-    entry = extensions.add(tmp_path, {"kind": "tool", "python": _py()})
-    assert entry["readOnly"] is False
+def test_a_python_tool_is_removed_whole(tmp_path):
+    extensions.add(tmp_path, {"kind": "tool", "python": _py()})
     assert extensions.remove(tmp_path, "tool:adder")
     assert list((tmp_path / ".opencode" / "tools").iterdir()) == []
 
@@ -78,7 +77,6 @@ def test_read_only_defaults_to_false_and_a_python_tool_is_removed_whole(tmp_path
     (_py(description=""), "description"),
     (_py(args=["a"]), "args"),
     (_py(args={"a": "number"}), "args"),
-    (_py(readOnly="yes"), "readOnly"),
     (_py(name="Adder"), "lowercase"),
     (_py(name="bash"), "built-in"),
     ("SPEC = {\n", "SyntaxError"),
@@ -246,10 +244,10 @@ def test_an_import_adds_all_of_its_tools_or_none(tmp_path):
     assert not (tmp_path / ".opencode" / "tools" / "lookup.ts").exists()
 
 
-def test_read_only_set_on_upload_applies_to_typescript_tools(tmp_path):
+def test_an_upload_records_its_source_and_no_read_only_mark(tmp_path):
     [entry] = extensions.add_tools(tmp_path, [{"kind": "tool", "name": "lookup", "code": TOOL_TS}],
-                                   read_only=True, source={"type": "upload"})
-    assert entry["readOnly"] is True and entry["source"] == {"type": "upload"}
+                                   source={"type": "upload"})
+    assert entry["source"] == {"type": "upload"} and "readOnly" not in entry
 
 
 def _origin(tmp_path: Path, files: dict[str, str]) -> tuple[Path, str]:
@@ -293,57 +291,48 @@ def test_a_git_url_that_is_not_https_or_a_path_outside_it_is_refused():
         extensions.tools_from_git("https://git.example/x", "../etc")
 
 
-# ---- read-only, overridden in the panel ----------------------------------------------------------
+# ---- a manifest written while tools carried a read-only mark ------------------------------------
 
-def test_the_panel_can_change_a_tools_read_only_flag_and_the_catalog_follows(tmp_path):
-    extensions.add(tmp_path, {"kind": "tool", "name": "lookup", "code": TOOL_TS})
-    assert extensions.load_catalog(tmp_path).owner("lookup").read_only is False
-    assert extensions.set_read_only(tmp_path, "tool:lookup", True) is True
-    assert extensions.load_catalog(tmp_path).owner("lookup").read_only is True
-    assert extensions.set_read_only(tmp_path, "tool:nope", True) is False
-
-
-def test_only_a_custom_tool_takes_a_read_only_flag(tmp_path):
-    extensions.add(tmp_path, {"kind": "skill", "name": "alpha", "files": {
-        "SKILL.md": "---\nname: alpha\ndescription: A.\n---\nGo.\n"}})
-    with pytest.raises(extensions.ExtensionError, match="custom tool"):
-        extensions.set_read_only(tmp_path, "skill:alpha", True)
-
-
-def test_a_changed_read_only_flag_reaches_the_shim(tmp_path):
-    orch, _, _ = _build(tmp_path, [])
-    project = orch.project(start_preview=False)
-    orch.add_extension({"kind": "tool", "name": "lookup", "code": TOOL_TS})
-    orch.set_extension_read_only("tool:lookup", True)
-    assert project.control.snapshot().extensions.owner("lookup") == ("tool:lookup", True)
-    with pytest.raises(KeyError):
-        orch.set_extension_read_only("tool:nope", True)
+def test_a_manifest_with_read_only_marks_reads_without_them(tmp_path):
+    """#636 dropped the mark. A Project added to before then still has it on disk, and it must
+    neither reach the panel nor keep any tool off any turn."""
+    (tmp_path / ".opencode").mkdir()
+    (tmp_path / ".opencode" / "sage-extensions.json").write_text(json.dumps({"version": 1, "extensions": [
+        {"id": "tool:lookup", "kind": "tool", "name": "lookup", "readOnly": True,
+         "files": [".opencode/tools/lookup.ts"], "defaultEnabled": True},
+        {"id": "mcp:deepwiki", "kind": "mcp", "name": "deepwiki", "files": [],
+         "tools": {"read_wiki_structure": False, "ask_wiki_question": False},
+         "defaultEnabled": True}]}))
+    entries = {e["id"]: e for e in extensions.read_manifest(tmp_path)}
+    assert "readOnly" not in entries["tool:lookup"]
+    assert entries["mcp:deepwiki"]["tools"] == ["ask_wiki_question", "read_wiki_structure"]
+    catalog = extensions.catalog_of(list(entries.values()))
+    assert catalog.owner("lookup") == "tool:lookup"
+    assert catalog.owner("deepwiki_ask_wiki_question") == "mcp:deepwiki"
 
 
 # ---- the routes ----------------------------------------------------------------------------------
 
 @needs_python
-def test_the_routes_upload_import_and_override_read_only(tmp_path, monkeypatch):
+def test_the_routes_upload_and_import(tmp_path, monkeypatch):
     import sage.orchestrator.app as app_module
 
     orch, oc, _ = _build(tmp_path, [])
     monkeypatch.setattr(app_module, "orchestrator", orch)
     client = TestClient(app_module.control_app)
 
-    ts = client.post("/api/project/extensions/tools?filename=lookup.ts&readOnly=true",
-                     content=TOOL_TS.encode())
-    assert [(e["id"], e["readOnly"]) for e in ts.json()["items"]] == [("tool:lookup", True)]
+    ts = client.post("/api/project/extensions/tools?filename=lookup.ts", content=TOOL_TS.encode())
+    assert [e["id"] for e in ts.json()["items"]] == ["tool:lookup"]
     assert oc.disposed, "the new tool reaches the next turn"
     py = client.post("/api/project/extensions/tools?filename=adder.py", content=ADDER.encode())
-    assert [(e["id"], e["readOnly"]) for e in py.json()["items"]] == [("tool:adder", True)]
+    assert [e["id"] for e in py.json()["items"]] == ["tool:adder"]
     bad = client.post("/api/project/extensions/tools?filename=x.py", content=_py(args=1).encode())
     assert bad.status_code == 400 and "args" in bad.json()["error"]
     assert client.post("/api/project/extensions/tools/git",
                        json={"url": "ssh://x"}).status_code == 400
 
+    listed = client.get("/api/project/extensions").json()["items"]
+    assert {e["id"] for e in listed} == {"tool:lookup", "tool:adder"}
+    assert not any("readOnly" in e for e in listed)
     assert client.put("/api/project/extensions/tool:lookup/readOnly",
-                      json={"readOnly": False}).json() == {"ok": True}
-    listed = {e["id"]: e["readOnly"] for e in client.get("/api/project/extensions").json()["items"]}
-    assert listed == {"tool:lookup": False, "tool:adder": True}
-    assert client.put("/api/project/extensions/tool:nope/readOnly",
-                      json={"readOnly": True}).status_code == 404
+                      json={"readOnly": True}).status_code in (404, 405), "the override is gone"

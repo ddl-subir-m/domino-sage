@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 
-from .chat_compact import chat_summary
+from .chat_compact import chat_summary, chat_summary_dropped
 
 CLEARED = "recall-cleared"
 SUGGEST = "recall-suggest"
@@ -219,6 +219,16 @@ def reseed(history: list[dict]) -> str:
     making it fire would start seeding the summary-scoped clear for the first time, which is a live
     change to the recall ladder (ADR-0022) that ADR-0060 did not decide.
     """
+    return chat_summary(_carried(history))
+
+
+def reseed_dropped(history: list[dict]) -> bool:
+    """Whether `reseed` had to leave something out. Only then is the person told (#635): a short
+    chat reaches the new session word for word, and a line saying details may be missing is false."""
+    return chat_summary_dropped(_carried(history))
+
+
+def _carried(history: list[dict]) -> list[dict]:
     rows = [e for e in (history or []) if isinstance(e, dict)]
     # The turn being assembled has already written its own `user` row, and this prompt ends with
     # that same text. Summarising it as well would hand the model its question twice — once as
@@ -247,7 +257,7 @@ def reseed(history: list[dict]) -> str:
                 # provider state. Withheld text still passes through the shared policy.
                 start = next((j + 1 for j in range(i - 1, -1, -1)
                               if rows[j].get("type") == CLEARED and rows[j].get("scope") == EMPTY), 0)
-                return chat_summary(rows[start:i] + rows[i + 1:])
+                return rows[start:i] + rows[i + 1:]
             rows = rows[i + 1:]
             break
-    return chat_summary(rows)
+    return rows

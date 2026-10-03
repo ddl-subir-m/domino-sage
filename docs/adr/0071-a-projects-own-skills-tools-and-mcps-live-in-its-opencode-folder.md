@@ -59,19 +59,23 @@ container. It means such code can reach the control port and read the process en
 **On by default, toggled per Thread and per Built App.** A new extension is enabled for new
 Threads and Apps. A person can switch any one off for a Thread or an App.
 
-**Read-only turns get the enabled tools that are marked read-only.** Every user tool and MCP tool
-carries a `readOnly` flag in the manifest. An MCP tool's comes from its `readOnlyHint` annotation,
-read by Sage when the server is added; a custom tool's from its spec (`readOnly` in a Python
-`SPEC`, or set on upload for TypeScript). The person can override either in the panel. Ask and plan
-turns (Build's gated and answer-only turns) are offered only enabled tools marked read-only; every
-other turn is offered every enabled tool. `READ_ONLY_DENIED` keeps stripping Sage's own write and
-shell tools as before.
+**Every turn gets every enabled tool** (amended 2026-10-03, #636). Read-only turns used to get
+only the enabled tools marked read-only, the mark coming from an MCP tool's `readOnlyHint`, a
+Python `SPEC`'s `readOnly`, or a checkbox on upload, each overridable in the panel. It was dropped:
+people could not remember what it did, and it was a claim nothing checked, so a tool that writes
+ran on it anyway — while #635 showed it keeping lookup tools (`acme_lookup`, DeepWiki) off the
+questions they exist for. Ask and plan turns are now offered every enabled tool, like every other
+turn. `READ_ONLY_DENIED` keeps stripping Sage's own write and shell tools as before. An old
+manifest's marks are read and ignored; a `SPEC`'s `readOnly` is accepted and ignored.
 
-The flag is self-declared, which fits trusting user code. The existing revert stays as the
-backstop: a Build turn that is gated or answer-only and changes the app's tree is reverted and
-reported (`agent_wrote()` then `discard_changes()`, `backend/sage/orchestrator/service.py`). That
-check reads the tree hash, not the tool name, so a mislabelled tool trips it like any other write.
-When a user tool ran on that turn, the message names it rather than blaming "the agent".
+What a tool can change outside Sage is the access it is given, the same call Sage makes for SQL,
+where the guarantee is the credential behind the Data Source. The Add tool and Add MCP server
+dialogs say so once, at the only point a person decides. The existing revert stays for the files:
+a Build turn that is gated or answer-only and changes the app's tree is reverted and reported
+(`agent_wrote()` then `discard_changes()`, `backend/sage/orchestrator/service.py`). That check
+reads the tree hash, not the tool name. When a user tool ran on that turn, the message names it
+rather than blaming "the agent". A per-tool "ask before each use" approval is the next control,
+not yet built.
 
 **Chat stays confined to its Thread's folders.** Every Chat turn already undoes workspace writes
 outside `examples/<thread>/`, `.sage/threads/<thread>/` and `.sage/scratch/<thread>/`

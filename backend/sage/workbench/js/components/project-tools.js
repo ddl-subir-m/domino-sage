@@ -4,14 +4,14 @@ window.SW = window.SW || {};
 // dialog that adds them from a .ts or .py file, or a git URL.
 (function () {
   const { createElement: h, useState, useRef } = React;
-  const { Tooltip, Dropdown, Switch, Modal, Input, Segmented, Alert, Button, Checkbox } = antd;
+  const { Tooltip, Dropdown, Switch, Modal, Input, Segmented, Alert, Button } = antd;
   const { MoreOutlined, UploadOutlined } = icons;
 
   const isPython = (tool) => (tool.files || []).some((f) => /\.py$/.test(f));
 
   // `where` is what a switch answers for: 'conversation', 'app', or '' in Build with no app picked.
   SW.ToolRow = function ToolRow({ tool, where }) {
-    const subtitle = [isPython(tool) ? 'Python' : 'TypeScript', tool.readOnly ? 'Read-only' : '',
+    const subtitle = [isPython(tool) ? 'Python' : 'TypeScript',
                       tool.source && tool.source.type === 'git' ? 'From git' : 'Uploaded']
       .filter(Boolean).join(' · ');
     const tip = !where
@@ -49,13 +49,8 @@ window.SW = window.SW || {};
         Dropdown,
         {
           menu: {
-            items: [
-              { key: 'readOnly', label: tool.readOnly ? 'Mark not read-only' : 'Mark read-only' },
-              { key: 'remove', label: 'Remove from project', danger: true },
-            ],
-            onClick: ({ key }) => (key === 'readOnly'
-              ? SW.store.setExtensionReadOnly(tool, !tool.readOnly)
-              : SW.store.removeExtension(tool)),
+            items: [{ key: 'remove', label: 'Remove from project', danger: true }],
+            onClick: () => SW.store.removeExtension(tool),
           },
           trigger: ['click'],
         },
@@ -70,23 +65,20 @@ window.SW = window.SW || {};
     const [file, setFile] = useState(null);
     const [url, setUrl] = useState('');
     const [path, setPath] = useState('');
-    const [readOnly, setReadOnly] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const fileRef = useRef(null);
 
     const close = () => {
-      setFile(null); setUrl(''); setPath(''); setReadOnly(false); setError(''); setBusy(false);
+      setFile(null); setUrl(''); setPath(''); setError(''); setBusy(false);
       onClose();
     };
     const source = how === 'upload' ? file : (url.trim() ? { url: url.trim(), path: path.trim() } : null);
-    // A Python tool's SPEC says whether it is read-only, so the checkbox has nothing to say for it.
-    const python = how === 'upload' && !!file && /\.py$/i.test(file.name || '');
     const add = async () => {
       setBusy(true);
       setError('');
       try {
-        await SW.store.addTools(source, readOnly && !python);
+        await SW.store.addTools(source);
         close();
       } catch (err) {
         setError(err.message);
@@ -98,7 +90,7 @@ window.SW = window.SW || {};
       Modal,
       {
         open,
-        title: 'Add a tool',
+        title: 'Add tool',
         okText: 'Add tool',
         onOk: add,
         onCancel: close,
@@ -108,7 +100,8 @@ window.SW = window.SW || {};
       },
       h('p', { className: 'sw-caption', style: { margin: '0 0 12px' } },
         'Every conversation and app in this project can use it. A .ts tool is named after its '
-        + 'file. A .py tool declares SPEC (name, description, args, readOnly) and run(**args).'),
+        + 'file. A .py tool declares SPEC (name, description, args) and run(**args).'),
+      h(SW.util.ToolAccessWarning),
       h(Segmented, {
         block: true,
         value: how,
@@ -145,15 +138,6 @@ window.SW = window.SW || {};
               onChange: (e) => setPath(e.target.value),
             })
           ),
-      h(Checkbox, {
-        checked: readOnly && !python,
-        disabled: python,
-        onChange: (e) => setReadOnly(e.target.checked),
-      }, 'Read-only'),
-      h('p', { className: 'sw-caption', style: { margin: '6px 0 0' } },
-        python
-          ? 'A Python tool says whether it is read-only in its SPEC.'
-          : 'Ask and plan turns are offered only tools marked read-only. You can change it later.'),
       error && h(Alert, { type: 'error', showIcon: true, message: error, style: { marginTop: 12 } })
     );
   };

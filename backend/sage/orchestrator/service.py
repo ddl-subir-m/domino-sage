@@ -16873,7 +16873,7 @@ class Orchestrator:
                 # decide they were worth carrying, and tell the person a memory had been rebuilt on
                 # a session that never lost one.
                 store.clear_rebuild_pending(thread_id)
-            if rebuilt:
+            if rebuilt and recall.reseed_dropped(prompt_history):
                 # The half that is not about the model (ADR-0060). A repair nobody is told about is
                 # the same defect one level quieter: the person asks a follow-up that leans on a
                 # detail the summary dropped, gets a second confusing answer, and now has LESS to go
@@ -16897,6 +16897,9 @@ class Orchestrator:
                 # An empty `rebuilt` means there was nothing to carry — a Thread on its first turn,
                 # or one whose session was dropped by a clear of either scope, which has already
                 # drawn its own divider. Neither is a seam, and neither gets a row.
+                #
+                # Nor does a rebuild that carried everything said (#635): the row's whole message is
+                # "some details may be missing", which on a two-turn chat is untrue.
                 rebuilt_ev = {"type": recall.REBUILT}
                 store.append_history(thread_id, rebuilt_ev)
                 yield rebuilt_ev
@@ -23693,7 +23696,7 @@ class Orchestrator:
                 project.snapshot.discard_changes()
                 restore_mode()
                 # A Project tool that ran is the likelier writer: Sage's own write tools are not
-                # offered on this turn, and a user tool's read-only mark is its own claim.
+                # offered on this turn, and every switched-on Project tool is (#636).
                 who = ("the agent" if not user_tools_ran else
                        ("your tool " if len(user_tools_ran) == 1 else "your tools ")
                        + ", ".join(f"`{t}`" for t in user_tools_ran))
@@ -26342,19 +26345,12 @@ class Orchestrator:
             yield files, f"{asset.name}/{path}" if path else asset.name, {
                 "type": "dataset", "dataset": asset.id, "name": asset.name, "path": path}
 
-    def add_tools(self, tools: list[dict], *, read_only: bool, source: dict) -> list[dict]:
+    def add_tools(self, tools: list[dict], *, source: dict) -> list[dict]:
         """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
         entries = project_extensions.add_tools(self._chat_project().record.path, tools,
-                                               read_only=read_only, source=source)
+                                               source=source)
         self._reload_extensions()
         return entries
-
-    def set_extension_read_only(self, ext_id: str, read_only: bool) -> None:
-        """Raises KeyError for an unknown extension, `ExtensionError` for one that is not a tool."""
-        if not project_extensions.set_read_only(self._chat_project().record.path, ext_id,
-                                                read_only):
-            raise KeyError(ext_id)
-        self._reload_extensions()
 
     def remove_extension(self, ext_id: str) -> bool:
         removed = project_extensions.remove(self._chat_project().record.path, ext_id)
@@ -26443,8 +26439,7 @@ class Orchestrator:
             entry = project_extensions.replace_mcp_tools(root, entry["id"],
                                                          extension_mcp.read_tools(config))
         except project_extensions.ExtensionError as e:
-            entry = {**entry, "warning": f"Added, but Sage could not list its tools, so none is "
-                                         f"offered on Ask or plan turns yet: {e}"}
+            entry = {**entry, "warning": f"Added, but Sage could not list its tools: {e}"}
         self._reload_extensions()
         return entry
 
@@ -26458,13 +26453,6 @@ class Orchestrator:
             raise KeyError(ext_id)
         listed = extension_mcp.read_tools(project_extensions.mcp_servers(root).get(entry["name"]) or {})
         entry = project_extensions.replace_mcp_tools(root, ext_id, listed)
-        self._reload_extensions()
-        return entry
-
-    def set_mcp_tool_read_only(self, ext_id: str, tool: str, read_only: bool) -> dict:
-        """Raises KeyError for an unknown server or tool."""
-        entry = project_extensions.set_tool_read_only(self._chat_project().record.path, ext_id,
-                                                      tool, read_only)
         self._reload_extensions()
         return entry
 

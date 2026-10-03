@@ -82,7 +82,7 @@ def test_the_skills_door_adds_a_skill_rather_than_opening_the_catalog():
     """Skills are the Project's own (ADR-0071, #620), so the door is the Add skill dialog."""
     head = _heads()["Skills (1)"]
     assert head["hasAdd"] and head["addIsButton"]
-    assert head["addLabel"] == "Add a skill"
+    assert head["addLabel"] == "Add skill"
 
 
 def test_the_door_is_a_real_button_that_says_what_it_does():

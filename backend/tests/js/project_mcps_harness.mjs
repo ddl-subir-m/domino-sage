@@ -150,6 +150,12 @@ if (act === 'drawn' || act === 'press-door') {
   report.menuKeys = (nodes.find((n) => n.t === 'Dropdown' && (n.p.menu || {}).items
     && n.p.menu.items.some((i) => i.key === 'browse')).p.menu.items).map((i) => i.key);
   report.mcpDialogOpen = nodes.some((n) => n.t === SW.AddMcpModal);
+  const modal = nodes.find((n) => n.t === SW.AddMcpModal);
+  if (modal) {
+    const warning = flatten(SW.AddMcpModal(modal.p)).find((d) => d.t === 'Alert'
+      && d.p.type === 'warning');
+    report.warning = warning ? warning.p.message : null;
+  }
   report.skillDialogOpen = nodes.some((n) => n.t === SW.AddSkillModal);
 } else if (act === 'toggle') {
   mcpRows(panel())[0].sw.p.onChange(false);

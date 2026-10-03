@@ -1,9 +1,9 @@
 """A Project's own skills, custom tools and MCP servers (ADR-0071).
 
 They live in OpenCode's project slot, `.opencode/` at the root of the Project volume, so OpenCode
-loads them itself. `.opencode/sage-extensions.json` is Sage's manifest: what each extension is,
-which files it owns, and which of its tools are read-only. The shim reads the manifest through an
-`ExtensionCatalog`, never the files.
+loads them itself. `.opencode/sage-extensions.json` is Sage's manifest: what each extension is
+and which files it owns. The shim reads the manifest through an `ExtensionCatalog`, never the
+files.
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from .implementation_request import _OPTIONAL_BLOCKS as BUILTIN_SECTIONS
@@ -87,21 +86,15 @@ class ExtensionError(ValueError):
     """An extension that cannot be added as asked. The message is for the person."""
 
 
-class ToolOwner(NamedTuple):
-    id: str
-    read_only: bool
-
-
 @dataclass(frozen=True)
 class ExtensionCatalog:
     """Which offered tool names and skills belong to which extension.
 
     A custom tool `foo` is offered as `foo`, or `foo_<export>` for a file with several exports. An
-    MCP server `bar` has every tool offered as `bar_<tool>`. A name under an owner's prefix that
-    the manifest does not list is treated as not read-only.
+    MCP server `bar` has every tool offered as `bar_<tool>`.
     """
 
-    tools: dict[str, ToolOwner] = field(default_factory=dict)
+    tools: dict[str, str] = field(default_factory=dict)
     prefixes: dict[str, str] = field(default_factory=dict)
     skills: dict[str, str] = field(default_factory=dict)
     # Built-in skill or instruction section -> the id of the Project skill that replaces it while
@@ -111,13 +104,14 @@ class ExtensionCatalog:
     named_tools: dict[str, str] = field(default_factory=dict)
     servers: dict[str, str] = field(default_factory=dict)
 
-    def owner(self, tool_name: str) -> ToolOwner | None:
+    def owner(self, tool_name: str) -> str | None:
+        """The id of the extension that offers `tool_name`, or None for one of Sage's own."""
         name = tool_name.lower()
         if name in self.tools:
             return self.tools[name]
         for prefix, ext_id in self.prefixes.items():
             if name.startswith(prefix):
-                return ToolOwner(ext_id, False)
+                return ext_id
         return None
 
     def __bool__(self) -> bool:
@@ -128,7 +122,7 @@ EMPTY = ExtensionCatalog()
 
 
 def catalog_of(entries: list[dict]) -> ExtensionCatalog:
-    tools: dict[str, ToolOwner] = {}
+    tools: dict[str, str] = {}
     prefixes: dict[str, str] = {}
     skills: dict[str, str] = {}
     replaced: dict[str, str] = {}
@@ -141,14 +135,12 @@ def catalog_of(entries: list[dict]) -> ExtensionCatalog:
             if isinstance(entry.get("replaces"), str) and entry["replaces"]:
                 replaced[entry["replaces"]] = ext_id
         elif entry["kind"] == "tool":
-            tools[name] = ToolOwner(ext_id, bool(entry.get("readOnly")))
+            tools[name] = ext_id
             prefixes[name + "_"] = ext_id
             named_tools[name] = ext_id
         elif entry["kind"] == "mcp":
             prefixes[name + "_"] = ext_id
             servers[name] = ext_id
-            for tool, read_only in (entry.get("tools") or {}).items():
-                tools[f"{name}_{tool}".lower()] = ToolOwner(ext_id, bool(read_only))
     return ExtensionCatalog(tools, prefixes, skills, replaced, named_tools, servers)
 
 
@@ -200,8 +192,18 @@ def read_manifest(root: Path) -> list[dict]:
     except (OSError, ValueError):
         return []
     entries = body.get("extensions") if isinstance(body, dict) else None
-    return [e for e in entries or [] if isinstance(e, dict) and e.get("kind") in KINDS
+    return [_unmarked(e) for e in entries or [] if isinstance(e, dict) and e.get("kind") in KINDS
             and isinstance(e.get("id"), str) and isinstance(e.get("name"), str)]
+
+
+def _unmarked(entry: dict) -> dict:
+    """An entry written while tools carried a read-only mark (#636), in today's shape: no mark,
+    and an MCP server's tools as a list of names."""
+    entry = {k: v for k, v in entry.items() if k != "readOnly"}
+    if entry["kind"] == "mcp":
+        tools = entry.get("tools")
+        entry["tools"] = sorted(str(t) for t in tools) if isinstance(tools, (dict, list)) else []
+    return entry
 
 
 def load_catalog(root: Path) -> ExtensionCatalog:
@@ -302,17 +304,15 @@ def add(root: Path, body: dict) -> dict:
             entry["files"] = _write_skill(root, name, files)
         elif spec is not None:
             entry["files"] = _write_python_tool(root, name, body["python"], spec)
-            entry["readOnly"] = spec["readOnly"]
         elif kind == "tool":
             entry["files"] = _write_tool(root, name, body.get("code"))
-            entry["readOnly"] = bool(body.get("readOnly"))
         else:
-            tools = body.get("tools") or {}
-            if not isinstance(tools, dict):
-                raise ExtensionError("tools maps each MCP tool name to whether it is read-only.")
+            tools = body.get("tools") or []
+            if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+                raise ExtensionError("tools lists the MCP server's tool names.")
             _write_mcp(root, name, body.get("config"))
             entry["files"] = [MCP_CONFIG.as_posix()]
-            entry["tools"] = {str(k): bool(v) for k, v in tools.items()}
+            entry["tools"] = sorted(tools)
         entries.append(entry)
         _write_manifest(root, entries)
         return entry
@@ -415,21 +415,6 @@ def update_skill(root: Path, ext_id: str, files: dict[str, str], source: dict) -
         return entry
 
 
-def set_read_only(root: Path, ext_id: str, read_only: bool) -> bool:
-    """The panel's override of a custom tool's `readOnly`. False when there is no such extension."""
-    root = Path(root)
-    with _LOCK:
-        entries = read_manifest(root)
-        entry = next((e for e in entries if e["id"] == ext_id), None)
-        if entry is None:
-            return False
-        if entry["kind"] != "tool":
-            raise ExtensionError("Only a custom tool takes a read-only flag here.")
-        entry["readOnly"] = bool(read_only)
-        _write_manifest(root, entries)
-        return True
-
-
 def _check_description(name: str, skill_md: str) -> None:
     if not skill_description(skill_md):
         raise ExtensionError(f"'{name}' has no description in its SKILL.md frontmatter. OpenCode "
@@ -503,10 +488,7 @@ def _python_spec(source: object) -> dict:
     if not isinstance(args, dict) or not all(isinstance(v, dict) for v in args.values()):
         raise ExtensionError("Its SPEC's args map each argument's name to a JSON schema, like "
                              "{\"city\": {\"type\": \"string\"}}.")
-    if not isinstance(spec.get("readOnly", False), bool):
-        raise ExtensionError("Its SPEC's readOnly is True or False.")
-    return {"name": spec.get("name"), "description": spec["description"], "args": args,
-            "readOnly": spec.get("readOnly", False)}
+    return {"name": spec.get("name"), "description": spec["description"], "args": args}
 
 
 def _write_python_tool(root: Path, name: str, source: str, spec: dict) -> list[str]:
@@ -610,32 +592,17 @@ def mcp_servers(root: Path) -> dict:
     return servers if isinstance(servers, dict) else {}
 
 
-def _update_mcp_tools(root: Path, ext_id: str, change: Callable[[dict], dict]) -> dict:
+def replace_mcp_tools(root: Path, ext_id: str, listed: list[str]) -> dict:
+    """The tools a server listed when read. Raises KeyError for an unknown server."""
     root = Path(root)
     with _LOCK:
         entries = read_manifest(root)
         entry = next((e for e in entries if e["id"] == ext_id and e["kind"] == "mcp"), None)
         if entry is None:
             raise KeyError(ext_id)
-        entry["tools"] = change(dict(entry.get("tools") or {}))
+        entry["tools"] = sorted(listed)
         _write_manifest(root, entries)
         return entry
-
-
-def set_tool_read_only(root: Path, ext_id: str, tool: str, read_only: bool) -> dict:
-    """The panel's override of one MCP tool's mark. Raises KeyError for an unknown server or tool."""
-    def change(tools: dict) -> dict:
-        if tool not in tools:
-            raise KeyError(tool)
-        return {**tools, tool: bool(read_only)}
-    return _update_mcp_tools(root, ext_id, change)
-
-
-def replace_mcp_tools(root: Path, ext_id: str, listed: dict[str, bool]) -> dict:
-    """The tools a server listed when read. One already known keeps its mark, which may be the
-    person's override; one the server no longer lists is dropped."""
-    return _update_mcp_tools(root, ext_id, lambda known: {
-        name: bool(known.get(name, read_only)) for name, read_only in listed.items()})
 
 
 def add_skills(root: Path, skills: list[dict[str, str]], *, replaces: str = "",
@@ -760,15 +727,12 @@ def tools_from_git(url: object, path: object = "") -> tuple[list[dict], str]:
     return bodies, commit
 
 
-def add_tools(root: Path, tools: list[dict], *, read_only: bool = False,
-              source: dict | None = None) -> list[dict]:
-    """Add every tool one upload or import holds, or none of them. `read_only` marks the TypeScript
-    ones; a Python tool's SPEC says its own."""
+def add_tools(root: Path, tools: list[dict], *, source: dict | None = None) -> list[dict]:
+    """Add every tool one upload or import holds, or none of them."""
     added: list[dict] = []
     try:
         for body in tools:
-            added.append(add(root, {**body, "readOnly": read_only,
-                                    "source": source or {"type": "upload"}}))
+            added.append(add(root, {**body, "source": source or {"type": "upload"}}))
     except ExtensionError:
         for entry in added:
             remove(root, entry["id"])

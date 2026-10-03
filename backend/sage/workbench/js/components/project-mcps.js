@@ -22,7 +22,7 @@ window.SW = window.SW || {};
   SW.McpRow = function McpRow({ server, where }) {
     const status = server.status || {};
     const said = STATUS[status.status] || status.status || STATUS.unknown;
-    const tools = Object.keys(server.tools || {}).sort();
+    const tools = (server.tools || []).slice().sort();
     const subtitle = [status.error ? `${said}: ${status.error}` : said,
       server.source && server.source.type === 'git' ? 'From git' : '',
       `${tools.length} tool${tools.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
@@ -33,20 +33,13 @@ window.SW = window.SW || {};
       items: [
         tools.length && {
           type: 'group',
-          label: 'Offered on Ask and plan turns only if read-only',
-          children: tools.map((tool) => ({
-            key: `ro:${tool}`,
-            label: `${tool}: ${server.tools[tool] ? 'read-only' : 'may change things'}`,
-          })),
+          label: 'Its tools',
+          children: tools.map((tool) => ({ key: `tool:${tool}`, label: tool, disabled: true })),
         },
         { key: 'reread', label: 'Read its tools again' },
         { key: 'remove', label: 'Remove from project', danger: true },
       ].filter(Boolean),
       onClick: ({ key }) => {
-        if (key.startsWith('ro:')) {
-          const tool = key.slice(3);
-          return SW.store.setMcpToolReadOnly(server, tool, !server.tools[tool]);
-        }
         if (key === 'reread') return SW.store.readMcpTools(server);
         return SW.store.removeExtension(server);
       },
@@ -158,7 +151,7 @@ window.SW = window.SW || {};
       Modal,
       {
         open,
-        title: 'Add an MCP server',
+        title: 'Add MCP server',
         okText: 'Add server',
         onOk: add,
         onCancel: close,
@@ -168,6 +161,7 @@ window.SW = window.SW || {};
       },
       h('p', { className: 'sw-caption', style: { margin: '0 0 12px' } },
         'Every conversation and app in this project can use its tools.'),
+      h(SW.util.ToolAccessWarning),
       h(Input, {
         placeholder: 'Name, e.g. crm',
         value: name,
