@@ -2230,14 +2230,11 @@ def update_project_skill(ext_id: str) -> JSONResponse:
 
 @control_app.post("/api/project/extensions/tools")
 async def upload_project_tool(request: Request) -> JSONResponse:
-    """A `.ts` or `.py` tool as the raw body; `filename` and `readOnly` ride in the query. A Python
-    tool's SPEC says for itself whether it is read-only."""
+    """A `.ts` or `.py` tool as the raw body; `filename` rides in the query."""
     try:
         tool = project_extensions.tool_in_upload(request.query_params.get("filename", ""),
                                                  await request.body())
-        items = orchestrator.add_tools([tool],
-                                       read_only=request.query_params.get("readOnly") == "true",
-                                       source={"type": "upload"})
+        items = orchestrator.add_tools([tool], source={"type": "upload"})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     return JSONResponse(content={"items": items})
@@ -2249,25 +2246,13 @@ def import_project_tools(body: dict) -> JSONResponse:
     body = body or {}
     try:
         tools, commit = project_extensions.tools_from_git(body.get("url"), body.get("path"))
-        items = orchestrator.add_tools(tools, read_only=bool(body.get("readOnly")),
+        items = orchestrator.add_tools(tools,
                                        source={"type": "git", "url": body["url"],
                                                "path": str(body.get("path") or ""),
                                                "commit": commit})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     return JSONResponse(content={"items": items})
-
-
-@control_app.put("/api/project/extensions/{ext_id}/readOnly")
-def set_project_extension_read_only(ext_id: str, body: dict) -> JSONResponse:
-    """The panel's override of a custom tool's read-only flag, for the whole Project."""
-    try:
-        orchestrator.set_extension_read_only(ext_id, bool((body or {}).get("readOnly")))
-    except KeyError:
-        return JSONResponse(status_code=404, content={"error": "not in this project"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    return JSONResponse(content={"ok": True})
 
 
 @control_app.post("/api/project/extensions")
@@ -2312,22 +2297,13 @@ def add_project_mcp(body: dict) -> JSONResponse:
 
 @control_app.post("/api/project/extensions/{ext_id}/tools")
 def read_project_mcp_tools(ext_id: str) -> JSONResponse:
-    """Ask an MCP server for its tools again; a tool already known keeps its read-only mark."""
+    """Ask an MCP server for its tools again."""
     try:
         return JSONResponse(content={"item": orchestrator.read_mcp_tools(ext_id)})
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
-
-
-@control_app.put("/api/project/extensions/{ext_id}/tools/{tool}")
-def set_project_mcp_tool_read_only(ext_id: str, tool: str, body: dict) -> JSONResponse:
-    try:
-        item = orchestrator.set_mcp_tool_read_only(ext_id, tool, bool((body or {}).get("readOnly")))
-    except KeyError:
-        return JSONResponse(status_code=404, content={"error": "unknown MCP server or tool"})
-    return JSONResponse(content={"item": item})
 
 
 @control_app.get("/api/project/history")

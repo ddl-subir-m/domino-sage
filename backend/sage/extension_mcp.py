@@ -1,8 +1,8 @@
 """Reading a Project's MCP server before OpenCode does (ADR-0071, #621).
 
-When a server is added Sage asks it for `tools/list` itself, because each tool's `readOnlyHint`
-decides whether Ask and plan turns are offered it, and OpenCode does not pass annotations on. Also
-here: a git repo that declares its own server, read into OpenCode's shape.
+When a server is added Sage asks it for `tools/list` itself: that proves it answers with the URL or
+command and the headers or variables given, and its row names what it offers. Also here: a git
+repo that declares its own server, read into OpenCode's shape.
 """
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ _TIMEOUT_S = 30.0
 _DECLARATIONS = (".opencode/opencode.json", "opencode.json", ".mcp.json", "mcp.json")
 
 
-def read_tools(config: dict, *, timeout: float = _TIMEOUT_S) -> dict[str, bool]:
-    """Each tool the server lists, by name, and whether it is annotated `readOnlyHint: true`."""
+def read_tools(config: dict, *, timeout: float = _TIMEOUT_S) -> list[str]:
+    """The name of each tool the server lists."""
     unset = unset_variables(config)
     if unset:
         raise ExtensionError(f"{', '.join(unset)} {'is' if len(unset) == 1 else 'are'} not set "
@@ -41,15 +41,13 @@ def read_tools(config: dict, *, timeout: float = _TIMEOUT_S) -> dict[str, bool]:
         session.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                        "clientInfo": {"name": "sage", "version": "1"}})
         session.notify("notifications/initialized")
-        tools: dict[str, bool] = {}
+        tools: list[str] = []
         cursor = None
         while True:
             result = session.request("tools/list", {"cursor": cursor} if cursor else {})
             for tool in result.get("tools") or []:
                 if isinstance(tool, dict) and isinstance(tool.get("name"), str):
-                    hints = tool.get("annotations") if isinstance(tool.get("annotations"), dict) \
-                        else {}
-                    tools[tool["name"]] = hints.get("readOnlyHint") is True
+                    tools.append(tool["name"])
             cursor = result.get("nextCursor")
             if not cursor:
                 return tools

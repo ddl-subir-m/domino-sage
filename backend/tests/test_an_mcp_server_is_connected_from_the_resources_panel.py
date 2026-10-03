@@ -2,8 +2,8 @@
 
 ADR-0071. The form takes a remote URL plus headers or a local command plus environment; a secret is
 a variable name written as `{env:VAR}`, never a value. A git URL works too, for a repo that declares
-its own server. When a server is added Sage reads `tools/list` itself, storing each tool's
-`readOnlyHint` as `readOnly`, which the person can override. Each row carries OpenCode's own status
+its own server. When a server is added Sage reads `tools/list` itself and stores the names: its
+annotations are hints, and none of them decides a turn (#636). Each row carries OpenCode's own status
 for the directory the switch answers for, and a server naming an unset variable reads as failed.
 """
 from __future__ import annotations
@@ -45,22 +45,22 @@ def remote():
 
 # ---- reading tools/list ------------------------------------------------------------------------
 
-def test_a_local_servers_read_only_hints_are_read_and_a_missing_one_is_false(monkeypatch):
+def test_a_local_servers_tools_are_read_across_pages(monkeypatch):
     monkeypatch.setenv("STUB_PAGES", "1")
-    assert extension_mcp.read_tools(LOCAL) == {"echo": True, "write_note": False, "ping": False}
+    assert extension_mcp.read_tools(LOCAL) == ["echo", "write_note", "ping"]
 
 
 def test_a_local_servers_environment_resolves_its_variables(monkeypatch):
     monkeypatch.setenv("MY_TOOL_621", "lookup")
     tools = extension_mcp.read_tools({**LOCAL, "environment": {"STUB_EXTRA": "{env:MY_TOOL_621}"}})
-    assert tools["lookup"] is True
+    assert "lookup" in tools
 
 
 def test_a_remote_server_is_read_with_its_headers_resolved(remote, monkeypatch):
     monkeypatch.setenv("STUB_TOKEN_621", "s3cret")
     config = {"type": "remote", "url": remote,
               "headers": {"Authorization": "Bearer {env:STUB_TOKEN_621}"}}
-    assert extension_mcp.read_tools(config) == {"echo": True, "write_note": False, "ping": False}
+    assert extension_mcp.read_tools(config) == ["echo", "write_note", "ping"]
 
 
 def test_a_remote_server_holding_its_stream_open_is_read_without_waiting_for_it(tmp_path):
@@ -72,7 +72,7 @@ def test_a_remote_server_holding_its_stream_open_is_read_without_waiting_for_it(
         started = time.monotonic()
         tools = extension_mcp.read_tools(
             {"type": "remote", "url": f"http://127.0.0.1:{server.server_address[1]}/mcp"})
-        assert tools["echo"] is True and time.monotonic() - started < 5
+        assert "echo" in tools and time.monotonic() - started < 5
     finally:
         server.hold.set()
         server.shutdown()
@@ -113,15 +113,15 @@ def test_headers_and_environment_are_text_and_variables_are_names(tmp_path, conf
 
 # ---- the orchestrator --------------------------------------------------------------------------
 
-def test_adding_from_the_form_stores_each_tools_mark_and_reloads(tmp_path):
+def test_adding_from_the_form_stores_its_tool_names_and_reloads(tmp_path):
     orch, oc, _ = _build(tmp_path, [])
     project = orch.project(start_preview=False)
     item = orch.add_mcp({"name": "notes", "config": LOCAL})
-    assert item["tools"] == {"echo": True, "write_note": False, "ping": False}
+    assert item["tools"] == ["echo", "ping", "write_note"]
     assert item["source"] == {"type": "form"} and "warning" not in item
     assert oc.disposed
     owner = project.control.snapshot().extensions.owner
-    assert owner("notes_echo") == ("mcp:notes", True) and owner("notes_ping") == ("mcp:notes", False)
+    assert owner("notes_echo") == owner("notes_write_note") == "mcp:notes"
 
 
 def test_a_server_naming_an_unset_variable_is_still_added_and_says_why(tmp_path, monkeypatch):
@@ -129,34 +129,28 @@ def test_a_server_naming_an_unset_variable_is_still_added_and_says_why(tmp_path,
     orch, _, _ = _build(tmp_path, [])
     item = orch.add_mcp({"name": "crm", "config": {"type": "remote", "url": "https://x/mcp",
                                                    "headers": {"Authorization": "{env:NOPE_621}"}}})
-    assert item["tools"] == {} and "NOPE_621 is not set" in item["warning"]
+    assert item["tools"] == [] and "NOPE_621 is not set" in item["warning"]
     assert [e["id"] for e in orch.list_extensions()] == ["mcp:crm"]
 
 
-def test_an_override_changes_the_mark_and_reading_again_keeps_it(tmp_path, monkeypatch):
+def test_reading_again_replaces_the_list(tmp_path, monkeypatch):
     orch, _, _ = _build(tmp_path, [])
-    project = orch.project(start_preview=False)
     orch.add_mcp({"name": "notes", "config": LOCAL})
-    orch.set_mcp_tool_read_only("mcp:notes", "write_note", True)
-    assert project.control.snapshot().extensions.owner("notes_write_note").read_only is True
-
     monkeypatch.setenv("STUB_EXTRA", "fresh")
-    tools = orch.read_mcp_tools("mcp:notes")["tools"]
-    assert tools == {"echo": True, "write_note": True, "ping": False, "fresh": True}
+    assert orch.read_mcp_tools("mcp:notes")["tools"] == ["echo", "fresh", "ping", "write_note"]
     with pytest.raises(KeyError):
-        orch.set_mcp_tool_read_only("mcp:notes", "nope", True)
-    with pytest.raises(KeyError):
-        orch.set_mcp_tool_read_only("mcp:other", "echo", True)
+        orch.read_mcp_tools("mcp:other")
 
 
-def test_an_overridden_tool_is_offered_on_an_ask_turn(tmp_path):
+def test_every_tool_of_a_server_is_offered_on_an_ask_turn_whatever_it_lists(tmp_path):
+    """#636: a server's `readOnlyHint` used to decide this, and a tool it did not list was kept
+    off. Now nothing is, short of the switch."""
     extensions.add(tmp_path, {"kind": "mcp", "name": "crm", "config": {"type": "remote", "url": "u"},
-                              "tools": {"search": True, "update": False}})
-    extensions.set_tool_read_only(tmp_path, "mcp:crm", "update", True)
+                              "tools": ["search"]})
     control = ModelControl(mode=Mode.ASK)
     control.set_extensions(extensions.load_catalog(tmp_path))
     names = _sent(control)[0]
-    assert {"crm_search", "crm_update"} <= set(names) and "crm_other" not in names
+    assert {"crm_search", "crm_update", "crm_other"} <= set(names)
 
 
 # ---- the status OpenCode reports ---------------------------------------------------------------
@@ -280,12 +274,12 @@ def test_adding_from_git_records_the_url_and_commit(tmp_path, git_origin):
     item = orch.add_mcp({"name": "notes", "git": url})
     assert item["source"]["type"] == "git" and item["source"]["url"] == url
     assert len(item["source"]["commit"]) == 40
-    assert item["tools"]["echo"] is True
+    assert "echo" in item["tools"]
 
 
 # ---- the routes --------------------------------------------------------------------------------
 
-def test_the_routes_add_override_and_read_again(tmp_path, monkeypatch):
+def test_the_routes_add_and_read_again(tmp_path, monkeypatch):
     import sage.orchestrator.app as app_module
 
     orch, _, _ = _build(tmp_path, [])
@@ -293,13 +287,11 @@ def test_the_routes_add_override_and_read_again(tmp_path, monkeypatch):
     client = TestClient(app_module.control_app)
 
     added = client.post("/api/project/extensions/mcp", json={"name": "notes", "config": LOCAL})
-    assert added.json()["item"]["tools"]["write_note"] is False
+    assert "write_note" in added.json()["item"]["tools"]
     assert client.post("/api/project/extensions/mcp",
                        json={"name": "notes", "config": LOCAL}).status_code == 400
-    put = client.put("/api/project/extensions/mcp:notes/tools/write_note", json={"readOnly": True})
-    assert put.json()["item"]["tools"]["write_note"] is True
-    assert client.put("/api/project/extensions/mcp:notes/tools/nope",
-                      json={"readOnly": True}).status_code == 404
+    assert client.put("/api/project/extensions/mcp:notes/tools/write_note",
+                      json={"readOnly": True}).status_code in (404, 405), "the override is gone"
     again = client.post("/api/project/extensions/mcp:notes/tools")
-    assert again.json()["item"]["tools"]["write_note"] is True
+    assert "write_note" in again.json()["item"]["tools"]
     assert client.post("/api/project/extensions/mcp:nope/tools").status_code == 404

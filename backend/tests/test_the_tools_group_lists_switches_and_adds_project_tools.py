@@ -1,7 +1,7 @@
 """The resources panel's Tools group: the Project's custom tools, a switch each, and a way in (#622).
 
-ADR-0071. A switch answers for the Conversation open in Chat or the app selected in Build. A row's
-menu changes the tool's read-only flag, which decides whether Ask and plan turns are offered it.
+ADR-0071. A switch answers for the Conversation open in Chat or the app selected in Build. There is
+no read-only mark (#636): the dialog says, once, what a switched-on tool can reach.
 Drawn through `tests/js/project_tools_harness.mjs`, which records every request the panel sends.
 """
 import json
@@ -17,10 +17,10 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not on PATH (it is in the Sage image)")
 
 ITEMS = [
-    {"id": "tool:adder", "kind": "tool", "name": "adder", "enabled": False, "readOnly": True,
+    {"id": "tool:adder", "kind": "tool", "name": "adder", "enabled": False,
      "files": [".opencode/tools/adder.py", ".opencode/tools/adder.ts"],
      "source": {"type": "upload"}},
-    {"id": "tool:lookup", "kind": "tool", "name": "lookup", "enabled": True, "readOnly": False,
+    {"id": "tool:lookup", "kind": "tool", "name": "lookup", "enabled": True,
      "files": [".opencode/tools/lookup.ts"], "source": {"type": "git", "url": "https://x"}},
     {"id": "skill:tables", "kind": "skill", "name": "tables", "enabled": True,
      "source": {"type": "upload"}},
@@ -40,11 +40,11 @@ def test_each_project_tool_is_a_row_in_its_own_group_and_says_what_it_is():
     assert "Tools (2)" in drawn["heads"] and "Skills (1)" in drawn["heads"]
     rows = drawn["rows"]
     assert [r["name"] for r in rows] == ["adder", "lookup"]
-    assert rows[0]["subtitle"] == "Python · Read-only · Uploaded"
+    assert rows[0]["subtitle"] == "Python · Uploaded"
     assert rows[1]["subtitle"] == "TypeScript · From git"
     assert rows[0]["checked"] is False and rows[0]["disabled"] is False
     assert rows[0]["label"] == "Use adder in this conversation"
-    assert rows[0]["menu"][0] == "Mark not read-only" and rows[1]["menu"][0] == "Mark read-only"
+    assert rows[0]["menu"] == rows[1]["menu"] == ["Remove from project"]
 
 
 def test_only_build_with_no_app_picked_keeps_the_switch_off_limits():
@@ -63,13 +63,6 @@ def test_a_switch_in_chat_writes_to_the_conversation_and_in_build_to_the_app():
         "enabled": False, "thread": "", "app": "app-1"}
 
 
-def test_the_menu_flips_read_only_for_the_project_and_reads_the_list_again():
-    calls = _run("read-only", hash="#/chat", thread="t1")["calls"]
-    assert calls[0] == {"url": "./api/project/extensions/tool%3Aadder/readOnly", "method": "PUT",
-                        "body": {"readOnly": False}}
-    assert calls[-1]["url"].endswith("/project/extensions?thread=t1&app=")
-
-
 def test_remove_asks_first_then_deletes():
     out = _run("remove", hash="#/chat", thread="t1")
     assert out["confirmTitle"] == "Remove adder?"
@@ -82,20 +75,16 @@ def test_the_add_menu_and_the_group_door_open_the_tool_dialog_not_the_skill_one(
     assert "tool" in drawn["menuKeys"] and drawn["dialogOpen"] is False
     pressed = _run("press-door", hash="#/chat", thread="t1")
     assert pressed["dialogOpen"] is True and pressed["skillDialogOpen"] is False
-    assert pressed["box"] == {"checked": False, "disabled": False}
-
-
-def test_a_python_tool_says_its_own_read_only_so_the_checkbox_stands_down():
-    assert _run("dialog-py")["box"] == {"checked": False, "disabled": True}
+    assert pressed["box"] is None, "no read-only checkbox (#636)"
+    assert "credentials" in pressed["warning"] and "switched on" in pressed["warning"]
 
 
 def test_each_way_in_reaches_its_route():
     upload = _run("add-file", hash="#/chat", filename="lookup.ts")
     assert upload["calls"][0]["url"] == \
-        "./api/project/extensions/tools?filename=lookup.ts&readOnly=true"
+        "./api/project/extensions/tools?filename=lookup.ts"
     assert upload["calls"][0]["method"] == "POST"
     assert upload["calls"][0]["body"].startswith("<blob")
     git = _run("add-git", hash="#/chat")["calls"][0]
     assert git == {"url": "./api/project/extensions/tools/git", "method": "POST",
-                   "body": {"url": "https://example.com/tools.git", "path": "tools",
-                            "readOnly": True}}
+                   "body": {"url": "https://example.com/tools.git", "path": "tools"}}

@@ -720,27 +720,23 @@ class EnforcementShim:
                 tools.append(tool)
             request = {**request, "tools": tools}
         # The Project's own tools (ADR-0071): gone when this Thread or App switched them off, and on
-        # an Ask or plan turn unless marked read-only. The mark is the tool's own claim; the tree-hash
-        # revert stays the backstop for a tool that writes anyway. A Chat question keeps every one
-        # that is switched on (#635): most never carry the mark — DeepWiki's server sends no
-        # `readOnlyHint` — and a question is exactly what a lookup tool is for.
+        # every turn otherwise, read-only turns included (#636). There is no read-only mark: it was
+        # a claim nothing checked, so a tool that writes ran on it anyway. File writes on a
+        # read-only turn are still reverted at its end; what a tool changes outside Sage is the
+        # access it was given, and the add dialogs say so.
         extensions = state.extensions
         messages = request.get("messages") if isinstance(request.get("messages"), list) else []
         # An @-mention is explicit intent, so what it names is on for this turn whatever its switch
-        # says (#628), and a named tool is offered on a read-only turn too (#633).
+        # says (#628).
         named_tools = _named(messages, extensions.named_tools) if extensions else set()
         named_servers = _named(messages, extensions.servers) if extensions else set()
         named_ids = ({extensions.named_tools[n] for n in named_tools}
                      | {extensions.servers[n] for n in named_servers})
         if extensions and isinstance(request.get("tools"), list):
-            read_only_turn = state.mode is Mode.ASK or (
-                state.read_only_turn and not (chat_id and state.read_only_reason == "question"))
             kept = []
             for tool in request["tools"]:
                 owner = extensions.owner(str((tool.get("function") or {}).get("name", "")))
-                if owner and owner.id not in named_ids and (
-                        owner.id in state.extensions_off
-                        or (read_only_turn and not owner.read_only)):
+                if owner and owner not in named_ids and owner in state.extensions_off:
                     continue
                 kept.append(tool)
             request = {**request, "tools": kept}

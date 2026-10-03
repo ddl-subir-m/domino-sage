@@ -2,17 +2,15 @@
 //
 // The same approach as `project_skills_harness.mjs`: `createElement` is stubbed to a plain object,
 // so calling the panel returns tree data, and hooks are real per mount. `fetch` records every
-// request, so a switch, a read-only change or a removal is proved by what it SENT.
+// request, so a switch or a removal is proved by what it SENT.
 //
 // Input on stdin: `{ act, hash, thread, app, items }`.
 //   drawn       the tool rows, the Add menu's keys, and whether the dialog is open
-//   press-door  press the Tools group's `+`, then report the dialog's read-only checkbox
+//   press-door  press the Tools group's `+`, then report the dialog's checkbox and its warning
 //   toggle      switch the first tool off
-//   read-only   flip the first tool's read-only flag from its menu
 //   remove      confirm the first tool's Remove
-//   add-file    `SW.store.addTools(file, true)` for a file named `input.filename`
-//   add-git     `SW.store.addTools({ url, path }, true)`
-//   dialog-py   the dialog with a .py chosen: the read-only checkbox
+//   add-file    `SW.store.addTools(file)` for a file named `input.filename`
+//   add-git     `SW.store.addTools({ url, path })`
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
@@ -137,7 +135,9 @@ function dialog(props, alone) {
   if (alone) cursor = 0;
   const inner = flatten(SW.AddToolModal(props));
   const box = inner.find((d) => d.t === 'Checkbox');
-  return { inner, box: box && { checked: box.p.checked, disabled: box.p.disabled } };
+  const warning = inner.find((d) => d.t === 'Alert' && d.p.type === 'warning');
+  return { inner, box: box ? { checked: box.p.checked, disabled: box.p.disabled } : null,
+           warning: warning ? warning.p.message : null };
 }
 
 const report = {};
@@ -158,13 +158,9 @@ if (act === 'drawn' || act === 'press-door') {
   const modal = nodes.find((n) => n.t === SW.AddToolModal);
   report.dialogOpen = !!modal;
   report.skillDialogOpen = !!nodes.find((n) => n.t === SW.AddSkillModal);
-  if (modal) report.box = dialog(modal.p).box;
+  if (modal) Object.assign(report, (({ box, warning }) => ({ box, warning }))(dialog(modal.p)));
 } else if (act === 'toggle') {
   toolRows(panel())[0].sw.p.onChange(false);
-  await settle(); await settle();
-  report.calls = calls;
-} else if (act === 'read-only') {
-  toolRows(panel())[0].more.p.menu.onClick({ key: 'readOnly' });
   await settle(); await settle();
   report.calls = calls;
 } else if (act === 'remove') {
@@ -175,20 +171,12 @@ if (act === 'drawn' || act === 'press-door') {
 } else if (act === 'add-file') {
   const file = new Blob(['x']);
   file.name = input.filename;
-  await SW.store.addTools(file, true);
+  await SW.store.addTools(file);
   report.calls = calls;
   report.toasts = toasts;
 } else if (act === 'add-git') {
-  await SW.store.addTools({ url: 'https://example.com/tools.git', path: 'tools' }, true);
+  await SW.store.addTools({ url: 'https://example.com/tools.git', path: 'tools' });
   report.calls = calls;
-} else if (act === 'dialog-py') {
-  const props = { open: true, onClose: () => {} };
-  // Pick a .py through the hidden input, then draw again with the state that set.
-  const first = dialog(props, true).inner.find((d) => d.t === 'input');
-  const file = new Blob(['x']);
-  file.name = 'adder.py';
-  first.p.onChange({ target: { files: [file], value: 'adder.py' } });
-  report.box = dialog(props, true).box;
 }
 
 console.log(JSON.stringify(report));

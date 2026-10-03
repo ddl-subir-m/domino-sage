@@ -57,7 +57,7 @@ def test_a_project_tools_answer_is_in_the_next_chat_request(tmp_path, monkeypatc
     rig = Rig(tmp_path, monkeypatch)
     rig.project.control.pick("domino/gemini-3.7-flash")
     rig.project.control.set_mode(Mode.IMPLEMENT)
-    rig.orch.add_extension({"kind": "tool", "name": "fx_rate", "code": FX_RATE, "readOnly": True})
+    rig.orch.add_extension({"kind": "tool", "name": "fx_rate", "code": FX_RATE})
 
     def call_fx(request):
         offered = {t["function"]["name"] for t in request.get("tools", [])}

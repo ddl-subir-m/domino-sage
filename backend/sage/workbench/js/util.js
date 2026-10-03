@@ -1687,4 +1687,17 @@ window.SW = window.SW || {};
       })
     );
   };
+
+  // Said where a tool or MCP server is added, because nothing after that point asks (#636): a
+  // switched-on tool is offered on every turn, and what it can change is the access it was given.
+  SW.util.ToolAccessWarning = function ToolAccessWarning() {
+    return h(antd.Alert, {
+      type: 'warning',
+      showIcon: true,
+      style: { marginBottom: 12 },
+      message: SW.brand.text('{assistantName} can use it in any conversation or app where it is '
+        + 'switched on. It runs with the access you give it, so if it should not change anything, '
+        + 'give it credentials that cannot.'),
+    });
+  };
 })();
