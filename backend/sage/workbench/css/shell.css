@@ -691,15 +691,9 @@ a.sw-topnav-link {
 .sw-res-row:hover .sw-res-more, .sw-res-row.is-menu-open .sw-res-more,
 .sw-res-row.is-context .sw-res-more { opacity: 1; }
 .sw-res-more:hover { background: var(--gray-200); color: var(--dark-700); }
-/* A row with nothing to open, and a switch for the Conversation or app in view. */
+/* A Project skill's row: nothing to open, and a switch for the Conversation or app in view. */
 .sw-skill-main { cursor: default; }
 .sw-skill-switch { flex: none; margin-right: 4px; }
-/* An MCP server OpenCode could not load: the row is the only place a person sees it failed. */
-.sw-mcp-row .sw-res-sub.is-failed { color: var(--error); }
-.sw-mcp-pair { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
-/* A Project tool's row: the same shape as a skill's. */
-.sw-tool-main { cursor: default; }
-.sw-tool-switch { flex: none; margin-right: 4px; }
 .sw-res-expand {
   flex: none;
   width: 20px;

@@ -6118,25 +6118,6 @@ window.SW = window.SW || {};
       return true;
     },
 
-    // `body` is what `SW.mcpBody` builds from the Add MCP server dialog.
-    async addMcp(body) {
-      const read = await SW.api.addMcp(body);
-      await store.loadExtensions();
-      const item = read.item || {};
-      if (item.warning) antd.message.warning(item.warning);
-      else antd.message.success(`Added the MCP server ${item.name}. It reaches the next turn.`);
-      return item;
-    },
-
-    async readMcpTools(server) {
-      try {
-        await SW.api.readMcpTools(server.id);
-      } catch (err) {
-        antd.message.error(err.message);
-      }
-      await store.loadExtensions();
-    },
-
     async setExtensionEnabled(ext, enabled) {
       // A switch is intent, the same as `attach`: in Chat it opens the conversation it is for.
       if (SW.router.get().mode !== 'build' && !conversationId()) await store.newThread();
@@ -6148,19 +6129,6 @@ window.SW = window.SW || {};
         antd.message.error(err.message);
       }
       await store.loadExtensions();
-    },
-
-    // `source` is a File (a .ts or a .py) or `{ url, path }` for git.
-    async addTools(source) {
-      const read = source && typeof source.url === 'string'
-        ? await SW.api.importTools(source.url, source.path)
-        : await SW.api.uploadTool(source);
-      await store.loadExtensions();
-      const names = (read.items || []).map((e) => e.name);
-      antd.message.success(names.length === 1
-        ? `Added the tool ${names[0]}. It reaches the next turn.`
-        : `Added ${names.length} tools. They reach the next turn.`);
-      return read.items || [];
     },
 
     async removeExtension(ext) {

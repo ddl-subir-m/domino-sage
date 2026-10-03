@@ -1640,16 +1640,6 @@ def _opencode_config_diag() -> dict:
             cfg = json.loads(Path(path).read_text())
             row["keys"] = sorted(cfg)[:20] if isinstance(cfg, dict) else type(cfg).__name__
             row["declares_mcp"] = isinstance(cfg, dict) and "mcp" in cfg
-            # The Project's own MCP servers (ADR-0071) are Sage-written when the manifest records
-            # every one of them, none takes a reserved name, and the file says nothing else.
-            if (workspace and path == str(Path(workspace) / project_extensions.MCP_CONFIG)
-                    and isinstance(cfg, dict) and set(cfg) <= {"$schema", "mcp"}
-                    and isinstance(cfg.get("mcp", {}), dict)):
-                recorded = {e["name"] for e in project_extensions.read_manifest(Path(workspace))
-                            if e["kind"] == "mcp"}
-                keys = set(cfg.get("mcp") or {})
-                row["ours"] = bool(keys) and keys <= recorded and not any(
-                    k.startswith(project_extensions.RESERVED_PREFIXES) for k in keys)
             # A `tools` map is the quiet half. It never touches the `mcp` block, so the server still
             # connects, `opencode mcp list` still prints a green tick and `opencode_says` still reads
             # connected — while `"sage-live-read*": false` takes the tools off the agent anyway. That
@@ -1775,8 +1765,6 @@ def _python_diag() -> dict:
         # null when unset, never "": a venv that never exported VIRTUAL_ENV and one that exported
         # an empty string are different facts, and the reader has to be able to tell them apart.
         "virtual_env": _guard(lambda: os.environ.get("VIRTUAL_ENV")),
-        # Not this interpreter: the one a Project's Python tools run under (#634).
-        "project_python": _guard(lambda: os.environ.get("SAGE_PROJECT_PYTHON")),
     }
 
 
@@ -2107,9 +2095,9 @@ def unpin_project_resource(
 
 @control_app.get("/api/project/extensions")
 def list_project_extensions(thread: str = "", app: str = "") -> JSONResponse:
-    """The Project's own skills, tools and MCP servers (ADR-0071), each `enabled` or not for the
-    Thread or Built App named, and the skills Sage ships and the sections of its build
-    instructions, either of which a Project skill may replace."""
+    """The Project's own skills (ADR-0071), each `enabled` or not for the Thread or Built App
+    named, and the skills Sage ships and the sections of its build instructions, either of which a
+    Project skill may replace."""
     return JSONResponse(content={
         "items": orchestrator.list_extensions(thread=thread, app=app),
         "builtinSkills": [{"name": name, "description": description} for name, description
@@ -2230,33 +2218,6 @@ def update_project_skill(ext_id: str) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
 
-@control_app.post("/api/project/extensions/tools")
-async def upload_project_tool(request: Request) -> JSONResponse:
-    """A `.ts` or `.py` tool as the raw body; `filename` rides in the query."""
-    try:
-        tool = project_extensions.tool_in_upload(request.query_params.get("filename", ""),
-                                                 await request.body())
-        items = orchestrator.add_tools([tool], source={"type": "upload"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    return JSONResponse(content={"items": items})
-
-
-@control_app.post("/api/project/extensions/tools/git")
-def import_project_tools(body: dict) -> JSONResponse:
-    """`url`, and `path` inside it: one `.ts` or `.py`, or a folder of them ("" is the root)."""
-    body = body or {}
-    try:
-        tools, commit = project_extensions.tools_from_git(body.get("url"), body.get("path"))
-        items = orchestrator.add_tools(tools,
-                                       source={"type": "git", "url": body["url"],
-                                               "path": str(body.get("path") or ""),
-                                               "commit": commit})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    return JSONResponse(content={"items": items})
-
-
 @control_app.post("/api/project/extensions")
 def add_project_extension(body: dict) -> JSONResponse:
     try:
@@ -2285,27 +2246,6 @@ def set_project_extension_enabled(ext_id: str, body: dict) -> JSONResponse:
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     return JSONResponse(content={"ok": True})
-
-
-@control_app.post("/api/project/extensions/mcp")
-def add_project_mcp(body: dict) -> JSONResponse:
-    """`name`, and `config` (remote `url` + `headers`, or local `command` + `environment`) or a
-    `git` URL with an optional `server`. A secret is written as `{env:VAR}`, never as a value."""
-    try:
-        return JSONResponse(content={"item": orchestrator.add_mcp(body or {})})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-
-
-@control_app.post("/api/project/extensions/{ext_id}/tools")
-def read_project_mcp_tools(ext_id: str) -> JSONResponse:
-    """Ask an MCP server for its tools again."""
-    try:
-        return JSONResponse(content={"item": orchestrator.read_mcp_tools(ext_id)})
-    except KeyError:
-        return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
 
 
 @control_app.get("/api/project/history")

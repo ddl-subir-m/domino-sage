@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
     from ..workspace.chat_tables import ChatTables
 
-from .. import build_diagnostics, degraded, extension_mcp, timing
+from .. import build_diagnostics, degraded, timing
 from .. import extensions as project_extensions
 from ..assets.provider import (
     Asset,
@@ -5909,25 +5909,6 @@ def _tool_detail(tool: str, part: dict) -> str:
         if isinstance(value, str) and value.strip():
             return _workspace_relative(value.strip())
     return ""
-
-
-def _extension_tool_detail(part: dict) -> str:
-    """A Project tool's arguments as `key=value`, clipped to one line: the call is the Project's own
-    and its arguments are the only thing that tells one call from the next. Nested values are
-    elided, not dumped."""
-    state = part.get("state")
-    inp = (state or {}).get("input") if isinstance(state, dict) else None
-    if not isinstance(inp, dict):
-        return ""
-    pairs = []
-    for key, value in inp.items():
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            text = value if isinstance(value, str) else json.dumps(value)
-            pairs.append(f"{key}={' '.join(text.split())}")
-        else:
-            pairs.append(f"{key}=…")
-    detail = ", ".join(pairs)
-    return detail if len(detail) <= _TOOL_DETAIL_MAX else detail[:_TOOL_DETAIL_MAX - 1] + "…"
 
 
 def _tool_duration_ms(part: dict) -> int | None:
@@ -16446,8 +16427,8 @@ class Orchestrator:
         # because the poison survives one too: `_recover_session` reads the session id back off disk,
         # and an un-armed restart would refuse every turn all over again.
         withheld_token = project.control.arm_withheld(recall.withheld(history))
-        extensions_off = self._extensions_off((store.get(thread_id) or {}).get("extensions"))
-        extensions_token = project.control.arm_extensions_off(extensions_off)
+        extensions_token = project.control.arm_extensions_off(
+            self._extensions_off((store.get(thread_id) or {}).get("extensions")))
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         # `investigating` exempts this Thread from both bounded lanes, and that is a SCOPE decision
         # before it is a latency one. #364 bounds a turn that only answers a question; while an
@@ -16490,14 +16471,9 @@ class Orchestrator:
         # loading a skill and listing folders before it asked. The attach → offer → accept path is
         # untouched: `resolve` matches the reply to the kept question, the funnel draws the one
         # card, and the accepted replay runs the question under the grant.
-        # A Project tool or MCP server switched on for this Thread may be the source (#631).
         source_request = (
             intent.valid and intent.label in {"data_answer", "data_artifact"} and not unbounded
             and chat_task.awaiting_source(store, thread_id, prompt)
-            and not any(e["kind"] in {"tool", "mcp"} and (
-                            e["id"] not in extensions_off
-                            or re.search(rf"(?<![\w@])@{re.escape(e['name'])}(?![\w-])", prompt))
-                        for e in project_extensions.read_manifest(project.record.path))
         )
         artifact_token = (
             project.control.arm_chat_artifact()
@@ -21486,8 +21462,6 @@ class Orchestrator:
         # it to implement instead of declaring success. Capped so a model that refuses to write
         # can't loop forever.
         made_edits = False
-        # The Project's own tools that ran (ADR-0071), so a reverted read-only turn names them.
-        user_tools_ran: list[str] = []
         # One follow-up each, for the whole turn. A reasoning-only implement call is interrupted
         # at its budget, and a reasoning stream that then dies is retried once. The attempt after
         # both is the stall that already ends a quiet turn. A plan call is not part of this.
@@ -22575,10 +22549,6 @@ class Orchestrator:
                                 stop_for_invalid = False
                             last_active = None  # completed: let the next running tool re-announce
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
-                            extensions = project.control.snapshot().extensions
-                            if (extensions and extensions.owner(tool)
-                                    and tool not in user_tools_ran):
-                                user_tools_ran.append(tool)
                             args = (part.get("state") or {}).get("input") \
                                 if isinstance(part.get("state"), dict) else None
                             if not looped and brake.saw(_repeat_fingerprint(tool, args),
@@ -22681,9 +22651,7 @@ class Orchestrator:
                             if tool in WRITE_TOOLS and status == "completed":
                                 _note_written_file_errors(project, args)
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
-                                  "detail": (_extension_tool_detail(part)
-                                             if extensions and extensions.owner(tool)
-                                             else _tool_detail(tool, part))}
+                                  "detail": _tool_detail(tool, part)}
                             ms = _tool_duration_ms(part)
                             if ms is not None:
                                 ev["durationMs"] = ms
@@ -23695,14 +23663,9 @@ class Orchestrator:
                 log.error("%s turn wrote code — reverting; read-only enforcement was bypassed", kind)
                 project.snapshot.discard_changes()
                 restore_mode()
-                # A Project tool that ran is the likelier writer: Sage's own write tools are not
-                # offered on this turn, and every switched-on Project tool is (#636).
-                who = ("the agent" if not user_tools_ran else
-                       ("your tool " if len(user_tools_ran) == 1 else "your tools ")
-                       + ", ".join(f"`{t}`" for t in user_tools_ran))
-                msg = (f"Planning was expected, but {who} edited files — nothing was applied. "
+                msg = ("Planning was expected, but the agent edited files — nothing was applied. "
                        "Send the request again, or switch to Implement to build directly." if gate else
-                       f"That was a question, but {who} edited files — nothing was applied. Ask "
+                       "That was a question, but the agent edited files — nothing was applied. Ask "
                        "again, or switch to Implement to build directly.")
                 yield persist({"type": "error", "message": msg})
                 yield persist({"type": "done", "ok": False,
@@ -26281,7 +26244,7 @@ class Orchestrator:
         _warn_if_history_lossy(history, "Orchestrator.history")
         return history
 
-    # ---- the Project's own skills, tools and MCP servers (ADR-0071) ------------------------------
+    # ---- the Project's own skills (ADR-0071) -----------------------------------------------------
 
     def list_extensions(self, *, thread: str = "", app: str = "") -> list[dict]:
         """Every extension, each `enabled` for the Thread or App named, or by default for neither."""
@@ -26293,10 +26256,7 @@ class Orchestrator:
             overrides = self._wm.app_workspace(self._project_id, app).extension_overrides()
         items = project_extensions.list_extensions(root)
         off = project_extensions.disabled(items, overrides)
-        listed = [{**e, "enabled": e["id"] not in off} for e in items]
-        if any(e["kind"] == "mcp" for e in listed):
-            listed = self._with_mcp_status(listed, app=app)
-        return listed
+        return [{**e, "enabled": e["id"] not in off} for e in items]
 
     def add_extension(self, body: dict) -> dict:
         """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
@@ -26344,13 +26304,6 @@ class Orchestrator:
                          for rel in sorted(known) if rel.startswith(prefix)}
             yield files, f"{asset.name}/{path}" if path else asset.name, {
                 "type": "dataset", "dataset": asset.id, "name": asset.name, "path": path}
-
-    def add_tools(self, tools: list[dict], *, source: dict) -> list[dict]:
-        """Raises `ExtensionError` (a ValueError) for anything the person has to change."""
-        entries = project_extensions.add_tools(self._chat_project().record.path, tools,
-                                               source=source)
-        self._reload_extensions()
-        return entries
 
     def remove_extension(self, ext_id: str) -> bool:
         removed = project_extensions.remove(self._chat_project().record.path, ext_id)
@@ -26420,78 +26373,6 @@ class Orchestrator:
             if app not in self._wm.app_ids():
                 raise KeyError(app)
             self._wm.app_workspace(self._project_id, app).set_extension(ext_id, enabled)
-
-    def add_mcp(self, body: dict) -> dict:
-        """An MCP server from the panel: `name`, and either `config` in OpenCode's shape or `git`, a
-        repo declaring its own (`server` picks one of several). Its tools are read once added; a
-        server that cannot be read yet is kept, with a `warning`, and can be read again later.
-
-        Raises `ExtensionError` (a ValueError) for anything the person has to change."""
-        root = self._chat_project().record.path
-        if body.get("git"):
-            config, commit = extension_mcp.server_from_git(body["git"], str(body.get("server") or ""))
-            source = {"type": "git", "url": body["git"], "commit": commit}
-        else:
-            config, source = body.get("config"), {"type": "form"}
-        entry = project_extensions.add(root, {"kind": "mcp", "name": body.get("name"),
-                                              "config": config, "source": source})
-        try:
-            entry = project_extensions.replace_mcp_tools(root, entry["id"],
-                                                         extension_mcp.read_tools(config))
-        except project_extensions.ExtensionError as e:
-            entry = {**entry, "warning": f"Added, but Sage could not list its tools: {e}"}
-        self._reload_extensions()
-        return entry
-
-    def read_mcp_tools(self, ext_id: str) -> dict:
-        """Ask a server for its tools again. Raises KeyError for an unknown server and
-        `ExtensionError` when it cannot be read."""
-        root = self._chat_project().record.path
-        entry = next((e for e in project_extensions.read_manifest(root)
-                      if e["id"] == ext_id and e["kind"] == "mcp"), None)
-        if entry is None:
-            raise KeyError(ext_id)
-        listed = extension_mcp.read_tools(project_extensions.mcp_servers(root).get(entry["name"]) or {})
-        entry = project_extensions.replace_mcp_tools(root, ext_id, listed)
-        self._reload_extensions()
-        return entry
-
-    def _with_mcp_status(self, items: list[dict], *, app: str) -> list[dict]:
-        """Each MCP server with OpenCode's own status for the directory the switches answer for.
-
-        OpenCode drops a server it cannot load from `GET /mcp`, and loads one naming an unset
-        variable with nothing in its place, so both read here as failed rather than absent or fine.
-        """
-        root = Path(self._chat_project().record.path)
-        directory = (self._wm.app_workspace(self._project_id, app).path
-                     if app and app in self._wm.app_ids() else root / CHAT_WORK)
-        said = self.opencode_mcp_status(str(directory))
-        servers = said.get("servers") if said.get("ok") and isinstance(said.get("servers"), dict) \
-            else None
-        configs = project_extensions.mcp_servers(root)
-        out = []
-        for e in items:
-            if e["kind"] != "mcp":
-                out.append(e)
-                continue
-            unset = project_extensions.unset_variables(configs.get(e["name"]) or {})
-            if unset:
-                status = {"status": "failed", "error": (
-                    f"{', '.join(unset)} {'is' if len(unset) == 1 else 'are'} not set. Add it to "
-                    "the project's environment variables, then restart the app.")}
-            elif servers is None:
-                status = {"status": "unknown",
-                          "error": str(said.get("why") or said.get("error")
-                                       or f"OpenCode answered {said.get('status')}")}
-            elif isinstance(servers.get(e["name"]), dict):
-                status = servers[e["name"]]
-            elif self._extensions_pending:
-                status = {"status": "pending"}
-            else:
-                status = {"status": "failed",
-                          "error": "OpenCode did not load it. Check its command or URL."}
-            out.append({**e, "status": status})
-        return out
 
     def _extensions_off(self, overrides: dict) -> frozenset[str]:
         """The ids one Thread's or App's record switched off, read at the turn boundary."""

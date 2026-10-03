@@ -72,8 +72,8 @@ window.SW = window.SW || {};
   // (#148). Without it the menu would go on offering every file it ever offered EXCEPT the app's
   // own data — the one kind a Build prompt names most.
   //
-  // The Project's skills, tools and MCP servers sit beside its Resources (#628, #633). None is a
-  // Resource: naming one carries no context, and the shim reads `@<name>` off the prompt itself.
+  // The Project's skills sit beside its Resources (#628). A skill is not a Resource: naming one
+  // carries no context, and the shim reads `@<name>` off the prompt itself.
   function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents,
                              appAttachments, collapse, extensions) {
     const context = (attachments || []).map((att) => ({
@@ -96,8 +96,8 @@ window.SW = window.SW || {};
 
     const project = PROJECT_MENTION_KINDS.flatMap((kind) => resourceGroups[kind] || []);
     const skills = ((extensions && extensions.items) || [])
-      .filter((e) => (e.kind === 'skill' && !e.shadowed) || e.kind === 'tool' || e.kind === 'mcp')
-      .map((e) => ({ id: e.id, name: e.name, kind: e.kind }));
+      .filter((e) => e.kind === 'skill' && !e.shadowed)
+      .map((e) => ({ id: e.id, name: e.name, kind: 'skill' }));
     const files = (resourceGroups.file || []).filter(
       (r) => !SW.util.isHiddenFromExplorer(r.path || r.name)
     );
@@ -543,7 +543,7 @@ window.SW = window.SW || {};
       // A folder row is not a Resource and has no chip to become: it is offered only because every
       // file under it is already attached to this app, which is the very thing a chip would say
       // (ADR-0030). Adding one would post a `folder:` id no Resource answers to.
-      if (['folder', 'skill', 'tool', 'mcp'].includes(resource.kind)) return;
+      if (resource.kind === 'folder' || resource.kind === 'skill') return;
       // The @name is already in the box. Unreported, this sends a prompt mentioning a file that
       // was never attached.
       await SW.store.addToContext(resource, { quiet: true }).catch(sayFailed);

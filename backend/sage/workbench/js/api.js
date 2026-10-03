@@ -512,7 +512,7 @@ SW.api = {
   promoteScratch: (path, datasetId) => post('/project/scratch/promote', { path, dataset: datasetId }),
   // Deletes an Upload's bytes from .sage/scratch/ — the Project-scope door (ADR-0023).
   deleteScratchFile: (path) => post('/project/scratch/delete', { path }),
-  // The Project's own skills, tools and MCP servers (ADR-0071), each `enabled` for one Thread or App.
+  // The Project's own skills (ADR-0071), each `enabled` for one Thread or App.
   extensions: ({ thread, app } = {}) =>
     request(`/project/extensions?${new URLSearchParams({ thread: thread || '', app: app || '' })}`),
   // Each skill route takes `{ replaces, preview, pick }`: `preview` answers what it holds and adds
@@ -538,12 +538,6 @@ SW.api = {
   setExtensionEnabled: (id, enabled, { thread, app } = {}) =>
     request(`/project/extensions/${encodeURIComponent(id)}/enabled`, {
       method: 'PUT', body: { enabled, thread: thread || '', app: app || '' } }),
-  addMcp: (body) => post('/project/extensions/mcp', body),
-  readMcpTools: (id) => post(`/project/extensions/${encodeURIComponent(id)}/tools`),
-  uploadTool: (file) =>
-    request(`/project/extensions/tools?${new URLSearchParams({ filename: file.name || '' })}`,
-      { method: 'POST', body: file }),
-  importTools: (url, path) => post('/project/extensions/tools/git', { url, path: path || '' }),
 
   // The Build tab's crossing door (#275): moves this Conversation's chips into the selected app.
   // Answers per chip, because a crossing can be half refused.

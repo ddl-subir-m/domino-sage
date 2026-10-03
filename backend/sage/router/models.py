@@ -333,8 +333,8 @@ class SessionState:
     # for the turn and disarms it in the same `finally`. Default Guided, so a snapshot that never
     # names it does not change which instructions go out.
     direct: bool = False
-    # The Project's own skills, tools and MCP servers (ADR-0071), standing rather than per turn: it
-    # changes only when OpenCode reloads them. None when the Project has none.
+    # The Project's own skills (ADR-0071), standing rather than per turn: it changes only when
+    # OpenCode reloads them. None when the Project has none.
     extensions: ExtensionCatalog | None = None
     # The extension ids this turn's Thread or App switched off. Per turn, like `withheld`.
     extensions_off: frozenset[str] = frozenset()

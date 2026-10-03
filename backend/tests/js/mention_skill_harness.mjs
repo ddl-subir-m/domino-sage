@@ -5,16 +5,14 @@
 // menu. `fetch` records every request, so "picking a skill attaches nothing" is proved by what was
 // NOT sent.
 //
-// Input on stdin: `{ "mode": "chat"|"build", "query": "<after the @>", "pick": "<row name>" }`;
-// `pick` defaults to the skill `report-style`.
+// Input on stdin: `{ "mode": "chat"|"build", "query": "<after the @>" }`.
 // Output: `{ rows: [{ name, kind }], inserted, posts }`.
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const { mode, query } = input;
+const { mode, query } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const posts = [];
 const json = (body) => ({ ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -93,7 +91,6 @@ SW.store.set({
     { id: 'skill:report-style', kind: 'skill', name: 'report-style', enabled: false },
     { id: 'skill:report-old', kind: 'skill', name: 'report-old', enabled: true, shadowed: true },
     { id: 'tool:report_tool', kind: 'tool', name: 'report_tool', enabled: true },
-    { id: 'mcp:reports-wiki', kind: 'mcp', name: 'reports-wiki', enabled: false },
   ] },
 });
 
@@ -107,8 +104,8 @@ const items = flatten(render()).filter((n) => String(n.p.className || '').starts
 const nameOf = (row) => flatten(row).filter((n) => n.p && n.p.className === 'sw-mention-name')
   .flatMap((n) => (n.c || []).flat(Infinity)).join('');
 const rows = items.map((row) => ({ name: nameOf(row) }));
-const picked = items.find((row) => nameOf(row) === (input.pick || 'report-style'));
-if (picked) await picked.p.onClick();
+const skill = items.find((row) => nameOf(row) === 'report-style');
+if (skill) await skill.p.onClick();
 for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 0));
 const inserted = String(flatten(render()).find((n) => n.t === 'Input.TextArea').p.value || '');
 console.log(JSON.stringify({ rows, inserted, posts }));

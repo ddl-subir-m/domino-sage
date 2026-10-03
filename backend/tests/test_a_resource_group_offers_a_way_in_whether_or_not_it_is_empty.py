@@ -60,7 +60,8 @@ def test_a_group_with_rows_in_it_still_offers_a_way_in():
 
 
 def test_a_group_with_no_catalog_behind_it_offers_nothing():
-    """Files come from Upload rather than from the catalog at all.
+    """MCPs are a placeholder until OpenCode config wires them, and Files come from Upload rather
+    than from the catalog at all.
 
     A door onto a catalog that cannot answer is worse than no door: it is a dead end with a
     label on it.
