@@ -2,10 +2,27 @@
 status: accepted
 extends: ADR-0052 (the LLM Gateway is the trusted enforcement point), ADR-0041 (a live read
   reaches the person without reaching the model)
-reverses: docs/workbench/chat.md §8 "MCP connector UI" out of scope
+amended: 2026-10-03 (#638), Project tools and MCP servers taken out; Project skills remain
 ---
 
 # A Project's own skills, tools and MCPs live in its `.opencode/` folder
+
+## Amended 2026-10-03 (#638): skills only
+
+Project custom tools and Project MCP servers were taken out; Project skills stay as decided below.
+The resources panel has no Tools group and no Add MCP server door, the composer @-mentions skills
+only, `sage-extensions.json` records only `skill` entries (an older `tool` or `mcp` entry is
+ignored), and the shim no longer filters the tool list by extension. Sage's own tools and MCP
+servers (Live read, `artifact_write`, `delegated_model_call`, OpenCode's built-ins) are untouched.
+`docs/workbench/chat.md` §8 "MCP connector UI" is out of scope again.
+
+Files a Project already has under `.opencode/tools/`, or an `mcp` block in `.opencode/opencode.json`,
+are left where they are. OpenCode still loads them by itself; Sage neither lists nor manages them,
+and `_opencode_config_diag` reports such a block as `shadowing_mcp`, like any file Sage did not
+write.
+
+Everything below about tools, MCP servers, Python tools, `{env:VAR}` credentials and read-only
+marks describes the design that was removed, kept for the reasoning.
 
 Today every skill and tool Sage offers ships in the repo and is copied into the container-wide
 `~/.config/opencode/` at boot (`_install_opencode_config`, `backend/sage/orchestrator/app.py`).

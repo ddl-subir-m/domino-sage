@@ -63,7 +63,7 @@ class ModelControl:
         # the turn that finished must not clear the turn that has already armed the next one.
         self._direct_token: object | None = None
         # The Project's extensions as OpenCode last loaded them (ADR-0071). Standing, set only
-        # when OpenCode reloads, so the shim never classifies tools against files it has not read.
+        # when OpenCode reloads, so the shim never classifies skills against files it has not read.
         self._extensions = None
         self._extensions_off: frozenset[str] = frozenset()
         self._extensions_off_token: object | None = None

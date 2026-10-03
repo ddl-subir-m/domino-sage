@@ -98,7 +98,7 @@ def test_a_skill_may_replace_one_built_in_and_only_a_real_one(tmp_path):
     with pytest.raises(extensions.ExtensionError, match="not a skill Sage ships"):
         extensions.add(tmp_path, {"kind": "skill", "files": {"SKILL.md": _md("x")},
                                   "replaces": "no-such-skill"})
-    with pytest.raises(extensions.ExtensionError, match="not a skill Sage ships"):
+    with pytest.raises(extensions.ExtensionError, match="kind"):
         extensions.add(tmp_path, {"kind": "tool", "name": "t", "code": "x",
                                   "replaces": "data-table"})
     assert [e["name"] for e in extensions.read_manifest(tmp_path)] == ["tables"]

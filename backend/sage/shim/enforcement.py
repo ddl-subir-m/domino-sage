@@ -87,31 +87,6 @@ def _named(messages: list[Any], names: Iterable[str]) -> set[str]:
     return {n for n in names if re.search(rf"(?<![\w@])@{re.escape(n)}(?![\w-])", content)}
 
 
-def _note_named_tools(messages: list[Any], tools: set[str], servers: set[str]) -> list[Any]:
-    """Tell the model, at the end of the system prompt, to use the tools and MCP servers the
-    person @-mentioned."""
-    said = []
-    if tools:
-        said.append(f"The person named these tools with @: {', '.join(sorted(tools))}. "
-                    "Call them to answer.")
-    if servers:
-        said.append(f"The person named these MCP servers with @: {', '.join(sorted(servers))}. "
-                    "Use their tools to answer.")
-    note = " ".join(said)
-    for i, m in enumerate(messages):
-        if not (isinstance(m, dict) and m.get("role") == "system"):
-            continue
-        content = m.get("content")
-        if isinstance(content, str):
-            content = content.rstrip("\n") + "\n" + note
-        elif isinstance(content, list):
-            content = [*content, {"type": "text", "text": note}]
-        else:
-            continue
-        return [*messages[:i], {**m, "content": content}, *messages[i + 1:]]
-    return [{"role": "system", "content": note}, *messages]
-
-
 def _hide_skills(messages: list[Any], names: set[str], own: set[str] = frozenset(),
                  named: set[str] = frozenset()) -> list[Any]:
     """Drop `names` from the system prompt's `<available_skills>` block, where OpenCode 1.18.4
@@ -719,30 +694,9 @@ class EnforcementShim:
                     continue
                 tools.append(tool)
             request = {**request, "tools": tools}
-        # The Project's own tools (ADR-0071): gone when this Thread or App switched them off, and on
-        # every turn otherwise, read-only turns included (#636). There is no read-only mark: it was
-        # a claim nothing checked, so a tool that writes ran on it anyway. File writes on a
-        # read-only turn are still reverted at its end; what a tool changes outside Sage is the
-        # access it was given, and the add dialogs say so.
+        # The Project's own skills (ADR-0071). An @-mention is explicit intent, so a skill it names
+        # is on for this turn whatever its switch says (#628).
         extensions = state.extensions
-        messages = request.get("messages") if isinstance(request.get("messages"), list) else []
-        # An @-mention is explicit intent, so what it names is on for this turn whatever its switch
-        # says (#628).
-        named_tools = _named(messages, extensions.named_tools) if extensions else set()
-        named_servers = _named(messages, extensions.servers) if extensions else set()
-        named_ids = ({extensions.named_tools[n] for n in named_tools}
-                     | {extensions.servers[n] for n in named_servers})
-        if extensions and isinstance(request.get("tools"), list):
-            kept = []
-            for tool in request["tools"]:
-                owner = extensions.owner(str((tool.get("function") or {}).get("name", "")))
-                if owner and owner not in named_ids and owner in state.extensions_off:
-                    continue
-                kept.append(tool)
-            request = {**request, "tools": kept}
-            if named_ids:
-                request = {**request, "messages": _note_named_tools(messages, named_tools,
-                                                                    named_servers)}
         if extensions and isinstance(request.get("messages"), list):
             named = _named(request["messages"], extensions.skills)
             off = state.extensions_off - {extensions.skills[n] for n in named}
@@ -788,8 +742,6 @@ class EnforcementShim:
                 # which reads exactly like the tool not existing.
                 or name in {"sage-live-read_live_read_table", "sage-live-read_live_read_files",
                             "sage-live-read_live_read_query"}
-                # The Project's own tools, already filtered above for this turn.
-                or (extensions is not None and extensions.owner(name) is not None)
             ]}
         elif isinstance(request.get("tools"), list):
             # `artifact_write` is scoped to the artifact lane. `delegated_model_call` is scoped to a
