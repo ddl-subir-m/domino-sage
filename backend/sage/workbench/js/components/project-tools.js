@@ -98,7 +98,7 @@ window.SW = window.SW || {};
       Modal,
       {
         open,
-        title: 'Add a tool',
+        title: 'Add tool',
         okText: 'Add tool',
         onOk: add,
         onCancel: close,

@@ -158,7 +158,7 @@ window.SW = window.SW || {};
       Modal,
       {
         open,
-        title: 'Add an MCP server',
+        title: 'Add MCP server',
         okText: 'Add server',
         onOk: add,
         onCancel: close,
