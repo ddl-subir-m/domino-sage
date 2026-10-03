@@ -16427,8 +16427,8 @@ class Orchestrator:
         # because the poison survives one too: `_recover_session` reads the session id back off disk,
         # and an un-armed restart would refuse every turn all over again.
         withheld_token = project.control.arm_withheld(recall.withheld(history))
-        extensions_token = project.control.arm_extensions_off(
-            self._extensions_off((store.get(thread_id) or {}).get("extensions")))
+        extensions_off = self._extensions_off((store.get(thread_id) or {}).get("extensions"))
+        extensions_token = project.control.arm_extensions_off(extensions_off)
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         # `investigating` exempts this Thread from both bounded lanes, and that is a SCOPE decision
         # before it is a latency one. #364 bounds a turn that only answers a question; while an
@@ -16471,9 +16471,12 @@ class Orchestrator:
         # loading a skill and listing folders before it asked. The attach → offer → accept path is
         # untouched: `resolve` matches the reply to the kept question, the funnel draws the one
         # card, and the accepted replay runs the question under the grant.
+        # A Project tool or MCP server switched on for this Thread may be the source (#631).
         source_request = (
             intent.valid and intent.label in {"data_answer", "data_artifact"} and not unbounded
             and chat_task.awaiting_source(store, thread_id, prompt)
+            and not any(e["kind"] in {"tool", "mcp"} and e["id"] not in extensions_off
+                        for e in project_extensions.read_manifest(project.record.path))
         )
         artifact_token = (
             project.control.arm_chat_artifact()
