@@ -350,13 +350,17 @@ def test_a_git_url_that_is_not_https_is_refused():
 # ---- a Dataset -----------------------------------------------------------------------------------
 
 class _Datasets:
-    """One mounted Dataset, read through the provider calls the orchestrator uses for any other."""
+    """One Dataset, mounted or not, read through the provider calls the orchestrator uses for any
+    other. `sent` is what a download answers instead of the file, when set."""
 
-    def __init__(self, root: Path, *, truncated: bool = False) -> None:
+    def __init__(self, root: Path, *, truncated: bool = False, mounted: bool = False,
+                 sent: bytes | None = None) -> None:
         self.root, self.truncated, self.read = root, truncated, []
+        self.mounted, self.sent = mounted, sent
 
     def list_datasets(self, project_id):
-        return [Asset(id="ds1", name="team-skills", mount_path=str(self.root))]
+        return [Asset(id="ds1", name="team-skills",
+                      mount_path=str(self.root) if self.mounted else None)]
 
     def list_files(self, asset):
         return FileListing(files=[DatasetFile(p.relative_to(self.root).as_posix(), p.stat().st_size)
@@ -365,7 +369,7 @@ class _Datasets:
 
     def download_file(self, asset, rel, dest):
         self.read.append(rel)
-        dest.write_bytes((self.root / rel).read_bytes())
+        dest.write_bytes(self.sent if self.sent is not None else (self.root / rel).read_bytes())
         return dest.stat().st_size
 
 
@@ -399,6 +403,20 @@ def test_a_skill_folder_in_a_dataset_is_copied_and_says_where_it_came_from(tmp_p
                                "path": "skills/house"}
     assert sorted(datasets.read) == ["skills/house/SKILL.md", "skills/house/ref.md"]
     assert oc.disposed, "the new skill reaches the next turn"
+
+
+def test_a_mounted_dataset_is_read_from_the_mount_and_never_downloaded(tmp_path):
+    """#630: a mounted Dataset was listed from the mount and then downloaded, and on Domino the
+    download came back as something with no frontmatter, so `forecast-notes` previewed with no
+    description. The mount is the file; every other Dataset reader already reads it."""
+    orch, _, datasets = _dataset_orch(tmp_path, mounted=True, sent=b"<html>not the file</html>")
+    with orch.dataset_skill_files("ds1", "skills") as (files, where, _):
+        found = extensions.found_skills(files, where)
+    assert [(s["name"], s["description"]) for s in found] == [
+        ("house", "A test skill."), ("other", "A test skill.")]
+    assert _from_dataset(orch, "ds1", "skills/house")[0]["name"] == "house"
+    [brand] = _from_dataset(orch, "ds1", "packs/brand.zip")
+    assert brand["name"] == "brand" and datasets.read == []
 
 
 def test_a_folder_holding_several_skills_and_a_zip_in_a_dataset_both_work(tmp_path):

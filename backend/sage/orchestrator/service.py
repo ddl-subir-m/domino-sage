@@ -26297,6 +26297,8 @@ class Orchestrator:
         path = str(path or "").strip("/")
         with tempfile.TemporaryDirectory() as tmp:
             def read(rel: str) -> bytes:
+                if asset.mount_path:
+                    return _safe_join(Path(asset.mount_path), rel).read_bytes()
                 dest = Path(tmp) / "file"
                 self._assets.download_file(asset, rel, dest)
                 return dest.read_bytes()
