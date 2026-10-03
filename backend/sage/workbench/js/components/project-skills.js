@@ -278,7 +278,7 @@ window.SW = window.SW || {};
       onClose();
     };
 
-    const addable = (skills || []).filter((s) => s.description && !have.has(s.name));
+    const addable = (skills || []).filter((s) => !s.refused && !have.has(s.name));
     const inCount = (skills || []).filter((s) => have.has(s.name)).length;
 
     const side = (key, label, child) => h(
@@ -359,6 +359,8 @@ window.SW = window.SW || {};
               h('span', { className: 'sw-cat-name' }, s.name || s.folder)),
             h('span', { className: 'sw-cat-desc' },
               s.description || 'No description in its frontmatter, so it would never be offered.'),
+            s.refused && s.description && !isIn
+              && h('span', { className: 'sw-cat-refused' }, s.refused),
             h('span', { className: 'sw-cat-meta' },
               [s.folder && s.folder !== '.' ? `${s.folder}/` : '',
                s.files.length === 1 ? '1 file' : `${s.files.length} files`].filter(Boolean).join(' · '))
@@ -370,11 +372,11 @@ window.SW = window.SW || {};
                 'In project'))
           : h(
               Tooltip,
-              { title: s.description ? '' : 'Add a description to its SKILL.md first.' },
+              { title: s.refused },
               h(Button, {
                 size: 'small',
                 type: 'primary',
-                disabled: !s.description || (busy !== null && busy !== s.folder),
+                disabled: !!s.refused || (busy !== null && busy !== s.folder),
                 loading: busy === s.folder,
                 icon: h(PlusOutlined, { style: { fontSize: 10 } }),
                 onClick: () => add([s.folder]),

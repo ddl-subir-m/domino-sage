@@ -416,6 +416,12 @@ def set_read_only(root: Path, ext_id: str, read_only: bool) -> bool:
         return True
 
 
+def _check_description(name: str, skill_md: str) -> None:
+    if not skill_description(skill_md):
+        raise ExtensionError(f"'{name}' has no description in its SKILL.md frontmatter. OpenCode "
+                             "loads a skill without one and never offers it to the model.")
+
+
 def _write_skill(root: Path, name: str, files: object) -> list[str]:
     if not isinstance(files, dict) or not isinstance(files.get("SKILL.md"), str):
         raise ExtensionError("A skill needs a SKILL.md.")
@@ -423,9 +429,7 @@ def _write_skill(root: Path, name: str, files: object) -> list[str]:
     # checks on `name`.
     if _frontmatter_name(files["SKILL.md"]) != name:
         raise ExtensionError(f"SKILL.md's frontmatter must say 'name: {name}'.")
-    if not skill_description(files["SKILL.md"]):
-        raise ExtensionError(f"'{name}' has no description in its SKILL.md frontmatter. OpenCode "
-                             "loads a skill without one and never offers it to the model.")
+    _check_description(name, files["SKILL.md"])
     paths = {_relative(p): text for p, text in files.items()}
     if not all(isinstance(text, str) for text in paths.values()):
         raise ExtensionError("Every skill file is text.")
@@ -791,15 +795,28 @@ def _skill_rel(folder: str, paths: list[str], path: str) -> str:
     return "SKILL.md" if path == paths[0] else _inside(folder, path)
 
 
+def _refused(skill_md: str) -> str:
+    """What `add` would refuse this SKILL.md with in a Project holding no skill yet, or ''. One
+    already in the Project is the picker's to show, from the Project's own list."""
+    name = _frontmatter_name(skill_md)
+    try:
+        _check_name(name or None, "skill", [])
+        _check_description(name, skill_md)
+    except ExtensionError as e:
+        return str(e)
+    return ""
+
+
 def found_skills(files: dict[str, Callable[[], bytes]], where: str) -> list[dict]:
     """What `skills_in_files` could add, read from each SKILL.md alone: per folder, the skill's
-    name, its description, and its files."""
+    name, its description, its files, and why `add` would refuse it, if it would."""
     found = []
     for folder, paths in _skill_folders(files, where).items():
         text = files[paths[0]]().decode("utf-8", "replace")
         found.append({"folder": folder, "name": _frontmatter_name(text),
                       "description": skill_description(text),
-                      "files": [_skill_rel(folder, paths, p) for p in paths]})
+                      "files": [_skill_rel(folder, paths, p) for p in paths],
+                      "refused": _refused(text)})
     return found
 
 

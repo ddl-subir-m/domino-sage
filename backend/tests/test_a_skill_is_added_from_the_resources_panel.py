@@ -226,6 +226,25 @@ def test_in_a_mixed_zip_only_folders_holding_a_skill_md_are_skills():
     assert found[0]["description"] == "A test skill." and found[2]["description"] == ""
 
 
+REFUSED = {"ok/SKILL.md": _md("ok"), "bare/SKILL.md": _md("bare", ""),
+           "mine/SKILL.md": _md("sage-helper"), "ships/SKILL.md": _md("data-table"),
+           "shape/SKILL.md": _md("Bad Name")}
+
+
+def test_a_preview_says_why_the_add_would_refuse_each_skill_in_the_adds_own_words(tmp_path):
+    """#629: the picker greyed out a skill with no description but offered `sage-helper`, which the
+    add then refused. Every reason is the preview's now, and it is the add's message, word for
+    word, so the two cannot drift."""
+    files = extensions.upload_files("pack.zip", _zip(REFUSED))
+    found = {s["folder"]: s["refused"] for s in extensions.found_skills(files, "pack.zip")}
+    assert found.pop("ok") == ""
+    for folder, refused in found.items():
+        skills, _ = extensions.skills_in_files(files, "pack.zip", [folder])
+        with pytest.raises(extensions.ExtensionError) as said:
+            extensions.add_skills(tmp_path, skills)
+        assert refused == str(said.value), folder
+
+
 def test_a_preview_reads_each_skill_md_and_nothing_else():
     read = []
     files = {path: (lambda path=path, body=body: read.append(path) or (
