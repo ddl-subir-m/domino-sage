@@ -1402,7 +1402,7 @@ window.SW = window.SW || {};
     // in backticks stays code. Without KaTeX on the page the source is left as written.
     inline(text) {
       const parts = String(text).split(
-        /(`[^`]+`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)[^$\n]*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
+        /(`[^`]+`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)(?:\\\$|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
       );
       // Odd indices are what the pattern captured; an even one is prose even when it starts with
       // `$` — a table cell reading `$420k` is money, not a formula missing its closing dollar.

@@ -48,6 +48,9 @@ def test_the_reported_line_is_typeset():
     (r"so \(x^2\) grows", False, "x^2"),
     ("$$\n\\sum_i p_i \\log \\frac{p_i}{q_i}\n$$", True, "\\sum_i p_i \\log \\frac{p_i}{q_i}"),
     (r"\[ \sigma = 1 \]", True, r"\sigma = 1"),
+    # #632: an escaped dollar inside a formula is part of it, not where it ends.
+    (r"Margin: $\frac{\$130,000}{\$420,000} \approx 30.95\%$ overall", False,
+     r"\frac{\$130,000}{\$420,000} \approx 30.95\%"),
 ])
 def test_each_delimiter_a_model_uses(text, display, tex):
     got = render(text)
