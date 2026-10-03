@@ -1775,6 +1775,8 @@ def _python_diag() -> dict:
         # null when unset, never "": a venv that never exported VIRTUAL_ENV and one that exported
         # an empty string are different facts, and the reader has to be able to tell them apart.
         "virtual_env": _guard(lambda: os.environ.get("VIRTUAL_ENV")),
+        # Not this interpreter: the one a Project's Python tools run under (#634).
+        "project_python": _guard(lambda: os.environ.get("SAGE_PROJECT_PYTHON")),
     }
 
 

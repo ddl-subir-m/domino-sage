@@ -47,9 +47,16 @@ _FRONTMATTER_NAME = re.compile(r"\A---\s*\n(?:.*\n)*?name:\s*['\"]?([^'\"\n]*?)[
 # What one upload or git import may bring in, across every skill it holds.
 _MAX_SKILL_BYTES = 5 * 1024 * 1024
 _MAX_SKILL_FILES = 200
-# The interpreter a Python tool runs under, when Sage reads its SPEC and from its bridge alike: the
-# first `python3` on the PATH Sage and OpenCode share, which in Domino is the Project's environment.
-_PYTHON = "python3"
+# Names the interpreter a Python tool runs under, when Sage reads its SPEC and from its bridge alike.
+# `environment/app.sh` sets it to the Project's `python3` before `uv run` puts Sage's own venv first
+# on the PATH Sage and OpenCode share (#634). Unset or empty, it is the first `python3` on PATH.
+_PYTHON_ENV = "SAGE_PROJECT_PYTHON"
+
+
+def _python() -> str:
+    return os.environ.get(_PYTHON_ENV) or "python3"
+
+
 # Loads a Python tool by path. With `--spec` it prints the SPEC as its last line; otherwise it calls
 # `run(**args)` with the JSON object on stdin and prints the result. Python 3.9 is the floor.
 _PY_RUNNER = """\
@@ -471,11 +478,12 @@ def _python_spec(source: object) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "tool.py"
         path.write_text(source)
+        python = _python()
         try:
-            ran = subprocess.run([_PYTHON, "-c", _PY_RUNNER, str(path), "--spec"], cwd=tmp,
+            ran = subprocess.run([python, "-c", _PY_RUNNER, str(path), "--spec"], cwd=tmp,
                                  capture_output=True, text=True, timeout=30, check=False)
         except FileNotFoundError as e:
-            raise ExtensionError(f"There is no {_PYTHON} here to run a Python tool with.") from e
+            raise ExtensionError(f"There is no {python} here to run a Python tool with.") from e
         except subprocess.TimeoutExpired as e:
             raise ExtensionError("Reading its SPEC took longer than 30 seconds.") from e
     if ran.returncode != 0:
@@ -527,7 +535,7 @@ export default {{
   description: {json.dumps(spec["description"])},
   args: {json.dumps(spec["args"])},
   async execute(args) {{
-    const child = spawn({json.dumps(_PYTHON)}, ["-c", RUNNER, SCRIPT])
+    const child = spawn(process.env.{_PYTHON_ENV} || "python3", ["-c", RUNNER, SCRIPT])
     let out = ""
     let err = ""
     child.stdout.on("data", (chunk) => {{ out += chunk }})
