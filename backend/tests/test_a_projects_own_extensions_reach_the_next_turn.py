@@ -443,6 +443,27 @@ def test_a_reverted_read_only_turn_names_the_extension_tool_that_ran(tmp_path, r
     assert "the agent" not in error["message"]
 
 
+def test_a_build_log_row_for_a_project_tool_carries_its_arguments(tmp_path):
+    """A Build turn called `fx_rate` ten times and every row read `fx_rate` alone, so a run of
+    identical calls and a run of different ones looked the same in "Show the turns"."""
+    args = {"amount": 1, "from": "USD", "to": "EUR", "opts": {"round": 2}}
+    turn = Turn(text="Done.", tools=["fx_rate", "glob"],
+                tool_inputs={"fx_rate": args, "glob": {"amount": 1}})
+    orch, _, _ = _build(tmp_path, [turn])
+    orch.create_app(stack="react-vite")
+    project = orch.project(start_preview=False)
+    orch.add_extension({"kind": "tool", "name": "fx_rate", "code": TOOL_TS, "readOnly": True})
+    project.control.set_mode(Mode.ASK)
+
+    events = list(orch.build_stream("What is 1 USD in EUR?"))
+
+    rows = {e["tool"]: e["detail"] for e in events if e.get("kind") == "tool"}
+    assert rows["fx_rate"] == "amount=1, from=USD, to=EUR, opts=…"
+    assert rows["glob"] == "", "a built-in tool keeps its own label"
+    logged = [r for r in project.workspace.read_history() if r.get("tool") == "fx_rate"]
+    assert [r["detail"] for r in logged] == ["amount=1, from=USD, to=EUR, opts=…"]
+
+
 # ---- /api/project/extensions and /api/diag -----------------------------------------------------
 
 def test_the_routes_add_list_switch_and_remove(tmp_path, monkeypatch):

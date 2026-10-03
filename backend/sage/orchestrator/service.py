@@ -5911,6 +5911,25 @@ def _tool_detail(tool: str, part: dict) -> str:
     return ""
 
 
+def _extension_tool_detail(part: dict) -> str:
+    """A Project tool's arguments as `key=value`, clipped to one line: the call is the Project's own
+    and its arguments are the only thing that tells one call from the next. Nested values are
+    elided, not dumped."""
+    state = part.get("state")
+    inp = (state or {}).get("input") if isinstance(state, dict) else None
+    if not isinstance(inp, dict):
+        return ""
+    pairs = []
+    for key, value in inp.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            text = value if isinstance(value, str) else json.dumps(value)
+            pairs.append(f"{key}={' '.join(text.split())}")
+        else:
+            pairs.append(f"{key}=…")
+    detail = ", ".join(pairs)
+    return detail if len(detail) <= _TOOL_DETAIL_MAX else detail[:_TOOL_DETAIL_MAX - 1] + "…"
+
+
 def _tool_duration_ms(part: dict) -> int | None:
     """How long a tool call took, in ms, or None when OpenCode did not time it.
 
@@ -22659,7 +22678,9 @@ class Orchestrator:
                             if tool in WRITE_TOOLS and status == "completed":
                                 _note_written_file_errors(project, args)
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
-                                  "detail": _tool_detail(tool, part)}
+                                  "detail": (_extension_tool_detail(part)
+                                             if extensions and extensions.owner(tool)
+                                             else _tool_detail(tool, part))}
                             ms = _tool_duration_ms(part)
                             if ms is not None:
                                 ev["durationMs"] = ms

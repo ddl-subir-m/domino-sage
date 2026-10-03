@@ -67,6 +67,9 @@ class Turn:
     prelude: str = ""
     writes: dict[str, str] = field(default_factory=dict)
     tools: list[str] = field(default_factory=list)
+    # The arguments a call in `tools` was made with, by tool name. A tool not named here carries no
+    # `input` at all, which is what every existing turn has always sent.
+    tool_inputs: dict[str, dict] = field(default_factory=dict)
     # OpenCode usage on the assistant message. None means the fake omits `tokens` (turn-count
     # fallback). Tests that want the token threshold set this to `{input, output, ...}`.
     tokens: dict | None = None
@@ -250,7 +253,8 @@ class FakeOpenCode:
                           # _tool_duration_ms testable and still wrong (see that function).
                           "time": {"created": 1_700_000_000_000, "ran": 1_700_000_000_100,
                                    "completed": 1_700_000_000_350},
-                          "state": {"status": "completed"}})
+                          "state": ({"status": "completed", "input": turn.tool_inputs[tool]}
+                                    if tool in turn.tool_inputs else {"status": "completed"})})
         for j, intended in enumerate(turn.invalid_calls):
             parts.append({"id": f"m{n}-i{j}", "type": "tool", "callID": f"call-m{n}-i{j}",
                           "tool": "invalid",
