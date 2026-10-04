@@ -24,11 +24,12 @@ SECRETS = {"available": True, "reason": None, "secrets": [
 UNAVAILABLE = {"available": False, "reason": "Secrets are kept by Domino, and this is not running "
                "in a Domino Project.", "secrets": []}
 SERVERS = [
-    {"name": "crm", "url": "https://crm.example.com/mcp",
+    {"name": "crm", "kind": "remote", "url": "https://crm.example.com/mcp",
      "headers": {"Authorization": "Bearer {env:CRM_TOKEN}"}, "enabled": True,
      "tools": ["search", "create_lead"], "status": "connected", "warning": None},
-    {"name": "docs", "url": "https://docs.example.com/mcp", "headers": {}, "enabled": False,
-     "tools": [], "status": "failed", "warning": "the secret DOCS_KEY is not set"},
+    {"name": "docs", "kind": "domino", "url": "https://apps.domino.example.com/docs/mcp",
+     "headers": {}, "enabled": False, "tools": [], "status": "failed",
+     "warning": "the secret DOCS_KEY is not set"},
 ]
 PLANTED = "sk-planted-7f3a9c1e5b"
 
@@ -106,8 +107,9 @@ def test_where_secrets_cannot_be_kept_the_group_says_why_and_offers_no_way_in():
 def test_each_mcp_server_shows_its_status_tools_and_switch():
     drawn = _run("drawn")
     assert drawn["servers"] == [
-        {"name": "crm", "subtitle": "Connected · 2 tools", "checked": True},
-        {"name": "docs", "subtitle": "Failed: the secret DOCS_KEY is not set · 0 tools",
+        {"name": "crm", "subtitle": "Remote · Connected · 2 tools", "checked": True},
+        {"name": "docs",
+         "subtitle": "Domino-hosted · Failed: the secret DOCS_KEY is not set · 0 tools",
          "checked": False},
     ]
     heads = {h["label"]: h for h in drawn["heads"]}
@@ -145,3 +147,15 @@ def test_adding_a_server_with_a_secret_header_writes_its_name_not_its_value():
     assert post == {"url": "./api/project/mcp", "method": "POST",
                     "body": {"name": "crm", "url": "https://crm.example.com/mcp",
                              "headers": {"Authorization": "Bearer {env:CRM_TOKEN}"}}}
+
+
+def test_a_domino_hosted_server_hides_authorization_and_says_sage_signs_in():
+    out = _run("add-domino-mcp")
+    assert out["kinds"] == ["Remote", "Domino-hosted"]
+    assert out["before"] == {"kind": "remote", "note": False}
+    assert out["after"]["kind"] == "domino" and out["after"]["headerNames"] == []
+    assert "signs in to it as you" in out["after"]["note"]
+    [post] = _writes(out["calls"])
+    assert post == {"url": "./api/project/mcp", "method": "POST",
+                    "body": {"name": "crm", "url": "https://apps.domino.example.com/crm/mcp",
+                             "headers": {"X-Region": "eu"}, "kind": "domino"}}

@@ -16,6 +16,8 @@
 //   reread-mcp      the first server's Read its tools again
 //   remove-mcp      confirm the first server's Remove
 //   add-mcp         Add MCP server from the Add menu, a header from the secret `CRM_TOKEN`, Add
+//   add-domino-mcp  Add MCP server, an Authorization header typed, then Domino-hosted, another
+//                   header, Add
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
@@ -230,6 +232,26 @@ if (act === 'drawn') {
   await settle();
   report.calls = calls;
   report.toasts = toasts;
+} else if (act === 'add-domino-mcp') {
+  panel().find((n) => n.t === 'Dropdown' && (n.p.menu || {}).items
+    && n.p.menu.items.some((i) => i.key === 'browse')).p.menu.onClick({ key: 'mcp' });
+  const kinds = () => panel().find((n) => n.t === 'Segmented' && cls(n) === 'sw-mcp-kind');
+  const note = () => panel().find((n) => cls(n).includes('sw-mcp-domino-note'));
+  const headerNames = () => panel().filter((n) => n.p['aria-label'] === 'Header name').map((n) => n.p.value);
+  report.kinds = kinds().p.options.map((o) => o.label);
+  report.before = { kind: kinds().p.value, note: !!note() };
+  type('Header name', 'Authorization');
+  type('Header value', 'Bearer {env:CRM_TOKEN}');
+  kinds().p.onChange('domino');
+  report.after = { kind: kinds().p.value, note: note() && text(note()), headerNames: headerNames() };
+  type('Name', 'crm');
+  type('URL', 'https://apps.domino.example.com/crm/mcp');
+  panel().find((n) => n.t === 'Button' && text(n) === 'Add a header').p.onClick();
+  type('Header name', 'X-Region');
+  type('Header value', 'eu');
+  await modal(panel()).p.onOk();
+  await settle();
+  report.calls = calls;
 }
 
 console.log(JSON.stringify(report));

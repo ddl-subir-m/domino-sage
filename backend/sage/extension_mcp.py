@@ -7,10 +7,15 @@ records which keys Sage wrote, and the tools each listed when it was last read.
 
 A secret is a header value written `{env:NAME}`. Sage stores the reference, never the value, and
 resolves it only to ask the server for `tools/list` itself.
+
+A Domino-hosted server (#645) wants a current Domino token on every request, and OpenCode reads a
+`{env:...}` header once. So OpenCode is pointed at Sage's control port, `/mcp/domino/<name>`, which
+forwards each request with a token fetched for it, and the real URL is kept in the registry.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -19,6 +24,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .extensions import RESERVED_PREFIXES, SLOT, ExtensionError, _write_json
+from .gateway.client import DEFAULT_SIDECAR_URL, sidecar_token
 from .router.phase_classifier import READ_TOOLS, SHELL_TOOLS, TODO_TOOLS, WEB_TOOLS, WRITE_TOOLS
 
 MCP_CONFIG = SLOT / "opencode.json"
@@ -37,6 +43,8 @@ _BUILTIN_TOOLS = frozenset({
 ENV_REF = re.compile(r"\{env:([^}]*)\}")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CREDENTIAL_HEADER = re.compile(r"key|token|secret", re.IGNORECASE)
+DOMINO = "domino"
+_KINDS = ("remote", DOMINO)
 _LOCK = threading.Lock()
 
 
@@ -83,7 +91,8 @@ def registered(root: Path) -> set[str]:
 
 
 def _row(name: str, config: dict, record: dict) -> dict:
-    return {"name": name, "url": config.get("url", ""), "headers": config.get("headers") or {},
+    return {"name": name, "kind": record.get("kind", "remote"),
+            "url": record.get("url") or config.get("url", ""), "headers": config.get("headers") or {},
             "enabled": config.get("enabled", True) is not False,
             "tools": list(record.get("tools") or []), "warning": record.get("warning")}
 
@@ -107,8 +116,30 @@ def server(root: Path, name: str) -> dict:
 
 def config_of(row: dict) -> dict:
     """The row in OpenCode's shape."""
-    return {"type": "remote", "url": row["url"], "headers": row["headers"],
-            "enabled": row["enabled"]}
+    url = proxy_url(row["name"]) if row["kind"] == DOMINO else row["url"]
+    return {"type": "remote", "url": url, "headers": row["headers"], "enabled": row["enabled"]}
+
+
+def proxy_url(name: str) -> str:
+    """Where OpenCode reaches a Domino-hosted server: the control port's forwarding route."""
+    return f"http://127.0.0.1:{os.environ.get('SAGE_CONTROL_PORT', '8080')}/mcp/domino/{name}"
+
+
+def domino_token() -> str:
+    """The workspace's sidecar token, the builder's. Short-lived, so fetched for each use."""
+    try:
+        return sidecar_token(os.environ.get("GATEWAY_TOKEN_URL", DEFAULT_SIDECAR_URL))()
+    except OSError as e:
+        raise ExtensionError(f"Sage could not get a Domino token: {type(e).__name__}") from e
+
+
+def direct_config(row: dict) -> dict:
+    """What Sage asks for `tools/list` itself: the real URL, and for a Domino-hosted server a token
+    fetched now."""
+    headers = dict(row["headers"])
+    if row["kind"] == DOMINO:
+        headers["Authorization"] = f"Bearer {domino_token()}"
+    return {"type": "remote", "url": row["url"], "headers": headers}
 
 
 def _check_name(name: object, taken: set[str]) -> str:
@@ -133,6 +164,22 @@ def _check_url(url: object) -> str:
     return url
 
 
+def _check_domino_url(url: object) -> str:
+    raw = os.environ.get("DOMINO_API_HOST", "").strip()
+    host = urlsplit(raw if "://" in raw else f"//{raw}").hostname if raw else None
+    if not host:
+        raise ExtensionError("A Domino-hosted server can be added only when Sage runs on Domino.")
+    parts = urlsplit(url) if isinstance(url, str) else None
+    if parts is None or parts.scheme != "https" or not parts.hostname:
+        raise ExtensionError("A Domino-hosted server's URL starts with https://.")
+    # A Domino token goes with every request, so the host it goes to is the whole rule.
+    if "\\" in url or "@" in parts.netloc or not (
+            parts.hostname == host or parts.hostname.endswith("." + host)):
+        raise ExtensionError(f"A Domino-hosted server's URL is on {host}. Sage sends your Domino "
+                             "token nowhere else.")
+    return url
+
+
 def _check_headers(headers: object) -> dict[str, str]:
     if headers is None:
         return {}
@@ -150,14 +197,25 @@ def _check_headers(headers: object) -> dict[str, str]:
     return dict(headers)
 
 
-def add(root: Path, name: object, url: object, headers: object = None) -> dict:
+def add(root: Path, name: object, url: object, headers: object = None,
+        kind: object = "remote") -> dict:
     """Write one server into the project config, switched on, and register it. Answers its row."""
     root = Path(root)
     with _LOCK:
         records = _read_registry(root)
         name = _check_name(name, set(records))
-        config = {"type": "remote", "url": _check_url(url), "headers": _check_headers(headers),
-                  "enabled": True}
+        if kind not in _KINDS:
+            raise ExtensionError("An MCP server's kind is remote or domino.")
+        url = _check_domino_url(url) if kind == DOMINO else _check_url(url)
+        headers = _check_headers(headers)
+        record: dict = {"tools": [], "warning": None}
+        if kind == DOMINO:
+            if any(k.lower() == "authorization" for k in headers):
+                raise ExtensionError("Sage signs in to a Domino-hosted server as you. Leave the "
+                                     "Authorization header out.")
+            record.update(kind=DOMINO, url=url)
+            url = proxy_url(name)
+        config = {"type": "remote", "url": url, "headers": headers, "enabled": True}
         current = _read_config(root)
         servers = current.setdefault("mcp", {})
         if not isinstance(servers, dict):
@@ -166,7 +224,7 @@ def add(root: Path, name: object, url: object, headers: object = None) -> dict:
             raise ExtensionError(f"{MCP_CONFIG} already declares '{name}' and it is not Sage's.")
         servers[name] = config
         _write_json(root / MCP_CONFIG, current)
-        records[name] = {"tools": [], "warning": None}
+        records[name] = record
         _write_registry(root, records)
         return _row(name, config, records[name])
 
@@ -178,7 +236,7 @@ def set_tools(root: Path, name: str, tools: list[str], warning: str | None) -> d
         records = _read_registry(root)
         if name not in records:
             raise KeyError(name)
-        records[name] = {"tools": sorted(tools), "warning": warning}
+        records[name] = {**records[name], "tools": sorted(tools), "warning": warning}
         _write_registry(root, records)
     return server(root, name)
 

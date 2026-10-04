@@ -26555,19 +26555,21 @@ class Orchestrator:
 
     def _read_mcp_tools(self, root: str, row: dict) -> dict:
         try:
-            listed = extension_mcp.read_tools(extension_mcp.config_of(row), self._mcp_env())
+            listed = extension_mcp.read_tools(extension_mcp.direct_config(row), self._mcp_env())
         except project_extensions.ExtensionError as e:
             return extension_mcp.set_tools(root, row["name"], row["tools"],
                                            f"Sage could not list its tools: {e}")
         return extension_mcp.set_tools(root, row["name"], listed, None)
 
     def add_mcp(self, body: dict) -> dict:
-        """A remote server from the panel: `name`, `url`, and `headers`. Its tools are read once
-        added; a server that cannot be read yet is kept, with a `warning`, and can be read again.
+        """A server from the panel: `name`, `url`, `headers`, and `kind`, remote or domino. Its tools
+        are read once added; a server that cannot be read yet is kept, with a `warning`, and can be
+        read again.
 
         Raises `ExtensionError` (a ValueError) for anything the person has to change."""
         root = self._chat_project().record.path
-        row = extension_mcp.add(root, body.get("name"), body.get("url"), body.get("headers"))
+        row = extension_mcp.add(root, body.get("name"), body.get("url"), body.get("headers"),
+                                body.get("kind", "remote"))
         row = self._read_mcp_tools(root, row)
         self._reload_extensions()
         self._save_project_record("project mcp servers")
@@ -26586,6 +26588,14 @@ class Orchestrator:
         self._reload_extensions()
         self._save_project_record("project mcp servers")
         return self._mcp_row(row)
+
+    def domino_mcp_server(self, name: str) -> dict:
+        """A switched-on Domino-hosted server's row, for the control port to forward to. Raises
+        KeyError for any other name."""
+        row = extension_mcp.server(self._chat_project().record.path, name)
+        if row["kind"] != extension_mcp.DOMINO or not row["enabled"]:
+            raise KeyError(name)
+        return row
 
     def remove_mcp(self, name: str) -> bool:
         removed = extension_mcp.remove(self._chat_project().record.path, name)
