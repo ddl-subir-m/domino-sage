@@ -26502,7 +26502,7 @@ class Orchestrator:
 
     def _mcp_env(self) -> dict[str, str]:
         """What a server's `{env:NAME}` references resolve against when Sage lists its tools."""
-        return dict(os.environ)
+        return project_secrets.process_env()
 
     def list_mcp_servers(self) -> list[dict]:
         """Each server as stored, with a `status` and `warning`. OpenCode is asked only when there

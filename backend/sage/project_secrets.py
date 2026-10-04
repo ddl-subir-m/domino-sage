@@ -117,10 +117,7 @@ class ProjectSecrets:
         if value is None and not exists:
             raise SecretError("A new secret needs a value.")
         if value is not None:
-            if exists:
-                # LIVE-VERIFY: whether POST on an existing name replaces it. Delete-then-create holds
-                # either way.
-                self._cp.delete_project_env_var(self._pid, name)
+            # Domino's POST on an existing name replaces its value in place.
             self._cp.set_project_env_var(self._pid, name, value)
             with self._lock:
                 self._values[name] = value
