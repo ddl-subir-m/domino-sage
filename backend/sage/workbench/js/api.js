@@ -230,7 +230,7 @@ function membershipKind(item) {
 function emptyResourceGroups() {
   return {
     dataset: [], table: [], datasource: [], model_llm: [], model_predictive: [],
-    tool: [], agent: [], skill: [], mcp: [], file: [], pin: [],
+    tool: [], agent: [], skill: [], file: [], pin: [],
   };
 }
 
@@ -538,6 +538,19 @@ SW.api = {
   setExtensionEnabled: (id, enabled, { thread, app } = {}) =>
     request(`/project/extensions/${encodeURIComponent(id)}/enabled`, {
       method: 'PUT', body: { enabled, thread: thread || '', app: app || '' } }),
+  // The Project's secrets, kept by Domino as Project variables (#641). Names and notes only: no
+  // read answers a value, and a value is sent only when it is set.
+  secrets: () => request('/project/secrets'),
+  putSecret: (name, body) =>
+    request(`/project/secrets/${encodeURIComponent(name)}`, { method: 'PUT', body }),
+  deleteSecret: (name) => del(`/project/secrets/${encodeURIComponent(name)}`),
+  // The Project's remote MCP servers (#642), switched on and off for the whole Project.
+  mcpServers: () => request('/project/mcp'),
+  addMcpServer: (body) => post('/project/mcp', body),
+  readMcpTools: (name) => post(`/project/mcp/${encodeURIComponent(name)}/tools`),
+  setMcpEnabled: (name, enabled) =>
+    request(`/project/mcp/${encodeURIComponent(name)}/enabled`, { method: 'PUT', body: { enabled } }),
+  removeMcpServer: (name) => del(`/project/mcp/${encodeURIComponent(name)}`),
 
   // The Build tab's crossing door (#275): moves this Conversation's chips into the selected app.
   // Answers per chip, because a crossing can be half refused.
