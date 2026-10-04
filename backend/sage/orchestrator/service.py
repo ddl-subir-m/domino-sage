@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
     from ..workspace.chat_tables import ChatTables
 
-from .. import build_diagnostics, degraded, timing
+from .. import build_diagnostics, degraded, extension_mcp, timing
 from .. import extensions as project_extensions
 from ..assets.provider import (
     Asset,
@@ -26434,6 +26434,102 @@ class Orchestrator:
         finally:
             self._turn_lock.release()
         return True
+
+    # ---- the Project's remote MCP servers (#642) -------------------------------------------------
+
+    def _mcp_env(self) -> dict[str, str]:
+        """What a server's `{env:NAME}` references resolve against when Sage lists its tools."""
+        return dict(os.environ)
+
+    def list_mcp_servers(self) -> list[dict]:
+        """Each server as stored, with a `status` and `warning`. OpenCode is asked only when there
+        is a server to ask about."""
+        rows = extension_mcp.list_servers(self._chat_project().record.path)
+        if not rows:
+            return []
+        said = self.opencode_mcp_status(str(Path(self._chat_project().record.path) / CHAT_WORK))
+        env = self._mcp_env()
+        return [self._with_mcp_status(row, said, env) for row in rows]
+
+    def _with_mcp_status(self, row: dict, said: dict, env: dict[str, str]) -> dict:
+        """OpenCode drops a server it cannot load from `GET /mcp`, and loads one naming an unset
+        variable with nothing in its place, so both read here as failed rather than absent or fine.
+        """
+        servers = said.get("servers") if said.get("ok") and isinstance(said.get("servers"), dict) \
+            else None
+        unset = extension_mcp.unset_variables(extension_mcp.config_of(row), env)
+        warning: str | None = None
+        if not row["enabled"]:
+            status = "disabled"
+        elif unset:
+            status = "failed"
+            warning = (f"{', '.join(unset)} {'is' if len(unset) == 1 else 'are'} not set. "
+                       "Add it as a secret.")
+        elif servers is None:
+            status = "unknown"
+            warning = str(said.get("why") or said.get("error")
+                          or f"OpenCode answered {said.get('status')}")
+        elif isinstance(servers.get(row["name"]), dict):
+            said_one = servers[row["name"]]
+            status = said_one.get("status")
+            if status not in ("connected", "failed", "disabled"):
+                warning = f"OpenCode says {status}."
+                status = "failed"
+            elif status == "failed":
+                warning = str(said_one.get("error") or "OpenCode could not connect to it.")
+        elif self._extensions_pending:
+            status = "pending"
+        else:
+            status = "failed"
+            warning = "OpenCode did not load it. Check its URL."
+        if warning is None and status != "connected":
+            warning = row["warning"]
+        return {**row, "status": status, "warning": warning}
+
+    def _mcp_row(self, row: dict) -> dict:
+        said = self.opencode_mcp_status(str(Path(self._chat_project().record.path) / CHAT_WORK))
+        return self._with_mcp_status(row, said, self._mcp_env())
+
+    def _read_mcp_tools(self, root: str, row: dict) -> dict:
+        try:
+            listed = extension_mcp.read_tools(extension_mcp.config_of(row), self._mcp_env())
+        except project_extensions.ExtensionError as e:
+            return extension_mcp.set_tools(root, row["name"], row["tools"],
+                                           f"Sage could not list its tools: {e}")
+        return extension_mcp.set_tools(root, row["name"], listed, None)
+
+    def add_mcp(self, body: dict) -> dict:
+        """A remote server from the panel: `name`, `url`, and `headers`. Its tools are read once
+        added; a server that cannot be read yet is kept, with a `warning`, and can be read again.
+
+        Raises `ExtensionError` (a ValueError) for anything the person has to change."""
+        root = self._chat_project().record.path
+        row = extension_mcp.add(root, body.get("name"), body.get("url"), body.get("headers"))
+        row = self._read_mcp_tools(root, row)
+        self._reload_extensions()
+        self._save_project_record("project mcp servers")
+        return self._mcp_row(row)
+
+    def read_mcp_tools(self, name: str) -> dict:
+        """Ask a server for its tools again. Raises KeyError for an unknown server."""
+        root = self._chat_project().record.path
+        row = self._read_mcp_tools(root, extension_mcp.server(root, name))
+        self._save_project_record("project mcp servers")
+        return self._mcp_row(row)
+
+    def set_mcp_enabled(self, name: str, enabled: bool) -> dict:
+        """Raises KeyError for an unknown server."""
+        row = extension_mcp.set_enabled(self._chat_project().record.path, name, enabled)
+        self._reload_extensions()
+        self._save_project_record("project mcp servers")
+        return self._mcp_row(row)
+
+    def remove_mcp(self, name: str) -> bool:
+        removed = extension_mcp.remove(self._chat_project().record.path, name)
+        if removed:
+            self._reload_extensions()
+            self._save_project_record("project mcp servers")
+        return removed
 
     def list_project_resources(self) -> list[dict]:
         """Domino Resources the creator added to this project — the rail, not the catalogue.

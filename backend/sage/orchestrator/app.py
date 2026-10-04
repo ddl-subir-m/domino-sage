@@ -51,7 +51,7 @@ _UI = _WB / "index.html"
 _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
-from .. import degraded, timing
+from .. import degraded, extension_mcp, timing
 from .. import extensions as project_extensions
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
@@ -1640,6 +1640,14 @@ def _opencode_config_diag() -> dict:
             cfg = json.loads(Path(path).read_text())
             row["keys"] = sorted(cfg)[:20] if isinstance(cfg, dict) else type(cfg).__name__
             row["declares_mcp"] = isinstance(cfg, dict) and "mcp" in cfg
+            # The Project's remote MCP servers (#642) are Sage-written when Sage registered every
+            # one of them, none takes a reserved name, and the file says nothing else.
+            if (workspace and path == str(Path(workspace) / extension_mcp.MCP_CONFIG)
+                    and isinstance(cfg, dict) and set(cfg) <= {"$schema", "mcp"}
+                    and isinstance(cfg.get("mcp", {}), dict)):
+                keys = set(cfg.get("mcp") or {})
+                row["ours"] = bool(keys) and keys <= extension_mcp.registered(Path(workspace)) \
+                    and not any(k.startswith(project_extensions.RESERVED_PREFIXES) for k in keys)
             # A `tools` map is the quiet half. It never touches the `mcp` block, so the server still
             # connects, `opencode mcp list` still prints a green tick and `opencode_says` still reads
             # connected — while `"sage-live-read*": false` takes the tools off the agent anyway. That
@@ -2246,6 +2254,57 @@ def set_project_extension_enabled(ext_id: str, body: dict) -> JSONResponse:
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     return JSONResponse(content={"ok": True})
+
+
+@control_app.get("/api/project/mcp")
+def list_project_mcp() -> JSONResponse:
+    """The Project's remote MCP servers (#642). Header values are as stored: `{env:NAME}`
+    references, never what they resolve to."""
+    return JSONResponse(content={"servers": orchestrator.list_mcp_servers()})
+
+
+@control_app.post("/api/project/mcp")
+def add_project_mcp(body: dict) -> JSONResponse:
+    """`name`, `url`, and `headers`, whose credential values are written `{env:NAME}`."""
+    try:
+        return JSONResponse(content=orchestrator.add_mcp(body or {}))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.post("/api/project/mcp/{name}/tools")
+def read_project_mcp_tools(name: str) -> JSONResponse:
+    """Ask a server for its tools again."""
+    try:
+        return JSONResponse(content=orchestrator.read_mcp_tools(name))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.put("/api/project/mcp/{name}/enabled")
+def set_project_mcp_enabled(name: str, body: dict) -> JSONResponse:
+    enabled = (body or {}).get("enabled")
+    if not isinstance(enabled, bool):
+        return JSONResponse(status_code=400, content={"error": "enabled is true or false"})
+    try:
+        return JSONResponse(content=orchestrator.set_mcp_enabled(name, enabled))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.delete("/api/project/mcp/{name}")
+def remove_project_mcp(name: str) -> JSONResponse:
+    try:
+        removed = orchestrator.remove_mcp(name)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    if not removed:
+        return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
+    return JSONResponse(content={"removed": True})
 
 
 @control_app.get("/api/project/history")
