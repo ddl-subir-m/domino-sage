@@ -57,8 +57,7 @@ window.SW = window.SW || {};
     ArrowRightOutlined, CloseOutlined, CheckCircleFilled, InboxOutlined, EditOutlined,
   } = icons;
 
-  // What the caller can pick now. MCPs are still listed because OpenCode config will wire them;
-  // they draw nothing until it does, which is the point of the rule below.
+  // What the caller can pick now.
   //
   // A group is drawn only when it HOLDS something, or when its listing failed. Empty headings were
   // the panel's loudest noise: six subheadings over nothing, in a 320px rail whose whole job is to
@@ -97,17 +96,18 @@ window.SW = window.SW || {};
     // and the door opens the Add skill dialog.
     { key: 'skills', label: 'Skills', extension: true, addLabel: 'Add skill',
       subgroups: [{ kind: 'skill' }] },
-    // `placeholder` is "no catalog behind this yet", and it is what the group's add door is gated
-    // on (#164). This draws nothing until OpenCode config wires it, so under the
-    // draw-only-when-held rule below it is invisible today — the flag is what keeps the door
-    // from appearing on the day it is not.
-    { key: 'mcp', label: 'MCPs', placeholder: true, subgroups: [{ kind: 'mcp' }] },
+    // The Project's secrets (#643): `state.secrets`, kept by Domino as Project variables.
+    { key: 'secrets', label: 'Secrets', extension: true, addLabel: 'Add secret',
+      subgroups: [{ kind: 'secret' }] },
+    // The Project's remote MCP servers (#643): `state.mcpServers`, until the MCP gateway.
+    { key: 'mcp', label: 'MCP servers', extension: true, addLabel: 'Add MCP server',
+      subgroups: [{ kind: 'mcp' }] },
     // The Project's own Uploads. It was a collapsible drawer pinned to the bottom of the panel —
     // its own pattern, its own chevron, its own empty sentence — for a list that behaves like every
     // other group. Folded in here: one pattern, and it disappears when there are no files, which
     // the drawer never did.
     //
-    // `placeholder` for the opposite reason to the two above: a file does not come from the
+    // `placeholder` is "no add door on the head" (#164): a file does not come from the
     // catalog at all, it comes from Upload, so `openCatalog('file')` has nothing to open. The head
     // draws no `+`; the panel's own Add menu carries Upload file.
     { key: 'file', label: 'Files', placeholder: true, subgroups: [{ kind: 'file' }] },
@@ -601,11 +601,14 @@ window.SW = window.SW || {};
   SW.ResourcePanel = function ResourcePanel() {
     const {
       resourceGroups, resourceErrors, activeApp, panelFilter, projectPlan, activePlanId, plans,
-      apps, bindings, attachments, resourcesLoading, extensions,
+      apps, bindings, attachments, resourcesLoading, extensions, secrets, mcpServers,
     } = SW.store.get();
     const [collapsed, setCollapsed] = useState({});
     const [addingSkill, setAddingSkill] = useState(false);
     const [openSkillId, setOpenSkillId] = useState(null);
+    // `{ mode, secret }` for the secret dialog open now — see `SW.SecretModal`.
+    const [secretDialog, setSecretDialog] = useState(null);
+    const [addingMcp, setAddingMcp] = useState(false);
     // Whether the Plans group is showing what has been put away (#167). Panel state rather than
     // stored state, like `collapsed` beside it: an archive is a lasting judgement about a document,
     // and "let me see the ones I hid" is a glance, not a preference to carry between sessions.
@@ -630,7 +633,30 @@ window.SW = window.SW || {};
       : null;
 
     const skills = ((extensions && extensions.items) || []).filter((e) => e.kind === 'skill');
-    const rows = (kind) => (kind === 'skill' ? skills : resourceGroups[kind] || []);
+    const secretsAvailable = !!(secrets && secrets.available);
+    const projectRows = {
+      skill: skills,
+      secret: (secretsAvailable && secrets.secrets) || [],
+      mcp: mcpServers || [],
+    };
+    const rows = (kind) => projectRows[kind] || resourceGroups[kind] || [];
+    // What a Project-own group says under its head. Secrets that cannot be kept here say why, and
+    // that sentence stands in for the group's door.
+    const groupCaption = (key) => {
+      if (key === 'secrets') {
+        if (secrets && !secrets.available) return secrets.reason || 'Secrets are not available here.';
+        return SW.brand.text('Values are kept by {platformName} for this project. {assistantName} '
+          + 'restarts its assistant after a change; published apps get a change on their next publish.');
+      }
+      if (key === 'mcp') return 'Temporary until the MCP gateway.';
+      return null;
+    };
+    const openAdd = {
+      skills: () => setAddingSkill(true),
+      secrets: () => setSecretDialog({ mode: 'add' }),
+      mcp: () => setAddingMcp(true),
+    };
+    useEffect(() => { SW.store.loadSecrets(); SW.store.loadMcpServers(); }, []);
 
     const inChat = SW.router.get().mode === 'chat';
     const inBuild = SW.router.get().mode === 'build';
@@ -651,11 +677,15 @@ window.SW = window.SW || {};
         { key: 'browse', label: SW.brand.text('Browse {platformName}') },
         { key: 'upload', label: 'Upload file' },
         { key: 'skill', label: 'Add skill' },
-      ],
+        secretsAvailable && { key: 'secret', label: 'Add secret' },
+        { key: 'mcp', label: 'Add MCP server' },
+      ].filter(Boolean),
       onClick: ({ key }) => {
         if (key === 'browse') return SW.store.openCatalog();
         if (key === 'upload') return fileRef.current && fileRef.current.click();
         if (key === 'skill') return setAddingSkill(true);
+        if (key === 'secret') return openAdd.secrets();
+        if (key === 'mcp') return openAdd.mcp();
       },
     };
 
@@ -954,7 +984,7 @@ window.SW = window.SW || {};
                 type: 'button',
                 className: 'sw-res-group-add',
                 'aria-label': group.addLabel || SW.brand.text(`Add ${label.toLowerCase()} from {platformName}`),
-                onClick: () => (group.extension ? setAddingSkill(true) : SW.store.openCatalog(addKind(group))),
+                onClick: () => (group.extension ? openAdd[group.key]() : SW.store.openCatalog(addKind(group))),
               },
               h(PlusOutlined, { style: { fontSize: 11 } })
             )
@@ -1108,14 +1138,18 @@ window.SW = window.SW || {};
           // Empty and known is nothing to draw. Empty and UNKNOWN still is — see the note on
           // GROUPS above. This is also what puts #161's group-level sentence on screen in the case
           // it was written for: a kind that errored and has no rows left to hang it over.
-          if (count === 0 && !listingError) return null;
+          const unavailable = group.key === 'secrets' && !!secrets && !secrets.available;
+          if (count === 0 && !listingError && !unavailable) return null;
           const isCollapsed = collapsed[group.key];
           const named = group.namedSubgroups || items.filter((i) => i.rows.length).length > 1;
+          const caption = groupCaption(group.key);
 
           return h(
             Fragment,
             { key: group.key },
-            groupLabel(group.key, group.label, count, group),
+            groupLabel(group.key, group.label, count, unavailable ? null : group),
+            !isCollapsed && caption &&
+              h('div', { className: unavailable ? 'sw-group-note' : 'sw-group-caption' }, caption),
             // A kind that would not list says so here, above its rows, because the fact is the
             // KIND's rather than any row's — stamping it on twelve rows says it twelve times. It
             // used to render only in the empty state, which is the one place it could never appear
@@ -1148,6 +1182,12 @@ window.SW = window.SW || {};
                         ? subRows.map((skill) => h(SW.SkillRow, {
                             key: skill.id, skill, where: extensionWhere,
                             onOpen: () => setOpenSkillId(skill.id) }))
+                        : sub.kind === 'secret'
+                        ? subRows.map((secret) => h(SW.SecretRow, {
+                            key: secret.name, secret,
+                            onEdit: (mode) => setSecretDialog({ mode, secret }) }))
+                        : sub.kind === 'mcp'
+                        ? subRows.map((server) => h(SW.McpRow, { key: server.name, server }))
                         : subRows.map(rowFor)
                     )
                   : null
@@ -1199,6 +1239,9 @@ window.SW = window.SW || {};
         }),
 
         addingSkill && h(SW.AddSkillModal, { open: true, onClose: () => setAddingSkill(false) }),
+        secretDialog && h(SW.SecretModal, Object.assign({}, secretDialog,
+                                                         { onClose: () => setSecretDialog(null) })),
+        addingMcp && h(SW.AddMcpModal, { open: true, onClose: () => setAddingMcp(false) }),
 
         // Read off the list each draw, so an update or a new Replaces shows without reopening.
         openSkillId && h(SW.SkillDrawer, {

@@ -694,6 +694,16 @@ a.sw-topnav-link {
 /* A Project skill's row: nothing to open, and a switch for the Conversation or app in view. */
 .sw-skill-main { cursor: default; }
 .sw-skill-switch { flex: none; margin-right: 4px; }
+.sw-mcp-row .sw-res-sub.is-failed { color: var(--error); }
+.sw-mcp-pair { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.sw-mcp-secret-pick { flex: none; min-width: 120px; }
+/* What a group says about itself under its head, where `.sw-group-note` is a listing that failed. */
+.sw-group-caption {
+  padding: 0 var(--s3) var(--s2) 28px;
+  font-size: var(--fs-12);
+  color: var(--gray-500);
+  line-height: 1.5;
+}
 .sw-res-expand {
   flex: none;
   width: 20px;

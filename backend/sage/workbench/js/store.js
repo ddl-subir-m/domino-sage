@@ -224,6 +224,11 @@ window.SW = window.SW || {};
     // The Project's own extensions (ADR-0071), `enabled` as read for `extensionScope`.
     extensions: { items: [], builtinSkills: [], builtinSections: [] },
     extensionScope: '',
+    // `GET /api/project/secrets` as answered: `{ available, reason, secrets: [{ name, note }] }`.
+    // Null until read. Never holds a value — the server never answers one.
+    secrets: null,
+    // `GET /api/project/mcp`'s servers, each `{ name, url, headers, enabled, tools, status, warning }`.
+    mcpServers: [],
     selectingAppId: null,
     activePlanId: null,
     activePlan: null,
@@ -6145,6 +6150,105 @@ window.SW = window.SW || {};
               antd.message.error(err.message);
             }
             await store.loadExtensions();
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+
+    async loadSecrets() {
+      try {
+        state.secrets = await SW.api.secrets();
+      } catch (err) {
+        state.secrets = { available: false, reason: err.message, secrets: [] };
+      }
+      notify();
+    },
+
+    // `body` is `{ value?, note? }`. Throws, so the dialog that sent it can keep its fields and say
+    // why. The value is not kept here or anywhere after the request.
+    async saveSecret(name, body) {
+      await SW.api.putSecret(name, body);
+      await store.loadSecrets();
+      antd.message.success(body.value === undefined
+        ? `Saved the note for ${name}.`
+        : SW.brand.text('Saved {name}. {assistantName} restarts its assistant to pick it up.',
+                        { name }));
+    },
+
+    async removeSecret(secret) {
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Remove ${secret.name}?`,
+          content: 'Deletes it from this project, for everyone. Code that reads it stops getting a '
+            + 'value; a published app keeps the old one until its next publish.',
+          okText: 'Remove',
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            try {
+              await SW.api.deleteSecret(secret.name);
+            } catch (err) {
+              antd.message.error(err.message);
+            }
+            await store.loadSecrets();
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+
+    async loadMcpServers() {
+      try {
+        state.mcpServers = (await SW.api.mcpServers()).servers || [];
+      } catch (err) {
+        return;
+      }
+      notify();
+    },
+
+    // `body` is `{ name, url, headers? }`. Throws, for the dialog to show.
+    async addMcpServer(body) {
+      const row = await SW.api.addMcpServer(body);
+      await store.loadMcpServers();
+      if (row && row.warning) antd.message.warning(`Added ${body.name}, but ${row.warning}`);
+      else antd.message.success(`Added ${body.name}. Its tools reach the next turn.`);
+      return row;
+    },
+
+    async readMcpTools(server) {
+      try {
+        await SW.api.readMcpTools(server.name);
+      } catch (err) {
+        antd.message.error(err.message);
+      }
+      await store.loadMcpServers();
+    },
+
+    async setMcpEnabled(server, enabled) {
+      try {
+        await SW.api.setMcpEnabled(server.name, enabled);
+      } catch (err) {
+        antd.message.error(err.message);
+      }
+      await store.loadMcpServers();
+    },
+
+    async removeMcpServer(server) {
+      return new Promise((resolve) => {
+        antd.Modal.confirm({
+          title: `Remove ${server.name}?`,
+          content: 'Disconnects it from this project, for everyone.',
+          okText: 'Remove',
+          okButtonProps: { danger: true },
+          onOk: async () => {
+            try {
+              await SW.api.removeMcpServer(server.name);
+            } catch (err) {
+              antd.message.error(err.message);
+            }
+            await store.loadMcpServers();
             resolve(true);
           },
           onCancel: () => resolve(false),

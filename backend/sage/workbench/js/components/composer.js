@@ -73,9 +73,10 @@ window.SW = window.SW || {};
   // own data — the one kind a Build prompt names most.
   //
   // The Project's skills sit beside its Resources (#628). A skill is not a Resource: naming one
-  // carries no context, and the shim reads `@<name>` off the prompt itself.
+  // carries no context, and the shim reads `@<name>` off the prompt itself. The Project's secrets
+  // sit beside them (#643) for the same reason: picking one writes `{env:NAME}`, never a value.
   function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents,
-                             appAttachments, collapse, extensions) {
+                             appAttachments, collapse, extensions, secrets) {
     const context = (attachments || []).map((att) => ({
       id: att.resourceId || att.id,
       name: att.resourceName,
@@ -98,6 +99,8 @@ window.SW = window.SW || {};
     const skills = ((extensions && extensions.items) || [])
       .filter((e) => e.kind === 'skill' && !e.shadowed)
       .map((e) => ({ id: e.id, name: e.name, kind: 'skill' }));
+    const secretRows = ((secrets && secrets.available && secrets.secrets) || [])
+      .map((s) => ({ id: `secret:${s.name}`, name: s.name, kind: 'secret' }));
     const files = (resourceGroups.file || []).filter(
       (r) => !SW.util.isHiddenFromExplorer(r.path || r.name)
     );
@@ -115,7 +118,8 @@ window.SW = window.SW || {};
     // where a folder is not a chip, so it is offered a folder nowhere it could not carry one.
     // Chat gains no folder act (ADR-0029), and this is the same line drawn in the menu.
     return SW.util.workingSetFirst({
-      groups: [context, produced, resourceGroups.pin || [], project, skills, files, attached],
+      groups: [context, produced, resourceGroups.pin || [], project, skills, secretRows, files,
+               attached],
       catalogue: catalogueParents,
       query,
       // The same number as `FOLDER_COLLAPSE_THRESHOLD` in `sage/orchestrator/service.py`, and the
@@ -127,6 +131,21 @@ window.SW = window.SW || {};
       limit: 10,
       collapse,
     });
+  }
+
+  // The composer's mirror of `text`: every character kept, so it lines up with the box over it, and
+  // each `{env:NAME}` wrapped as a chip whose braces take their room but draw nothing.
+  function secretRefMirror(text) {
+    const parts = String(text).split(SW.util.SECRET_REF);
+    const out = parts.map((part, i) => (i % 2 === 0 ? part : h(
+      'span',
+      { key: i, className: 'sw-secret-ref is-mirror' },
+      h('span', { className: 'sw-secret-ref-brace' }, '{env:'),
+      part,
+      h('span', { className: 'sw-secret-ref-brace' }, '}')
+    )));
+    // A box ending in a newline shows the empty line under it; a div does not without something on it.
+    return text.endsWith('\n') ? out.concat('\u200b') : out;
   }
 
   // Where the caret sits inside an unfinished @mention, if it does.
@@ -324,7 +343,7 @@ window.SW = window.SW || {};
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
       catalog, buildModel, buildEffort, buildPhase, openWeightModels, signingSlot,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
-      sensitivity, sensitivityNoticeFor, crossingRefused, extensions,
+      sensitivity, sensitivityNoticeFor, crossingRefused, extensions, secrets,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -340,6 +359,8 @@ window.SW = window.SW || {};
       () => SW.prefs.get('chipScopeHintDismissed')
     );
     const fileRef = useRef(null);
+    const mirrorRef = useRef(null);
+    const hasSecretRefs = SW.util.SECRET_REF.test(text);
 
     const aliases = chatAliases({
       model_llm: (gatewayAliases && gatewayAliases.length) ? gatewayAliases : resourceGroups.model_llm,
@@ -401,7 +422,7 @@ window.SW = window.SW || {};
     const mentionArts = ((thread && thread.artifacts) || []).filter((a) => !a.missing);
     const suggestions = mention
       ? mentionCandidates(attachments, resourceGroups, mention.query, mentionArts,
-                          catalogueParents, appAttachments, showMode, extensions)
+                          catalogueParents, appAttachments, showMode, extensions, secrets)
       : [];
     const catalogueIds = new Set((catalogueParents || []).map((r) => r.id));
     const buildModes = BUILD_MODES();
@@ -427,6 +448,8 @@ window.SW = window.SW || {};
       setText(composerSeed);
       SW.store.clearComposerSeed();
     }, [composerSeed]);
+
+    useEffect(() => { if (!SW.store.get().secrets) SW.store.loadSecrets(); }, []);
 
     useEffect(() => {
       if (!modeOpen || !showMode) return undefined;
@@ -535,7 +558,8 @@ window.SW = window.SW || {};
       // Prefer the file's basename so "@data.csv" matches the path OpenCode reads, and fall back to
       // the shortest distinguishing suffix when the app holds two files of that name (ADR-0030).
       // Derived by the util the TURN reads these tokens back with, so the two cannot drift apart.
-      const token = SW.util.mentionToken(resource, mentionPeers);
+      const token = resource.kind === 'secret'
+        ? `{env:${resource.name}}` : SW.util.mentionToken(resource, mentionPeers);
       const after = text.slice(mention.start).replace(/^@\S*/, '');
       const pad = after === '' || /^\s/.test(after) ? '' : ' ';
       setText(text.slice(0, mention.start) + token + pad + after);
@@ -543,7 +567,7 @@ window.SW = window.SW || {};
       // A folder row is not a Resource and has no chip to become: it is offered only because every
       // file under it is already attached to this app, which is the very thing a chip would say
       // (ADR-0030). Adding one would post a `folder:` id no Resource answers to.
-      if (resource.kind === 'folder' || resource.kind === 'skill') return;
+      if (resource.kind === 'folder' || resource.kind === 'skill' || resource.kind === 'secret') return;
       // The @name is already in the box. Unreported, this sends a prompt mentioning a file that
       // was never attached.
       await SW.store.addToContext(resource, { quiet: true }).catch(sayFailed);
@@ -1320,12 +1344,25 @@ window.SW = window.SW || {};
                 );
               })
             ),
+          h(
+          'div',
+          { className: `sw-composer-field${hasSecretRefs ? ' has-secret-refs' : ''}` },
+          // The draft drawn again behind the box, with each `{env:NAME}` as a chip, while the box's
+          // own text is transparent. Character for character, so the caret lands where it reads.
+          hasSecretRefs && h(
+            'div',
+            { className: 'sw-composer-mirror', ref: mirrorRef, 'aria-hidden': 'true' },
+            secretRefMirror(text)
+          ),
           h(Input.TextArea, {
             value: text,
             autoFocus,
             disabled,
             placeholder: placeholder || SW.util.composerPlaceholder('Describe your app, or a change to make'),
             autoSize: { minRows: compact ? 1 : 2, maxRows: 8 },
+            onScroll: (e) => {
+              if (mirrorRef.current) mirrorRef.current.scrollTop = e.target.scrollTop;
+            },
             onChange: (e) =>
               changeText(e.target.value, e.target.selectionStart, e.nativeEvent && e.nativeEvent.inputType),
             onKeyDown: (e) => {
@@ -1377,6 +1414,7 @@ window.SW = window.SW || {};
               }
             },
           })
+          )
         ),
 
         h(

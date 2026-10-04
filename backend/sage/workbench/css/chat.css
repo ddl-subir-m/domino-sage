@@ -1040,6 +1040,40 @@
   resize: none;
   background: transparent;
 }
+/* A secret named as `{env:NAME}` (#643): a chip showing NAME, in a sent message and in the box. */
+.sw-secret-ref {
+  background: var(--purple-100);
+  color: var(--purple-700);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--purple-200);
+  padding: 0 4px;
+  font-weight: 500;
+}
+/* In the box the draft is drawn twice: the textarea's own text goes transparent over a mirror that
+   holds every character in the same place, so a chip there cannot pad or change any width. Its
+   braces keep their room and draw a key instead of themselves. */
+.sw-composer-field { position: relative; }
+.sw-composer-mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-size: var(--fs-15);
+  line-height: 1.6;
+  color: var(--dark-700);
+}
+.sw-composer-field.has-secret-refs .ant-input { color: transparent; caret-color: var(--dark-700); }
+.sw-secret-ref.is-mirror { padding: 0; }
+.sw-secret-ref-brace { color: transparent; position: relative; }
+.sw-secret-ref-brace:first-child::before {
+  content: '🔑';
+  position: absolute;
+  left: 2px;
+  font-size: 0.8em;
+  color: var(--purple-700);
+}
 .sw-composer-bar {
   display: flex;
   align-items: center;

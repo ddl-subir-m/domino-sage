@@ -60,8 +60,7 @@ def test_a_group_with_rows_in_it_still_offers_a_way_in():
 
 
 def test_a_group_with_no_catalog_behind_it_offers_nothing():
-    """MCPs are a placeholder until OpenCode config wires them, and Files come from Upload rather
-    than from the catalog at all.
+    """Files come from Upload rather than from the catalog at all.
 
     A door onto a catalog that cannot answer is worse than no door: it is a dead end with a
     label on it.
@@ -74,7 +73,7 @@ def test_a_group_with_no_catalog_behind_it_offers_nothing():
     # arrives by Upload.
     assert not heads["Files (1)"]["hasAdd"]
     # And a group nobody has put anything in is not on screen to be asked.
-    assert "MCPs (0)" not in heads
+    assert "MCP servers (0)" not in heads
     # Agents are out of scope (ADR-0071), so the panel has no group for them at all.
     assert not any(label.startswith("Agents") for label in heads)
 
