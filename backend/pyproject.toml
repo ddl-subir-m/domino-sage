@@ -30,6 +30,9 @@ dependencies = [
     # dev one: with it absent the disclosure rule fails closed and no result ever reaches the model,
     # which is safe and also useless.
     "sqlglot>=27,<28",
+    # A Built App's viewer keys (#644): `template/fastapi-antd/sage_secrets.py` seals them in an
+    # AES-GCM cookie. The published App and the preview both serve from this venv, so it lives here.
+    "cryptography>=42,<47",
 ]
 
 [project.optional-dependencies]
