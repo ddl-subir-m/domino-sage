@@ -18,6 +18,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from typing import Any
 
+from .. import project_secrets
 from ..build_policy import BuildPolicy
 from ..gateway.capabilities import legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
@@ -53,6 +54,7 @@ from ..router.phase_classifier import (
 from ..tool_result_window import apply_tool_result_window
 from . import keepalive as ka
 from .chat_paths import apply_withheld, strip_denied_writes
+from .secret_values import hide_secret_values, note_secret_mentions
 from .tool_json import redact_invalid_tool_results
 
 # What the agent sees in place of an image its model can't accept. It must know an image WAS
@@ -578,6 +580,10 @@ class EnforcementShim:
             redacted = redact_invalid_tool_results(request["messages"])
             if redacted is not request["messages"]:
                 request = {**request, "messages": redacted}
+            hidden = note_secret_mentions(
+                hide_secret_values(request["messages"], project_secrets.known_values()))
+            if hidden is not request["messages"]:
+                request = {**request, "messages": hidden}
         state = self._control.snapshot()
 
         # Per-step phase: in Auto mode, classify THIS inference from its own message tail (plan

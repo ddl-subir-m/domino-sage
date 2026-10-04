@@ -244,6 +244,11 @@ shows_pack = true
 
 [[surface]]
 kind = "python-prose"
+module = "sage/project_secrets.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
 module = "sage/provision/domino.py"
 shows_pack = true
 

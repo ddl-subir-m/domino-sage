@@ -184,6 +184,9 @@ class ControlPlane(Protocol):
     def app_status(self, app_id: str) -> str: ...
     def app_visibility(self, app_id: str) -> str: ...
     def app_exists(self, app_id: str) -> bool: ...
+    def project_env_vars(self, project_id: str) -> dict[str, str]: ...
+    def set_project_env_var(self, project_id: str, name: str, value: str) -> None: ...
+    def delete_project_env_var(self, project_id: str, name: str) -> None: ...
 
 
 class DominoControlPlane:
@@ -727,6 +730,37 @@ class DominoControlPlane:
         proj = quote(project_name, safe="")
         return f"/u/{owner}/{proj}/apps/{app_id}/{version_id}/details/overview"
 
+    def project_env_vars(self, project_id: str) -> dict[str, str]:
+        """The Project's environment variables, name -> PLAINTEXT value (#641).
+
+        Measured on cloud-dogfood 2026-10-04: GET answers names and values to the Project owner.
+        LIVE-VERIFY: the envelope. Read tolerantly — a bare list, or a list under `vars` — so a
+        differently-wrapped answer still yields names rather than an empty map that reads as
+        "no secrets". The answer is never logged.
+        """
+        data = self._get(f"/v4/projects/{project_id}/environmentVariables")
+        items = data.get("vars") if isinstance(data, dict) else data
+        out: dict[str, str] = {}
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and item.get("name"):
+                out[str(item["name"])] = str(item.get("value") or "")
+        return out
+
+    def set_project_env_var(self, project_id: str, name: str, value: str) -> None:
+        """Create a Project variable. A running process does not see it until it is restarted."""
+        path = f"/v4/projects/{project_id}/environmentVariables"
+        with self._client() as c:
+            r = c.post(f"{self._host}{path}", json={"name": name, "value": value}, headers=self._headers())
+        try:
+            self._check(r, "POST", path)
+        except RuntimeError as e:
+            # `_check` quotes the response body, and a validation error may quote the request back.
+            scrubbed = str(e).replace(value, "***") if value else str(e)
+            raise type(e)(scrubbed) from None
+
+    def delete_project_env_var(self, project_id: str, name: str) -> None:
+        self._delete(f"/v4/projects/{project_id}/environmentVariables/{quote(name, safe='')}")
+
     def whoami(self) -> UserRef:
         """The identity this client's token acts as (GET /api/users/v1/self), cached per token.
 
@@ -808,10 +842,25 @@ class FakeControlPlane:
     dead_credentials: set[str] = field(default_factory=set)  # ids create_project refuses, as Domino would
     tried_credentials: list[str] = field(default_factory=list)  # ids create_project was called with, in order
     host: str = "github.com"
+    env_vars: dict[str, dict[str, str]] = field(default_factory=dict)  # project_id -> name -> value
+    env_var_writes: list[tuple[str, str]] = field(default_factory=list)  # (verb, name), never a value
     _seq: int = 0
 
     def whoami(self) -> UserRef:
         return self.user
+
+    def project_env_vars(self, project_id: str) -> dict[str, str]:
+        return dict(self.env_vars.get(project_id, {}))
+
+    def set_project_env_var(self, project_id: str, name: str, value: str) -> None:
+        self.env_var_writes.append(("POST", name))
+        self.env_vars.setdefault(project_id, {})[name] = value
+
+    def delete_project_env_var(self, project_id: str, name: str) -> None:
+        self.env_var_writes.append(("DELETE", name))
+        if name not in self.env_vars.get(project_id, {}):
+            raise NotFound(f"DELETE /v4/projects/{project_id}/environmentVariables/{name} -> 404")
+        del self.env_vars[project_id][name]
 
     @property
     def git_host(self) -> str:
