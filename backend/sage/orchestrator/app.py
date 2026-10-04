@@ -2386,7 +2386,8 @@ async def forward_domino_mcp(name: str, request: Request) -> Response:
         row = await run_in_threadpool(orchestrator.domino_mcp_server, name)
     except KeyError:
         return JSONResponse(status_code=404,
-                            content={"error": "not a Domino-hosted MCP server in this project"})
+                            content={"error": brand_text(
+                                "not a {platformName}-hosted server in this {project}")})
     names = (_MCP_FORWARD | {k.lower() for k in row["headers"]}) - {"authorization"}
     headers = {k: v for k, v in request.headers.items() if k.lower() in names}
     try:
@@ -2414,9 +2415,18 @@ async def forward_domino_mcp(name: str, request: Request) -> Response:
             await upstream.aclose()
             await client.aclose()
 
-    passed = {k: v for k, v in upstream.headers.items()
-              if k.lower() in ("content-type", "mcp-session-id")}
-    return StreamingResponse(relay(), status_code=upstream.status_code, headers=passed)
+    passed = {k: v for k, v in upstream.headers.items() if k.lower() == "mcp-session-id"}
+    media = upstream.headers.get("content-type", "")
+    if media.startswith("text/event-stream"):
+        return StreamingResponse(relay(), status_code=upstream.status_code, headers=passed,
+                                 media_type="text/event-stream")
+    try:
+        content = await upstream.aread()
+    finally:
+        await upstream.aclose()
+        await client.aclose()
+    return Response(content, status_code=upstream.status_code, headers=passed,
+                    media_type=media or None)
 
 
 @control_app.get("/api/project/history")
