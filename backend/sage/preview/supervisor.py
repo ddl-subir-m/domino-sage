@@ -27,6 +27,7 @@ from pathlib import Path
 import httpx
 
 from ..workspace.stack import preview_stack_of, resolve_stack
+from ..workspace.viewer_keys import write_names as write_viewer_key_names
 
 log = logging.getLogger("sage.preview.supervisor")
 
@@ -615,6 +616,10 @@ class UvicornSupervisor(ViteSupervisor):
         generation = self._spawn_generation(previous)
         if generation is None:
             return
+        try:
+            write_viewer_key_names(self._workspace)  # the names a viewer may set (#644)
+        except OSError:
+            log.exception("preview: could not write sage_keys.json")
         port = self._listen_port()
         self._launch(
             [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
