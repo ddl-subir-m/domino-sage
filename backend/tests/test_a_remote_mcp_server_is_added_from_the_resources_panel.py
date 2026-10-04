@@ -164,7 +164,8 @@ def test_add_lists_tools_and_every_route_answers_in_the_contracts_shape(client, 
         "name": "notes", "url": remote, "headers": {"Authorization": "Bearer {env:STUB_TOKEN_642}"}})
     assert added.status_code == 200
     row = added.json()
-    assert set(row) == {"name", "url", "headers", "enabled", "tools", "status", "warning"}
+    assert set(row) == {"name", "kind", "url", "headers", "enabled", "tools", "status", "warning"}
+    assert row["kind"] == "remote"
     assert row["tools"] == ["echo", "ping", "write_note"]
     assert extension_mcp.server(client.root, "notes")["warning"] is None
     assert row["headers"] == {"Authorization": "Bearer {env:STUB_TOKEN_642}"}

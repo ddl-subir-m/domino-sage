@@ -2325,7 +2325,8 @@ def list_project_mcp() -> JSONResponse:
 
 @control_app.post("/api/project/mcp")
 def add_project_mcp(body: dict) -> JSONResponse:
-    """`name`, `url`, and `headers`, whose credential values are written `{env:NAME}`."""
+    """`name`, `url`, `headers`, whose credential values are written `{env:NAME}`, and `kind`:
+    `remote` (the default) or `domino`."""
     try:
         return JSONResponse(content=orchestrator.add_mcp(body or {}))
     except ValueError as e:
@@ -2365,6 +2366,57 @@ def remove_project_mcp(name: str) -> JSONResponse:
     if not removed:
         return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
     return JSONResponse(content={"removed": True})
+
+
+_MCP_FORWARD = frozenset({"content-type", "accept", "mcp-session-id", "mcp-protocol-version",
+                          "last-event-id"})
+
+
+@control_app.api_route("/mcp/domino/{name}", methods=["GET", "POST", "DELETE"])
+async def forward_domino_mcp(name: str, request: Request) -> Response:
+    """OpenCode's way to a Domino-hosted MCP server (#645): each request goes on to the server with
+    a Domino token fetched for it, and the answer streams back.
+
+    Refuses a browser, which sends `Sec-Fetch-*`: the token is the builder's, and only OpenCode,
+    over loopback, is meant to spend it.
+    """
+    if "sec-fetch-site" in request.headers or "sec-fetch-mode" in request.headers:
+        return JSONResponse(status_code=403, content={"error": "not for a browser"})
+    try:
+        row = await run_in_threadpool(orchestrator.domino_mcp_server, name)
+    except KeyError:
+        return JSONResponse(status_code=404,
+                            content={"error": "not a Domino-hosted MCP server in this project"})
+    names = (_MCP_FORWARD | {k.lower() for k in row["headers"]}) - {"authorization"}
+    headers = {k: v for k, v in request.headers.items() if k.lower() in names}
+    try:
+        headers["authorization"] = f"Bearer {await run_in_threadpool(extension_mcp.domino_token)}"
+    except project_extensions.ExtensionError as e:
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    body = await request.body()
+    # No read timeout: the GET is the server's event stream, idle until it has something to say.
+    client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None))
+    try:
+        upstream = await client.send(
+            client.build_request(request.method, row["url"], content=body, headers=headers),
+            stream=True)
+    except httpx.HTTPError as e:
+        await client.aclose()
+        log.warning("mcp %s: the Domino-hosted server did not answer: %s", name, type(e).__name__)
+        return JSONResponse(status_code=502,
+                            content={"error": f"The server did not answer: {type(e).__name__}"})
+
+    async def relay():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    passed = {k: v for k, v in upstream.headers.items()
+              if k.lower() in ("content-type", "mcp-session-id")}
+    return StreamingResponse(relay(), status_code=upstream.status_code, headers=passed)
 
 
 @control_app.get("/api/project/history")

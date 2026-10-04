@@ -44,9 +44,12 @@ def answer(message: dict) -> dict | None:
 class Handler(BaseHTTPRequestHandler):
     """Needs `Authorization: Bearer <server.token>` when the server has a token, hands out a session
     id on `initialize` and requires it after, and answers `tools/list` as an event stream, the other
-    reply shape the transport allows."""
+    reply shape the transport allows. A server with a `seen` list records each request's headers."""
 
     def do_POST(self):
+        seen = getattr(self.server, "seen", None)
+        if seen is not None:
+            seen.append({k.lower(): v for k, v in self.headers.items()})
         token = getattr(self.server, "token", "")
         if token and self.headers.get("authorization") != f"Bearer {token}":
             self.send_response(401)

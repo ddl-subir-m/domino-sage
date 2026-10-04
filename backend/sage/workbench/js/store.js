@@ -227,7 +227,7 @@ window.SW = window.SW || {};
     // `GET /api/project/secrets` as answered: `{ available, reason, secrets: [{ name, note }] }`.
     // Null until read. Never holds a value — the server never answers one.
     secrets: null,
-    // `GET /api/project/mcp`'s servers, each `{ name, url, headers, enabled, tools, status, warning }`.
+    // `GET /api/project/mcp`'s servers, each `{ name, kind, url, headers, enabled, tools, status, warning }`.
     mcpServers: [],
     selectingAppId: null,
     activePlanId: null,
@@ -6208,7 +6208,7 @@ window.SW = window.SW || {};
       notify();
     },
 
-    // `body` is `{ name, url, headers? }`. Throws, for the dialog to show.
+    // `body` is `{ name, url, headers?, kind? }`. Throws, for the dialog to show.
     async addMcpServer(body) {
       const row = await SW.api.addMcpServer(body);
       await store.loadMcpServers();

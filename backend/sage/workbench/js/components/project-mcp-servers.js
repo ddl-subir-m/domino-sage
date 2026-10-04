@@ -3,10 +3,11 @@ window.SW = window.SW || {};
 // The Project's remote MCP servers in the resources panel (#640, #643), temporary until the MCP
 // gateway: one row each with OpenCode's status and the tools it listed, a Project-wide switch, and
 // the dialog that connects one by URL. A header value may name a secret as `{env:NAME}`, which
-// OpenCode resolves when it connects, so the value itself is never in the config.
+// OpenCode resolves when it connects, so the value itself is never in the config. A Domino-hosted
+// server (#645) is reached through Sage, which signs each call in as the builder.
 (function () {
   const { createElement: h, useState } = React;
-  const { Tooltip, Dropdown, Switch, Modal, Input, Alert, Button, Select } = antd;
+  const { Tooltip, Dropdown, Switch, Modal, Input, Alert, Button, Select, Segmented } = antd;
   const { MoreOutlined, DeleteOutlined, PlusOutlined } = icons;
 
   const STATUS = {
@@ -16,11 +17,13 @@ window.SW = window.SW || {};
     pending: 'Loads before the next turn',
     unknown: 'Status unknown',
   };
+  const KIND = { remote: 'Remote', domino: 'Domino-hosted' };
 
   SW.McpRow = function McpRow({ server }) {
     const said = STATUS[server.status] || server.status || STATUS.unknown;
     const tools = (server.tools || []).slice().sort();
-    const subtitle = [server.warning ? `${said}: ${server.warning}` : said,
+    const subtitle = [KIND[server.kind] || KIND.remote,
+      server.warning ? `${said}: ${server.warning}` : said,
       `${tools.length} tool${tools.length === 1 ? '' : 's'}`].join(' · ');
     const menu = {
       items: [
@@ -76,20 +79,26 @@ window.SW = window.SW || {};
     );
   };
 
+  const isAuthorization = (pair) => String(pair.key || '').trim().toLowerCase() === 'authorization';
+
   // What the dialog sends: header rows with no key are dropped, and no headers at all is left out.
-  SW.mcpBody = function mcpBody({ name, url, pairs }) {
+  // A Domino-hosted server's Authorization is Sage's to set, so a row naming it is dropped too.
+  SW.mcpBody = function mcpBody({ name, url, pairs, kind }) {
+    const domino = kind === 'domino';
     const headers = {};
-    (pairs || []).forEach(({ key, value }) => {
-      const k = String(key || '').trim();
-      if (k) headers[k] = String(value || '').trim();
+    (pairs || []).forEach((pair) => {
+      const k = String(pair.key || '').trim();
+      if (k && !(domino && isAuthorization(pair))) headers[k] = String(pair.value || '').trim();
     });
     return Object.assign({ name: String(name || '').trim(), url: String(url || '').trim() },
-                         Object.keys(headers).length ? { headers } : {});
+                         Object.keys(headers).length ? { headers } : {},
+                         domino ? { kind } : {});
   };
 
   const blankPair = () => ({ key: '', value: '' });
 
   SW.AddMcpModal = function AddMcpModal({ open, onClose }) {
+    const [kind, setKind] = useState('remote');
     const [name, setName] = useState('');
     const [url, setUrl] = useState('');
     const [pairs, setPairs] = useState([blankPair()]);
@@ -97,9 +106,10 @@ window.SW = window.SW || {};
     const [error, setError] = useState('');
     const { secrets } = SW.store.get();
     const secretNames = ((secrets && secrets.secrets) || []).map((s) => s.name);
+    const domino = kind === 'domino';
 
     const close = () => {
-      setName(''); setUrl(''); setPairs([blankPair()]); setError(''); setBusy(false);
+      setKind('remote'); setName(''); setUrl(''); setPairs([blankPair()]); setError(''); setBusy(false);
       onClose();
     };
     const ready = name.trim() && url.trim();
@@ -107,7 +117,7 @@ window.SW = window.SW || {};
       setError('');
       setBusy(true);
       try {
-        await SW.store.addMcpServer(SW.mcpBody({ name, url, pairs }));
+        await SW.store.addMcpServer(SW.mcpBody({ name, url, pairs, kind }));
         close();
       } catch (err) {
         setError(err.message);
@@ -135,6 +145,15 @@ window.SW = window.SW || {};
       },
       h('p', { className: 'sw-caption', style: { margin: '0 0 12px' } },
         'Temporary until the MCP gateway. Every conversation and app in this project can use its tools.'),
+      h(Segmented, {
+        className: 'sw-mcp-kind',
+        value: kind,
+        onChange: setKind,
+        options: [{ value: 'remote', label: KIND.remote }, { value: 'domino', label: KIND.domino }],
+        style: { marginBottom: 12 },
+      }),
+      domino && h('p', { className: 'sw-caption sw-mcp-domino-note', style: { margin: '0 0 12px' } },
+        'An app on Domino. Sage signs in to it as you on every call, so it needs no Authorization header.'),
       h(Input, {
         placeholder: 'Name, e.g. crm',
         value: name,
@@ -143,17 +162,17 @@ window.SW = window.SW || {};
         style: { marginBottom: 12 },
       }),
       h(Input, {
-        placeholder: 'https://crm.example.com/mcp',
+        placeholder: domino ? 'https://apps.your-domino/…/mcp' : 'https://crm.example.com/mcp',
         value: url,
         'aria-label': 'URL',
         onChange: (e) => setUrl(e.target.value),
         style: { marginBottom: 12 },
       }),
       h('div', { className: 'sw-caption', style: { marginBottom: 4 } }, 'Headers'),
-      pairs.map((pair, i) => h(
+      pairs.map((pair, i) => !(domino && isAuthorization(pair)) && h(
         'div',
         { key: i, className: 'sw-mcp-pair' },
-        h(Input, { placeholder: 'Authorization', value: pair.key, 'aria-label': 'Header name',
+        h(Input, { placeholder: domino ? 'X-Region' : 'Authorization', value: pair.key, 'aria-label': 'Header name',
                    onChange: (e) => setPair(i, { key: e.target.value }) }),
         h(Input, { placeholder: 'Value', value: pair.value, 'aria-label': 'Header value',
                    onChange: (e) => setPair(i, { value: e.target.value }) }),
