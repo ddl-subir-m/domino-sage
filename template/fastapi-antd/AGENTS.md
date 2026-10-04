@@ -435,7 +435,7 @@ GET only, and only these families; anything else answers 403 or 405:
   the server's environment when it runs on the platform, and absent on a laptop.
 
 ### Keys: `secret("NAME")`, never a value
-Any key the app needs (an outside API, a {platformName} Model API token, a remote MCP server)
+Any key the app needs (an outside API, a {platformName} model endpoint's token, a remote MCP server)
 comes from **`secret("NAME")`**, in a route of `app.py`: `from sage_secrets import secret`, then
 `secret("CRM_TOKEN")`. It returns the viewer's own key when they set one on the App's Your keys
 page, else the builder's, else `None`. Call it inside the route, per request, never at import time.
