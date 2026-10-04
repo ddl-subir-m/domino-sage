@@ -3,7 +3,8 @@
 A Domino App wants a current token on each request, and OpenCode reads a `{env:...}` header once, so
 it would go stale within minutes. OpenCode is pointed at the control port's `/mcp/domino/<name>`
 instead, which forwards each request to the real URL with a sidecar token fetched for it. The token
-goes only to the Domino host or a subdomain of it, never to a browser, and never into a file.
+goes only to Domino's own host or exactly the host of an App Domino lists, never to a browser, and
+never into a file.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,7 +24,7 @@ from . import mcp_stub
 from .test_no_edit_recovery_uses_the_active_stack import _no_waiting  # noqa: F401  (autouse)
 from .test_turn_path import _build
 
-HOST = "domino.example.com"
+APPS = "apps.cloud-dogfood.domino.tech"
 PORT = "8765"
 
 
@@ -41,6 +43,32 @@ class _Sidecar(BaseHTTPRequestHandler):
         pass
 
 
+class _Domino(BaseHTTPRequestHandler):
+    """Domino's App list, a page at a time: 150 Apps, one of them on `APPS`."""
+
+    def do_GET(self):
+        self.server.asked.append(self.headers.get("authorization"))
+        parts = urlsplit(self.path)
+        if parts.path != "/api/apps/beta/apps" or self.server.fail:
+            self.send_response(500)
+            self.end_headers()
+            return
+        query = parse_qs(parts.query)
+        offset, limit = int(query["offset"][0]), int(query["limit"][0])
+        apps = [{"id": f"a{i}", "url": f"https://{APPS if i == 120 else 'apps.other.example'}"
+                 f"/apps-internal/a{i}/"} for i in range(150)]
+        body = json.dumps({"items": apps[offset:offset + limit],
+                           "metadata": {"totalCount": len(apps)}}).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
 def _serve(handler, **attrs):
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     for k, v in attrs.items():
@@ -49,15 +77,25 @@ def _serve(handler, **attrs):
     return server
 
 
+def _on_domino(monkeypatch):
+    """A sidecar and a Domino to ask, as the environment names them."""
+    sidecar, domino = _serve(_Sidecar, issued=0), _serve(_Domino, asked=[], fail=False)
+    monkeypatch.setenv("GATEWAY_TOKEN_URL", f"http://127.0.0.1:{sidecar.server_address[1]}/token")
+    monkeypatch.setenv("DOMINO_API_HOST", f"http://127.0.0.1:{domino.server_address[1]}")
+    # A port can come round again within the cache's minute.
+    monkeypatch.setattr(extension_mcp, "_APP_HOSTS", {})
+    return sidecar, domino
+
+
 @pytest.fixture
 def sidecar(monkeypatch):
-    server = _serve(_Sidecar, issued=0)
-    monkeypatch.setenv("GATEWAY_TOKEN_URL", f"http://127.0.0.1:{server.server_address[1]}/token")
-    monkeypatch.setenv("DOMINO_API_HOST", f"https://{HOST}")
+    server, domino = _on_domino(monkeypatch)
+    server.domino = domino
     monkeypatch.setenv("SAGE_CONTROL_PORT", PORT)
     yield server
-    server.shutdown()
-    server.server_close()
+    for s in (server, domino):
+        s.shutdown()
+        s.server_close()
 
 
 @pytest.fixture
@@ -107,28 +145,48 @@ def _rpc(method: str, id_: int, **params) -> dict:
 # ---- the door ----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(("url", "headers", "said"), [
-    (f"http://{HOST}/mcp", None, "https://"),
-    (f"https://{HOST}.evil.com/mcp", None, "nowhere else"),
-    (f"https://evil{HOST}/mcp", None, "nowhere else"),
-    (f"https://{HOST}@evil.com/mcp", None, "nowhere else"),
-    (f"https://evil.com\\@{HOST}/mcp", None, "nowhere else"),
+    (f"http://{APPS}/mcp", None, "https://"),
+    (f"https://{APPS}.evil.com/mcp", None, "nowhere else"),
+    (f"https://evil{APPS}/mcp", None, "nowhere else"),
+    (f"https://x.{APPS}/mcp", None, "nowhere else"),
+    (f"https://{APPS}@evil.com/mcp", None, "nowhere else"),
+    (f"https://evil.com\\@{APPS}/mcp", None, "nowhere else"),
     ("https://crm.example.com/mcp", None, "nowhere else"),
-    (f"https://apps.{HOST}/mcp", {"Authorization": "Bearer {env:TOK}"}, "Authorization"),
-    (f"https://apps.{HOST}/mcp", {"authorization": "Bearer {env:TOK}"}, "Authorization"),
+    (f"https://{APPS}/mcp", {"Authorization": "Bearer {env:TOK}"}, "Authorization"),
+    (f"https://{APPS}/mcp", {"authorization": "Bearer {env:TOK}"}, "Authorization"),
 ])
-def test_a_domino_server_is_refused_off_the_domino_host_or_with_its_own_authorization(
+def test_a_domino_server_is_refused_off_domino_and_its_apps_hosts_or_with_its_own_authorization(
         client, url, headers, said):
     r = client.post("/api/project/mcp", json={"name": "crm", "kind": "domino", "url": url,
                                               "headers": headers})
     assert r.status_code == 400 and said in r.json()["error"]
     assert not (client.root / ".opencode" / "opencode.json").exists()
-    assert client.sidecar.issued == 0
+
+
+def test_domino_is_asked_with_the_sidecar_token_and_its_answer_kept_a_while(client, monkeypatch):
+    for name in ("crm", "docs"):
+        assert _add(client, monkeypatch, name=name, url=f"https://{APPS}/{name}/mcp").status_code == 200
+    # Two pages of 100, asked once for both adds.
+    assert client.sidecar.domino.asked == ["Bearer tok-645-1"] * 2
+
+
+def test_domino_s_own_host_needs_no_asking(client, monkeypatch):
+    r = _add(client, monkeypatch, name="crm", url="https://127.0.0.1/mcp")
+    assert r.status_code == 200 and client.sidecar.domino.asked == []
+
+
+def test_when_domino_cannot_be_asked_the_url_is_refused_with_a_reason(client):
+    client.sidecar.domino.fail = True
+    r = client.post("/api/project/mcp", json={"name": "crm", "kind": "domino",
+                                              "url": f"https://{APPS}/mcp"})
+    assert r.status_code == 400 and "could not ask Domino" in r.json()["error"]
+    assert not (client.root / ".opencode" / "opencode.json").exists()
 
 
 def test_off_domino_the_kind_is_refused_with_a_reason(client, monkeypatch):
     monkeypatch.delenv("DOMINO_API_HOST")
     r = client.post("/api/project/mcp", json={"name": "crm", "kind": "domino",
-                                              "url": f"https://apps.{HOST}/mcp"})
+                                              "url": f"https://{APPS}/mcp"})
     assert r.status_code == 400 and "only when Sage runs on Domino" in r.json()["error"]
 
 
@@ -139,7 +197,7 @@ def test_an_unknown_kind_is_refused(client):
 
 def test_opencode_is_pointed_at_the_control_port_and_never_at_the_real_url(client, monkeypatch):
     monkeypatch.setenv("REGION_645", "eu")
-    real = f"https://apps.{HOST}/crm/mcp"
+    real = f"https://{APPS}/crm/mcp"
     r = _add(client, monkeypatch, name="crm", url=real,
              headers={"X-Region": "{env:REGION_645}", "X-Team": "sales"})
     assert r.status_code == 200
@@ -161,19 +219,20 @@ def test_tools_are_listed_from_the_real_url_with_a_token_fetched_for_each_read(c
     asked: list[dict] = []
     monkeypatch.setattr(extension_mcp, "read_tools",
                         lambda config, env: (asked.append(config), ["echo"])[1])
-    real = f"https://{HOST}/mcp"
+    real = f"https://{APPS}/mcp"
     row = client.post("/api/project/mcp", json={"name": "crm", "kind": "domino", "url": real}).json()
     assert row["tools"] == ["echo"]
     client.post("/api/project/mcp/crm/tools")
-    assert [(c["url"], c["headers"]) for c in asked] == [
-        (real, {"Authorization": "Bearer tok-645-1"}), (real, {"Authorization": "Bearer tok-645-2"})]
+    tokens = [c["headers"].pop("Authorization") for c in asked]
+    assert [(c["url"], c["headers"]) for c in asked] == [(real, {}), (real, {})]
+    assert len(set(tokens)) == 2 and tokens[-1] == f"Bearer tok-645-{client.sidecar.issued}"
     for path in (client.root / ".opencode").rglob("*"):
         if path.is_file():
             assert "tok-645" not in path.read_text(), path
 
 
 def test_read_again_reaches_the_server_signed_in(client, monkeypatch, stub):
-    _add(client, monkeypatch, name="crm", url=f"https://{HOST}/mcp")
+    _add(client, monkeypatch, name="crm", url=f"https://{APPS}/mcp")
     _point_at(client.root, "crm", _stub_url(stub))
     row = client.post("/api/project/mcp/crm/tools").json()
     assert row["tools"] == ["echo", "ping", "write_note"]
@@ -187,7 +246,7 @@ def test_each_forwarded_request_carries_its_own_fresh_token_and_the_answer_strea
         client, monkeypatch, stub, caplog):
     caplog.set_level(logging.DEBUG)
     monkeypatch.setenv("REGION_645", "eu")
-    _add(client, monkeypatch, name="crm", url=f"https://{HOST}/mcp",
+    _add(client, monkeypatch, name="crm", url=f"https://{APPS}/mcp",
          headers={"X-Region": "{env:REGION_645}"})
     _point_at(client.root, "crm", _stub_url(stub))
     n = client.sidecar.issued
@@ -216,7 +275,7 @@ def test_each_forwarded_request_carries_its_own_fresh_token_and_the_answer_strea
 
 @pytest.mark.parametrize("browser", [{"Sec-Fetch-Site": "same-origin"}, {"Sec-Fetch-Mode": "cors"}])
 def test_a_browser_is_refused_before_anything_is_fetched(client, monkeypatch, stub, browser):
-    _add(client, monkeypatch, name="crm", url=f"https://{HOST}/mcp")
+    _add(client, monkeypatch, name="crm", url=f"https://{APPS}/mcp")
     _point_at(client.root, "crm", _stub_url(stub))
     issued = client.sidecar.issued
     r = client.post("/mcp/domino/crm", headers=browser, json=_rpc("initialize", 1))
@@ -225,7 +284,7 @@ def test_a_browser_is_refused_before_anything_is_fetched(client, monkeypatch, st
 
 
 def test_only_a_switched_on_domino_server_is_forwarded_to(client, monkeypatch, stub):
-    _add(client, monkeypatch, name="crm", url=f"https://{HOST}/mcp")
+    _add(client, monkeypatch, name="crm", url=f"https://{APPS}/mcp")
     _point_at(client.root, "crm", _stub_url(stub))
     client.post("/api/project/mcp", json={"name": "docs", "url": _stub_url(stub)})
     stub.seen.clear()

@@ -21,10 +21,10 @@ from sage.driver.opencode import OpenCodeClient
 from . import mcp_stub
 from .opencode_server import BINARY, _opencode_server
 from .test_a_domino_hosted_mcp_server_is_signed_in_on_every_call import (
-    HOST,
+    APPS,
+    _on_domino,
     _point_at,
     _serve,
-    _Sidecar,
     _stub_url,
 )
 from .test_an_added_remote_mcp_server_reaches_real_opencode import PROVIDER, _tools_sent
@@ -53,10 +53,8 @@ def test_a_domino_server_connects_through_the_control_port_and_reaches_chat(tmp_
     import sage.orchestrator.app as app_module
 
     stub = _serve(mcp_stub.Handler, seen=[])
-    sidecar = _serve(_Sidecar, issued=0)
+    sidecar, domino = _on_domino(monkeypatch)
     capture = _Capture()
-    monkeypatch.setenv("GATEWAY_TOKEN_URL", f"http://127.0.0.1:{sidecar.server_address[1]}/token")
-    monkeypatch.setenv("DOMINO_API_HOST", HOST)
 
     orch, _, _ = _build(tmp_path / "w", [])
     monkeypatch.setattr(app_module, "orchestrator", orch)
@@ -70,7 +68,7 @@ def test_a_domino_server_connects_through_the_control_port_and_reaches_chat(tmp_
 
     with monkeypatch.context() as m:
         m.setattr(extension_mcp, "read_tools", lambda config, env: [])
-        orch.add_mcp({"name": "dom", "kind": "domino", "url": f"https://apps.{HOST}/dom/mcp"})
+        orch.add_mcp({"name": "dom", "kind": "domino", "url": f"https://{APPS}/dom/mcp"})
     _point_at(root, "dom", _stub_url(stub))
     assert orch.read_mcp_tools("dom")["tools"] == ["echo", "ping", "write_note"]
     stub.seen.clear()
@@ -102,6 +100,6 @@ def test_a_domino_server_connects_through_the_control_port_and_reaches_chat(tmp_
     finally:
         control.should_exit = True
         control_thread.join(timeout=5)
-        for server in (capture.server, stub, sidecar):
+        for server in (capture.server, stub, sidecar, domino):
             server.shutdown()
             server.server_close()
