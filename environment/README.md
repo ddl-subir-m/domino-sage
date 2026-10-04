@@ -82,6 +82,12 @@ commits. A published Workbench App must **not** treat that checkout as an app â€
    - **Don't** put `GATEWAY_API_KEY` here: promoted to `ENV` it lands in an image layer. In `domino`
      mode leave the key unset; listings and model calls use the sidecar token at `:8899`.
 
+**Viewer keys need an Environment built after #644.** A published fastapi-antd App and its preview
+both serve from `/opt/sage/backend/.venv`, and `cryptography` (which seals a viewer's keys into
+their cookie) entered that venv's lockfile with #644. On an image built before that, `secret()`
+still returns the builder's keys and the Your keys page says viewer keys are unavailable. Rebuild
+the Environment, then republish (ADR-0072).
+
 ## Fast inner dev loop
 
 Don't rebuild the image per code change: set `SAGE_APP_HOME=/mnt/code` (in a git-based project that

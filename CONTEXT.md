@@ -121,6 +121,22 @@ _Kind_: word
 _Avoid_: invite, invitee (Sage cannot invite — there is no acceptance step to wait on), member,
 teammate
 
+**Secret**:
+A builder's key for an outside API or a remote [[MCP server]], stored as a Domino Project
+environment variable of the [[Project]] Sage runs in. Its value is written once and never shown
+again; Sage keeps it in memory only and the model sees only its name, as `{env:NAME}`. A
+[[Built App]] reads it with `secret("NAME")`. Names starting `SAGE_` or `DOMINO_` are reserved
+([ADR-0071](docs/adr/0071-a-projects-own-skills-tools-and-mcps-live-in-its-opencode-folder.md)).
+_Kind_: name
+_Avoid_: credential (that word is the Domino Git credential), env var, token, password
+
+**MCP server**:
+A remote server, reached by URL, that offers tools to OpenCode in Chat and Build. Its headers may
+reference a [[Secret]] as `{env:NAME}`. Remote only; Sage's own MCP servers, such as [[Live read]],
+are not one of these.
+_Kind_: name
+_Avoid_: connector, integration, plugin
+
 ### Gateways
 
 **LLM Gateway**:

@@ -56,6 +56,7 @@ from .stack import (
     stack_of,
 )
 from .threads import CHAT_WORK, HistoryRows, new_id, safe_id
+from .viewer_keys import write_names as write_viewer_key_names
 
 log = logging.getLogger(__name__)
 
@@ -2565,6 +2566,9 @@ class WorkspaceManager:
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)  # scripts/ may predate this app
             shutil.copy2(src, dst)  # copy2 keeps the +x bit Domino needs to run app.sh
+            changed = True
+        # The names a viewer may set (#644), from the code about to be published.
+        if write_viewer_key_names(self.app_path):
             changed = True
         return changed
 

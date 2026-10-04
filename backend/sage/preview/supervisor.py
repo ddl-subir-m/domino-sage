@@ -26,7 +26,9 @@ from pathlib import Path
 
 import httpx
 
+from .. import project_secrets
 from ..workspace.stack import preview_stack_of, resolve_stack
+from ..workspace.viewer_keys import write_names as write_viewer_key_names
 
 log = logging.getLogger("sage.preview.supervisor")
 
@@ -343,7 +345,7 @@ class ViteSupervisor:
             # than set in `vite.config.ts` because a workspace seeded from an older template never
             # re-seeds (#40) — the flag reaches those too, a config change would not.
             ["npm", "run", "dev", "--", "--port", str(port)],
-            {**os.environ, "SAGE_BASE_PREFIX": self._base_prefix,
+            {**project_secrets.preview_env(), "SAGE_BASE_PREFIX": self._base_prefix,
              "SAGE_PREVIEW_APP": self._workspace.name}, port, generation,
         )
 
@@ -615,9 +617,13 @@ class UvicornSupervisor(ViteSupervisor):
         generation = self._spawn_generation(previous)
         if generation is None:
             return
+        try:
+            write_viewer_key_names(self._workspace)  # the names a viewer may set (#644)
+        except OSError:
+            log.exception("preview: could not write sage_keys.json")
         port = self._listen_port()
         self._launch(
             [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
              "--reload", "--reload-dir", ".", "--log-level", "info"],
-            {**os.environ, "SAGE_PREVIEW": "1"}, port, generation,
+            {**project_secrets.preview_env(), "SAGE_PREVIEW": "1"}, port, generation,
         )

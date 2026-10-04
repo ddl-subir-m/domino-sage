@@ -117,7 +117,7 @@ a route of its own. There is nothing to install, compile, or bundle.
   `NOTHING_TO_BUILD` instead (see the top of this file) — never reach for that because a task is
   large, unclear, or would be easier after a question.
 - **Do not touch** `app.sh`, `sage_serve.py`, `sage_queries.py`, `sage_domino.py`,
-  `scripts/`, `static/index.html`, `static/theme.js`, or anything under `static/vendor/` or
+  `sage_secrets.py`, `sage_mcp.py`, `sage_keys.json`, `scripts/`, `static/index.html`, `static/theme.js`, or anything under `static/vendor/` or
   `static/sage/`. They are {assistantName}'s: they are how the page is served, how it finds its
   own URL once published, how a crash reaches the screen and reaches you, and how the app reaches
   its data and its models. {assistantName} refreshes them from its template, so an edit to any of
@@ -433,4 +433,21 @@ GET only, and only these families; anything else answers 403 or 405:
   say what the app could not reach.
 - `DOMINO_API_HOST`, `DOMINO_PROJECT_ID`, `DOMINO_PROJECT_NAME` and `DOMINO_PROJECT_OWNER` are in
   the server's environment when it runs on the platform, and absent on a laptop.
+
+### Keys: `secret("NAME")`, never a value
+Any key the app needs (an outside API, a {platformName} model endpoint's token, a remote MCP server)
+comes from **`secret("NAME")`**, in a route of `app.py`: `from sage_secrets import secret`, then
+`secret("CRM_TOKEN")`. It returns the viewer's own key when they set one on the App's Your keys
+page, else the builder's, else `None`. Call it inside the route, per request, never at import time.
+Pass the name as a plain string literal, `secret("NAME")` or `secret('NAME')`: that literal is how
+{assistantName} knows which keys a viewer may set. `{env:NAME}` in a request names a secret; read it
+with `secret("NAME")`.
+
+- **Never print, log, return to the browser, or write a key's value** — not in a route's answer,
+  not in an error, not in a file, not in a comment. The page never sees a key; only the server does.
+- **A remote MCP server** is called from a route with `from sage_mcp import call_tool, list_tools`:
+  `list_tools(url, headers)` and `call_tool(url, name, arguments, headers)`, with headers such as
+  `{"Authorization": f"Bearer {secret('CRM_TOKEN')}"}`. Both raise `sage_mcp.McpError` with a
+  sentence for the App's log.
+- Do not build a page for entering keys: the Your keys button is already on every page.
 <!-- sage:build-profile:v1:platform:end -->

@@ -11,6 +11,7 @@ have to write:
     reaches the preview on the next request and a republish reaches every viewer;
   - the app's named queries, answered by `sage_queries.py` beside this file — the same module the
     react-vite stack's server mounts, so the two stacks cannot disagree about a refusal;
+  - the viewer's own keys behind `secret()` and the Your keys page, from `sage_secrets.py`;
   - the boot lines Domino surfaces in the App's log: cold start, the token sidecar, the data
     library, the platform API host.
 
@@ -42,6 +43,10 @@ try:
     import sage_domino  # the platform-API relay (#489), shipped as its own deploy file
 except ImportError:  # an app born before the relay existed serves without it
     sage_domino = None
+try:
+    import sage_secrets  # secret() and the viewer's own keys (#644), its own deploy file too
+except ImportError:
+    sage_secrets = None
 
 _STATIC = ROOT / "static"
 _DATA = ROOT / "public" / "data"
@@ -92,6 +97,20 @@ def inject_base_shim(html: str, received_path: str, preview: bool = False) -> st
     if m:
         return html[: m.end()] + shim + html[m.end():]
     return shim + html
+
+
+# The Your keys button (#644), on every page this server serves, so no app has to write it. It stays
+# hidden on an app whose code reads no key.
+_KEYS_SCRIPT = '<script src="static/sage/keys.js" defer></script>'
+_BODY_CLOSE = re.compile(r"</body\s*>", re.IGNORECASE)
+
+
+def inject_keys_script(html: str) -> str:
+    closes = list(_BODY_CLOSE.finditer(html))
+    if not closes:
+        return html + _KEYS_SCRIPT
+    at = closes[-1].start()
+    return html[:at] + _KEYS_SCRIPT + html[at:]
 
 
 def is_preview() -> bool:
@@ -150,8 +169,10 @@ def mount(app: FastAPI, *, executor=None) -> _State:
         except OSError:
             return JSONResponse({"error": "static/index.html is missing from this app."},
                                 status_code=404)
-        return HTMLResponse(inject_base_shim(html, request.url.path, preview),
-                            headers={"Cache-Control": "no-cache"})
+        html = inject_base_shim(html, request.url.path, preview)
+        if sage_secrets is not None and (_STATIC / "sage" / "keys.js").is_file():
+            html = inject_keys_script(html)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     @app.post("/api/queries/{name}", include_in_schema=False)
     async def named_query(name: str, request: Request) -> Response:
@@ -178,6 +199,9 @@ def mount(app: FastAPI, *, executor=None) -> _State:
             # to it, and the headers it answers with are the relay's own.
             status, headers, payload = sage_domino.relay(path, str(request.url.query))
             return Response(payload, status_code=status, headers=headers)
+
+    if sage_secrets is not None:
+        sage_secrets.mount(app)
 
     # Sub-paths only, never `/`: a mount at the root would answer for every route the creator adds
     # after this call, and the order of `app.py` would silently decide whether their API exists.

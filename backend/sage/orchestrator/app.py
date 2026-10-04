@@ -51,7 +51,7 @@ _UI = _WB / "index.html"
 _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
-from .. import degraded, timing
+from .. import degraded, extension_mcp, project_secrets, timing
 from .. import extensions as project_extensions
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
@@ -443,6 +443,8 @@ def _build_resources():
 
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
 _control_plane = _build_control_plane()
+project_secrets.install(_control_plane, os.environ.get("DOMINO_PROJECT_ID"),
+                        _WORKSPACE_DIR / ".sage" / "secrets.json")
 _provision = _build_provision_service(_control_plane)
 _door = _build_door(_provision, _control_plane)
 orchestrator = Orchestrator(
@@ -1640,6 +1642,14 @@ def _opencode_config_diag() -> dict:
             cfg = json.loads(Path(path).read_text())
             row["keys"] = sorted(cfg)[:20] if isinstance(cfg, dict) else type(cfg).__name__
             row["declares_mcp"] = isinstance(cfg, dict) and "mcp" in cfg
+            # The Project's remote MCP servers (#642) are Sage-written when Sage registered every
+            # one of them, none takes a reserved name, and the file says nothing else.
+            if (workspace and path == str(Path(workspace) / extension_mcp.MCP_CONFIG)
+                    and isinstance(cfg, dict) and set(cfg) <= {"$schema", "mcp"}
+                    and isinstance(cfg.get("mcp", {}), dict)):
+                keys = set(cfg.get("mcp") or {})
+                row["ours"] = bool(keys) and keys <= extension_mcp.registered(Path(workspace)) \
+                    and not any(k.startswith(project_extensions.RESERVED_PREFIXES) for k in keys)
             # A `tools` map is the quiet half. It never touches the `mcp` block, so the server still
             # connects, `opencode mcp list` still prints a green tick and `opencode_says` still reads
             # connected — while `"sage-live-read*": false` takes the tools off the agent anyway. That
@@ -2043,6 +2053,64 @@ def list_project_resources() -> JSONResponse:
     return JSONResponse(content={"items": orchestrator.list_project_resources()})
 
 
+@control_app.get("/api/project/secrets")
+async def list_project_secrets() -> JSONResponse:
+    """The builder's secrets (#641): names and notes, never a value."""
+    store = project_secrets.active()
+    if store is None:
+        return JSONResponse(content={
+            "available": False, "reason": project_secrets.unavailable_reason(), "secrets": []})
+    try:
+        rows = await run_in_threadpool(store.list)
+    except Exception as e:
+        log.exception("secrets: couldn't list the Project variables")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    return JSONResponse(content={"available": True, "reason": None, "secrets": rows})
+
+
+@control_app.put("/api/project/secrets/{name}")
+async def put_project_secret(name: str, request: Request) -> JSONResponse:
+    """Create a secret, replace its value, or change its note. The value is write-only."""
+    store = project_secrets.active()
+    if store is None:
+        return JSONResponse(status_code=409, content={"error": project_secrets.unavailable_reason()})
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "expected an object"})
+    value, note = body.get("value"), body.get("note")
+    if not isinstance(value, (str, type(None))) or not isinstance(note, (str, type(None))):
+        return JSONResponse(status_code=400, content={"error": "value and note must be text"})
+    try:
+        row = await run_in_threadpool(store.put, name, value, note)
+    except project_secrets.SecretError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        log.exception("secrets: couldn't save %s", name)
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    if value is not None:
+        await run_in_threadpool(orchestrator.restart_for_secrets)
+    return JSONResponse(content=row)
+
+
+@control_app.delete("/api/project/secrets/{name}")
+async def delete_project_secret(name: str) -> JSONResponse:
+    store = project_secrets.active()
+    if store is None:
+        return JSONResponse(status_code=409, content={"error": project_secrets.unavailable_reason()})
+    try:
+        await run_in_threadpool(store.delete, name)
+    except project_secrets.SecretError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        log.exception("secrets: couldn't delete %s", name)
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    await run_in_threadpool(orchestrator.restart_for_secrets)
+    return JSONResponse(content={"ok": True})
+
+
 @control_app.post("/api/project/resources")
 def add_project_resource(body: dict) -> JSONResponse:
     try:
@@ -2246,6 +2314,57 @@ def set_project_extension_enabled(ext_id: str, body: dict) -> JSONResponse:
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     return JSONResponse(content={"ok": True})
+
+
+@control_app.get("/api/project/mcp")
+def list_project_mcp() -> JSONResponse:
+    """The Project's remote MCP servers (#642). Header values are as stored: `{env:NAME}`
+    references, never what they resolve to."""
+    return JSONResponse(content={"servers": orchestrator.list_mcp_servers()})
+
+
+@control_app.post("/api/project/mcp")
+def add_project_mcp(body: dict) -> JSONResponse:
+    """`name`, `url`, and `headers`, whose credential values are written `{env:NAME}`."""
+    try:
+        return JSONResponse(content=orchestrator.add_mcp(body or {}))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.post("/api/project/mcp/{name}/tools")
+def read_project_mcp_tools(name: str) -> JSONResponse:
+    """Ask a server for its tools again."""
+    try:
+        return JSONResponse(content=orchestrator.read_mcp_tools(name))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.put("/api/project/mcp/{name}/enabled")
+def set_project_mcp_enabled(name: str, body: dict) -> JSONResponse:
+    enabled = (body or {}).get("enabled")
+    if not isinstance(enabled, bool):
+        return JSONResponse(status_code=400, content={"error": "enabled is true or false"})
+    try:
+        return JSONResponse(content=orchestrator.set_mcp_enabled(name, enabled))
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+
+@control_app.delete("/api/project/mcp/{name}")
+def remove_project_mcp(name: str) -> JSONResponse:
+    try:
+        removed = orchestrator.remove_mcp(name)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    if not removed:
+        return JSONResponse(status_code=404, content={"error": "not an MCP server in this project"})
+    return JSONResponse(content={"removed": True})
 
 
 @control_app.get("/api/project/history")

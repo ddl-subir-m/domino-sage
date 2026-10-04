@@ -24,6 +24,7 @@ window.SW = window.SW || {};
     artifact:         { icon: '🖼', label: 'artifact',       group: 'artifacts' },
     skill:            { icon: '📘', label: 'skill',          group: 'skills' },
     mcp:              { icon: '🧩', label: 'MCP',            group: 'mcp' },
+    secret:           { icon: '🔑', label: 'secret',         group: 'secrets' },
     folder:           { icon: '📁', label: 'folder',         group: 'files' },
   };
 
@@ -1411,9 +1412,13 @@ window.SW = window.SW || {};
     // opens only before a non-space and closes only after one, never before a digit: that is what
     // keeps "$5 to $10" and "$1.2M or $3M" as prose. Code spans are matched first, so TeX quoted
     // in backticks stays code. Without KaTeX on the page the source is left as written.
+    // A secret named in text, as the composer writes it (#643). Captures the name; not global, so
+    // `.test` holds no state between calls.
+    SECRET_REF: /\{env:([A-Za-z_][A-Za-z0-9_]*)\}/,
+
     inline(text) {
       const parts = String(text).split(
-        /(`[^`]+`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)(?:\\\$|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
+        /(`[^`]+`|\{env:[A-Za-z_][A-Za-z0-9_]*\}|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)(?:\\\$|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
       );
       // Odd indices are what the pattern captured; an even one is prose even when it starts with
       // `$` — a table cell reading `$420k` is money, not a formula missing its closing dollar.
@@ -1424,6 +1429,10 @@ window.SW = window.SW || {};
         }
         if (part.startsWith('`') && part.endsWith('`')) {
           return h('code', { key: i }, part.slice(1, -1));
+        }
+        if (part.startsWith('{env:')) {
+          return h('span', { key: i, className: 'sw-secret-ref', title: `The secret ${part.slice(5, -1)}` },
+                   part.slice(5, -1));
         }
         if (/^(\$|\\[([])/.test(part)) {
           const display = part.startsWith('$$') || part.startsWith('\\[');
