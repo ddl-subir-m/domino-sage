@@ -26,6 +26,7 @@ from pathlib import Path
 
 import httpx
 
+from .. import project_secrets
 from ..workspace.stack import preview_stack_of, resolve_stack
 
 log = logging.getLogger("sage.preview.supervisor")
@@ -343,7 +344,7 @@ class ViteSupervisor:
             # than set in `vite.config.ts` because a workspace seeded from an older template never
             # re-seeds (#40) — the flag reaches those too, a config change would not.
             ["npm", "run", "dev", "--", "--port", str(port)],
-            {**os.environ, "SAGE_BASE_PREFIX": self._base_prefix,
+            {**project_secrets.preview_env(), "SAGE_BASE_PREFIX": self._base_prefix,
              "SAGE_PREVIEW_APP": self._workspace.name}, port, generation,
         )
 
@@ -619,5 +620,5 @@ class UvicornSupervisor(ViteSupervisor):
         self._launch(
             [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
              "--reload", "--reload-dir", ".", "--log-level", "info"],
-            {**os.environ, "SAGE_PREVIEW": "1"}, port, generation,
+            {**project_secrets.preview_env(), "SAGE_PREVIEW": "1"}, port, generation,
         )

@@ -13,6 +13,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+from .. import project_secrets
+
 # "opencode server listening on http://127.0.0.1:4096"
 _LISTEN_RE = re.compile(r"listening on\s+(https?://[^\s]+)")
 
@@ -45,8 +47,11 @@ class OpenCodeServer:
         checked-in source names the assistant and the nouns as `{assistantName}` / `{dataset}`
         tokens, deliberately left unresolved so a pack never writes its words into a repo file, and
         handing OpenCode that file makes it read the braces out loud to the user.
+
+        The base is `os.environ` overlaid with the Project's secrets as Domino holds them now, so
+        `{env:NAME}` in OpenCode config resolves a secret added after the workspace started.
         """
-        env = dict(os.environ)
+        env = project_secrets.process_env()
         for cfg in (_VOICED_CONFIG, self._cwd / "opencode.json"):
             if cfg.exists():
                 env["OPENCODE_CONFIG"] = str(cfg)

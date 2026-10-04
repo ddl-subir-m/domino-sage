@@ -51,7 +51,7 @@ _UI = _WB / "index.html"
 _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
-from .. import degraded, timing
+from .. import degraded, project_secrets, timing
 from .. import extensions as project_extensions
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
@@ -443,6 +443,8 @@ def _build_resources():
 
 _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
 _control_plane = _build_control_plane()
+project_secrets.install(_control_plane, os.environ.get("DOMINO_PROJECT_ID"),
+                        _WORKSPACE_DIR / ".sage" / "secrets.json")
 _provision = _build_provision_service(_control_plane)
 _door = _build_door(_provision, _control_plane)
 orchestrator = Orchestrator(
@@ -2041,6 +2043,64 @@ def get_project() -> JSONResponse:
 def list_project_resources() -> JSONResponse:
     """Resources the creator added to this project. Browse Domino lists access; this is membership."""
     return JSONResponse(content={"items": orchestrator.list_project_resources()})
+
+
+@control_app.get("/api/project/secrets")
+async def list_project_secrets() -> JSONResponse:
+    """The builder's secrets (#641): names and notes, never a value."""
+    store = project_secrets.active()
+    if store is None:
+        return JSONResponse(content={
+            "available": False, "reason": project_secrets.unavailable_reason(), "secrets": []})
+    try:
+        rows = await run_in_threadpool(store.list)
+    except Exception as e:
+        log.exception("secrets: couldn't list the Project variables")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    return JSONResponse(content={"available": True, "reason": None, "secrets": rows})
+
+
+@control_app.put("/api/project/secrets/{name}")
+async def put_project_secret(name: str, request: Request) -> JSONResponse:
+    """Create a secret, replace its value, or change its note. The value is write-only."""
+    store = project_secrets.active()
+    if store is None:
+        return JSONResponse(status_code=409, content={"error": project_secrets.unavailable_reason()})
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "expected an object"})
+    value, note = body.get("value"), body.get("note")
+    if not isinstance(value, (str, type(None))) or not isinstance(note, (str, type(None))):
+        return JSONResponse(status_code=400, content={"error": "value and note must be text"})
+    try:
+        row = await run_in_threadpool(store.put, name, value, note)
+    except project_secrets.SecretError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        log.exception("secrets: couldn't save %s", name)
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    if value is not None:
+        await run_in_threadpool(orchestrator.restart_for_secrets)
+    return JSONResponse(content=row)
+
+
+@control_app.delete("/api/project/secrets/{name}")
+async def delete_project_secret(name: str) -> JSONResponse:
+    store = project_secrets.active()
+    if store is None:
+        return JSONResponse(status_code=409, content={"error": project_secrets.unavailable_reason()})
+    try:
+        await run_in_threadpool(store.delete, name)
+    except project_secrets.SecretError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        log.exception("secrets: couldn't delete %s", name)
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    await run_in_threadpool(orchestrator.restart_for_secrets)
+    return JSONResponse(content={"ok": True})
 
 
 @control_app.post("/api/project/resources")

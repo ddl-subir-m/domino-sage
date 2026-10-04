@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
     from ..workspace.chat_tables import ChatTables
 
-from .. import build_diagnostics, degraded, timing
+from .. import build_diagnostics, degraded, project_secrets, timing
 from .. import extensions as project_extensions
 from ..assets.provider import (
     Asset,
@@ -7567,6 +7567,10 @@ class Orchestrator:
         self._extensions_lock = threading.Lock()
         self._extensions_pending = False
         self._extensions_waiter: threading.Thread | None = None
+        # A Project secret changed and OpenCode still runs with the old environment (#641).
+        self._secrets_lock = threading.Lock()
+        self._secrets_pending = False
+        self._secrets_waiter: threading.Thread | None = None
         # What the remote has that this workspace does not (#78). Refreshed off the request path so
         # the rail can badge it without anyone clicking, and read again by a turn on its way in.
         # `None` until the first check lands, which is why the rail badges nothing before then.
@@ -9304,6 +9308,62 @@ class Orchestrator:
             self._oc_client = None
         finally:
             self._release_turn()
+
+    def restart_for_secrets(self) -> None:
+        """A Project secret was set or deleted: restart what Sage started, never the workspace.
+
+        OpenCode is stopped the way `revoice` stops it, now or as soon as no turn holds the lock —
+        stopping it mid-turn ends the turn. `_ensure_opencode` starts the next one, and its
+        environment carries the new values. Running previews restart at once: a preview is a pane,
+        not a turn.
+        """
+        with self._secrets_lock:
+            self._secrets_pending = True
+            waiting = self._secrets_waiter is not None
+        if not waiting and not self._try_restart_for_secrets():
+            with self._secrets_lock:
+                if self._secrets_waiter is None and self._secrets_pending:
+                    self._secrets_waiter = threading.Thread(
+                        target=self._await_secrets_restart, name="secrets-restart", daemon=True)
+                    self._secrets_waiter.start()
+        project = self._project
+        if project is None:
+            return
+        views = list(project._views.values())
+        if project._selected_view not in views:
+            views.append(project._selected_view)
+        for view in views:
+            try:
+                view.supervisor.upstream()
+            except RuntimeError:
+                continue  # not running: its next start reads the new environment anyway
+            view.supervisor.retry_start(explicit=True)
+
+    def _await_secrets_restart(self) -> None:
+        while True:
+            time.sleep(0.2)
+            with self._secrets_lock:
+                if not self._secrets_pending:
+                    self._secrets_waiter = None
+                    return
+            self._try_restart_for_secrets()
+
+    def _try_restart_for_secrets(self) -> bool:
+        if not self._turn_lock.acquire(blocking=False):
+            return False
+        try:
+            with self._secrets_lock:
+                self._secrets_pending = False
+            if self._oc_server is not None:
+                try:
+                    self._oc_server.stop()
+                except Exception:
+                    log.exception("secrets: failed to stop the opencode server")
+            self._oc_server = None
+            self._oc_client = None
+        finally:
+            self._release_turn()
+        return True
 
     def resolved_agents(self) -> list[dict] | None:
         """The agents OpenCode resolved, for /api/diag. None when the server isn't up yet or the
@@ -25134,6 +25194,9 @@ class Orchestrator:
                 self._save_to_git(project, "save before publish")
             except Exception:
                 log.exception("publish: pre-publish save failed; publishing the last committed code")
+            # The published App reads the Project variables at start, and its viewer cookies are
+            # encrypted with this one (#641).
+            project_secrets.ensure_app_key()
 
             cp = self._control_plane
             pid = self._domino_project_id

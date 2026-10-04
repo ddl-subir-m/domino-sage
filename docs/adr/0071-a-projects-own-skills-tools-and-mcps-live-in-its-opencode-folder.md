@@ -2,10 +2,27 @@
 status: accepted
 extends: ADR-0052 (the LLM Gateway is the trusted enforcement point), ADR-0041 (a live read
   reaches the person without reaching the model)
-amended: 2026-10-03 (#638), Project tools and MCP servers taken out; Project skills remain
+amended: 2026-10-03 (#638), Project tools and MCP servers taken out; Project skills remain;
+  2026-10-04 (#641), Sage writes credentials to Domino Project variables and holds none at rest
 ---
 
 # A Project's own skills, tools and MCPs live in its `.opencode/` folder
+
+## Amended 2026-10-04 (#641): Sage writes credentials, and still holds none
+
+"Credentials are referenced, never stored" below said the person sets the variable in Domino and
+restarts. Now Sage writes it: the Secrets group in the resources panel stores a [[Secret]] as a
+Domino **Project environment variable** of the Project Sage runs in, through the Domino API
+(`/v4/projects/{id}/environmentVariables`). Sage still holds no credential at rest. Values are read
+from that API when needed and kept in process memory; `.sage/secrets.json` holds names and notes
+only, and no value goes to disk, git, a log line, an API response or the model.
+
+A new Project variable is not in a running process's environment until it restarts, so Sage gives
+every process it starts (OpenCode, a preview) `os.environ` overlaid with the Project variables as
+the API answers now, and after a change restarts those — OpenCode once no turn holds the lock —
+never the workspace. `{env:NAME}` therefore resolves a secret added after the workspace started.
+The shim replaces any secret value of 8 characters or more in a model request with `{env:NAME}`,
+tool results included. "Storing credentials in Sage" stays rejected: Domino is the store.
 
 ## Amended 2026-10-03 (#638): skills only
 
