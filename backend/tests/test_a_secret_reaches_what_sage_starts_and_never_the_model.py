@@ -134,22 +134,23 @@ def test_the_list_hides_sage_and_domino_variables(client, cp):
 
 def test_a_value_is_never_in_a_response_a_log_line_or_a_sage_file(client, cp, orch, tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
-    texts = [
-        client.put("/api/project/secrets/OPENAI_KEY", json={"value": PLANTED, "note": "n"}).text,
-        client.get("/api/project/secrets").text,
-        client.put("/api/project/secrets/OPENAI_KEY", json={"note": "m"}).text,
-        client.put("/api/project/secrets/OPENAI_KEY", json={"value": PLANTED}).text,
-        client.get("/api/project/secrets").text,
-    ]
+
+    def clean(text: str) -> None:
+        # After every step, not once at the end: a later write can overwrite an earlier leak.
+        assert PLANTED not in text
+        assert PLANTED not in caplog.text
+        for f in (tmp_path / ".sage").rglob("*"):
+            if f.is_file():
+                assert PLANTED not in f.read_text(), f
+
+    clean(client.put("/api/project/secrets/OPENAI_KEY", json={"value": PLANTED, "note": "n"}).text)
+    clean(client.get("/api/project/secrets").text)
+    clean(client.put("/api/project/secrets/OPENAI_KEY", json={"note": "m"}).text)
+    clean(client.put("/api/project/secrets/OPENAI_KEY", json={"value": PLANTED}).text)
+    clean(client.get("/api/project/secrets").text)
     project_secrets.process_env()
     project_secrets.preview_env()
-    texts.append(client.delete("/api/project/secrets/OPENAI_KEY").text)
-
-    assert all(PLANTED not in t for t in texts)
-    assert PLANTED not in caplog.text
-    for f in (tmp_path / ".sage").rglob("*"):
-        if f.is_file():
-            assert PLANTED not in f.read_text(), f
+    clean(client.delete("/api/project/secrets/OPENAI_KEY").text)
 
 
 def test_a_domino_error_does_not_echo_the_value_back(caplog):

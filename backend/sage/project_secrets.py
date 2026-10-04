@@ -58,6 +58,7 @@ class ProjectSecrets:
         self._notes_path = Path(notes_path)
         self._values: dict[str, str] = {}
         self._lock = threading.Lock()
+        self._notes_lock = threading.Lock()  # read-modify-write of the notes file
         self._app_key_lock = threading.Lock()
         self._app_key_ok = False
 
@@ -123,10 +124,11 @@ class ProjectSecrets:
             self._cp.set_project_env_var(self._pid, name, value)
             with self._lock:
                 self._values[name] = value
-        notes = self._notes()
-        if note is not None:
-            notes[name] = {"note": note}
-            self._write_notes(notes)
+        with self._notes_lock:
+            notes = self._notes()
+            if note is not None:
+                notes[name] = {"note": note}
+                self._write_notes(notes)
         return {"name": name, "note": self._note_of(notes, name)}
 
     def delete(self, name: str) -> None:
@@ -137,9 +139,10 @@ class ProjectSecrets:
             pass  # already gone: the outcome the caller asked for
         with self._lock:
             self._values.pop(name, None)
-        notes = self._notes()
-        if notes.pop(name, None) is not None:
-            self._write_notes(notes)
+        with self._notes_lock:
+            notes = self._notes()
+            if notes.pop(name, None) is not None:
+                self._write_notes(notes)
 
     def ensure_app_key(self) -> None:
         """Make sure the Project has SAGE_APP_KEY. Never overwrites one that is there."""
