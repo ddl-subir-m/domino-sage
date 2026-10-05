@@ -8316,6 +8316,9 @@ class Orchestrator:
                                project_name=self._cost_project_label,
                                build_policy=self._build_policy)
         shim.resolve_capability = self.route_capability
+        if hasattr(self._resources, "measure_on_first_use"):
+            self._resources.use_local_evidence(record.path / ".sage" / "reasoning-evidence.json")
+            shim.on_unmeasured_route = self._resources.measure_on_first_use
         supervisor = _supervisor_for(workspace.path, domino_base_prefix(), pinned_port=True)
         queries = PreviewQueries(workspace.path, self._wm.template)
         view = AppView(workspace=workspace, supervisor=supervisor, queries=queries)

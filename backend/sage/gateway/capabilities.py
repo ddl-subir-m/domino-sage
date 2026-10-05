@@ -14,6 +14,7 @@ class RouteStatus(str, Enum):
     """Which of the four answers a capability is. `efforts == ()` is true of all four (#509, #647)."""
     VERIFIED = "verified"              # a proof matched this Alias identity; may still offer nothing
     UNMEASURED = "unmeasured"          # a gateway Alias with no matching proof; measuring repairs it
+    MEASURING = "measuring"            # UNMEASURED, and this builder is measuring it now (#646)
     FALLBACK_CHAIN = "fallback_chain"  # refused before evidence is read; measuring cannot repair it
     NO_ROUTE = "no_route"              # not resolved against a gateway Alias: dev table, or unlisted
 
@@ -36,7 +37,8 @@ class RouteCapability:
     @property
     def unverified_route(self) -> bool:
         """A gateway Alias whose levels are not known — the case worth a warning and a note."""
-        return self.status in (RouteStatus.UNMEASURED, RouteStatus.FALLBACK_CHAIN)
+        return self.status in (RouteStatus.UNMEASURED, RouteStatus.MEASURING,
+                               RouteStatus.FALLBACK_CHAIN)
 
     def settings(self, effort: str | None, *, tools: bool) -> dict:
         if effort is None:
@@ -55,9 +57,12 @@ class RouteCapability:
         return {"reasoning_effort": effort}
 
 
+_IDENTITY_FIELDS = ("id", "name", "provider_id", "provider_type", "provider_model", "updated_at")
+
+
 def route_identity(root: str, row: dict) -> tuple[str, ...]:
-    return (root.rstrip("/").removesuffix("/v1"), *(str(row.get(k) or "") for k in
-            ("id", "name", "provider_id", "provider_type", "provider_model", "updated_at")))
+    return (root.rstrip("/").removesuffix("/v1"),
+            *(str(row.get(k) or "") for k in _IDENTITY_FIELDS))
 
 
 def resolve(root: str, row: dict, evidence: list[dict]) -> RouteCapability:
@@ -86,6 +91,13 @@ def resolve(root: str, row: dict, evidence: list[dict]) -> RouteCapability:
                 "setting can be offered for it and the turn takes the default wire."
                 + (f" Repair: scripts/reasoning-evidence.py '{name}' --write" if name else "")),
         identity=identity, status=RouteStatus.UNMEASURED)
+
+
+def identity_row(identity: tuple[str, ...]) -> dict:
+    """The evidence row `route_identity` was read from, rebuilt from its answer, to measure into."""
+    gateway, *fields = identity
+    return {"gateway": gateway, **dict(zip(_IDENTITY_FIELDS, fields, strict=True)),
+            "fallback_chain": []}
 
 
 def legacy(model: str) -> RouteCapability:

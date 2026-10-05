@@ -51,16 +51,34 @@ Two adapters, as with assets:
 from __future__ import annotations
 
 import concurrent.futures
+import json
+import logging
 import re
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Protocol
 
-from ..gateway.capabilities import RouteCapability, evidence, legacy, resolve
+from ..gateway.capabilities import (
+    RouteCapability,
+    RouteStatus,
+    evidence,
+    identity_row,
+    legacy,
+    resolve,
+    route_identity,
+)
 from ..orchestrator import brand
 from ..router.models import reasoning_efforts_for as measured_reasoning_efforts
+
+_log = logging.getLogger(__name__)
+
+MEASURING_NOTE = ("Checking which reasoning settings this model accepts. Its levels appear here "
+                  "when that finishes; until then it runs at its default.")
+MEASURE_RETRY_S = 3600.0
+MEASURE_TIMEOUT_S = 45.0
 
 
 def _platform_api() -> str:
@@ -1458,7 +1476,8 @@ def approved_aliases(
     return tuple(ordered)
 
 
-def join_aliases(accessible: set[str], records: list[dict], *, gateway_root: str | None = None) -> list[LlmAlias]:
+def join_aliases(accessible: set[str], records: list[dict], *, gateway_root: str | None = None,
+                 proofs: list[dict] | None = None) -> list[LlmAlias]:
     """Intersect the accessible model ids with the alias metadata records.
 
     Matched on alias `name` OR `id`: `/v1/models` reports the name a call must use, which is the
@@ -1471,6 +1490,7 @@ def join_aliases(accessible: set[str], records: list[dict], *, gateway_root: str
     """
     out: list[LlmAlias] = []
     claimed: set[str] = set()
+    proofs = evidence() if proofs is None else proofs
     for rec in records:
         name = str(rec.get("name") or "")
         rid = str(rec.get("id") or "")
@@ -1478,7 +1498,7 @@ def join_aliases(accessible: set[str], records: list[dict], *, gateway_root: str
         if not key:
             continue
         claimed.add(key)
-        route = resolve(gateway_root, rec, evidence()) if gateway_root is not None else None
+        route = resolve(gateway_root, rec, proofs) if gateway_root is not None else None
         out.append(
             LlmAlias(
                 id=rid or name,
@@ -1499,7 +1519,7 @@ def join_aliases(accessible: set[str], records: list[dict], *, gateway_root: str
         out.append(LlmAlias(
             id=extra, name=extra, display_name=extra,
             reasoning_efforts=alias_reasoning_efforts(extra) if gateway_root is None else [],
-            route_capability=resolve(gateway_root, {"id": extra, "name": extra}, evidence())
+            route_capability=resolve(gateway_root, {"id": extra, "name": extra}, proofs)
                 if gateway_root is not None else None,
         ))
     return out
@@ -1712,13 +1732,119 @@ class DominoResourceProvider:
         self._api_host = api_host.rstrip("/")
         self._api_token_provider = api_token_provider or token_provider
         self._reasoning_cache: tuple[float, dict[str, RouteCapability]] = (0, {})
+        # Measurements this builder made itself (#646), kept in the Project beside the checked-in
+        # ones. One worker measures one identity at a time: a measurement is ~30 calls on the
+        # viewer's quota, and two at once would race each other's control request.
+        self._local_evidence: Path | None = None
+        self._local_rows: list[dict] = []
+        self._measure_lock = threading.Lock()
+        self._measuring: list[tuple[str, ...]] = []
+        self._cooldown: dict[tuple[str, ...], float] = {}
+        self._worker: threading.Thread | None = None
+
+    def use_local_evidence(self, path: Path) -> None:
+        """Read and record this builder's own measurements at `path` (`.sage/` in the Project)."""
+        try:
+            rows = json.loads(path.read_text())
+        except (OSError, ValueError):
+            rows = []
+        with self._measure_lock:
+            self._local_evidence = path
+            self._local_rows = rows if isinstance(rows, list) else []
+            self._reasoning_cache = (0, {})
 
     def list_llm_aliases(self) -> list[LlmAlias]:
         models = self._get("/v1/models")  # accessible set, already filtered for this caller
         aliases = self._get("/api/aliases")  # display name, capabilities, cost
-        rows = join_aliases(accessible_ids(models), records_of(aliases), gateway_root=self._root)
+        with self._measure_lock:
+            proofs = evidence() + self._local_rows  # the checked-in row wins a tie
+            measuring = set(self._measuring)
+        rows = join_aliases(accessible_ids(models), records_of(aliases), gateway_root=self._root,
+                            proofs=proofs)
+        rows = [replace(a, route_capability=replace(
+                    a.route_capability, status=RouteStatus.MEASURING, reason=MEASURING_NOTE))
+                if a.route_capability is not None and a.route_capability.identity in measuring
+                and a.route_capability.status is RouteStatus.UNMEASURED else a
+                for a in rows]
         self._reasoning_cache = (time.monotonic(), {a.name: a.route_capability for a in rows})
         return rows
+
+    def measure_on_first_use(self, model: str) -> None:
+        """Start measuring `model` in the background if it is an Alias nobody has measured yet.
+
+        Called from dispatch, after the sensitivity lock has chosen the model, never from a
+        listing or a save: a save is not checked against the lock, so measuring there could send
+        a barred model thirty requests. A failed measurement waits an hour before it is tried
+        again, so a model the gateway refuses does not cost thirty calls on every turn.
+        """
+        capability = self.reasoning_capability(model)
+        if capability.status is not RouteStatus.UNMEASURED:
+            return
+        key = capability.identity
+        with self._measure_lock:
+            if key in self._measuring or self._cooldown.get(key, 0) > time.monotonic():
+                return
+            self._measuring.append(key)
+            self._reasoning_cache = (0, {})
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(target=self._measure_queued, daemon=True,
+                                                name="sage-reasoning-measure")
+                self._worker.start()
+
+    def _measure_queued(self) -> None:
+        from ..gateway.measure import Prober
+
+        while True:
+            with self._measure_lock:
+                if not self._measuring:
+                    self._worker = None
+                    return
+                key = self._measuring[0]
+            row = identity_row(key)
+            name = row["name"]
+            try:
+                measured = Prober(self._root, self._gateway_call,
+                                  lambda line, name=name: _log.info("%s:%s", name, line)
+                                  ).measure(row)
+            except Exception:  # one bad measurement must not end the queue
+                _log.exception("measuring %s failed", name)
+                measured = None
+            with self._measure_lock:
+                if measured is not None:
+                    self._record(measured)
+                else:
+                    self._cooldown[key] = time.monotonic() + MEASURE_RETRY_S
+                self._measuring.remove(key)
+                self._reasoning_cache = (0, {})
+
+    def _record(self, measured: dict) -> None:
+        """Keep `measured`, replacing any earlier row for the same identity. Caller holds the lock."""
+        key = route_identity(measured["gateway"], measured)
+        self._local_rows = [r for r in self._local_rows
+                            if route_identity(r["gateway"], r) != key] + [measured]
+        if self._local_evidence is None:
+            return
+        from ..workspace.manager import _write_atomic
+
+        try:
+            self._local_evidence.parent.mkdir(parents=True, exist_ok=True)
+            _write_atomic(self._local_evidence, json.dumps(self._local_rows, indent=2) + "\n")
+        except OSError:
+            _log.exception("could not keep the measurement for %s", measured["name"])
+
+    def _gateway_call(self, url: str, body: dict) -> tuple[int, str]:
+        """(status, body-or-explanation); a transport failure is status 0, which is never a verdict."""
+        import httpx
+
+        try:
+            r = httpx.post(url, json=body, timeout=MEASURE_TIMEOUT_S, headers={
+                "Authorization": f"Bearer {self._token_provider()}",
+                "X-LLM-Tag-sage-source": "domino-sage",
+                "X-LLM-Tag-sage-component": "reasoning-measure",
+            })
+        except Exception as e:
+            return 0, f"ERROR: {type(e).__name__}: {e}"
+        return r.status_code, r.text
 
     def reasoning_capability(self, model: str) -> RouteCapability:
         # Refresh metadata, including updated_at and fallback, at most five seconds after a read.
