@@ -1161,17 +1161,6 @@
   color: var(--warning-text);
   margin-top: 6px;
 }
-/* What this row's model does not advertise (#463). Same size and spacing as the verdict above it,
-   because it sits in the same place and answers the same reader — but `--gray-600` rather than
-   `--warning-text`, and that is the whole sentence's meaning. A verdict says the next turn will
-   fail; this says the capability list did not claim something Chat turns use, on metadata that has
-   been measured wrong in both directions. Warning ink would promise a certainty the field does not
-   have, on rows where the model works. */
-.sw-assignment-capability {
-  font-size: var(--fs-12);
-  color: var(--gray-600);
-  margin-top: 6px;
-}
 .sw-assignment-recheck .ant-btn-link {
   padding: 0;
   height: auto;
