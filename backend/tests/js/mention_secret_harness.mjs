@@ -13,7 +13,7 @@ import vm from 'node:vm';
 import { unrefTimeout } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { mode, query, available, markdown } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { mode, query, available, markdown, mcp, pick } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const posts = [];
 const json = (body) => ({ ok: true, status: 200, headers: { get: () => 'application/json' },
@@ -98,6 +98,7 @@ SW.store.set({
   extensions: { items: [] },
   secrets: { available, reason: available ? null : 'Not in a Domino Project.',
              secrets: [{ name: 'OPENAI_API_KEY', note: 'OpenAI key' }, { name: 'CRM_TOKEN', note: '' }] },
+  mcpServers: mcp || [],
 });
 
 const props = { showMode: mode === 'build', onSend: () => {} };
@@ -110,15 +111,18 @@ const items = flatten(render()).filter((n) => String(n.p.className || '').starts
 const nameOf = (row) => flatten(row).filter((n) => n.p && n.p.className === 'sw-mention-name')
   .flatMap((n) => (n.c || []).flat(Infinity)).join('');
 const rows = items.map((row) => ({ name: nameOf(row) }));
-const secret = items.find((row) => nameOf(row) === 'OPENAI_API_KEY');
-if (secret) await secret.p.onClick();
+const chosen = items.find((row) => nameOf(row) === (pick || 'OPENAI_API_KEY'));
+if (chosen) await chosen.p.onClick();
 for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 0));
 const drawn = flatten(render());
 const inserted = String(drawn.find((n) => n.t === 'Input.TextArea').p.value || '');
 const field = drawn.find((n) => String(n.p.className || '').startsWith('sw-composer-field'));
 const mirror = drawn.find((n) => n.p.className === 'sw-composer-mirror');
-const chip = (nodes) => nodes.filter((n) => String(n.p.className || '').startsWith('sw-secret-ref ')
-  || n.p.className === 'sw-secret-ref');
+const chip = (nodes) => nodes.filter((n) => {
+  const cls = String(n.p.className || '');
+  return cls === 'sw-secret-ref' || cls.startsWith('sw-secret-ref ')
+    || cls === 'sw-mcp-ref' || cls.startsWith('sw-mcp-ref ');
+});
 const out = {
   rows, inserted, posts,
   field: field && field.p.className,

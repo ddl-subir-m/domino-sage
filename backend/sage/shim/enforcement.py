@@ -18,7 +18,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from typing import Any
 
-from .. import project_secrets
+from .. import extension_mcp, project_secrets
 from ..build_policy import BuildPolicy
 from ..gateway.capabilities import legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
@@ -576,15 +576,25 @@ class EnforcementShim:
         # The invalid tool quotes the raw arguments back (`Text: ...`). Replace that result
         # before anything else reads the messages, and keep the message: dropping it while the
         # tool call stays is an HTTP 400. A repaired call never produces this result.
+        state = self._control.snapshot()
         if isinstance(request.get("messages"), list):
             redacted = redact_invalid_tool_results(request["messages"])
             if redacted is not request["messages"]:
                 request = {**request, "messages": redacted}
-            hidden = note_secret_mentions(
-                hide_secret_values(request["messages"], project_secrets.known_values()))
+            hidden = hide_secret_values(request["messages"], project_secrets.known_values())
+            # Build only. Chat already has a connected server's tools; a mention there would be a
+            # second way to point at it. The note is on the request, not the stored message, so
+            # the transcript keeps `{mcp:name}` and the URL stays in the app's code.
+            if state.chat_thread_id is None:
+                try:
+                    servers = (extension_mcp.list_servers(extension_mcp.project_root())
+                               if extension_mcp.project_root() is not None else [])
+                except extension_mcp.ExtensionError:
+                    servers = []
+                hidden = extension_mcp.note_mentions(hidden, servers)
+            hidden = note_secret_mentions(hidden)
             if hidden is not request["messages"]:
                 request = {**request, "messages": hidden}
-        state = self._control.snapshot()
 
         # Per-step phase: in Auto mode, classify THIS inference from its own message tail (plan
         # while reasoning/reading, implement while writing code). Done here, per request, so

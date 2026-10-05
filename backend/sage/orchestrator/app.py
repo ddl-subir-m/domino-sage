@@ -445,6 +445,7 @@ _COST_PROJECT_LABEL = domino_project_label(fallback=_WORKSPACE_DIR.name)
 _control_plane = _build_control_plane()
 project_secrets.install(_control_plane, os.environ.get("DOMINO_PROJECT_ID"),
                         _WORKSPACE_DIR / ".sage" / "secrets.json")
+extension_mcp.set_root(_WORKSPACE_DIR)
 _provision = _build_provision_service(_control_plane)
 _door = _build_door(_provision, _control_plane)
 orchestrator = Orchestrator(
