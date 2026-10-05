@@ -14,13 +14,13 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import replace
 from typing import Any
 
 from .. import extension_mcp, project_secrets
 from ..build_policy import BuildPolicy
-from ..gateway.capabilities import legacy
+from ..gateway.capabilities import RouteStatus, legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..implementation_request import (
     InstructionFacts,
@@ -417,6 +417,10 @@ class EnforcementShim:
         # plan, and stack before an implement call. A request that arrives first must not drop them.
         self._instruction_facts = InstructionFacts()
         self.resolve_capability = legacy
+        # Told the model a turn is about to run on when no measurement covers its route, so the
+        # provider can measure it for the next turn (#646). Here and not at save time: this is the
+        # first point the sensitivity lock has already had its say about which model that is.
+        self.on_unmeasured_route: Callable[[str], None] = lambda _model: None
         # The last capability each model resolved to, for dispatch only. The resolver re-reads the
         # Gateway listing every few seconds and raises when that read fails; measured 2026-09-29,
         # one failed read ended a Chat turn at 7 minutes on "The gateway route cannot be checked
@@ -881,6 +885,12 @@ class EnforcementShim:
         #    gemini's measured 200 with tools and all was thrown away with it.
         tool_call = bool(request.get("tools"))
         capability = self._capability_for(request["model"])
+        if getattr(capability, "status", None) is RouteStatus.UNMEASURED:
+            try:
+                self.on_unmeasured_route(request["model"])
+            except Exception:  # measuring is for the next turn; never fail this one
+                logging.getLogger("sage.shim").exception(
+                    "could not start measuring %s", request["model"])
         accepted = capability.efforts_with_tools if tool_call else capability.efforts
         # Whatever the caller sent is not an answer to any of the three. `model` is overwritten
         # above on every request, so an incoming effort was chosen for a model that is no longer on

@@ -284,6 +284,9 @@ _APPS = "apps"
 # commit (ThreadStore._write_json renames the real one into place, so a .tmp is never read).
 _PROJECT_IGNORE = (".sage/build-diagnostics.json", ".sage/.build-diagnostics-*",
                    ".sage/scratch/", f"{CHAT_WORK.as_posix()}/", ".sage/threads/*/.*.tmp",
+                   # Reasoning levels this builder measured on its own gateway (#646): a fact
+                   # about the deployment, not the app, so a fork elsewhere must not inherit it.
+                   ".sage/reasoning-evidence.json",
                    # The upload ledger's half-written twin, for the same reason (#274). Its name
                    # carries a pid and a random suffix so two Workspaces on one volume cannot write
                    # into each other's, which also means a killed writer leaves a NEW file each
