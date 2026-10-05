@@ -296,6 +296,8 @@ window.SW = window.SW || {};
     // drawer: a save on another row says nothing about whether this one's level is still
     // unexplained, and "that save dropped nothing" is the commonest save there is.
     assignmentEffortDropped: null,
+    // `{model, message}` when a Re-check was refused (#646), shown on that model's rows.
+    recheckError: null,
     // Why the Alias list is missing, when it is. The panel stays open and read-only on this rather
     // than falling back to the models already assigned — a list that can only offer what is already
     // chosen cannot express a change.
@@ -5082,12 +5084,38 @@ window.SW = window.SW || {};
       }
     },
 
+    // A measurement is ~30 gateway calls and takes seconds to minutes, so the drawer re-reads until
+    // the row stops saying `measuring`. The cap stops an answer that never lands polling forever.
+    RECHECK_POLL_MS: 2000,
+    RECHECK_POLLS: 150,
+
+    async recheckReasoning(model) {
+      state.recheckError = null;
+      try {
+        await SW.api.recheckReasoning(model);
+      } catch (err) {
+        state.recheckError = { model, message: String((err && err.message) || err) };
+        notify();
+        return;
+      }
+      const measuring = () => (((state.assignments || {}).aliases || [])
+        .find((a) => a.name === model) || {}).reasoning_status === 'measuring';
+      for (let i = 0; i < store.RECHECK_POLLS; i += 1) {
+        await store.loadAssignments();
+        if (!measuring() || !state.assignmentsOpen) break;
+        await new Promise((resolve) => setTimeout(resolve, store.RECHECK_POLL_MS));
+      }
+      // The Chat picker reads the levels from the resource listing, not from this drawer.
+      store.refreshResourceListing();
+    },
+
     openAssignments(open) {
       state.assignmentsOpen = Boolean(open);
       // A note about a save made the last time this drawer was open is spent. It explains a control
       // that has just gone back to its default under the reader's hand, and read cold on a later
       // opening it is a sentence about something they did not just do.
       state.assignmentEffortDropped = null;
+      state.recheckError = null;
       notify();
       if (open) this.loadAssignments();
       if (open) store.refreshModelList();

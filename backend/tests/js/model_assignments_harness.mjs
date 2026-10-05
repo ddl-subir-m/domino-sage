@@ -59,6 +59,7 @@ const ALIASES = [
     problem: null, capability_note: null,
     reasoning_efforts: ['none', 'low', 'medium', 'high', 'xhigh'],
     reasoning_efforts_with_tools: ['none'],
+    reasoning_status: 'verified', reasoning_recheck: true,
   },
   {
     name: 'gemini-3.7-flash', display_name: 'Gemini 3.7 Flash', capabilities: ['chat'],
@@ -76,6 +77,7 @@ const ALIASES = [
     name: 'coder', display_name: 'Qwen3 Coder', capabilities: ['chat', 'tools'], serving: true,
     problem: null, capability_note: null,
     reasoning_efforts: [], reasoning_efforts_with_tools: [],
+    reasoning_status: 'unmeasured', reasoning_recheck: true,
   },
   {
     name: 'opus', display_name: 'Claude Opus', capabilities: ['chat', 'tools'], serving: true,
@@ -127,6 +129,15 @@ let sensitivity = null;
 // copying `locked_runs_on` into a fixture and letting the panel agree with the copy.
 let sensitivityReads = 0;
 const calls = [];
+// A Re-check (#646). The server answers at once; the row then reads `measuring` for
+// `measuringReads` panel reads, and lands carrying `recheckLands` on the read after.
+let recheckRefusal = null;
+let recheckModel = null;
+let recheckLands = null;
+let measuringReads = 0;
+let pendingMeasuringReads = 0;
+const recheckReads = [];
+const MEASURING_NOTE = 'Checking which reasoning settings this model accepts.';
 
 const json = (body, status = 200) => ({
   ok: status < 400, status,
@@ -209,7 +220,10 @@ const panel = () => ({
         ? `The ${slot} model (${model(slot)}) is Stopped. Turns that use it will fail. Start that endpoint, or pick a different model.`
         : null),
   })),
-  aliases: listing === 'up' || listing === 'unchecked' ? ALIASES : [],
+  aliases: listing === 'up' || listing === 'unchecked'
+    ? ALIASES.map((a) => (a.name === recheckModel && measuringReads > 0
+      ? { ...a, reasoning_status: 'measuring', reasoning_note: MEASURING_NOTE } : a))
+    : [],
   error: listing === 'down' ? 'The LLM Gateway is not answering.'
     : listing === 'unchecked' ? 'The Hosted GenAI Endpoint listing timed out.' : null,
 });
@@ -220,7 +234,24 @@ function serve(url, options = {}) {
   // Not the same thing as a gateway that answered "I cannot list": this is the read never landing
   // at all, which leaves the panel with no slots of its own to draw.
   if (path === '/project/model/assignments' && listing === 'throw') throw new Error('network down');
-  if (path === '/project/model/assignments') return json(panel());
+  if (path === '/project/model/assignments') {
+    const body = panel();
+    if (recheckModel) {
+      recheckReads.push((body.aliases.find((a) => a.name === recheckModel) || {}).reasoning_status);
+      if (measuringReads > 0 && (measuringReads -= 1) === 0 && recheckLands) {
+        Object.assign(ALIASES.find((a) => a.name === recheckModel), recheckLands);
+      }
+    }
+    return json(body);
+  }
+  if (path === '/project/model/recheck' && method === 'POST') {
+    const body = JSON.parse(options.body);
+    calls.push({ recheck: body.model });
+    if (recheckRefusal) return json({ error: recheckRefusal }, 400);
+    recheckModel = body.model;
+    measuringReads = pendingMeasuringReads;
+    return json({ ok: true }, 202);
+  }
   if (path.startsWith('/project/sensitivity')) {
     sensitivityReads += 1;
     return json(sensitivity || { enabled: false, locked: false, group: '', approved: [],
@@ -391,6 +422,8 @@ for (const step of steps) {
     // all three lists above answer what will RUN, and folding it in would make the one assertion
     // that tells them apart impossible to write.
     effortNotes: text(tree, 'sw-assignment-effort-note'),
+    rechecks: all(tree, (n) => n.t === 'Button' && /^recheck-/.test(n.p.id || ''))
+      .map((n) => ({ id: n.p.id, disabled: !!n.p.disabled })),
     alerts: alerts(tree).map((a) => ({
       type: a.p.type,
       message: a.p.message,
@@ -444,6 +477,30 @@ for (const step of steps) {
     row.afterProblems = text(after, 'sw-assignment-problem');
     row.afterDetails = text(after, 'sw-assignment-detail');
     row.afterEffortNotes = text(after, 'sw-assignment-effort-note');
+  }
+  if (step.recheck) {
+    recheckRefusal = step.recheckRefused || null;
+    recheckLands = step.recheckLands || null;
+    pendingMeasuringReads = step.measuringReads === undefined ? 2 : step.measuringReads;
+    SW.store.RECHECK_POLL_MS = 0;
+    SW.store.RECHECK_POLLS = step.polls || 150;
+    const button = find(tree, (n) => n.t === 'Button' && n.p.id === `recheck-${step.recheck}`);
+    if (!button) throw new Error(`no Re-check for slot ${step.recheck}`);
+    // Settled on this file's own timer rather than awaited: the sandbox's timers are unref'd, so a
+    // bare await on the store's poll would let node exit with the click still running.
+    let done = false;
+    button.p.onClick().then(() => { done = true; });
+    for (let i = 0; i < 400 && !done; i += 1) await settle();
+    await settle();
+    const after = mount();
+    row.wrote = calls.slice();
+    row.recheckReads = recheckReads.slice();
+    row.afterEffortLimits = text(after, 'sw-assignment-detail sw-assignment-effort-limit');
+    row.afterRechecks = all(after, (n) => n.t === 'Button' && /^recheck-/.test(n.p.id || ''))
+      .map((n) => n.p.id);
+    row.afterRecheckErrors = text(after, 'sw-assignment-recheck-error');
+    row.afterEfforts = (selects(after).find((s) => s.p.id === `effort-${step.recheck}`) || { p: {} })
+      .p.options;
   }
   report.push(row);
 }

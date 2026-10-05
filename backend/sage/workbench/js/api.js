@@ -880,6 +880,7 @@ SW.api = {
   // choice, persisted and shared — which is a different thing from `setBuildModel` above, and the
   // reason they are not folded together. `null` clears one, putting the slot back on the
   // deployment default; the backend tells that from a slot nobody mentioned.
+  recheckReasoning: (model) => post('/project/model/recheck', { model }),
   modelAssignments: (conversation = '') => request(
     `/project/model/assignments${conversation ? `?conversation=${encodeURIComponent(conversation)}` : ''}`),
   // The sensitivity lock, for every surface that draws it (ADR-0043). Its own read rather than a
