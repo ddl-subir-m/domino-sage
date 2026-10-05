@@ -134,16 +134,20 @@ window.SW = window.SW || {};
   }
 
   // The composer's mirror of `text`: every character kept, so it lines up with the box over it, and
-  // each `{env:NAME}` wrapped as a chip whose braces take their room but draw nothing.
+  // each `{env:NAME}` wrapped as a chip whose braces take their room but draw nothing. The opening
+  // brace sits before the chip, so its room reads as a space and the key sits against the name.
   function secretRefMirror(text) {
     const parts = String(text).split(SW.util.SECRET_REF);
-    const out = parts.map((part, i) => (i % 2 === 0 ? part : h(
-      'span',
-      { key: i, className: 'sw-secret-ref is-mirror' },
-      h('span', { className: 'sw-secret-ref-brace' }, '{env:'),
-      part,
-      h('span', { className: 'sw-secret-ref-brace' }, '}')
-    )));
+    const out = parts.map((part, i) => (i % 2 === 0 ? part : [
+      h('span', { key: `${i}-open`, className: 'sw-secret-ref-brace' }, '{env:'),
+      h(
+        'span',
+        { key: i, className: 'sw-secret-ref is-mirror' },
+        h('span', { className: 'sw-secret-ref-key' }),
+        part,
+        h('span', { className: 'sw-secret-ref-brace' }, '}')
+      ),
+    ]));
     // A box ending in a newline shows the empty line under it; a div does not without something on it.
     return text.endsWith('\n') ? out.concat('\u200b') : out;
   }

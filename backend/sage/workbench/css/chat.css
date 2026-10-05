@@ -1065,14 +1065,27 @@
   color: var(--dark-700);
 }
 .sw-composer-field.has-secret-refs .ant-input { color: transparent; caret-color: var(--dark-700); }
-.sw-secret-ref.is-mirror { padding: 0; }
-.sw-secret-ref-brace { color: transparent; position: relative; }
-.sw-secret-ref-brace:first-child::before {
+.sw-secret-ref.is-mirror {
+  padding: 0;
+  border-radius: 0 4px 4px 0;
+  box-shadow: inset 0 1px var(--purple-200), inset 0 -1px var(--purple-200), inset -1px 0 var(--purple-200);
+}
+.sw-secret-ref-brace { color: transparent; }
+/* No width of its own: the key is drawn leftward, over the opening brace's empty room. */
+.sw-secret-ref-key { position: relative; }
+.sw-secret-ref-key::before {
   content: '🔑';
   position: absolute;
-  left: 2px;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 2px 0 4px;
   font-size: 0.8em;
-  color: var(--purple-700);
+  background: var(--purple-100);
+  border-radius: 4px 0 0 4px;
+  box-shadow: inset 0 1px var(--purple-200), inset 0 -1px var(--purple-200), inset 1px 0 var(--purple-200);
 }
 .sw-composer-bar {
   display: flex;
