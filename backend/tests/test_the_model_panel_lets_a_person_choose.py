@@ -345,41 +345,24 @@ def test_a_lock_that_closes_every_model_still_takes_the_shadow_off():
     assert drawn["problems"] == []
 
 
-def test_a_row_can_carry_a_verdict_and_a_capability_note_at_once():
-    """The two are independent fields and this is the row that shows it (#463).
-
-    Written in the separate pass that asks what every OTHER fixture happens to share: all of them
-    serve, so `problem` is silent on all of them, and "the mark is not in `problem`" had only ever
-    been shown where `problem` had nothing to say. `local-llm` is the harness's stopped alias and
-    now also declares no `tools`, so a slot on it draws both sentences — which is what the component
-    comment claims and what nothing held until now.
-    """
+def test_a_stopped_model_without_tools_draws_its_verdict_and_no_note():
+    """The drawer draws no tool-support note (#648). `local-llm` is stopped and declares no `tools`:
+    the verdict about the stopped endpoint stays, and the note about the capability list does not
+    appear beside it."""
     (drawn,) = _drawn([{"seed": {"plan": {"model": "local-llm"}}}])
     (problem,) = drawn["problems"]
     assert "Stopped" in problem
-    (capability,) = drawn["capabilities"]
-    assert "doesn't advertise tool support" in capability
+    assert drawn["capabilities"] == []
 
 
-def test_the_capability_note_survives_the_gate_that_eats_problem():
-    """#463, and this test is the entire reason the mark is a field of its own.
-
-    The gate above the sentence drops `problem` whenever a row is shadowed and the server says the
-    pin did not decide it — the precedence comment in `service.model_assignments` records that cost
-    in its own words ("pin + LOCK — the row shows NOTHING"). A pinned slot is the one most likely to
-    be carrying a capability mark, so a rank inside `problem` would render as nothing on exactly the
-    rows it was written for.
-
-    Plan is put on `gemini-3.7-flash`, the one alias in the fixture that declares `chat` and not
-    `tools` — which is what it declares live. `problems` loses Plan's shadow to the gate and keeps
-    Ask's, whose pin did decide; `capabilities` keeps Plan's note. Two lists of one, from a state
-    where the gate is provably closed over that row.
-    """
+def test_a_model_without_tools_draws_no_note_where_the_gate_eats_problem():
+    """#648 on the row #463 drew the note for: Plan on `gemini-3.7-flash`, shadowed, with the pin
+    not deciding it. `problems` loses Plan's shadow to the gate and keeps Ask's; nothing else is
+    drawn for Plan."""
     (drawn,) = _drawn([{"seed": {"plan": {"model": "gemini-3.7-flash"}},
                         "signing": "implement", "pinDecided": {"plan": False}}])
     assert drawn["problems"] == [_SHADOW_ASK]
-    assert len(drawn["capabilities"]) == 1
-    assert "doesn't advertise tool support" in drawn["capabilities"][0]
+    assert drawn["capabilities"] == []
 
 
 def test_the_gate_is_closed_over_that_row_and_not_merely_quiet():
@@ -389,7 +372,7 @@ def test_the_gate_is_closed_over_that_row_and_not_merely_quiet():
     (drawn,) = _drawn([{"seed": {"plan": {"model": "gemini-3.7-flash"}},
                         "signing": "implement"}])
     assert len(drawn["problems"]) == 2
-    assert len(drawn["capabilities"]) == 1
+    assert drawn["capabilities"] == []
 
 
 def test_a_model_that_advertises_tools_gets_no_note():
@@ -399,14 +382,13 @@ def test_a_model_that_advertises_tools_gets_no_note():
     assert drawn["capabilities"] == []
 
 
-def test_a_marked_alias_is_still_offered_and_still_pickable():
-    """Mark it; do not hide it (#296). The capability list has been measured wrong in both
-    directions, and a person who cannot see a model cannot report that the list is wrong about it.
-    The note rides as the row's tooltip, where `problem` would have closed the row."""
+def test_a_model_without_tools_is_offered_pickable_and_without_a_tooltip():
+    """Do not hide it (#296), and since #648 do not mark it either: the capability list has been
+    measured wrong in both directions, and the option draws no tool-support tooltip."""
     (drawn,) = _drawn([{}])
-    marked = next(o for o in _row(drawn, "Plan")["options"] if o["value"] == "gemini-3.7-flash")
-    assert marked["disabled"] is False
-    assert "doesn't advertise tool support" in marked["title"]
+    toolless = next(o for o in _row(drawn, "Plan")["options"] if o["value"] == "gemini-3.7-flash")
+    assert toolless["disabled"] is False
+    assert toolless["title"] is None
 
 
 def test_the_lock_leaves_a_verdict_about_a_model_that_will_not_answer_standing():
