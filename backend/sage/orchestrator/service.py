@@ -26101,6 +26101,9 @@ class Orchestrator:
             # for `problem`'s one line, it has a line of its own.
             row["capability_note"] = tool_capability_note(
                 caps_by_alias.get(slot_alias(row["model"], aliases)), row["model"])
+        from ..gateway.capabilities import RouteStatus
+        measuring = getattr(self._resources, "is_measuring", lambda _identity: False)
+        recheckable = hasattr(self._resources, "recheck_reasoning")
         return {
             "slots": slots,
             "aliases": [
@@ -26117,6 +26120,13 @@ class Orchestrator:
                     "reasoning_efforts": list(a.capability.efforts),
                     "reasoning_note": a.capability.reason,
                     "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
+                    # Whether a Re-check is offered, and whether one is running (#646). Running is
+                    # asked of the provider: a re-checked row stays `verified` for the turns that
+                    # dispatch on it meanwhile, so its status cannot say so.
+                    "reasoning_status": "measuring" if measuring(a.capability.identity)
+                    else a.capability.status.value,
+                    "reasoning_recheck": recheckable and a.capability.status in (
+                        RouteStatus.VERIFIED, RouteStatus.UNMEASURED),
                     "serving": (problem := alias_problem(a.name, aliases, endpoints)) is None,
                     "problem": problem,
                     # Beside `problem` and not folded into it, for the reason the slot rows keep the
@@ -27647,6 +27657,27 @@ class Orchestrator:
             return resolver(model)
         except ResourceUnavailable as error:
             raise ValueError("The gateway route cannot be checked now. Retry the model listing.") from error
+
+    def recheck_reasoning(self, model: str) -> None:
+        """Measure `model`'s reasoning settings again, in the background (#646).
+
+        Asks the sensitivity lock first, because a measurement sends the model ~30 test requests
+        and nothing else between this click and the gateway would ask it.
+        """
+        recheck = getattr(self._resources, "recheck_reasoning", None)
+        if recheck is None:
+            raise ValueError("Reasoning settings can only be re-checked on the Domino gateway.")
+        approved, refusal = self._sensitivity_for_turn(self.project(), None, is_a_turn=False)
+        if refusal:
+            raise ValueError(refusal)
+        if approved is not None and model not in approved.names:
+            raise ValueError(f"{model} isn't approved while the sensitivity lock is on, so Sage "
+                             "won't send it test requests.")
+        try:
+            recheck(model)
+        except ResourceUnavailable as error:
+            raise ValueError("The gateway model list can't be read now, so nothing was "
+                             "re-checked. Try again in a moment.") from error
 
     @property
     def native_codec_enabled(self) -> bool:

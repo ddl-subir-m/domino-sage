@@ -2537,6 +2537,19 @@ def model_assignments(conversation: str = "") -> JSONResponse:
     return JSONResponse(content=orchestrator.model_assignments(asked))
 
 
+@control_app.post("/api/project/model/recheck")
+def recheck_reasoning(body: dict = Body(...)) -> JSONResponse:
+    """Measure one model's reasoning settings again (#646). Answers at once; the drawer re-reads."""
+    model = str(body.get("model") or "")
+    if not model:
+        return JSONResponse(status_code=400, content={"error": "No model named."})
+    try:
+        orchestrator.recheck_reasoning(model)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    return JSONResponse(status_code=202, content={"ok": True})
+
+
 @control_app.post("/api/project/sync")
 async def sync_project() -> JSONResponse:
     """Pull incoming changes from the repo into the workspace, resolving any merge conflicts with

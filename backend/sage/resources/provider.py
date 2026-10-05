@@ -78,6 +78,25 @@ _log = logging.getLogger(__name__)
 MEASURING_NOTE = ("Checking which reasoning settings this model accepts. Its levels appear here "
                   "when that finishes; until then it runs at its default.")
 MEASURE_RETRY_S = 3600.0
+
+
+def _overlay(capability: RouteCapability, measuring: set, failed: dict) -> RouteCapability:
+    """`capability` as this builder's measurements in flight, or failed, say it reads now."""
+    key = capability.identity
+    if key in measuring:
+        if capability.status is RouteStatus.UNMEASURED:
+            return replace(capability, status=RouteStatus.MEASURING, reason=MEASURING_NOTE)
+        if capability.status is RouteStatus.VERIFIED:  # a Re-check: the old levels stay usable
+            return replace(capability, reason=MEASURING_NOTE)
+    elif key in failed:
+        if capability.status is RouteStatus.UNMEASURED:
+            return replace(capability, reason=(
+                f"Sage couldn't check which reasoning settings this model accepts: {failed[key]}"))
+        if capability.status is RouteStatus.VERIFIED:
+            return replace(capability, reason=(
+                f"The last re-check didn't finish ({failed[key]}), so these levels are from the "
+                "earlier check."))
+    return capability
 MEASURE_TIMEOUT_S = 45.0
 
 
@@ -1740,6 +1759,7 @@ class DominoResourceProvider:
         self._measure_lock = threading.Lock()
         self._measuring: list[tuple[str, ...]] = []
         self._cooldown: dict[tuple[str, ...], float] = {}
+        self._failed: dict[tuple[str, ...], str] = {}  # why the last measurement gave no row
         self._worker: threading.Thread | None = None
 
     def use_local_evidence(self, path: Path) -> None:
@@ -1757,15 +1777,15 @@ class DominoResourceProvider:
         models = self._get("/v1/models")  # accessible set, already filtered for this caller
         aliases = self._get("/api/aliases")  # display name, capabilities, cost
         with self._measure_lock:
-            proofs = evidence() + self._local_rows  # the checked-in row wins a tie
+            # This builder's own row wins: it was measured here, and later than anything checked
+            # in, which only a Re-check can have replaced.
+            proofs = self._local_rows + evidence()
             measuring = set(self._measuring)
+            failed = dict(self._failed)
         rows = join_aliases(accessible_ids(models), records_of(aliases), gateway_root=self._root,
                             proofs=proofs)
-        rows = [replace(a, route_capability=replace(
-                    a.route_capability, status=RouteStatus.MEASURING, reason=MEASURING_NOTE))
-                if a.route_capability is not None and a.route_capability.identity in measuring
-                and a.route_capability.status is RouteStatus.UNMEASURED else a
-                for a in rows]
+        rows = [replace(a, route_capability=_overlay(a.route_capability, measuring, failed))
+                if a.route_capability is not None else a for a in rows]
         self._reasoning_cache = (time.monotonic(), {a.name: a.route_capability for a in rows})
         return rows
 
@@ -1778,11 +1798,29 @@ class DominoResourceProvider:
         again, so a model the gateway refuses does not cost thirty calls on every turn.
         """
         capability = self.reasoning_capability(model)
-        if capability.status is not RouteStatus.UNMEASURED:
-            return
-        key = capability.identity
+        if capability.status is RouteStatus.UNMEASURED:
+            self._enqueue(capability.identity, force=False)
+
+    def recheck_reasoning(self, model: str) -> None:
+        """Measure `model` again now, measured or not, ignoring the hour a failure waits.
+
+        The caller has already asked the sensitivity lock: this sends the model test requests.
+        """
+        capability = self.reasoning_capability(model)
+        if capability.status not in (RouteStatus.VERIFIED, RouteStatus.UNMEASURED,
+                                     RouteStatus.MEASURING):
+            raise ValueError(capability.reason or f"{model} has no gateway route to measure.")
+        self._enqueue(capability.identity, force=True)
+
+    def is_measuring(self, identity: tuple[str, ...]) -> bool:
         with self._measure_lock:
-            if key in self._measuring or self._cooldown.get(key, 0) > time.monotonic():
+            return identity in self._measuring
+
+    def _enqueue(self, key: tuple[str, ...], *, force: bool) -> None:
+        with self._measure_lock:
+            if key in self._measuring:
+                return
+            if not force and self._cooldown.get(key, 0) > time.monotonic():
                 return
             self._measuring.append(key)
             self._reasoning_cache = (0, {})
@@ -1800,20 +1838,30 @@ class DominoResourceProvider:
                     self._worker = None
                     return
                 key = self._measuring[0]
+                previous = next((r for r in self._local_rows + evidence()
+                                 if route_identity(r["gateway"], r) == key), None)
             row = identity_row(key)
             name = row["name"]
+            said: list[str] = []
+
+            def say(line: str, name: str = name, said: list[str] = said) -> None:
+                _log.info("%s:%s", name, line)
+                if line.strip().startswith(("NOT MEASURED", "INCOMPLETE")):
+                    said.append(line.strip())
+
             try:
-                measured = Prober(self._root, self._gateway_call,
-                                  lambda line, name=name: _log.info("%s:%s", name, line)
-                                  ).measure(row)
-            except Exception:  # one bad measurement must not end the queue
+                measured = Prober(self._root, self._gateway_call, say).measure(row, previous)
+            except Exception as e:  # one bad measurement must not end the queue
                 _log.exception("measuring %s failed", name)
+                said.append(f"the check stopped on {type(e).__name__}")
                 measured = None
             with self._measure_lock:
                 if measured is not None:
                     self._record(measured)
+                    self._failed.pop(key, None)
                 else:
                     self._cooldown[key] = time.monotonic() + MEASURE_RETRY_S
+                    self._failed[key] = said[-1] if said else "the gateway gave no verdict"
                 self._measuring.remove(key)
                 self._reasoning_cache = (0, {})
 

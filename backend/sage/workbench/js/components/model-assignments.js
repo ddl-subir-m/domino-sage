@@ -52,7 +52,7 @@ window.SW = window.SW || {};
   SW.ModelAssignmentsDrawer = function ModelAssignmentsDrawer() {
     const {
       assignmentsOpen, assignments, assignmentsLoading, assignmentsError, buildRunning, catalog,
-      sensitivity, assignmentEffortDropped, buildModel, model: chatPick,
+      sensitivity, assignmentEffortDropped, buildModel, model: chatPick, recheckError,
     } = SW.store.get();
 
     const close = () => SW.store.openAssignments(false);
@@ -126,6 +126,21 @@ window.SW = window.SW || {};
     // and it is the same sentence a turn would be refused with; a second wording here would be a
     // second account of one state.
     const lockDead = locked && !(sensitivity.approved || []).length;
+
+    // Measure this row's model again (#646). Offered where the server says there is a gateway route
+    // to measure, and never on a model the lock bars: a measurement sends the model ~30 test
+    // requests, and the server refuses that case too. While one runs, the note above says so.
+    const reasoningRecheck = (alias, slot) => {
+      if (!alias || alias.reasoning_status === 'measuring') return null;
+      if (!alias.reasoning_recheck || !SW.util.isApproved(sensitivity, alias.name)) return null;
+      const refused = recheckError && recheckError.model === alias.name ? recheckError.message : '';
+      return h('div', { className: 'sw-assignment-recheck' },
+        h(Button, {
+          id: `recheck-${slot}`, type: 'link', size: 'small', disabled: readOnly,
+          onClick: () => SW.store.recheckReasoning(alias.name),
+        }, 'Re-check reasoning levels'),
+        refused ? h('div', { className: 'sw-assignment-recheck-error' }, refused) : null);
+    };
 
     const options = (row) => [
       // The way BACK, so it carries no model id of its own: picking it clears the assignment rather
@@ -430,6 +445,7 @@ window.SW = window.SW || {};
         // of the model above it: a person picks the model first and the levels on offer are that
         // model's, so a control drawn before it would offer an answer to a question not yet asked.
         effortNote ? h('div', { className: 'sw-assignment-detail sw-assignment-effort-limit' }, effortNote) : null,
+        reasoningRecheck(effortAlias, spec.slot),
         efforts.length || stranded
           ? h('div', { className: 'sw-assignment-effort' },
               h('label', {
