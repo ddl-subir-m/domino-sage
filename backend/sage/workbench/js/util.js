@@ -1415,10 +1415,13 @@ window.SW = window.SW || {};
     // A secret named in text, as the composer writes it (#643). Captures the name; not global, so
     // `.test` holds no state between calls.
     SECRET_REF: /\{env:([A-Za-z_][A-Za-z0-9_]*)\}/,
+    // An MCP server named in a Build prompt. Same shape as a secret: the name is the chip, and
+    // the server's URL is not what the person typed. Not global, so `.test` holds no state.
+    MCP_REF: /\{mcp:([a-z0-9][a-z0-9_-]*)\}/,
 
     inline(text) {
       const parts = String(text).split(
-        /(`[^`]+`|\{env:[A-Za-z_][A-Za-z0-9_]*\}|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)(?:\\\$|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
+        /(`[^`]+`|\{env:[A-Za-z_][A-Za-z0-9_]*\}|\{mcp:[a-z0-9][a-z0-9_-]*\}|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)(?:\\\$|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
       );
       // Odd indices are what the pattern captured; an even one is prose even when it starts with
       // `$` — a table cell reading `$420k` is money, not a formula missing its closing dollar.
@@ -1432,6 +1435,10 @@ window.SW = window.SW || {};
         }
         if (part.startsWith('{env:')) {
           return h('span', { key: i, className: 'sw-secret-ref', title: `The secret ${part.slice(5, -1)}` },
+                   part.slice(5, -1));
+        }
+        if (part.startsWith('{mcp:')) {
+          return h('span', { key: i, className: 'sw-mcp-ref', title: `The MCP server ${part.slice(5, -1)}` },
                    part.slice(5, -1));
         }
         if (/^(\$|\\[([])/.test(part)) {

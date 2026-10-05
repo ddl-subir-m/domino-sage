@@ -1040,8 +1040,10 @@
   resize: none;
   background: transparent;
 }
-/* A secret named as `{env:NAME}` (#643): a chip showing NAME, in a sent message and in the box. */
-.sw-secret-ref {
+/* A secret named as `{env:NAME}` (#643), and an MCP server named as `{mcp:name}` in Build: a chip
+   showing the name, in a sent message and in the box. The URL is not in the text. */
+.sw-secret-ref,
+.sw-mcp-ref {
   background: var(--purple-100);
   color: var(--purple-700);
   border-radius: 4px;
@@ -1064,7 +1066,8 @@
   line-height: 1.6;
   color: var(--dark-700);
 }
-.sw-composer-field.has-secret-refs .ant-input { color: transparent; caret-color: var(--dark-700); }
+.sw-composer-field.has-secret-refs .ant-input,
+.sw-composer-field.has-mcp-refs .ant-input { color: transparent; caret-color: var(--dark-700); }
 .sw-secret-ref.is-mirror {
   padding: 0;
   border-radius: 0 4px 4px 0;
@@ -1073,6 +1076,7 @@
 .sw-secret-ref-brace { color: transparent; }
 /* No width of its own: the key is drawn leftward, over the opening brace's empty room. */
 .sw-secret-ref-key { position: relative; }
+.sw-secret-ref.is-mcp .sw-secret-ref-key::before { content: '🧩'; }
 .sw-secret-ref-key::before {
   content: '🔑';
   position: absolute;
