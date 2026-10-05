@@ -24864,7 +24864,7 @@ class Orchestrator:
             if leaked:
                 detail += f" — kept {len(leaked)} copied data file(s) out of git; fetch attached data from data/ instead"
             return {"type": "saved", "ok": True, "pushed": result.pushed,
-                     "rejected": result.rejected, "detail": detail}
+                     "rejected": result.rejected, "behind": result.behind, "detail": detail}
         except Exception as e:
             log.exception("git save failed")
             # Same reason as the sync return above: this attempt did not send, the commits may
@@ -24981,6 +24981,7 @@ class Orchestrator:
             self._record_push(pushed)
             return {"status": result.status, "conflicts": result.conflicts,
                     "pushed": pushed.pushed, "rejected": pushed.rejected,
+                    "behind": pushed.behind,
                     "detail": result.detail, "pushDetail": pushed.detail}
         except Exception as e:
             log.exception("sync failed")
@@ -25068,8 +25069,8 @@ class Orchestrator:
             # The offer is derived, so this is what retires it: a local re-read, no fetch.
             self._check_remote(project, fetch=False)
             return {"ok": True, "sha": found.sha, "pushed": pushed.pushed,
-                    "rejected": pushed.rejected, "detail": "undid the merge",
-                    "pushDetail": pushed.detail}
+                    "rejected": pushed.rejected, "behind": pushed.behind,
+                    "detail": "undid the merge", "pushDetail": pushed.detail}
         finally:
             self._release_turn()
 

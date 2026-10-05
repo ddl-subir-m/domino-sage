@@ -56,6 +56,27 @@ def test_a_rejected_push_tells_the_person_their_work_is_local_and_what_to_do():
 
 
 @needs_node
+def test_a_refusal_that_is_not_the_remote_being_ahead_does_not_say_to_pull():
+    row = _drawn({"type": "saved", "ok": True, "pushed": False, "rejected": True,
+                  "behind": False,
+                  "detail": "push failed: remote: error: GH001: Large files detected."})
+
+    assert row["className"] == "sw-status-line is-warn"
+    assert "not pushed" in row["text"]
+    assert "pull" not in row["text"].lower()
+    assert "GH001" in row["text"]
+
+
+@needs_node
+def test_a_behind_flag_says_to_pull_when_the_detail_does_not_name_it():
+    row = _drawn({"type": "saved", "ok": True, "pushed": False, "rejected": True,
+                  "behind": True, "detail": "push failed: the remote rejected the update"})
+
+    assert "pull" in row["text"].lower()
+    assert "Pull the latest" in row["text"]
+
+
+@needs_node
 def test_no_changes_to_commit_still_reads_as_a_plain_save():
     """Regression pin (#234): this is the trap named in the ticket — "ok cannot simply become
     pushed" must not make the genuinely-fine "nothing to commit" case draw as a warning either."""

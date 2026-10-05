@@ -43,7 +43,7 @@ from ..implementation_request import carries_profile_markers
 from ..orchestrator.brand import apply_voice
 from ..resources.app_helpers import HelperNames, helpers_for
 from ..router.models import ASSIGNABLE_SLOTS
-from . import plan_doc
+from . import history_log, plan_doc
 from .stack import (
     LEGACY_STACK,
     REACT_VITE,
@@ -1715,16 +1715,16 @@ class Workspace:
         once, so a conversation no longer says which app its turn built, and an entry read out of
         the log should not need the path it came from to answer that.
 
-        The file stays one append-only log: history.md renders all of it (the agent's memory is
-        per app on purpose), and the stop-button baseline below stays positional and therefore
-        stays correct."""
-        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        The live file stays append-only until the next line would carry its blob past
+        `history_log.BLOB_CAP`. That file is then sealed under `history.d/` and a new live file
+        starts. history.md and every reader walk both, and the stop-button baseline counts lines
+        across them, so it stays a position in the transcript rather than in whichever file was
+        live when the turn started."""
         row = {**entry, **build_diagnostics.history_metadata(self.app_id, conversation, entry),
                "app": self.app_id, "at": _now()}
         if conversation:
             row["conversation"] = conversation
-        with self.history_path.open("a") as f:
-            f.write(json.dumps(row) + "\n")
+        history_log.append_line(self.history_path, json.dumps(row))
 
     def _iter_history(self, only: str | None = None) -> Iterator[tuple[int, str]]:
         """One line at a time. The log reaches megabytes on a long-lived project (~68KB per user
@@ -1742,17 +1742,19 @@ class Workspace:
         fail to parse and `render_history_md` does not (ADR-0051), so parsing is left to whichever
         caller knows what to do with a line it cannot read, and neither carries the other's
         bookkeeping. A whole-file failure (for example non-UTF-8 bytes) still raises out of this
-        generator into whichever caller is driving it, the same as it always has."""
-        if not self.history_path.exists():
-            return
-        with self.history_path.open() as f:
-            i = -1
-            for line in f:
-                if not line.strip():
-                    continue
-                i += 1
-                if only is None or only in line:
-                    yield i, line
+        generator into whichever caller is driving it, the same as it always has.
+
+        The index counts every non-blank line across sealed segments and the live file, in the
+        order they were written. `history_row_detail` reads back by that same index."""
+        i = -1
+        for path in history_log.segment_paths(self.history_path):
+            with path.open() as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    i += 1
+                    if only is None or only in line:
+                        yield i, line
 
     @staticmethod
     def _tag_text(conversation: str | None = None) -> str:
@@ -1835,13 +1837,12 @@ class Workspace:
         only a row's detail or none — and either way the tool call this row named cannot be shown.
         `(ValueError, OSError)` is the same pair every other reader here takes for that reason
         (ADR-0051), not the narrower catch a plain `except ValueError` would be."""
-        if index < 0 or not self.history_path.exists():
+        if index < 0:
             return None
         try:
-            with self.history_path.open() as f:
-                for i, line in enumerate(l for l in f if l.strip()):
-                    if i == index:
-                        return str(json.loads(line).get("detail") or "")
+            for i, line in self._iter_history():
+                if i == index:
+                    return str(json.loads(line).get("detail") or "")
         except (ValueError, OSError):
             return None
         return None
@@ -1853,11 +1854,15 @@ class Workspace:
         after the one adoption that makes it no. append_history() is the only writer of the tag,
         and it writes the key only for a conversation it has, so a line missing the key is an
         untagged entry and no line has to be parsed to see that."""
-        if not self.history_path.exists():
+        paths = history_log.segment_paths(self.history_path)
+        if not paths:
             return False
         key = self._tag_text()
-        with self.history_path.open() as f:
-            return any(key not in line for line in f if line.strip())
+        for path in paths:
+            with path.open() as f:
+                if any(key not in line for line in f if line.strip()):
+                    return True
+        return False
 
     def adopt_history(self, conversation: str) -> None:
         """Give every untagged entry to `conversation`. Build history predates tagging, so an
@@ -1869,27 +1874,53 @@ class Workspace:
         loss ADR-0051 names in the Chat handoff transcript, on this log instead. Raises rather than
         adopting from a partial read; `_adopt_legacy_build_history` is the caller and it is the one
         that decides a failed adoption is not worth failing the turn over."""
-        rows = self.read_history(strict=True)
-        if not rows:
+        paths = history_log.segment_paths(self.history_path)
+        # One live file is the historical rewrite: read_history and one write back. Sealed
+        # segments are retagged in place. Writing the concatenated transcript back to the live
+        # file would merge them into the blob this exists to keep under the cap, and leave the
+        # sealed copies beside it.
+        if paths == [self.history_path] or not paths:
+            rows = self.read_history(strict=True)
+            if not rows:
+                return
+            adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
+            _write_atomic(self.history_path, "".join(json.dumps(r) + "\n" for r in adopted))
             return
-        adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
-        _write_atomic(self.history_path, "".join(json.dumps(r) + "\n" for r in adopted))
+        parsed: list[tuple[Path, list[dict]]] = []
+        for path in paths:
+            rows = []
+            dropped = 0
+            text = path.read_text()
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    dropped += 1
+            if dropped:
+                raise ValueError(f"{dropped} line(s) in {path} could not be parsed")
+            parsed.append((path, rows))
+        for path, rows in parsed:
+            if not rows:
+                continue
+            adopted = [r if r.get("conversation") else {**r, "conversation": conversation} for r in rows]
+            if adopted == rows:
+                continue
+            _write_atomic(path, "".join(json.dumps(r) + "\n" for r in adopted))
 
     def history_len(self) -> int:
         """Counts the lines truncate_history() would keep. Deliberately does not parse them: this
         runs twice a turn, only to take the stop-button baseline, and the baseline is a position."""
-        if not self.history_path.exists():
-            return 0
-        with self.history_path.open() as f:
-            return sum(1 for line in f if line.strip())
+        return history_log.count_lines(self.history_path)
 
     def truncate_history(self, n: int) -> None:
         """Drop everything appended after the first `n` entries (stop-button revert:
-        removes the in-progress turn's user prompt and any partial response)."""
-        if not self.history_path.exists():
-            return
-        lines = self.history_path.read_text().splitlines()[:n]
-        _write_atomic(self.history_path, "".join(line + "\n" for line in lines))
+        removes the in-progress turn's user prompt and any partial response).
+
+        `n` is a position in the whole transcript. A turn that sealed the live file mid-way
+        still rewinds to the baseline taken before it started."""
+        history_log.truncate_to(self.history_path, n, _write_atomic)
 
     @property
     def history_md_path(self) -> Path:

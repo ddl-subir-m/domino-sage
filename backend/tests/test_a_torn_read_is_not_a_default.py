@@ -50,7 +50,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.workspace import manager
+from sage.workspace import history_log, manager
 
 # --------------------------------------------------------------------------------------
 # The census: the rule and the count, pinned together.
@@ -102,23 +102,38 @@ def _mode_of(call: ast.Call, *, builtin: bool) -> str:
 
 
 def _writes(*, inside_helper: bool) -> list[tuple[str, str]]:
-    """Every call in `manager.py` that opens a file for writing, as (function, what).
+    """Every call in `manager.py` or `history_log.py` that opens a file for writing.
 
     `inside_helper=False` excludes `_write_atomic`'s own subtree — that one call is the staged
     write the rule exists to funnel everything into, and counting it would make the census
-    self-defeating.
+    self-defeating. `history_log.py` is surveyed with it: the transcript append moved there,
+    and a write that leaves `manager.py` must not fall out of the census by changing files.
     """
-    tree = ast.parse(Path(manager.__file__).read_bytes())
+    found: list[tuple[str, str]] = []
+    found.extend(_writes_in(Path(manager.__file__), inside_helper=inside_helper, require_helper=True))
+    found.extend(_writes_in(Path(history_log.__file__), inside_helper=inside_helper, require_helper=False))
+    return found
+
+
+def _writes_in(path: Path, *, inside_helper: bool, require_helper: bool) -> list[tuple[str, str]]:
+    tree = ast.parse(path.read_bytes())
     helper = next(
         (n for n in ast.walk(tree)
          if isinstance(n, ast.FunctionDef) and n.name == "_write_atomic"),
         None,
     )
-    assert helper is not None, (
-        "`_write_atomic` is gone from workspace/manager.py. The census below cannot mean anything "
-        "without it, so this fails here rather than reporting a suspiciously clean zero."
-    )
-    helper_nodes = {id(n) for n in ast.walk(helper)}
+    if helper is None:
+        if require_helper:
+            raise AssertionError(
+                "`_write_atomic` is gone from workspace/manager.py. The census below cannot mean "
+                "anything without it, so this fails here rather than reporting a suspiciously "
+                "clean zero."
+            )
+        if inside_helper:
+            return []
+        helper_nodes: set[int] = set()
+    else:
+        helper_nodes = {id(n) for n in ast.walk(helper)}
 
     found: list[tuple[str, str]] = []
     for node in ast.walk(tree):
@@ -155,7 +170,8 @@ _EXEMPT = {
     # An append cannot remove bytes that are already on disk, so no reader can observe the log
     # missing an entry it previously had. A partial final line is the only artefact, and
     # `_iter_history` already drops an unparseable line rather than failing the read.
-    ("append_history", "Path.open('a')"),
+    # The call lives in `history_log.append_line`, which both transcripts share.
+    ("append_line", "Path.open('a')"),
     # `copy2` is what preserves the +x bit Domino needs to run `app.sh`, and `_write_atomic` would
     # drop it: the helper carries the mode from the file being REPLACED, and a seed has none to
     # carry from, so a fresh file would take whatever the umask says. Converting this trades a
@@ -207,7 +223,7 @@ def test_every_exemption_is_still_a_real_write_somebody_chose():
     surveyed = set(_writes(inside_helper=False))
     stale = _EXEMPT - surveyed
     assert stale == set(), (
-        f"These exemptions match no write in workspace/manager.py any more: {sorted(stale)}. "
+        f"These exemptions match no write in workspace/manager.py or history_log.py any more: {sorted(stale)}. "
         f"Remove them rather than leaving a licence lying around."
     )
 

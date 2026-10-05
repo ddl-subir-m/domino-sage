@@ -3078,11 +3078,24 @@ window.SW = window.SW || {};
   // remote in, so telling somebody to "undo again" points at a button that will no longer be there
   // once the revert is local. A shared tail here would be a second sentence that happens to look
   // like the first while being wrong.
+  // A pull fixes one refusal: the remote is ahead. `behind` is that fact when the server
+  // knew it. A saved row written before the flag existed still carries it in the git text
+  // (`non-fast-forward`, `fetch first`). Every other refusal — a hook, a file over GitHub's
+  // limit — is not fixed by pulling, and the sentence must not say that it is.
+  function pushWasBehind(result) {
+    if (result && result.behind) return true;
+    const detail = `${(result && result.pushDetail) || ''} ${(result && result.detail) || ''}`;
+    return /non-fast-forward|\(fetch first\)/i.test(detail);
+  }
+
   function pushRejected(lead, result, remedy) {
     const detail = result.pushDetail || result.detail || '';
+    const next = pushWasBehind(result)
+      ? remedy
+      : 'The remote refused the push, and pulling will not change that.';
     return (
       `${lead}, but the push was rejected. Your work is committed locally and not on the remote. ` +
-      `${remedy}${detail ? ` (${detail})` : ''}`
+      `${next}${detail ? ` (${detail})` : ''}`
     );
   }
 
@@ -3464,7 +3477,12 @@ window.SW = window.SW || {};
         if (ev.rejected) {
           // Committed locally but the remote refused the push — this is not the same as a plain
           // save, and drawing it in success styling would hide that the work isn't on the remote.
-          value = `Saved locally — not pushed. Pull the latest, then save again.${ev.detail ? ` (${ev.detail})` : ''}`;
+          // "Pull the latest" is the remedy only when the remote is ahead. A hook refusal is
+          // not that, and there is no pull control on this line either way.
+          const detail = ev.detail ? ` (${ev.detail})` : '';
+          value = pushWasBehind(ev)
+            ? `Saved locally — not pushed. Pull the latest, then save again.${detail}`
+            : `Saved locally — not pushed. The remote refused the push.${detail}`;
           warn = true;
         } else if (ev.ok) {
           value = ev.pushed ? 'Saved and pushed' : `Saved${ev.detail ? ` — ${ev.detail}` : ''}`;
