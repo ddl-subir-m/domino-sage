@@ -11,14 +11,29 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+# GitHub's receive hook rejects a blob at 100 MiB. The warning at 50 MB is not a refusal.
+# Checked on the blobs this push would introduce, before the push is sent, so the save can
+# name the file. History is sealed earlier (history_log.BLOB_CAP); this is the backstop for
+# every other file, and for a transcript line that is itself over the limit.
+BLOB_REJECT_BYTES = 100 * 1024 * 1024
+
+# Long enough to keep GitHub's `remote: error` lines. The old cap was 200 characters of the
+# whole stderr, and a 50 MB warning fills that before the refusal is named.
+_PUSH_DETAIL_CAP = 1000
+
 
 @dataclass
 class SaveResult:
     """rejected is True only when a push was attempted and git refused it (e.g. non-fast-forward).
-    Distinct from pushed=False for "no remote" or "nothing to commit", which are not failures."""
+    Distinct from pushed=False for "no remote" or "nothing to commit", which are not failures.
+
+    `behind` is the one refusal a pull can fix: the remote is ahead (non-fast-forward, or
+    fetch-first). Every other refusal — a hook, a blob over `BLOB_REJECT_BYTES`, a credential —
+    stays `behind` false, because pulling does not change it."""
     pushed: bool
     detail: str
     rejected: bool = False
+    behind: bool = False
 
 
 @dataclass
@@ -199,11 +214,100 @@ def tracked_under(path: Path, prefix: str) -> list[str]:
     return [p for p in r.stdout.split("\0") if p]
 
 
+def _push_is_behind(text: str) -> bool:
+    """True when git refused because the remote is ahead. A pull is the remedy for that and
+    for nothing else this function sees."""
+    low = text.lower()
+    return "non-fast-forward" in low or "(fetch first)" in low
+
+
+def _push_failure_detail(text: str) -> str:
+    """The lines that say why the remote refused.
+
+    GitHub prints a 50 MB warning before the error. The warning alone fills 200 characters,
+    which used to be the whole of what a save kept, so the `remote: error` lines — the
+    refusal — never reached the screen. When those lines are present they are the detail.
+    A non-fast-forward has none, and its own text is kept.
+    """
+    raw = (text or "").strip()
+    errors = [line.strip() for line in raw.splitlines() if line.strip().startswith("remote: error:")]
+    body = " ".join(errors) if errors else raw
+    if len(body) > _PUSH_DETAIL_CAP:
+        body = body[:_PUSH_DETAIL_CAP]
+    return f"push failed: {body}"
+
+
+def _unpushed_spec(path: Path) -> str:
+    """The commits a push of HEAD would send, as a rev-list range."""
+    tracked = _git(path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False)
+    if tracked.returncode == 0 and tracked.stdout.strip():
+        return f"{tracked.stdout.strip()}..HEAD"
+    if _git(path, "rev-parse", "--verify", "--quiet", "origin/HEAD", check=False).returncode == 0:
+        return "origin/HEAD..HEAD"
+    return "HEAD"
+
+
+def blobs_over_limit(path: Path, limit: int) -> list[tuple[str, int]]:
+    """Paths this push would introduce whose blob is at or over `limit`.
+
+    GitHub checks every new blob in the push, including one a later unpushed commit deleted.
+    A rev-list or cat-file failure answers nothing rather than blocking a push the check
+    could not read: git's own refusal is then the thing the save reports.
+    """
+    listed = _git(path, "rev-list", "--objects", _unpushed_spec(path), check=False)
+    if listed.returncode != 0:
+        return []
+    by_sha: dict[str, str] = {}
+    for line in listed.stdout.splitlines():
+        sha, sep, rel = line.partition(" ")
+        if sep and rel:
+            by_sha.setdefault(sha, rel)
+    if not by_sha:
+        return []
+    proc = subprocess.run(
+        ["git", "cat-file", "--batch-check=%(objectname) %(objectsize)"],
+        cwd=str(path),
+        input="".join(f"{sha}\n" for sha in by_sha),
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    found: list[tuple[str, int]] = []
+    for line in proc.stdout.splitlines():
+        sha, sep, size_text = line.partition(" ")
+        if not sep:
+            continue
+        try:
+            size = int(size_text)
+        except ValueError:
+            continue
+        if size >= limit and sha in by_sha:
+            found.append((by_sha[sha], size))
+    found.sort()
+    return found
+
+
+def _oversized_detail(over: list[tuple[str, int]]) -> str:
+    shown = over[:5]
+    names = "; ".join(
+        f"{rel} is {size / (1024 * 1024):.2f} MB" for rel, size in shown
+    )
+    extra = f" and {len(over) - len(shown)} more" if len(over) > len(shown) else ""
+    return (
+        f"push failed: {names}{extra}, over the 100 MB limit. The push was not sent."
+    )
+
+
 def push(path: Path) -> SaveResult:
     """Push HEAD. Returns pushed=False (not an error) when there's no remote or the push is
-    rejected (e.g. a non-fast-forward — the caller should pull first)."""
+    rejected. `behind` is set only when the remote is ahead and a pull can fix it."""
     if not has_remote(path):
         return SaveResult(pushed=False, detail="committed (no remote)")
+    # Read at call time so a test can lower the limit. A default argument would keep
+    # the value from import, and the check would never see the lower one.
+    over = blobs_over_limit(path, BLOB_REJECT_BYTES)
+    if over:
+        return SaveResult(pushed=False, detail=_oversized_detail(over), rejected=True, behind=False)
     # A branch with no upstream is refused outright by a bare `git push` — `fatal: the current
     # branch X has no upstream branch`, exit 128, which reads here as `rejected` and is the one
     # refusal a retry genuinely could fix. `unsent()` calls that branch the worst case rather than
@@ -214,8 +318,11 @@ def push(path: Path) -> SaveResult:
     args = ["push"] if tracked.returncode == 0 else ["push", "-u", "origin", "HEAD"]
     r = _git(path, *args, check=False)
     if r.returncode != 0:
-        detail = f"push failed: {(r.stderr or r.stdout).strip()[:200]}"
-        return SaveResult(pushed=False, detail=detail, rejected=True)
+        text = (r.stderr or r.stdout).strip()
+        return SaveResult(
+            pushed=False, detail=_push_failure_detail(text), rejected=True,
+            behind=_push_is_behind(text),
+        )
     return SaveResult(pushed=True, detail="pushed")
 
 

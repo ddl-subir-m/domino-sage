@@ -48,7 +48,8 @@ def test_sync_keeps_merge_detail_and_rejected_push_detail_separate(tmp_path: Pat
     monkeypatch.setattr(orch, "_integrate_remote",
                         lambda project: git.SyncResult("merged", [], "merged the incoming changes"))
     monkeypatch.setattr(git, "push", lambda path: git.SaveResult(
-        pushed=False, detail="push failed: rejected non-fast-forward", rejected=True))
+        pushed=False, detail="push failed: rejected non-fast-forward", rejected=True,
+        behind=True))
 
     result = orch.sync()
 
@@ -56,6 +57,7 @@ def test_sync_keeps_merge_detail_and_rejected_push_detail_separate(tmp_path: Pat
     assert result["detail"] == "merged the incoming changes"
     assert result["pushed"] is False
     assert result["rejected"] is True
+    assert result["behind"] is True
     assert result["pushDetail"] == "push failed: rejected non-fast-forward"
 
 
@@ -111,6 +113,25 @@ def test_pull_and_build_stops_and_tells_the_person_when_push_is_rejected():
     assert "Try Pull and build again" in result["thrown"]
     assert "Pull latest" not in result["thrown"]
     assert "push failed: rejected non-fast-forward" in result["thrown"]
+
+
+@needs_node
+def test_pull_and_build_does_not_say_to_pull_when_the_remote_refused_for_another_reason():
+    result = _pull({
+        "status": "merged",
+        "conflicts": [],
+        "pushed": False,
+        "rejected": True,
+        "behind": False,
+        "detail": "merged the incoming changes",
+        "pushDetail": "push failed: remote: error: GH001: Large files detected.",
+    })
+
+    assert result["calls"] == ["syncProject"]
+    assert "committed locally" in result["thrown"]
+    assert "Try Pull and build again" not in result["thrown"]
+    assert "pulling will not change" in result["thrown"].lower()
+    assert "GH001" in result["thrown"]
 
 
 @needs_node

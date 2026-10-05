@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import history_log
+
 _META_LOCK = threading.Lock()
 _ID_LOCK = threading.Lock()
 # One writer at a time over a Thread's `context.json` for the add/remove pair, and for the
@@ -312,10 +314,10 @@ class ThreadStore:
         stamps its own entries (Workspace.append_history): a conversation's transcript is these
         two logs merged, and one order needs one clock and one format. Left to the call sites it
         would be neither."""
-        p = self.history_path(thread_id)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a") as f:
-            f.write(json.dumps({**entry, "at": _now()}) + "\n")
+        # Same cap as Build's log. A Chat thread is the file that reached 66 MB.
+        history_log.append_line(
+            self.history_path(thread_id), json.dumps({**entry, "at": _now()})
+        )
 
     def read_history(self, thread_id: str, *, strict: bool = False) -> HistoryRows:
         """The Thread's turn-by-turn transcript, one JSON row per line.
@@ -334,10 +336,11 @@ class ThreadStore:
         bytes — a different failure than a bad line, and not one skipping reaches.
         """
         p = self.history_path(thread_id)
-        if not p.exists():
+        paths = history_log.segment_paths(p)
+        if not paths:
             return HistoryRows()
         try:
-            text = p.read_text()
+            text = "".join(path.read_text() for path in paths)
         except (ValueError, OSError):
             # `ValueError` covers the non-UTF-8 file as well as bad JSON — see `_read_meta`.
             if strict:

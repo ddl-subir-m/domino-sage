@@ -144,6 +144,21 @@ def test_a_rejected_push_reuses_the_sentence_pull_and_build_already_ships():
 
 
 @needs_node
+def test_a_rejected_push_that_is_not_behind_does_not_promise_a_later_pull():
+    rejected = _run(_UNDO, {"cases": [{
+        "merge": MERGE,
+        "answer": {"ok": True, "sha": "abc123def456", "pushed": False, "rejected": True,
+                   "behind": False, "detail": "undid the merge",
+                   "pushDetail": "push failed: remote: error: GH001: Large files detected."},
+    }]})[-1]
+
+    assert "committed locally and not on the remote" in rejected["thrown"]
+    assert "will carry the undo with it" not in rejected["thrown"]
+    assert "pulling will not change" in rejected["thrown"].lower()
+    assert "GH001" in rejected["thrown"]
+
+
+@needs_node
 def test_a_running_build_is_told_to_stop_first():
     """The server takes the turn lock and would answer 409, but that is a round trip to learn
     something already on screen."""

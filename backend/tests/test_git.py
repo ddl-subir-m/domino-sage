@@ -190,7 +190,70 @@ def test_push_rejected_on_non_fast_forward(tmp_path: Path):
     result = git.push(work)
     assert result.pushed is False and "push failed" in result.detail
     assert result.rejected is True  # a real rejection, not a benign pushed=False — #234
+    assert result.behind is True  # the remote is ahead; a pull is the remedy
     # After a pull, the push goes through.
     assert git.pull(work).status == "merged"
     result = git.push(work)
     assert result.pushed is True and result.rejected is False
+
+
+def test_a_hook_refusal_keeps_the_remote_error_and_is_not_a_reason_to_pull(tmp_path: Path):
+    """GitHub prints the 50 MB warning first. The refusal is the `remote: error` lines after
+    it, and a pull does not make GitHub accept the blob."""
+    work = _work_repo(tmp_path)
+    hook = tmp_path / "remote.git" / "hooks" / "pre-receive"
+    hook.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \\\n"
+        "  'warning: File .sage/threads/thr_x/history.jsonl is 66.37 MB; "
+        "this is larger than GitHub recommended maximum of 50.00 MB' \\\n"
+        "  'error: Trace: 25a5832841' \\\n"
+        "  'error: GH001: Large files detected.'\n"
+        "exit 1\n"
+    )
+    hook.chmod(0o755)
+    (work / "App.tsx").write_text("local")
+    git.commit_all(work, "sage: local")
+
+    result = git.push(work)
+
+    assert result.pushed is False
+    assert result.rejected is True
+    assert result.behind is False
+    assert "GH001: Large files detected." in result.detail
+    assert "Trace: 25a5832841" in result.detail
+    assert "66.37 MB" not in result.detail
+
+
+def test_a_push_is_not_sent_when_a_new_blob_is_over_the_limit(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(git, "BLOB_REJECT_BYTES", 32)
+    work = _work_repo(tmp_path)
+    (work / "wide.bin").write_bytes(b"x" * 64)
+    git.commit_all(work, "sage: wide")
+
+    result = git.push(work)
+
+    assert result.pushed is False
+    assert result.rejected is True
+    assert result.behind is False
+    assert "wide.bin" in result.detail
+    assert "not sent" in result.detail
+    names = _run(tmp_path / "remote.git", "ls-tree", "-r", "--name-only", "HEAD")
+    assert "wide.bin" not in names
+
+
+def test_a_push_names_an_oversized_blob_a_later_commit_deleted(tmp_path: Path, monkeypatch):
+    """GitHub checks every blob the push introduces, including one the tip no longer has."""
+    monkeypatch.setattr(git, "BLOB_REJECT_BYTES", 32)
+    work = _work_repo(tmp_path)
+    (work / "wide.bin").write_bytes(b"x" * 64)
+    git.commit_all(work, "sage: wide")
+    (work / "wide.bin").unlink()
+    git.commit_all(work, "sage: drop wide")
+
+    result = git.push(work)
+
+    assert result.rejected is True
+    assert result.behind is False
+    assert "wide.bin" in result.detail
+    assert result.pushed is False
