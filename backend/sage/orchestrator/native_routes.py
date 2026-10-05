@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import build_intent, timing
 from ..context_rollover import ContextAction
+from ..gateway.capabilities import RouteStatus
 from ..gateway.client import GatewayUpstreamError, StreamCancellation
 from ..gateway.events import StreamEvents
 from ..gateway.protocol import Protocol
@@ -417,7 +418,7 @@ def install(app, get_orchestrator):
                 return _native_local_error(protocol, message, code)
         if effort_decision is not None:
             call.route(protocol.value, effort_decision,
-                       capability.verified if capability.identity else None)
+                       None if capability.status is RouteStatus.NO_ROUTE else capability.verified)
         project.model_calls += 1
         call_id = call.call_id or uuid4().hex
         build_watchdog = bool(

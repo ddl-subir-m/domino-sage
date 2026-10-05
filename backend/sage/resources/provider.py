@@ -58,10 +58,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
-from ..gateway.capabilities import RouteCapability, evidence, resolve
+from ..gateway.capabilities import RouteCapability, evidence, legacy, resolve
 from ..orchestrator import brand
 from ..router.models import reasoning_efforts_for as measured_reasoning_efforts
-from ..router.models import reasoning_efforts_with_tools as measured_reasoning_efforts_with_tools
 
 
 def _platform_api() -> str:
@@ -137,6 +136,12 @@ class LlmAlias:
     route_capability: RouteCapability | None = None
 
     @property
+    def capability(self) -> RouteCapability:
+        """The one answer every reader takes. `route_capability` is None only off a gateway — the
+        fake provider and test fixtures — where `legacy` reads the development table (#647)."""
+        return self.route_capability if self.route_capability is not None else legacy(self.name)
+
+    @property
     def reasoning_efforts_with_tools(self) -> list[str]:
         """`reasoning_efforts`, narrowed to what this alias keeps when the request ALSO carries
         function tools (#280, ADR-0049).
@@ -154,8 +159,7 @@ class LlmAlias:
         the menu as "this alias offers no levels", silently removing a control. It also keeps the
         positional-argument hazard off a dataclass that is constructed positionally in fixtures.
         """
-        return (list(self.route_capability.efforts_with_tools) if self.route_capability is not None
-                else alias_efforts_with_tools(self.name, self.reasoning_efforts))
+        return list(self.capability.efforts_with_tools)
 
 
 @dataclass(frozen=True)
@@ -1356,16 +1360,6 @@ def alias_reasoning_efforts(name: str, inference_params: Any = None) -> list[str
     """
     _ = inference_params
     return list(measured_reasoning_efforts(name))
-
-
-def alias_efforts_with_tools(name: str, efforts: list[str]) -> list[str]:
-    """The tool-carrying effort choices Sage has measured locally for this alias.
-
-    `efforts` is accepted for caller compatibility, but the resolver is local and measured. This
-    keeps the provider, the menus, save validation and the outgoing request path on one answer.
-    """
-    _ = efforts
-    return list(measured_reasoning_efforts_with_tools(name))
 
 
 def parse_groups(raw: Any) -> list[str]:

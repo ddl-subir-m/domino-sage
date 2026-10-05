@@ -386,11 +386,9 @@ def test_an_unprobed_alias_gets_no_sage_effort_control():
     That keeps the Build menu, save validation and send path on one local answer. Passing a gateway
     enum through here would offer levels that the local save path cannot validate.
     """
-    from sage.resources.provider import LlmAlias, alias_efforts_with_tools
+    from sage.resources.provider import LlmAlias
 
     published = ["low", "high"]
-    assert alias_efforts_with_tools("nobody-probed-this", published) == []
-
     unprobed = LlmAlias("id", "nobody-probed-this", "N", None, ["chat"], {}, None, published)
     assert unprobed.reasoning_efforts_with_tools == []
 
