@@ -144,7 +144,7 @@ window.SW = window.SW || {};
         destroyOnClose: true,
       },
       h('p', { className: 'sw-caption', style: { margin: '0 0 12px' } },
-        'Temporary until the MCP gateway. Every conversation and app in this project can use its tools.'),
+        'Every conversation and app in this project can use its tools.'),
       h(Segmented, {
         className: 'sw-mcp-kind',
         value: kind,

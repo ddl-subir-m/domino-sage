@@ -645,8 +645,7 @@ window.SW = window.SW || {};
     const groupCaption = (key) => {
       if (key === 'secrets') {
         if (secrets && !secrets.available) return secrets.reason || 'Secrets are not available here.';
-        return SW.brand.text('Values are kept by {platformName} for this project. {assistantName} '
-          + 'restarts its assistant after a change; published apps get a change on their next publish.');
+        return null;
       }
       if (key === 'mcp') return 'Temporary until the MCP gateway.';
       return null;

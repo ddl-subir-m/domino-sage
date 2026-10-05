@@ -46,15 +46,13 @@ def _writes(calls: list) -> list:
     return [c for c in calls if c["method"] != "GET"]
 
 
-def test_each_secret_is_a_row_with_its_note_and_the_group_says_where_values_live():
+def test_each_secret_is_a_row_with_its_note_and_the_group_has_no_caption():
     drawn = _run("drawn")
     assert [(r["name"], r["subtitle"]) for r in drawn["secrets"]] == [
         ("CRM_TOKEN", "CRM API token"), ("OPENAI_API_KEY", "No note")]
     heads = {h["label"]: h for h in drawn["heads"]}
     assert heads["Secrets (2)"]["hasAdd"] is True
-    caption = next(c["text"] for c in drawn["captions"] if "kept by" in c["text"])
-    assert "restarts its assistant after a change" in caption
-    assert "next publish" in caption
+    assert not any("kept by" in c["text"] for c in drawn["captions"])
     assert "secret" in drawn["menuKeys"] and "mcp" in drawn["menuKeys"]
 
 
