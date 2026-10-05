@@ -156,6 +156,33 @@ def test_the_chip_describes_only_the_project_it_can_read():
     assert "memberCount" not in picker and "appCount" not in picker
 
 
+def test_the_default_project_is_listed_as_default_from_another_project(monkeypatch):
+    """The Default overlay lives in the Default Project's own builder, so from any other builder
+    the listing would name it by its Domino slug and the chip would offer the same Project twice
+    under two names. The slug is derived from the viewer, so the listing can recognise it."""
+    from fastapi.testclient import TestClient
+
+    import sage.orchestrator.app as appmod
+    from sage.provision import naming
+
+    default = naming.default_project_name(ALICE.name, ALICE.id)
+
+    class _Listing:
+        def list_apps(self):
+            return [ProjectRef(id="p-default", name=default, git_url=""),
+                    ProjectRef(id=PROJECT, name="sage-sales", git_url="")]
+
+    monkeypatch.setattr(appmod, "_provision", _Listing())
+    monkeypatch.setenv("DOMINO_USER_NAME", ALICE.name)
+    monkeypatch.setenv("DOMINO_USER_ID", ALICE.id)
+    monkeypatch.setenv("DOMINO_PROJECT_ID", PROJECT)
+
+    items = TestClient(appmod.control_app).get("/api/projects").json()["items"]
+
+    assert items == [{"id": "p-default", "name": "Default", "current": False},
+                     {"id": PROJECT, "name": "sage-sales", "current": True}]
+
+
 def test_a_container_that_cannot_provision_offers_nothing_to_switch_to():
     # A laptop run has no Projects to switch between, and says so rather than failing on click.
     from fastapi.testclient import TestClient

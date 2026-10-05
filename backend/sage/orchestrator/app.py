@@ -989,14 +989,23 @@ async def list_projects() -> JSONResponse:
     """
     if _provision is None:
         return JSONResponse(content={"items": [], "provisioning": False})
+    from ..provision import naming  # lazy, as every provision import here is
     current = os.environ.get("DOMINO_PROJECT_ID", "")
+    # The Default overlay is only readable in the Default Project's own builder, so from any other
+    # one the chip would name it by its Domino slug. The slug is derived from the viewer.
+    default = naming.default_project_name(
+        os.environ.get("DOMINO_USER_NAME") or os.environ.get("DOMINO_STARTING_USERNAME") or "",
+        os.environ.get("DOMINO_USER_ID") or "",
+    )
     try:
         projects = await run_in_threadpool(_provision.list_apps)
     except Exception as e:
         log.exception("chip: couldn't list this viewer's Sage Projects")
         return JSONResponse(status_code=502, content={"error": str(e)})
     return JSONResponse(content={
-        "items": [{"id": p.id, "name": p.name, "current": p.id == current} for p in projects],
+        "items": [{"id": p.id,
+                   "name": "Default" if naming.is_default_name(p.name, default) else p.name,
+                   "current": p.id == current} for p in projects],
         "provisioning": True,
     })
 
