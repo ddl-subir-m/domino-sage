@@ -3,10 +3,19 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 
 from .protocol import Protocol
+
+
+class RouteStatus(str, Enum):
+    """Which of the four answers a capability is. `efforts == ()` is true of all four (#509, #647)."""
+    VERIFIED = "verified"              # a proof matched this Alias identity; may still offer nothing
+    UNMEASURED = "unmeasured"          # a gateway Alias with no matching proof; measuring repairs it
+    FALLBACK_CHAIN = "fallback_chain"  # refused before evidence is read; measuring cannot repair it
+    NO_ROUTE = "no_route"              # not resolved against a gateway Alias: dev table, or unlisted
 
 
 @dataclass(frozen=True)
@@ -17,11 +26,17 @@ class RouteCapability:
     efforts_with_tools: tuple[str, ...] = ()
     reason: str = "Reasoning settings have not been verified for this model's current route."
     identity: tuple[str, ...] = ()
-    # Did a proof actually match, or is this the fallback? No other field answers that (#509).
-    # A MEASURED row can be empty — one deployment's `haiku` is verified to offer no levels at
-    # all — so `not efforts` reads True for "offers nothing" and for "nothing is known" alike,
-    # and those two need opposite responses. Last, so `resolve`'s positional call is unaffected.
-    verified: bool = False
+    # Last, so `resolve`'s positional call is unaffected.
+    status: RouteStatus = RouteStatus.NO_ROUTE
+
+    @property
+    def verified(self) -> bool:
+        return self.status is RouteStatus.VERIFIED
+
+    @property
+    def unverified_route(self) -> bool:
+        """A gateway Alias whose levels are not known — the case worth a warning and a note."""
+        return self.status in (RouteStatus.UNMEASURED, RouteStatus.FALLBACK_CHAIN)
 
     def settings(self, effort: str | None, *, tools: bool) -> dict:
         if effort is None:
@@ -49,17 +64,17 @@ def resolve(root: str, row: dict, evidence: list[dict]) -> RouteCapability:
     identity = route_identity(root, row)
     if row.get("fallback_chain"):
         return RouteCapability(reason="Reasoning settings are unavailable because this model has an unverified fallback route.",
-                               identity=identity)
+                               identity=identity, status=RouteStatus.FALLBACK_CHAIN)
     for proof in evidence:
         if identity != route_identity(proof["gateway"], proof):
             continue
         return RouteCapability(Protocol(proof["protocol"]), proof.get("native", False),
                                tuple(proof["efforts"]), tuple(proof["efforts_with_tools"]),
-                               proof.get("reason", ""), identity, verified=True)
+                               proof.get("reason", ""), identity, status=RouteStatus.VERIFIED)
     # No proof for THIS identity. The protocol stays CHAT and the levels stay empty, which is the
     # conservative answer and is not the defect — the defect was that nobody could tell this apart
     # from a verified model that offers nothing, so a repointed alias went back to refusing every
-    # tool-carrying turn in silence (#509). `verified` is what the log and the person's error read.
+    # tool-carrying turn in silence (#509). `status` is what the log and the person's error read.
     #
     # The repair belongs HERE rather than in the readers, because it is right only for this branch:
     # the fallback branch above can never be satisfied by measuring — `resolve` returns it without
@@ -70,7 +85,7 @@ def resolve(root: str, row: dict, evidence: list[dict]) -> RouteCapability:
         reason=("No measurement matches this model's route on this deployment, so no reasoning "
                 "setting can be offered for it and the turn takes the default wire."
                 + (f" Repair: scripts/reasoning-evidence.py '{name}' --write" if name else "")),
-        identity=identity)
+        identity=identity, status=RouteStatus.UNMEASURED)
 
 
 def legacy(model: str) -> RouteCapability:

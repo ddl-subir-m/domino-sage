@@ -195,7 +195,6 @@ from ..router.models import (
     Phase,
     Reason,
     SessionState,
-    reasoning_efforts_for,
     signing_slot,
 )
 from ..router.phase_classifier import SHELL_TOOLS, WRITE_TOOLS
@@ -26112,9 +26111,8 @@ class Orchestrator:
                     # efforts that slot may offer, and the join is here or it is a second copy of
                     # the per-alias table on the panel's side (#280). The drawer is a tool-carrying
                     # assignment surface, so it reads the narrow twin below.
-                    "reasoning_efforts": list(a.route_capability.efforts if a.route_capability is not None
-                                              else reasoning_efforts_for(a.name)),
-                    "reasoning_note": a.route_capability.reason if a.route_capability is not None else "",
+                    "reasoning_efforts": list(a.capability.efforts),
+                    "reasoning_note": a.capability.reason,
                     "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
                     "serving": (problem := alias_problem(a.name, aliases, endpoints)) is None,
                     "problem": problem,
@@ -27666,10 +27664,8 @@ class Orchestrator:
                 "capabilities": a.capabilities,
                 "costs": a.costs,
                 # Resolve locally so stale alias rows cannot restore unsupported choices (#284).
-                "reasoning_efforts": list(a.route_capability.efforts if a.route_capability is not None
-                                              else reasoning_efforts_for(a.name)),
-                **({"reasoning_note": a.route_capability.reason}
-                   if a.route_capability is not None and a.route_capability.reason else {}),
+                "reasoning_efforts": list(a.capability.efforts),
+                **({"reasoning_note": a.capability.reason} if a.capability.reason else {}),
                 # Chat, Build and assignment controls carry tools and read this list (#298).
                 "reasoning_efforts_with_tools": a.reasoning_efforts_with_tools,
             }

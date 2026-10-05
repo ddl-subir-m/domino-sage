@@ -13,7 +13,7 @@ import json
 import pytest
 
 from sage import timing
-from sage.gateway.capabilities import RouteCapability
+from sage.gateway.capabilities import RouteCapability, RouteStatus
 from sage.gateway.client import CostLabels
 from sage.gateway.protocol import Protocol
 from sage.liveread import run
@@ -23,7 +23,7 @@ from sage.shim.native import text_stream
 from .test_analyze_text_honours_its_alias import OPUS, SONNET, _events, _mid_turn, _no_real_poll  # noqa: F401
 from .test_csv_text_analysis_data_used import analysis_args, labels_for, setup_turn, sse
 
-LEVELS = RouteCapability(efforts=("none", "low", "high"), verified=True)
+LEVELS = RouteCapability(efforts=("none", "low", "high"), status=RouteStatus.VERIFIED)
 
 
 def _judging(tmp_path, capability=LEVELS, picker="high"):
@@ -51,7 +51,7 @@ def test_an_unnamed_level_judges_at_none_whatever_the_picker_says(tmp_path, alia
 
 def test_an_unnamed_level_falls_back_to_low_where_none_is_not_offered(tmp_path):
     analyze, gateway, *_ = _judging(
-        tmp_path, capability=RouteCapability(efforts=("low", "high"), verified=True))
+        tmp_path, capability=RouteCapability(efforts=("low", "high"), status=RouteStatus.VERIFIED))
 
     json.loads(analyze())
 
@@ -82,7 +82,7 @@ def test_a_named_level_the_model_does_not_take_is_refused_naming_the_ones_it_doe
 
 
 def test_a_model_with_no_levels_judges_at_its_default_and_refuses_a_named_one(tmp_path):
-    analyze, gateway, orch, *_ = _judging(tmp_path, capability=RouteCapability(verified=True))
+    analyze, gateway, orch, *_ = _judging(tmp_path, capability=RouteCapability(status=RouteStatus.VERIFIED))
 
     json.loads(analyze())
     assert [b.get("reasoning_effort") for b in gateway.batches] == [None, None]
@@ -169,7 +169,7 @@ class ResponsesGateway:
 def test_a_native_batch_puts_its_tokens_on_the_ledger(tmp_path):
     """Only text deltas cross `text_stream`, so without the stop frame's usage a long think read
     as a slow first byte and nothing else."""
-    capability = RouteCapability(protocol=Protocol.RESPONSES, efforts=("low",), verified=True)
+    capability = RouteCapability(protocol=Protocol.RESPONSES, efforts=("low",), status=RouteStatus.VERIFIED)
     request = {"model": "mimo", "stream": True, "reasoning_effort": "low",
                "messages": [{"role": "user", "content": "judge"}]}
     labels = CostLabels(phase="ask", mode="auto", component="chat-delegated")

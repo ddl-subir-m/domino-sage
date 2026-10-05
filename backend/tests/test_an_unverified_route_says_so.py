@@ -21,7 +21,7 @@ import logging
 from dataclasses import replace
 from types import SimpleNamespace
 
-from sage.gateway.capabilities import RouteCapability, evidence, resolve
+from sage.gateway.capabilities import RouteCapability, RouteStatus, evidence, legacy, resolve
 from sage.gateway.client import FakeGatewayClient
 from sage.gateway.protocol import Protocol
 from sage.orchestrator.app import _unverified_route_note
@@ -58,6 +58,17 @@ def test_a_measured_row_that_offers_nothing_is_not_read_as_an_unmeasured_one():
     assert not measured.efforts, "this row is the point: it was measured and offers nothing"
     assert measured.verified is True and unmeasured.verified is False, (
         "no other field separates these two, and they need opposite responses")
+
+
+def test_each_way_of_offering_no_level_carries_its_own_status():
+    """Four answers, and `efforts == ()` can be true of every one of them (#647)."""
+    row = _measured_row_offering_nothing()
+
+    assert resolve(row["gateway"], row, evidence()).status is RouteStatus.VERIFIED
+    assert resolve(row["gateway"], _repointed(row), evidence()).status is RouteStatus.UNMEASURED
+    assert resolve(row["gateway"], {**row, "fallback_chain": ["other"]},
+                   evidence()).status is RouteStatus.FALLBACK_CHAIN
+    assert legacy("nobody-probed-this").status is RouteStatus.NO_ROUTE
 
 
 def _shim_with(capability) -> EnforcementShim:

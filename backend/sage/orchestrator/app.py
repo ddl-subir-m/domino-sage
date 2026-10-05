@@ -4941,9 +4941,9 @@ def _unverified_route_note(project) -> str:
         # A diagnostic must never replace the error it explains. `route_capability` raises when the
         # gateway listing cannot be reached, which is exactly the moment this runs.
         return ""
-    # `identity` and not `verified` alone: the fake/development contract is unverified by
-    # construction and carries no identity, and saying this on a local run would be a lie.
-    if not getattr(capability, "identity", ()) or getattr(capability, "verified", True):
+    # Not `not verified`: the fake/development contract is unverified by construction, and saying
+    # this on a local run would be a lie.
+    if not getattr(capability, "unverified_route", False):
         return ""
     # `reason` is composed by `resolve`, which is the only thing that knows WHICH unverified case
     # this is — and so which repair, if any, is honest to offer.
