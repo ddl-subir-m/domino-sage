@@ -122,6 +122,84 @@ def server(root: Path, name: str) -> dict:
     return row
 
 
+# The workspace whose `.opencode/` holds the servers a Build @mention names. Set once at startup.
+_root: Path | None = None
+_MCP_MENTION = re.compile(r"\{mcp:([a-z0-9][a-z0-9_-]*)\}")
+
+
+def set_root(root: Path | None) -> None:
+    """Where `note_mentions` reads servers from. `None` clears it."""
+    global _root
+    _root = None if root is None else Path(root)
+
+
+def project_root() -> Path | None:
+    return _root
+
+
+def _text_of(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(p["text"] for p in content
+                         if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return ""
+
+
+def _mention_line(name: str, row: dict | None) -> str:
+    """What the model is told about one `{mcp:name}`. A missing row invents no URL."""
+    token = "{mcp:" + name + "}"
+    if row is None:
+        return (f"{token} names no MCP server in this Project. Do not invent a URL or a "
+                "sign-in for it.")
+    hosted = row.get("kind") == DOMINO
+    tools = [t for t in (row.get("tools") or []) if isinstance(t, str)]
+    headers = row.get("headers") if isinstance(row.get("headers"), dict) else {}
+    header_text = ", ".join(f"{key}: {value}" for key, value in headers.items())
+    line = (f"{token} is the MCP server `{name}` "
+            f"({'Domino-hosted' if hosted else 'remote'}). "
+            f"URL: {row.get('url') or ''}. Tools: {', '.join(tools) or 'none listed'}.")
+    if header_text:
+        line += f" Headers, as stored: {header_text}."
+    if row.get("enabled") is False:
+        line += " It is switched off for Chat and Build."
+    if hosted:
+        line += (" The published app calls this URL itself with `sage_mcp.call_tool`, from a "
+                 "route. Sign in with `Authorization` set to `Bearer` plus `sage_domino.token()`, "
+                 "fetched inside the route. Do not put a secret in that header. Any other header "
+                 "written `{env:NAME}` is read with `secret(\"NAME\")` inside the route.")
+    else:
+        line += (" The published app calls this URL itself with `sage_mcp.call_tool`, from a "
+                 "route. A header written `{env:NAME}` is read with `secret(\"NAME\")` inside the "
+                 "route. Never write a key's value.")
+    return line + " Use the URL only in the app's server code."
+
+
+def note_mentions(messages: list, servers: list[dict]) -> list:
+    """Append how a Built App calls each `{mcp:name}` the last user message names.
+
+    Header values are copied as stored, so `{env:NAME}` stays a name and a secret's value never
+    enters the note. The same list when the message names no server.
+    """
+    by_name = {row["name"]: row for row in servers if isinstance(row, dict) and row.get("name")}
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, dict) and message.get("role") == "user":
+            break
+    else:
+        return messages
+    names = list(dict.fromkeys(_MCP_MENTION.findall(_text_of(message.get("content")))))
+    if not names:
+        return messages
+    note = "\n".join(_mention_line(name, by_name.get(name)) for name in names)
+    content = message.get("content")
+    if isinstance(content, list):
+        updated = {**message, "content": [*content, {"type": "text", "text": note}]}
+    else:
+        updated = {**message, "content": f"{_text_of(content)}\n\n{note}"}
+    return [*messages[:index], updated, *messages[index + 1:]]
+
+
 def config_of(row: dict) -> dict:
     """The row in OpenCode's shape."""
     url = proxy_url(row["name"]) if row["kind"] == DOMINO else row["url"]

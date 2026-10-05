@@ -75,8 +75,10 @@ window.SW = window.SW || {};
   // The Project's skills sit beside its Resources (#628). A skill is not a Resource: naming one
   // carries no context, and the shim reads `@<name>` off the prompt itself. The Project's secrets
   // sit beside them (#643) for the same reason: picking one writes `{env:NAME}`, never a value.
+  // MCP servers are offered in Build only, by the caller passing them: picking one writes
+  // `{mcp:name}`, and the model is told the server's record on the request, not in the transcript.
   function mentionCandidates(attachments, resourceGroups, query, artifacts, catalogueParents,
-                             appAttachments, collapse, extensions, secrets) {
+                             appAttachments, collapse, extensions, secrets, mcpServers) {
     const context = (attachments || []).map((att) => ({
       id: att.resourceId || att.id,
       name: att.resourceName,
@@ -101,6 +103,9 @@ window.SW = window.SW || {};
       .map((e) => ({ id: e.id, name: e.name, kind: 'skill' }));
     const secretRows = ((secrets && secrets.available && secrets.secrets) || [])
       .map((s) => ({ id: `secret:${s.name}`, name: s.name, kind: 'secret' }));
+    const mcpRows = (mcpServers || []).filter((s) => s && s.name).map((s) => ({
+      id: `mcp:${s.name}`, name: s.name, kind: 'mcp', path: s.url || '',
+    }));
     const files = (resourceGroups.file || []).filter(
       (r) => !SW.util.isHiddenFromExplorer(r.path || r.name)
     );
@@ -118,8 +123,8 @@ window.SW = window.SW || {};
     // where a folder is not a chip, so it is offered a folder nowhere it could not carry one.
     // Chat gains no folder act (ADR-0029), and this is the same line drawn in the menu.
     return SW.util.workingSetFirst({
-      groups: [context, produced, resourceGroups.pin || [], project, skills, secretRows, files,
-               attached],
+      groups: [context, produced, resourceGroups.pin || [], project, skills, secretRows, mcpRows,
+               files, attached],
       catalogue: catalogueParents,
       query,
       // The same number as `FOLDER_COLLAPSE_THRESHOLD` in `sage/orchestrator/service.py`, and the
@@ -134,20 +139,32 @@ window.SW = window.SW || {};
   }
 
   // The composer's mirror of `text`: every character kept, so it lines up with the box over it, and
-  // each `{env:NAME}` wrapped as a chip whose braces take their room but draw nothing. The opening
-  // brace sits before the chip, so its room reads as a space and the key sits against the name.
+  // each `{env:NAME}` or `{mcp:name}` wrapped as a chip whose braces take their room but draw
+  // nothing. The opening brace sits before the chip, so its room reads as a space and the glyph
+  // sits against the name.
   function secretRefMirror(text) {
-    const parts = String(text).split(SW.util.SECRET_REF);
-    const out = parts.map((part, i) => (i % 2 === 0 ? part : [
-      h('span', { key: `${i}-open`, className: 'sw-secret-ref-brace' }, '{env:'),
-      h(
+    const re = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\{mcp:([a-z0-9][a-z0-9_-]*)\}/g;
+    const out = [];
+    let last = 0;
+    let i = 0;
+    let match = re.exec(text);
+    while (match) {
+      if (match.index > last) out.push(text.slice(last, match.index));
+      const mcp = match[2] !== undefined;
+      out.push(h('span', { key: `${i}-open`, className: 'sw-secret-ref-brace' },
+                 mcp ? '{mcp:' : '{env:'));
+      out.push(h(
         'span',
-        { key: i, className: 'sw-secret-ref is-mirror' },
+        { key: i, className: `sw-secret-ref is-mirror${mcp ? ' is-mcp' : ''}` },
         h('span', { className: 'sw-secret-ref-key' }),
-        part,
+        mcp ? match[2] : match[1],
         h('span', { className: 'sw-secret-ref-brace' }, '}')
-      ),
-    ]));
+      ));
+      last = match.index + match[0].length;
+      i += 1;
+      match = re.exec(text);
+    }
+    if (last < text.length) out.push(text.slice(last));
     // A box ending in a newline shows the empty line under it; a div does not without something on it.
     return text.endsWith('\n') ? out.concat('\u200b') : out;
   }
@@ -347,7 +364,7 @@ window.SW = window.SW || {};
       buildMode, buildTurnMode, buildRunning, catalogAsk, gatewayAliases, thread,
       catalog, buildModel, buildEffort, buildPhase, openWeightModels, signingSlot,
       apps, activeApp, composerSeed, queuedTurns, catalogueParents, appAttachments,
-      sensitivity, sensitivityNoticeFor, crossingRefused, extensions, secrets,
+      sensitivity, sensitivityNoticeFor, crossingRefused, extensions, secrets, mcpServers,
     } = SW.store.get();
     const [text, setText] = useState('');
     const [dragOver, setDragOver] = useState(false);
@@ -365,6 +382,7 @@ window.SW = window.SW || {};
     const fileRef = useRef(null);
     const mirrorRef = useRef(null);
     const hasSecretRefs = SW.util.SECRET_REF.test(text);
+    const hasMcpRefs = SW.util.MCP_REF.test(text);
 
     const aliases = chatAliases({
       model_llm: (gatewayAliases && gatewayAliases.length) ? gatewayAliases : resourceGroups.model_llm,
@@ -426,7 +444,8 @@ window.SW = window.SW || {};
     const mentionArts = ((thread && thread.artifacts) || []).filter((a) => !a.missing);
     const suggestions = mention
       ? mentionCandidates(attachments, resourceGroups, mention.query, mentionArts,
-                          catalogueParents, appAttachments, showMode, extensions, secrets)
+                          catalogueParents, appAttachments, showMode, extensions, secrets,
+                          showMode ? mcpServers : [])
       : [];
     const catalogueIds = new Set((catalogueParents || []).map((r) => r.id));
     const buildModes = BUILD_MODES();
@@ -563,7 +582,10 @@ window.SW = window.SW || {};
       // the shortest distinguishing suffix when the app holds two files of that name (ADR-0030).
       // Derived by the util the TURN reads these tokens back with, so the two cannot drift apart.
       const token = resource.kind === 'secret'
-        ? `{env:${resource.name}}` : SW.util.mentionToken(resource, mentionPeers);
+        ? `{env:${resource.name}}`
+        : resource.kind === 'mcp'
+          ? `{mcp:${resource.name}}`
+          : SW.util.mentionToken(resource, mentionPeers);
       const after = text.slice(mention.start).replace(/^@\S*/, '');
       const pad = after === '' || /^\s/.test(after) ? '' : ' ';
       setText(text.slice(0, mention.start) + token + pad + after);
@@ -571,7 +593,8 @@ window.SW = window.SW || {};
       // A folder row is not a Resource and has no chip to become: it is offered only because every
       // file under it is already attached to this app, which is the very thing a chip would say
       // (ADR-0030). Adding one would post a `folder:` id no Resource answers to.
-      if (resource.kind === 'folder' || resource.kind === 'skill' || resource.kind === 'secret') return;
+      if (resource.kind === 'folder' || resource.kind === 'skill' || resource.kind === 'secret'
+          || resource.kind === 'mcp') return;
       // The @name is already in the box. Unreported, this sends a prompt mentioning a file that
       // was never attached.
       await SW.store.addToContext(resource, { quiet: true }).catch(sayFailed);
@@ -1350,10 +1373,12 @@ window.SW = window.SW || {};
             ),
           h(
           'div',
-          { className: `sw-composer-field${hasSecretRefs ? ' has-secret-refs' : ''}` },
-          // The draft drawn again behind the box, with each `{env:NAME}` as a chip, while the box's
-          // own text is transparent. Character for character, so the caret lands where it reads.
-          hasSecretRefs && h(
+          { className: `sw-composer-field${hasSecretRefs ? ' has-secret-refs' : ''}`
+            + `${hasMcpRefs ? ' has-mcp-refs' : ''}` },
+          // The draft drawn again behind the box, with each `{env:NAME}` or `{mcp:name}` as a chip,
+          // while the box's own text is transparent. Character for character, so the caret lands
+          // where it reads.
+          (hasSecretRefs || hasMcpRefs) && h(
             'div',
             { className: 'sw-composer-mirror', ref: mirrorRef, 'aria-hidden': 'true' },
             secretRefMirror(text)

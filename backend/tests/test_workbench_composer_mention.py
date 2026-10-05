@@ -110,9 +110,9 @@ def test_the_new_group_is_appended_last():
     # `attached` — the selected app's Attachments — joined the working set when the Project stopped
     # listing them (#148). It goes above the catalogue like every other group here, because those
     # files are already in this Project and picking one joins nothing. So do the Project's skills
-    # (#628), and the Project's secrets (#643), for the same reason.
-    assert ("groups: [context, produced, resourceGroups.pin || [], project, skills, secretRows, files,\n"
-            "               attached],") in UI
+    # (#628), its secrets (#643), and its MCP servers, for the same reason.
+    assert ("groups: [context, produced, resourceGroups.pin || [], project, skills, secretRows, mcpRows,\n"
+            "               files, attached],") in UI
     assert "catalogue: catalogueParents," in UI
     assert "[...(groups || []), catalogue || []].forEach(" in UTIL
 
