@@ -4580,6 +4580,7 @@ window.SW = window.SW || {};
     if (ev.type === 'plan-proposed' || ev.type === 'done') {
       refreshProjectPlan().then(notify, () => {});
     }
+    if (ev.type === 'done') store.loadMcpServers();
     // The server named this Conversation off the first thing typed into it, at the top of the turn,
     // and says so here. Applied rather than fetched: nothing on this path re-reads the Thread index
     // — `sendBuildPrompt` re-reads the preview and the Bindings and never the list — so before this
@@ -9509,6 +9510,8 @@ window.SW = window.SW || {};
         if (mine() && (!state.chatRunning || state.runningTurn === claim)) state.typing = null;
         releaseRunningTurn(claim);
         notify();
+        // OpenCode starts with the first turn, so only now can it say whether each server loaded.
+        store.loadMcpServers();
       };
 
       const assistant = {

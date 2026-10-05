@@ -26528,6 +26528,9 @@ class Orchestrator:
             status = "failed"
             warning = (f"{', '.join(unset)} {'is' if len(unset) == 1 else 'are'} not set. "
                        "Add it as a secret.")
+        elif said.get("asked") is False:
+            # OpenCode starts with the first turn, and loads every server then.
+            status = "pending"
         elif servers is None:
             status = "unknown"
             warning = str(said.get("why") or said.get("error")

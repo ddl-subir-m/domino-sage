@@ -170,8 +170,8 @@ def test_add_lists_tools_and_every_route_answers_in_the_contracts_shape(client, 
     assert extension_mcp.server(client.root, "notes")["warning"] is None
     assert row["headers"] == {"Authorization": "Bearer {env:STUB_TOKEN_642}"}
     assert row["enabled"] is True
-    # The fake wiring runs no OpenCode server, so its status cannot be known.
-    assert (row["status"], row["warning"]) == ("unknown", "the OpenCode server is not running")
+    # The fake wiring runs no OpenCode server, so the server loads with the next turn.
+    assert (row["status"], row["warning"]) == ("pending", None)
     assert client.oc.disposed, "OpenCode reloads after an add"
 
     [listed] = client.get("/api/project/mcp").json()["servers"]
@@ -298,12 +298,19 @@ def test_secrets_resolve_through_one_seam(tmp_path, monkeypatch):
     assert crm["status"] == "connected"
 
 
-def test_when_opencode_cannot_be_asked_the_status_says_so(tmp_path):
+def test_before_opencode_starts_the_server_loads_with_the_next_turn(tmp_path):
     orch, root, _ = _status_orch(tmp_path, {"asked": False,
                                             "why": "the OpenCode server is not running"})
     extension_mcp.add(root, "crm", "https://x/mcp")
     [crm] = orch.list_mcp_servers()
-    assert (crm["status"], crm["warning"]) == ("unknown", "the OpenCode server is not running")
+    assert (crm["status"], crm["warning"]) == ("pending", None)
+
+
+def test_when_opencode_cannot_answer_the_status_says_so(tmp_path):
+    orch, root, _ = _status_orch(tmp_path, {"asked": True, "ok": False, "status": 500})
+    extension_mcp.add(root, "crm", "https://x/mcp")
+    [crm] = orch.list_mcp_servers()
+    assert (crm["status"], crm["warning"]) == ("unknown", "OpenCode answered 500")
 
 
 def test_a_project_with_no_servers_never_asks_opencode(tmp_path):
