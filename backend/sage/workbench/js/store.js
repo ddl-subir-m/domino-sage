@@ -572,6 +572,10 @@ window.SW = window.SW || {};
   // costs one extra read and not a poll.
   let listingRetryFor = -1;
   const LISTING_RETRY_MS = 4000;
+  // When the newest listing read started, and how old it may be before opening a model picker or
+  // coming back to the tab reads again (#646). Tab switches come in bursts; this bounds them.
+  let listingReadAt = 0;
+  const MODEL_LIST_FRESH_MS = 30000;
   // Which read of what the PROJECT holds is the current one — its membership and its `/project`
   // record together, which is the pair every refresh below takes. Same shape as the listing counter
   // above and needed for the same reason since #162: a working-set refresh no longer bumps
@@ -928,6 +932,7 @@ window.SW = window.SW || {};
 
     const appTicket = appScopeTicket();
     const listingGen = ++listingRead;
+    listingReadAt = Date.now();
     Promise.all([
       // `null`, not an empty body. A failed read keeps what is on screen — the rule
       // `refreshAppScope` states — and only `null` can say "no read" here: `{ attached: [] }` is a
@@ -5085,6 +5090,7 @@ window.SW = window.SW || {};
       state.assignmentEffortDropped = null;
       notify();
       if (open) this.loadAssignments();
+      if (open) store.refreshModelList();
       // Beside the panel read, because this drawer is the one surface that draws every closed row
       // at once (ADR-0043): an administrator who has just added a model to the group is most likely
       // to be looking here, and a lock read on the last scope load would still be showing it out.
@@ -5892,6 +5898,7 @@ window.SW = window.SW || {};
     async refreshResourceListing() {
       const scopeGen = scopeLoad;
       const gen = ++listingRead;
+      listingReadAt = Date.now();
       const listing = await SW.api.resourceListing().catch(() => null);
       if (gen !== listingRead || scopeGen !== scopeLoad) return;
       if (!listing) {
@@ -5911,6 +5918,13 @@ window.SW = window.SW || {};
       applyListing(listing);
       retryFailedListing(listing, scopeGen);
       notify();
+    },
+
+    // A gateway administrator can add a model while this tab is open, and the pickers draw from
+    // the listing a scope load read (#646). Nothing before the first listing: that load reads it.
+    refreshModelList() {
+      if (!state.resourceListing || Date.now() - listingReadAt < MODEL_LIST_FRESH_MS) return;
+      store.refreshResourceListing();
     },
 
     closeCatalog() {
@@ -10560,6 +10574,11 @@ window.SW = window.SW || {};
   // witness of the same drop; this is what makes the Workbench start reading again without a reload.
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('online', () => store.noteNetworkBack());
+  }
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') store.refreshModelList();
+    });
   }
 
   // The Build log cut into runs — a user row and the agent rows that followed it — for anything

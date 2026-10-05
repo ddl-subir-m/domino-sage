@@ -1452,7 +1452,8 @@ window.SW = window.SW || {};
           !showMode &&
             h(
               Dropdown,
-              { menu: modelMenu, trigger: ['click'], placement: 'topLeft' },
+              { menu: modelMenu, trigger: ['click'], placement: 'topLeft',
+                onOpenChange: (open) => { if (open) SW.store.refreshModelList(); } },
               h(
                 Button,
                 // The chip is now the only place the switch is stated once the notice is dismissed,
