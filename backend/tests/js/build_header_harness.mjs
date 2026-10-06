@@ -1239,6 +1239,14 @@ for (const step of steps) {
     report.push(SW.store.get().buildMessages.flatMap(m => m.blocks || []).filter(b => b.type === 'status'));
     continue;
   }
+  if (step.savedHistory) {
+    await arrive('thr_one', 'app_a');
+    SW.prefs.set('conversationView', 'split');
+    SW.api.history = async () => ({ history: step.savedHistory });
+    await SW.store.loadBuild({ keepPreview: true });
+    report.push(SW.store.get().buildMessages.flatMap(m => m.blocks || []).filter(b => b.type === 'status'));
+    continue;
+  }
   if (step.historyUnavailable) {
     await arrive('thr_many', 'app_a');
     SW.store.set({ me: { id: 'viewer' }, scope: { id: 'project_one' } });

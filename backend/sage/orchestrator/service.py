@@ -24216,6 +24216,8 @@ class Orchestrator:
                     if has_reference_metadata else
                     ([e["path"] for e in project.attachments_for_turn()] or None))
         project.active_plan_record_id = str((approved_doc or {}).get("id") or "")
+        tree_before = project.snapshot.working_tree_hash()
+        rows_before = len(project.app_for_turn().read_history(project.build_conversation))
         try:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
@@ -24240,6 +24242,10 @@ class Orchestrator:
                     # reads the plan turn already did (ADR-0070). Phased builds and the
                     # continuation path keep a session per phase.
                     fresh_session=False)
+            unbuilt = self._plan_unbuilt_event(project, plan_md, tree_before, rows_before)
+            if unbuilt is not None:
+                project.app_for_turn().append_history(unbuilt, project.build_conversation)
+                yield unbuilt
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs
@@ -24270,6 +24276,39 @@ class Orchestrator:
                 app.set_plan_retry_step(1)
             if app.read_plan_retry_step() == 0:
                 app.archive_plan()
+
+    def _plan_unbuilt_event(self, project: Project, plan_md: str, tree_before: str,
+                            rows_before: int) -> dict | None:
+        """The approved plan's steps this build wrote none of the named files for, or None (#662).
+
+        Only for a build that finished: a turn that gave up, was stopped, or wrote nothing already
+        says so in its own words. A step whose files overlap a built step's reads as built, so this
+        under-reports rather than naming a step that was worked on.
+        """
+        if self._turn_gave_up:
+            return None
+        app = project.app_for_turn()
+        rows = app.read_history(project.build_conversation)[rows_before:]
+        ended = next((r for r in reversed(rows) if r.get("type") in ("done", "stopped")), None)
+        if ended is None or ended["type"] != "done":
+            return None
+        changed = project.snapshot.changed_paths(
+            tree_before, project.snapshot.working_tree_hash(), limit=100_000)
+        if not changed:
+            return None
+
+        def written(name: str) -> bool:
+            path = str(PurePosix(name))
+            return any(c == path or c.startswith(path + "/") for c in changed)
+
+        unbuilt = [s for s in parse_steps(plan_md) if s.files and not any(map(written, s.files))]
+        if not unbuilt:
+            return None
+        named = [f"step {s.n} ({s.label})" for s in unbuilt]
+        listed = ", ".join(named[:-1]) + f" and {named[-1]}" if len(named) > 1 else named[0]
+        return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": (
+            f"Not built from the plan: {listed}. This build wrote none of the files "
+            + ("those steps name." if len(named) > 1 else "that step names."))}
 
     def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:
         """The document the approved plan.md belongs to, or None.
