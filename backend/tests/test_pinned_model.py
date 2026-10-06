@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from sage.gateway.client import FakeGatewayClient
 from sage.orchestrator.service import Orchestrator
-from sage.resources.app_helpers import TEMPLATE
+from sage.resources.app_helpers import FASTAPI, TEMPLATE
 from sage.resources.bindings import Binding
 from sage.resources.pinned_model import agents_block, pinned_alias, render_config
 from sage.resources.provider import FakeResourceProvider, LlmAlias
@@ -164,6 +166,17 @@ def test_the_agent_is_told_what_a_raw_gateway_call_costs_not_just_that_it_is_for
     assert "for the viewer" in block     # the error messages a raw call replaces with nothing
     assert "expired" in block            # session expiry, which a raw call cannot tell from a 500
     assert "streaming" in block
+
+
+@pytest.mark.parametrize("names", [TEMPLATE, FASTAPI], ids=["react-vite", "fastapi-antd"])
+def test_the_agent_is_told_a_structured_answer_needs_room_to_finish(names):
+    # #658: a brief asked for JSON with `maxTokens: 260`; the reply ended before its closing brace and
+    # the viewer saw "Unexpected end of JSON input". A cap that low is a guess the agent makes, so
+    # the block says what it costs and what to do when the parse fails anyway.
+    block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [], names)
+    assert "maxTokens" in block
+    assert "JSON" in block
+    assert "1000" in block
 
 
 def test_the_agent_is_told_the_preview_proxy_is_not_there_once_the_app_ships():
