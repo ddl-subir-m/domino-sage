@@ -1759,7 +1759,11 @@ for (const step of steps) {
     // The app the card named. It is the selected one here, which is the only state that draws a
     // button at all: every act behind one resolves the app on screen NOW (#77, #135).
     const on = SW.store.get().activeApp || {};
-    const entry = { ...step.fixMention, app: on.name, appId: on.id };
+    // `also` is the other rows on the same card. One mention is the ordinary step; two Aliases
+    // are what draws two buttons with the same words unless the store collapses them.
+    const entries = [step.fixMention, ...(step.also || [])].map((row) => ({
+      ...row, app: on.name, appId: on.id,
+    }));
     // What the click sends once it has written the record (#213). Stubbed rather than the store's
     // own send: what is under test is that the record's answer decides whether a turn follows at
     // all, and a real `sendBuildPrompt` would put the whole build pipeline between the claim and
@@ -1769,8 +1773,8 @@ for (const step of steps) {
     // A route that turns the bind down, so "the record decides" is a claim about what happened
     // rather than about a path nothing walked.
     bindRefusal = step.refuse || '';
-    const fixes = SW.store.mentionFixes([entry], on.id, replay);
-    if (!fixes.length) throw new Error(`no fix offered for ${JSON.stringify(entry)}`);
+    const fixes = SW.store.mentionFixes(entries, on.id, replay);
+    if (!fixes.length) throw new Error(`no fix offered for ${JSON.stringify(entries)}`);
     await fixes[0].act();
     const picker = headerPicker(step.thread);
     const s = SW.store.get();
