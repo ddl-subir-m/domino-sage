@@ -116,7 +116,7 @@ def test_the_warning_is_drawn_under_the_box_and_only_when_there_is_one():
 def test_the_sentence_names_the_app_and_only_what_a_button_below_it_can_close():
     """The invariant the refusal keeps by building both halves in one pass: the warning can never
     name something no act on it can fix."""
-    assert "const offered = new Set(fixes.map((fix) => fix.key));" in UI
+    assert "const offered = new Set(fixes.flatMap((fix) => fix.keys));" in UI
     assert ".filter((e) => offered.has(`${e.kind}:${e.id}`))" in UI
     assert "`${app} doesn't use ${named.join(', ')} yet.`" in UI
     # An Alias is not a failed delivery, so it gets the other half of the sentence — the capability

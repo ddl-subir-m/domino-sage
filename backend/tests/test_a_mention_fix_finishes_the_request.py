@@ -217,6 +217,38 @@ def test_the_bind_is_followed_by_the_request_that_was_refused():
 
 
 @needs_node
+def test_two_unbound_aliases_are_one_button_that_binds_both_before_the_build():
+    """Two mentions, one sentence, one button. Each row used to draw "Use in {app} and build",
+    so the card offered the same words twice — and the click bound one Alias and started the
+    turn while the other was still missing."""
+    step = _fix(
+        {"kind": "llm_alias", "id": "al_1", "name": "haiku"},
+        replay=True,
+        also=[{"kind": "llm_alias", "id": "al_9", "name": "sonnet"}])
+
+    assert step["labels"] == [f"Use in {APP} and build"]
+    assert step["posted"] == [
+        {"kind": "llm_alias", "id": "al_1"},
+        {"kind": "llm_alias", "id": "al_9"},
+    ]
+    assert step["replayed"] == 1
+
+
+@needs_node
+def test_an_alias_and_a_token_stay_two_buttons():
+    """The collapse is the words, not the card. A Model API does not write a record, so it keeps
+    its own button — and clicking the Alias's does not pretend to have added the token."""
+    step = _fix(
+        {"kind": "llm_alias", "id": "al_1", "name": "haiku"},
+        replay=True,
+        also=[MODEL_API])
+
+    assert step["labels"] == [f"Use in {APP} and build", "Add its access token"]
+    assert step["posted"] == [{"kind": "llm_alias", "id": "al_1"}]
+    assert step["replayed"] == 1
+
+
+@needs_node
 def test_a_refused_bind_sends_nothing():
     """The record is what decides. A turn sent on top of a Binding the route turned down would walk
     into the refusal the click was supposed to have cleared, and read as a second failure of the

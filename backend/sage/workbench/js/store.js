@@ -6837,12 +6837,40 @@ window.SW = window.SW || {};
       // have to mean two acts at once.
       const scope = (e) => ({ label: `Choose what ${e.app} reads`,
                               act: () => store.openScopeForMention(e) });
-      return (entries || []).map((entry) => {
+      const made = (entries || []).map((entry) => {
         const make = entry && (entry.table ? scope : MENTION_FIX[entry.kind]);
         if (!make || !entry.id || !entry.app) return null;
         if (!entry.appId || entry.appId !== activeAppId) return null;
-        return { ...withReplay(make(entry)), key: `${entry.kind}:${entry.id}` };
+        return { ...make(entry), key: `${entry.kind}:${entry.id}` };
       }).filter(Boolean);
+      // One button per label, when the click also builds. Two unbound Aliases both read
+      // "Use in Gong sentiment and build", and each click bound one of them and then started the
+      // turn — so the other was still missing when the build began, and the card came back with
+      // the same words on a second button. Rows that share a label and write the record are one
+      // act: bind every one of them, then build once. A door that only opens (the token, the
+      // Scope) stays one button per row, because the second click is a different choice.
+      const grouped = [];
+      made.forEach((fix) => {
+        const prev = grouped.find((g) => g.label === fix.label && g.sends && fix.sends);
+        if (prev) {
+          prev.acts.push(fix.act);
+          prev.keys.push(fix.key);
+          return;
+        }
+        grouped.push({ label: fix.label, sends: fix.sends, acts: [fix.act], keys: [fix.key] });
+      });
+      return grouped.map((group) => {
+        const act = group.acts.length > 1
+          ? () => group.acts.reduce(
+              (chain, next) => chain.then((ok) => (ok ? Promise.resolve(next()) : ok)),
+              Promise.resolve(true))
+          : group.acts[0];
+        return {
+          ...withReplay({ label: group.label, act, sends: group.sends }),
+          key: group.keys.join('|'),
+          keys: group.keys,
+        };
+      });
     },
 
     // What a card with no buttons says instead (#213). One entry per kind the route can refuse, so

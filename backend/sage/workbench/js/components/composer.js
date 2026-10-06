@@ -264,7 +264,9 @@ window.SW = window.SW || {};
     // the box clears and the turn starts exactly as it would have without the warning.
     const fixes = SW.store.mentionFixes(entries, activeAppId, onSend);
     if (!fixes.length) return null;
-    const offered = new Set(fixes.map((fix) => fix.key));
+    // `keys` rather than `key`: one button can close several rows — two Aliases, one
+    // "Use in {app} and build" — and the sentence has to name every one of them.
+    const offered = new Set(fixes.flatMap((fix) => fix.keys));
     // The token the picker INSERTED, not the row's name. `mentionToken` collapses whitespace, so a
     // Resource called "Sales Warehouse" stands in the box as `@Sales_Warehouse` — and a warning that
     // quoted the name would send the reader looking for a word their prompt does not contain.
