@@ -39,6 +39,10 @@ _CURRENT_TIMING_RECORD = object()
 TIMEOUT_S = 8.0
 MAX_UNREADABLE = 3
 
+# Heads the handoff note's data-used lines. The app's data region reads the note for it, so a build
+# that has bound nothing is warned before its first turn writes a query.
+DATA_USED_HEADING = "Data used in the Chat work:"
+
 # Only the last user + last assistant + title. Truncate rather than refuse.
 _TITLE_CHARS = 200
 _TURN_CHARS = 1500
@@ -929,7 +933,16 @@ def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
         parts.append("")
         lines = [line for line in (data_used or []) if line]
         if lines:
-            parts.append("Data used in the Chat work:")
+            parts.append(DATA_USED_HEADING)
+            bound = [b for b in (binding_from_context(i) for i in context)
+                     if b is not None and b.kind == KIND_DATA_SOURCE]
+            if not bound:
+                # Unlabelled, a build read these names as sources it could query, found no id to
+                # copy, and wrote every query against one it made up (#669).
+                parts.append(brand.text(
+                    "No {dataSource} crosses with this handoff, so the app cannot query any of "
+                    "these. They are background on what the Chat work read, not sources to name "
+                    "in a query."))
             parts.extend(f"- {line}" for line in lines)
             parts.append("")
     # No closing "the plan is what to build" line. `implement_note` puts that sentence in front of
