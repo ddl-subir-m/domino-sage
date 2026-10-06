@@ -221,6 +221,23 @@ def test_a_name_typed_into_the_rail_outranks_every_prompt_after_it(tmp_path: Pat
     assert store.get(thread["id"])["title"] == "Q3 exposure"
 
 
+def test_a_follow_up_build_turn_moves_the_conversation_up_the_rail(tmp_path: Path, monkeypatch):
+    """The rail sorts on `updatedAt` and prints it, and only the naming turn used to write it — so a
+    conversation built in all afternoon read "2 hours ago" beneath one left quiet since (#651)."""
+    from sage.workspace import threads as threads_mod
+
+    orch, store = _named_orch(tmp_path)
+    building = store.create()
+    list(orch.build_stream("add a revenue chart by region", None, None, conversation=building["id"]))
+    quiet = store.create(title="scratch")
+    monkeypatch.setattr(threads_mod, "_now", lambda: "2099-01-01T00:00:00Z")
+
+    list(orch.build_stream("make it dark", None, None, conversation=building["id"]))
+
+    assert store.get(building["id"])["updatedAt"] == "2099-01-01T00:00:00Z"
+    assert [t["id"] for t in store.list()] == [building["id"], quiet["id"]]
+
+
 def test_a_build_naming_no_conversation_writes_no_title(tmp_path: Path):
     """A build driven from outside the rail — the CLI, a test — passes an id this store has no row
     for, or none at all. Neither is a Conversation to name."""
