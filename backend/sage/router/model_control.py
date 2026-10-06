@@ -277,6 +277,10 @@ class ModelControl:
             self._turn_mode_token = None
             self._turn_mode = None
             self._sync_phase(self._mode)
+            # The classifier starts every Auto turn in PLAN until its first write, so a phase
+            # left at IMPLEMENT would name a turn that is over (#662).
+            if self._mode is Mode.AUTO:
+                self._phase = Phase.PLAN
 
     def arm_saved_effort_slots(self, slots: frozenset[str] | set[str]) -> object:
         token = object()

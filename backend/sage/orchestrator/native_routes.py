@@ -12,12 +12,12 @@ from uuid import uuid4
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import build_intent, timing
+from .. import build_intent, timing, transient
 from ..context_rollover import ContextAction
 from ..gateway.capabilities import RouteStatus
 from ..gateway.client import GatewayUpstreamError, StreamCancellation
 from ..gateway.events import StreamEvents
-from ..gateway.protocol import Protocol
+from ..gateway.protocol import Protocol, endpoint
 from ..pre_edit_guard import PreEditAction
 from ..request_composition import measure, wire_bytes
 from ..router.models import Phase
@@ -57,6 +57,8 @@ _CONTEXT_CONTINUE_REQUIRED = "Sage stopped this request because the Build reache
 _CONTEXT_MEASUREMENT_ERROR = "Sage could not measure the final model request safely."
 _TURN_SCOPE_CHANGED = "Sage stopped this request because its Build turn ended before it was ready."
 _MODEL_OUTPUT_LIMIT_ERRORS = frozenset({"length", "max_tokens", "max_output_tokens"})
+_RATE_LIMITED = "The model is rate-limited; try again in a minute or pick another model."
+_HELD_FRAMES = 8
 _MODEL_NO_ACTION_MESSAGE = (
     "The model kept streaming without producing text or starting a tool call. "
     "Sage stopped this attempt safely."
@@ -68,6 +70,11 @@ _IMPLEMENT_REASONING_BUDGET_MESSAGE = (
 _PRE_EDIT_REPEATED_CALL = (
     "The model repeated a tool call it had already made in this response. "
     "Sage stopped this attempt under the active pre-edit Build policy."
+)
+# Starts "The model gateway" so OpenCode's provider (`driver/provider.mjs`) passes it through.
+_GATEWAY_SERVER_ERROR = (
+    "The model gateway failed inside itself while serving {model} over {path} (server_error). "
+    "This is a gateway-side error, not a refusal of the request; try again, or pick another model."
 )
 
 
@@ -471,6 +478,9 @@ def install(app, get_orchestrator):
                             reasoning_only_chunks=events.reasoning_only_chunks)
                     # Provider terminal failures, including output limits, own the frame on which
                     # they arrive. A text or tool announcement on the same frame is then action.
+                    if events.error == "server_error":
+                        raise ValueError(_GATEWAY_SERVER_ERROR.format(
+                            model=outbound.get("model", ""), path=endpoint("", protocol)))
                     if events.error:
                         raise ValueError("The model stream failed: " + events.error)
                     if build_watchdog:
@@ -539,7 +549,49 @@ def install(app, get_orchestrator):
             finally:
                 upstream.close()
 
-        gen = _capture_refusal(validated(), view, refused)
+        def retried():
+            """`validated()`, called again while a rate limit is all the person would have seen.
+
+            Frames that show nothing (a response opening, a role-only delta) are held until the
+            first text, reasoning or tool frame, so a dropped attempt never reaches OpenCode and
+            a reply is never opened twice. After that frame a rate limit ends the call. SSE
+            comments pass straight through, and the hold is capped at the pump's queue size: a
+            held frame is one the producer ran ahead by, past the queue's backpressure.
+            """
+            nonlocal events, repair, upstream
+            attempt, waited = 0, 0.0
+            while True:
+                held, shown = [], False
+                try:
+                    for frame in validated():
+                        if shown or frame.startswith(b":"):
+                            yield frame
+                        elif (events.first_action_kind is None and not events.reasoning_only_chunks
+                                and len(held) < _HELD_FRAMES):
+                            held.append(frame)
+                        else:
+                            shown = True
+                            yield from held
+                            held = []
+                            yield frame
+                except ValueError:
+                    delay = (transient.rate_limit_delay(attempt, waited)
+                             if not shown and events.error == "rate_limit_error"
+                             and not cancel.event.is_set() else None)
+                    if delay is None:
+                        raise
+                    log.warning("model call rate-limited; trying again in %.0fs", delay)
+                    attempt, waited = attempt + 1, waited + delay
+                    if transient.wait(delay, cancel):
+                        return
+                    events = StreamEvents(protocol, response_contract=contract)
+                    repair = ArgumentRepair(protocol)
+                    upstream = project.shim.gateway.route(outbound, labels, protocol=protocol, cancel=cancel)
+                    continue
+                yield from held
+                return
+
+        gen = _capture_refusal(retried(), view, refused)
         gen = project.shim.data_use.observe(gen, view, used)
         q = queue.Queue(maxsize=8)
 
@@ -598,7 +650,10 @@ def install(app, get_orchestrator):
 
         def failure(error):
             # Provider error bodies can contain reasoning or a signature. Do not log or echo them.
-            if isinstance(error, _ModelNoActionTimeout):
+            if (events.error == "rate_limit_error"
+                    or isinstance(error, GatewayUpstreamError) and error.status == 429):
+                message = _RATE_LIMITED
+            elif isinstance(error, _ModelNoActionTimeout):
                 message = _MODEL_NO_ACTION_MESSAGE
             elif isinstance(error, _ImplementReasoningBudget):
                 message = _IMPLEMENT_REASONING_BUDGET_MESSAGE

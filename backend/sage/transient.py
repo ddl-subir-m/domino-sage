@@ -18,6 +18,10 @@ log = logging.getLogger("sage.transient")
 ATTEMPTS = 4
 BACKOFF_S = (0.4, 1.0, 2.0)
 TRANSIENT_STATUS = frozenset({502, 503, 504})
+# A rate limit clears in seconds, not in the blip's fraction of one. Longer pauses, and a budget
+# for the whole wait, so a provider that keeps saying 429 still ends the turn instead of hanging it.
+RATE_LIMIT_BACKOFF_S = (2.0, 5.0, 10.0)
+RATE_LIMIT_BUDGET_S = 20.0
 
 _DROP = re.compile(
     r"ConnectError|ReadError|WriteError|CloseError|RemoteProtocolError|"
@@ -35,6 +39,30 @@ _CLOSED = re.compile(
 
 def pause(attempt: int) -> None:
     time.sleep(BACKOFF_S[attempt])
+
+
+def rate_limit_delay(attempt: int, waited: float, retry_after: str | None = None) -> float | None:
+    """Seconds to wait before trying a rate-limited call again, or None to give up.
+
+    `Retry-After` wins when it is a number of seconds. A wait that would carry the total past the
+    budget is not started: the person is better told now than after a pause that ends in a 429.
+    """
+    if attempt >= len(RATE_LIMIT_BACKOFF_S):
+        return None
+    delay = RATE_LIMIT_BACKOFF_S[attempt]
+    try:
+        delay = max(0.0, float(retry_after))
+    except (TypeError, ValueError):
+        pass
+    return delay if waited + delay <= RATE_LIMIT_BUDGET_S else None
+
+
+def wait(seconds: float, cancel=None) -> bool:
+    """Sleep, ending early when `cancel` (a `StreamCancellation`) fires. True when it did."""
+    if cancel is None:
+        time.sleep(seconds)
+        return False
+    return cancel.event.wait(seconds)
 
 
 def transport_blip(exc: BaseException) -> bool:

@@ -3382,7 +3382,8 @@ window.SW = window.SW || {};
               ? (ev.verification.stages && ev.verification.stages.runtime === 'passed'
                 && ev.verification.stages.data === 'unverified'
                 ? 'Page checks passed. Data access wasn\'t checked.'
-                : 'Code checks passed. The app wasn\'t run.')
+                : `Code checks passed. The app wasn't run${
+                  ev.verification.reason ? ` — ${ev.verification.reason}` : ''}.`)
               : ev.decision === 'answered'
               ? 'Answered'
               : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),
@@ -3402,6 +3403,9 @@ window.SW = window.SW || {};
         // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
         dropTableCard(messages, null);
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+        // The request a Retry sends again (#663). From the row, not the bubble above it: the
+        // bubble over a click is the click.
+        if (ev.prompt) ensureAssistant().retryPrompt = ev.prompt;
       } else if (ev.type === 'withhold-search') {
         // Build drew nothing for this frame, and Chat has drawn it since the search shipped. Live,
         // that is how it read: the refusal went up instantly, then fourteen seconds of nothing, then
@@ -3529,6 +3533,10 @@ window.SW = window.SW || {};
         // read as a failed turn, and an `{ type: 'error' }` frame would be one: `endedBadly` keys
         // on the frame type alone and would go and fetch a gateway listing over a clean build.
         ensureAssistant().blocks.push({ type: 'status', value: ev.message });
+      } else if (ev.type === 'plan-unbuilt' && ev.message) {
+        // Amber like an unverified build: the turn finished, and what it left out of the plan is
+        // a gap to read, not a failure of the turn.
+        ensureAssistant().blocks.push({ type: 'status', ok: null, warn: true, value: ev.message });
       } else if (ev.type === 'data-source-failed' && ev.message) {
         // Red, unlike the grey line above it, and that is the whole difference between the two: an
         // app nobody queried may be exactly what was wanted, and an app whose queries the store

@@ -522,13 +522,19 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
         "Call it from the app:", "",
         *(["```js",
            '// `sage.runQuery` is on the page already (static/sage/appQuery.js); nothing to import.',
-           'const { columns, rows } = await sage.runQuery("usage_by_account", { since: "2026-01-01" });']
+           'const { columns, rows, records } = await sage.runQuery("usage_by_account", { since: "2026-01-01" });']
           if names.ext == "js" else
           ["```tsx",
            f'import {{ runQuery }} from "./{names.query}";   // from a subfolder: "../{names.query}"',
            "",
-           'const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });']),
+           'const { columns, rows, records } = await runQuery("usage_by_account", { since: "2026-01-01" });']),
         "```", "",
+        # Measured 2026-10-06 (#662): a dashboard read `row.OPEN_PIPELINE` off the positional rows,
+        # got undefined on every read, and drew $0 and "No data" over queries that had answered.
+        ("- **Read a row by column name through `records`, never through `rows`.** `rows` holds one "
+         "positional array per row, so `row.OPEN_PIPELINE` on it is `undefined` and the screen "
+         "draws zeros over a query that answered. `records` is the same rows as objects keyed by "
+         "`columns`: `records[0].OPEN_PIPELINE`."),
         # Measured 2026-09-21 (#484): a dashboard wrote `COUNT(*) AS events`, read `columns` for
         # `"events"` with an exact `indexOf`, and drew its own "column is missing" error over a
         # store that had answered — Snowflake had spelled it `EVENTS`. Thirty patches of self-review

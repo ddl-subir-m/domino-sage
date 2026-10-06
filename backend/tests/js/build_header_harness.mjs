@@ -1232,8 +1232,17 @@ for (const step of steps) {
       { type: 'user', text: 'Make a page' },
       { type: 'typecheck', kind: 'Syntax check', ok: true },
       { type: 'done', ok: step.savedVerification !== 'failed', decision: 'queries failed',
-        verification: { overall: step.savedVerification, stages: step.verificationStages } },
+        verification: { overall: step.savedVerification, stages: step.verificationStages,
+                        reason: step.verificationReason || undefined } },
     ] });
+    await SW.store.loadBuild({ keepPreview: true });
+    report.push(SW.store.get().buildMessages.flatMap(m => m.blocks || []).filter(b => b.type === 'status'));
+    continue;
+  }
+  if (step.savedHistory) {
+    await arrive('thr_one', 'app_a');
+    SW.prefs.set('conversationView', 'split');
+    SW.api.history = async () => ({ history: step.savedHistory });
     await SW.store.loadBuild({ keepPreview: true });
     report.push(SW.store.get().buildMessages.flatMap(m => m.blocks || []).filter(b => b.type === 'status'));
     continue;

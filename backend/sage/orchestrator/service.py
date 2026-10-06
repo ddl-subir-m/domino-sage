@@ -23352,7 +23352,11 @@ class Orchestrator:
                         '\n\nThe plan is still here. Say "try again" to build it.')
                 message += _last_rung_note(build_history, reason)
                 failure_fields = _plan_failure_fields(err) if gate else {}
+                # What Build's Retry sends again (#663). Empty for an approval or a phase, as on
+                # `build-stalled`: their prompt is Sage's, and re-sent as typed text it is a new
+                # request rather than the same turn.
                 yield persist({"type": "error", "message": message, "reason": reason,
+                               "prompt": "" if is_approval or not owns_turn else prompt,
                                **failure_fields})
                 # Between the error and the `done`, for the reason Chat puts it there: a client
                 # reading the stream in order sees what failed before it is offered a way out of it.
@@ -23364,6 +23368,9 @@ class Orchestrator:
                 offered = self._record_build_recall_offer(project)
                 if offered is not None:
                     yield offered
+                # After the offer: the recall ladder reads the transcript's tail for the error.
+                if owns_turn and agent_wrote():
+                    yield persist(_app_change_event(project.app_for_turn()))
                 yield persist({"type": "done", "ok": False, "decision": "gateway error",
                                **failure_fields})
                 return
@@ -24228,6 +24235,8 @@ class Orchestrator:
                     if has_reference_metadata else
                     ([e["path"] for e in project.attachments_for_turn()] or None))
         project.active_plan_record_id = str((approved_doc or {}).get("id") or "")
+        tree_before = project.snapshot.working_tree_hash()
+        rows_before = len(project.app_for_turn().read_history(project.build_conversation))
         try:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
@@ -24252,6 +24261,10 @@ class Orchestrator:
                     # reads the plan turn already did (ADR-0070). Phased builds and the
                     # continuation path keep a session per phase.
                     fresh_session=False)
+            unbuilt = self._plan_unbuilt_event(project, plan_md, tree_before, rows_before)
+            if unbuilt is not None:
+                project.app_for_turn().append_history(unbuilt, project.build_conversation)
+                yield unbuilt
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs
@@ -24290,6 +24303,39 @@ class Orchestrator:
                 app.set_plan_retry_step(1)
             if app.read_plan_retry_step() == 0:
                 app.archive_plan()
+
+    def _plan_unbuilt_event(self, project: Project, plan_md: str, tree_before: str,
+                            rows_before: int) -> dict | None:
+        """The approved plan's steps this build wrote none of the named files for, or None (#662).
+
+        Only for a build that finished: a turn that gave up, was stopped, or wrote nothing already
+        says so in its own words. A step whose files overlap a built step's reads as built, so this
+        under-reports rather than naming a step that was worked on.
+        """
+        if self._turn_gave_up:
+            return None
+        app = project.app_for_turn()
+        rows = app.read_history(project.build_conversation)[rows_before:]
+        ended = next((r for r in reversed(rows) if r.get("type") in ("done", "stopped")), None)
+        if ended is None or ended["type"] != "done":
+            return None
+        changed = project.snapshot.changed_paths(
+            tree_before, project.snapshot.working_tree_hash(), limit=100_000)
+        if not changed:
+            return None
+
+        def written(name: str) -> bool:
+            path = str(PurePosix(name))
+            return any(c == path or c.startswith(path + "/") for c in changed)
+
+        unbuilt = [s for s in parse_steps(plan_md) if s.files and not any(map(written, s.files))]
+        if not unbuilt:
+            return None
+        named = [f"step {s.n} ({s.label})" for s in unbuilt]
+        listed = ", ".join(named[:-1]) + f" and {named[-1]}" if len(named) > 1 else named[0]
+        return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": (
+            f"Not built from the plan: {listed}. This build wrote none of the files "
+            + ("those steps name." if len(named) > 1 else "that step names."))}
 
     def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:
         """The document the approved plan.md belongs to, or None.
@@ -24652,8 +24698,19 @@ class Orchestrator:
                     and (not validation.generation
                          or supervisor.status()["generation"] == validation.generation))
 
+        def interrupted() -> str:
+            if project.stop_requested:
+                return "the build was stopped"
+            if self._project is not project or project.workspace.app_id != app.app_id:
+                return "another app was opened"
+            return "the preview was restarted by something else"
+
         try:
-            if timeout <= 0 or not current():
+            if timeout <= 0:
+                validation.reason = "page checks are turned off"
+                return validation
+            if not current():
+                validation.reason = interrupted()
                 return validation
             deadline = time.monotonic() + timeout
             accepted = False
@@ -24672,6 +24729,8 @@ class Orchestrator:
                         break
                 time.sleep(0.1)
             if validation.stages["startup"] != "passed" or not current():
+                validation.reason = (interrupted() if not current()
+                                     else f"the preview didn't start within {timeout:g}s")
                 return validation
             yield validation.event()
             deadline = time.monotonic() + timeout
@@ -24681,6 +24740,8 @@ class Orchestrator:
                     return validation
                 time.sleep(0.1)
             if not validation.acknowledged or not current():
+                validation.reason = (interrupted() if not current()
+                                     else f"the preview didn't load the changed page within {timeout:g}s")
                 return validation
             validation.stages["page"] = "passed"
             with timing.span("after.runtime_wait"):
@@ -24693,6 +24754,9 @@ class Orchestrator:
             elif (current() and validation.code_generation
                   and project.snapshot.working_tree_hash() == validation.code_generation):
                 validation.stages["runtime"] = "passed"
+            else:
+                validation.reason = (interrupted() if not current()
+                                     else "the code changed while the page was being checked")
             return validation
         finally:
             status = supervisor.status()

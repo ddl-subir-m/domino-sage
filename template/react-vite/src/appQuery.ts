@@ -34,13 +34,18 @@ export type QueryDataUse = {
   modelView: "not_sent_to_model_by_query" | "unknown";
 };
 
+/** A single value in a query's answer. */
+export type QueryValue = string | number | boolean | null;
+
 /** One query's answer. `columns` names them in order; each row has one value per column, by
- * position. `truncated` is true when the store had more rows than this app will return.
+ * position. `records` is the same rows as objects keyed by those names, spelled the way the store
+ * spells them. `truncated` is true when the store had more rows than this app will return.
  * `dataUsed` is the source and coverage evidence to show beside local tables, charts and
  * model-assisted text. */
 export type QueryResult = {
   columns: string[];
-  rows: (string | number | boolean | null)[][];
+  rows: QueryValue[][];
+  records: Record<string, QueryValue>[];
   truncated: boolean;
   dataUsed: QueryDataUse;
 };
@@ -70,7 +75,7 @@ const NOT_SERVED =
  * replacing it, because the reasons need opposite responses (wait and retry, ask for access, tell
  * whoever published the app) and one generic sentence sends everyone down the wrong one.
  *
- *     const { columns, rows } = await runQuery("usage_by_account", { since: "2026-01-01" });
+ *     const { columns, rows, records } = await runQuery("usage_by_account", { since: "2026-01-01" });
  */
 export async function runQuery(
   name: string,
@@ -104,6 +109,7 @@ export async function runQuery(
   return {
     columns: result.columns,
     rows: result.rows,
+    records: result.rows.map((row) => Object.fromEntries(result.columns.map((c, i) => [c, row[i]]))),
     truncated,
     dataUsed: normalizeDataUsed(name, result, truncated),
   };
