@@ -72,6 +72,19 @@ def test_a_body_with_no_error_object_is_still_logged(caplog):
     assert "tenant quota exhausted for project 42" in said, said
 
 
+def test_a_failed_response_logs_the_reason_it_carries(caplog):
+    """`response.failed` carries its reason inside `response.error`, not at the top level, so the
+    error branch above never saw it: the turn died as `response.failed` and the ring held nothing
+    that said why."""
+    events = StreamEvents(Protocol.RESPONSES)
+    events.feed(sse({"type": "response.failed", "response": {
+        "status": "failed", "error": {"code": "server_error", "message": REASON}}}))
+    assert events.error == "response.failed"
+    said = "\n".join(r.getMessage() for r in ring(caplog))
+    assert REASON in said, said
+    assert len(ring(caplog)) == 1, said
+
+
 def test_an_enormous_body_cannot_evict_the_rest_of_the_turn(caplog):
     """The ring holds 400 lines and an event may be megabytes. Clipped, not dropped."""
     events = StreamEvents(Protocol.MESSAGES)

@@ -2260,7 +2260,8 @@ def _context_folder_state(workspace: Path, item: dict) -> str:
     if not path:
         return ""
     try:
-        root = _safe_join(workspace, path)
+        p = Path(path)
+        root = p if p.is_absolute() else _safe_join(workspace, path)
         if not root.is_dir():
             raise FileNotFoundError(path)
         entries = sorted(p for p in root.rglob("*") if p.is_file() or p.is_symlink())

@@ -20,6 +20,7 @@ from sage.router.models import (
     Reason,
     SessionState,
     signing_slot,
+    signs,
 )
 
 CATALOG = ModelCatalog(
@@ -102,6 +103,13 @@ def test_the_signing_class_never_overlaps_the_bedrock_class():
     one signature on the first call — so a model in both sets would have its history reshaped into
     the exact form it rejects. Neither set is huge; this is the cheap way to keep them apart."""
     assert SIGNS_TOOL_CALLS & BEDROCK_SERVED == frozenset()
+
+
+@pytest.mark.parametrize("model", ["gemini-3.8-flash", "google/gemini-3.8-flash"])
+def test_gemini_3_8_flash_signs_its_tool_calls(model):
+    """Offered as `google/gemini-3.8-flash`, it attaches a `thought_signature` like 3.7 does. Unlisted,
+    the pin never held a session on it and a mixed session sent it unsigned history."""
+    assert signs(model)
 
 
 @pytest.mark.parametrize(

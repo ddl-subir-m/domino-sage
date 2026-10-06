@@ -98,7 +98,7 @@ def is_bedrock(model: ModelId) -> bool:
 # Must stay DISJOINT from BEDROCK_SERVED: split_parallel_tool_calls takes a parallel batch apart
 # across messages, and a signed batch carries its one signature on the FIRST call, so splitting one
 # would manufacture the very shape Gemini rejects. A test holds the two sets apart.
-SIGNS_TOOL_CALLS = frozenset({"gemini-3.7-flash"})
+SIGNS_TOOL_CALLS = frozenset({"gemini-3.7-flash", "gemini-3.8-flash"})
 
 
 def signs(model: ModelId) -> bool:

@@ -476,6 +476,11 @@ class StreamEvents:
                 self.refused = True
             if kind in ("response.completed", "response.incomplete", "response.failed"):
                 self.terminal = kind
+                if kind == "response.failed":
+                    # The reason rides inside `response.error`, which the top-level `error` check
+                    # above cannot see. Same channel and clip as that one: the ring, never the stream.
+                    log.warning("gateway stream failed: %s",
+                                json.dumps(response.get("error") or event)[:MAX_LOGGED_ERROR_CHARS])
                 if kind != "response.completed":
                     reason = (response.get("incomplete_details") or {}).get("reason")
                     self.error = reason if reason in {"max_output_tokens", "content_filter"} else kind

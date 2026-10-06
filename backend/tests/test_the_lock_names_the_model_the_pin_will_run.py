@@ -25,7 +25,7 @@ from sage.resources.provider import FakeResourceProvider, LlmAlias
 from sage.router.llm_router import locked_runs_on, nearest_approved, resolve
 from sage.router.models import ASSIGNABLE_SLOTS, Mode, ModelCatalog, Phase, SessionState
 
-SIGNING = "gemini-3.7-flash"   # the one member of SIGNS_TOOL_CALLS
+SIGNING = "gemini-3.7-flash"   # a member of SIGNS_TOOL_CALLS
 GROUP = "sensitive-approved"
 
 # The measured shape from #285: a signing model in the Implement slot, two unapproved vendor models

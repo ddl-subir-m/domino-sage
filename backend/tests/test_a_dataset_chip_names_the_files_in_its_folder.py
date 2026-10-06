@@ -75,6 +75,20 @@ def test_a_folder_that_is_not_there_says_so(tmp_path: Path):
     assert "Do not read anything else in its place." in state
 
 
+def test_a_mounted_dataset_chip_with_an_absolute_path_is_read_where_it_is(tmp_path: Path):
+    """`@sales-playbooks` adds a chip whose path is the mount itself, `/mnt/data/sales-playbooks`.
+    Joined under the workspace, an absolute path reads as an escape, and every such turn was told
+    to refuse a folder it could open."""
+    mount = tmp_path / "mnt" / "data" / "sales-playbooks"
+    mount.mkdir(parents=True)
+    (mount / "playbook.md").write_text("# hi\n")
+    chip = {"kind": "dataset", "name": "sales-playbooks", "path": str(mount)}
+
+    state = _context_folder_state(tmp_path / "mnt" / "code", chip)
+
+    assert state == "Read these files: `playbook.md`."
+
+
 def test_files_that_all_refuse_to_open_are_not_reported_as_no_files(tmp_path: Path):
     """A rehydrate can leave the symlinks dangling. Calling that "no files" sends the person looking
     for an attachment they already made."""
