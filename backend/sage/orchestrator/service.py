@@ -11144,6 +11144,8 @@ class Orchestrator:
             raise KeyError(thread_id)
         if isinstance(body, dict) and body.get("handoff") == "suppress":
             store.suppress_handoff(thread_id)
+        if isinstance(body, dict) and body.get("handoff") == "cancel":
+            store.cancel_handoff_plan(thread_id)
         row = store.update(
             thread_id,
             title=body.get("title") if isinstance(body, dict) else None,
@@ -12308,11 +12310,13 @@ class Orchestrator:
             log.exception("handoff: detect failed")
             return None
 
-    def draft_handoff_plan(self, thread_id: str) -> dict:
+    def draft_handoff_plan(self, thread_id: str, redraft: bool = False) -> dict:
         """Write a plan document for this Thread by running sage-plan in its own session, and open
         the sheet payload. Creates no app: that is what confirming does (ADR-0008).
 
-        Idempotent once the Thread's handoff names a plan document. Does not teleport into Build."""
+        Idempotent while the Thread's handoff is `planned`, unless `redraft` asks for a new plan.
+        A bound handoff is finished, so the next draft is the next handoff's (#661). Does not
+        teleport into Build."""
         if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "try again")
         # The native harness refuses a model call whose lock has no ticket. This door takes the
@@ -12327,7 +12331,7 @@ class Orchestrator:
         ticket.conversation = thread_id
         try:
             self._turns.name_holder(ticket)
-            return self._draft_handoff_plan(thread_id)
+            return self._draft_handoff_plan(thread_id, redraft)
         finally:
             if self._project is not None:
                 self._project.stop_requested = False
@@ -12340,7 +12344,8 @@ class Orchestrator:
         `target` says which Built App this handoff is for: `{"appId": "app_..."}` names one that
         already exists, and anything else — absent, empty, `{"appId": ""}` — means a new one. The
         default lives HERE rather than in the sheet's markup, so a caller that says nothing gets a
-        new app and never someone else's (docs/workbench/handoff.md §4, #73)."""
+        new app and never someone else's (docs/workbench/handoff.md §4, #73). `target["name"]` is
+        what the sheet says to call a new app (#661)."""
         if not self._acquire_for_door():
             raise TurnBusy(self._turn_wedged, "try again")
         try:
@@ -12502,11 +12507,17 @@ class Orchestrator:
     def _handoff_sheet_payload(self, store: ThreadStore, thread_id: str, project: Project,
                                plan_md: str, handoff: dict) -> dict:
         thread = store.get(thread_id) or {}
+        plan_id = str((handoff or {}).get("planId") or "")
+        doc = project.record.read_plan_doc(plan_id) if plan_id else None
         return {
             "ok": True,
             "threadId": thread_id,
             "plan": plan_md,
             "title": chat_handoff.plan_title(plan_md) or thread.get("title") or "App",
+            # The name field's default: the title stored from the plan's own heading, which is what
+            # a new app is named when the person leaves it alone. Empty when the planner wrote no
+            # heading, and then the app stays a placeholder until somebody names it (ADR-0042).
+            "appName": str((doc or {}).get("title") or ""),
             "handoff": handoff,
             "untitled": project.record.is_untitled(),
             "artifacts": _artifacts_present(project.record.path, store.read_artifacts(thread_id)),
@@ -12532,7 +12543,7 @@ class Orchestrator:
         doc = record.read_plan_doc(plan_id) if plan_id else None
         return str((doc or {}).get("markdown") or "").strip()
 
-    def _draft_handoff_plan(self, thread_id: str) -> dict:
+    def _draft_handoff_plan(self, thread_id: str, redraft: bool = False) -> dict:
         # Chat's project, deliberately unseeded: drafting a plan must not create an app. Somebody
         # who opens the sheet and closes it again has asked for nothing, and an app minted here
         # would be one nobody asked for — a Built App is born when a handoff is CONFIRMED
@@ -12544,7 +12555,7 @@ class Orchestrator:
             raise KeyError(thread_id)
         existing = store.read_handoff(thread_id) or {}
         plan_md = self._handoff_plan_markdown(project.record, existing)
-        if existing.get("status") in ("planned", "bound") and plan_md:
+        if existing.get("status") == "planned" and plan_md and not redraft:
             return self._handoff_sheet_payload(store, thread_id, project, plan_md, existing)
 
         thread = store.get(thread_id) or {}
@@ -12921,7 +12932,7 @@ class Orchestrator:
         # tell the two apart — a minted app and a reselected one look identical on disk.
         existing_before = set(self._wm.app_ids())
         # The app: the one the sheet named, or a directory named for a newly minted id.
-        project = self._open_app(chat, handoff_row, chosen)
+        project = self._open_app(chat, handoff_row, chosen, str(target.get("name") or "").strip())
         # A plan somebody put away is taken back out, not refused (#170). Confirming is an
         # unambiguous act of wanting this plan, and writing `plan.md` from a document the Plans
         # group hides is the disagreement `archive_plan_doc`'s refusal exists to prevent, reached
@@ -13104,7 +13115,8 @@ class Orchestrator:
             "uploads": uploads,
         }
 
-    def _open_app(self, project: Project, handoff_row: dict, chosen: str) -> Project:
+    def _open_app(self, project: Project, handoff_row: dict, chosen: str,
+                  name: str = "") -> Project:
         """The Built App a confirmed handoff builds into, selected and ready.
 
         A NEW one unless the sheet named one that already exists, because a Project holds many and
@@ -13115,10 +13127,13 @@ class Orchestrator:
 
         A handoff that already bound stamped its app on the plan document, and that app is the
         fallback: confirming the same sheet twice reopens it instead of minting a twin nobody asked
-        for and nothing points at. A FALLBACK and not an override, because the sheet is served again
-        on a bound entry (`_draft_handoff_plan`) — so a bound app that won would quietly swallow the
+        for and nothing points at. A FALLBACK and not an override, because a sheet left open can
+        confirm again with a different answer — so a bound app that won would quietly swallow the
         answer to the question this row asks, which is criterion 11's failure from the other side.
         Saying nothing is the only thing that reaches the old app, and a double-confirm says nothing.
+
+        `name` is what the person typed on the sheet for a new app, and it beats the plan's title.
+        An existing app keeps its own name: renaming one is not this sheet's question.
         """
         plan_id = str((handoff_row or {}).get("planId") or "")
         doc = project.record.read_plan_doc(plan_id) if plan_id else None
@@ -13134,11 +13149,11 @@ class Orchestrator:
         opened = self._bind_app(project, self._wm.create_app(self._project_id))
         # The name starts as the plan's title, and is the person's to change from there.
         title = str((doc or {}).get("title") or "").strip()
-        if title:
+        if name or title:
             # `except_title` keeps this document's own title from counting as a collision.
             # Another app that already wears it still does.
             opened.workspace.set_display_name(
-                self._fresh_label(title, except_title=title))
+                self._fresh_label(name or title, except_title=title))
         return opened
 
     def _cross_context_items(self, context: list[dict], thread_id: str, *,
@@ -24262,8 +24277,16 @@ class Orchestrator:
             # somewhere before it died and the retry resumes there. Either way the plan stays live
             # AND says so, which is what lets the next "try again" build it rather than re-plan it:
             # a plan waiting for its first approval looks identical on disk.
+            #
+            # A third witness for the exits that never set `_turn_gave_up` — a stream the browser
+            # dropped, an exception out of the harness: the tree is where `_build_stream` baselined
+            # it, so nothing was built from this plan (#661). An approve turn cannot end `ok`
+            # without a tree delta (the pre-edit guard), so this never keeps a finished build's plan.
             app = project.app_for_turn()
-            if self._turn_gave_up and app.read_plan_retry_step() == 0:
+            if app.read_plan_retry_step() == 0 and (
+                    self._turn_gave_up
+                    or (not phased and bool(project.turn_tree_baseline)
+                        and project.snapshot.working_tree_hash() == project.turn_tree_baseline)):
                 app.set_plan_retry_step(1)
             if app.read_plan_retry_step() == 0:
                 app.archive_plan()

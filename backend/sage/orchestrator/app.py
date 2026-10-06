@@ -4045,9 +4045,10 @@ def delete_thread(thread_id: str) -> JSONResponse:
 
 
 @control_app.post("/api/threads/{thread_id}/handoff/plan")
-def draft_handoff_plan(thread_id: str) -> JSONResponse:
+def draft_handoff_plan(thread_id: str, body: dict | None = None) -> JSONResponse:
     try:
-        return JSONResponse(orchestrator.draft_handoff_plan(thread_id))
+        return JSONResponse(orchestrator.draft_handoff_plan(
+            thread_id, bool((body or {}).get("redraft"))))
     except KeyError:
         return JSONResponse({"error": "unknown thread"}, status_code=404)
     except TurnBusy as e:

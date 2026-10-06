@@ -529,10 +529,11 @@ def test_confirming_with_an_existing_app_builds_into_that_app(tmp_path: Path):
 
 
 def test_a_bound_sheet_answered_again_honours_the_app_it_names(tmp_path: Path):
-    """The sheet is served again on a Thread that already bound (`_draft_handoff_plan`), so the
-    app that entry bound cannot be allowed to win: it would swallow the answer to the question the
-    target row asks, which is criterion 11's failure coming the other way. The old app is the
-    FALLBACK, which is what a double-confirm — the same sheet, saying nothing — still lands on."""
+    """A sheet left open can be confirmed again after its entry bound, so the app that entry bound
+    cannot be allowed to win: it would swallow the answer to the question the target row asks,
+    which is criterion 11's failure coming the other way. The old app is the FALLBACK, which is
+    what a double-confirm — the same sheet, saying nothing — still lands on. (Drafting again on a
+    bound Thread no longer serves this sheet: that is the next handoff's plan, #661.)"""
     orch, _oc, root, first, second = _two_apps(tmp_path, [Turn(text=_PNL)])
 
     tid = orch.create_thread()["id"]
@@ -542,8 +543,7 @@ def test_a_bound_sheet_answered_again_honours_the_app_it_names(tmp_path: Path):
     third = orch.project(start_preview=False).workspace.app_id
     assert third not in (first, second)
 
-    # Open in Build again on the bound Thread, and this time pick an app.
-    orch.draft_handoff_plan(tid)
+    # The same sheet answered again, and this time it picks an app.
     orch.confirm_handoff(tid, _NOTHING_EXTRA, {"appId": first})
     assert orch.project(start_preview=False).workspace.app_id == first
     assert sorted(p.name for p in (root / "apps").iterdir()) == sorted([first, second, third])

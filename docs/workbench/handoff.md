@@ -117,6 +117,12 @@ build replaces that app's plan, which appears nowhere else in the Workbench.
 The sheet then lists the files this confirm writes, and that is all it does. The target is asked
 every time and is never remembered.
 
+**New app** carries a name field, pre-filled with the title stored from the plan's `# ` heading and
+empty when there is none (ADR-0042); what the person leaves there names the app. **Write a new
+plan** on the sheet drafts again rather than serving the plan this handoff holds. **Cancel** puts
+the handoff back to `suggested`: Write a plan is offered again, and the next one is a new plan.
+The cancelled plan document stays (ADR-0007); the handoff just stops naming it (#661).
+
 What crosses is not asked. It is the viewer's saved answer, held in the Workbench's preferences
 next to the conversation view (#52, `js/prefs.js`) and edited in Account settings:
 
@@ -145,7 +151,7 @@ Publish is available in Sage Builder either way. Do not PATCH Domino.
 
 On confirm, in order:
 
-0. Resolve the target. **New app**: mint `appId` with `new_id("app")`, seed `apps/<appId>/` from the template, set its display name to the plan title. **Existing app**: use its `appId`. The id and the directory never change afterwards — Domino fixes an App's `entryPoint` at creation.
+0. Resolve the target. **New app**: mint `appId` with `new_id("app")`, seed `apps/<appId>/` from the template, set its display name to the sheet's name field (the plan title unless the person changed it). **Existing app**: use its `appId`. The id and the directory never change afterwards — Domino fixes an App's `entryPoint` at creation.
 1. Write `apps/<appId>/.sage/handoff.md` (digest + list of Artifact paths that stayed included + list of context names).
 2. Optionally write `.sage/handoff-transcript.md`.
 3. For each Session context row with `kind` in `data_source | model_api | llm_alias` that is still included, upsert a Binding via `Workspace.update_bindings` (existing path). Files in context that are already Attachments stay Attachments.
@@ -179,9 +185,13 @@ different Built App each time (ADR-0008), so a single status per Conversation ca
 carries its own `planId`, `appId` and status.
 
 ```
-absent → suggested → planned → bound
+absent → suggested ⇄ planned → bound
                  ↘ suppressed
 ```
+
+`planned → suggested` is Cancel on the sheet. A draft is served again only while the entry is
+`planned`; after `bound` the next draft is the next handoff's, with its own plan document and
+`planId` (#661).
 
 | status | meaning |
 |--------|---------|
