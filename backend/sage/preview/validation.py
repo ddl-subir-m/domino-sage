@@ -23,6 +23,7 @@ class PageValidation:
     data_reads: list[dict] = field(default_factory=list)
     reads_truncated: bool = False
     query_failures: dict[str, str] = field(default_factory=dict)
+    reason: str = ''
 
     def event(self) -> dict:
         return {'type': 'preview-validation', 'validationId': self.id,
@@ -42,4 +43,5 @@ class PageValidation:
         return {'overall': overall, 'validationId': self.id, 'generation': self.generation,
                 'codeGeneration': self.code_generation, 'codeKind': self.code_kind,
                 'stages': dict(self.stages), 'dataReads': [dict(read) for read in self.data_reads],
-                'readsTruncated': self.reads_truncated}
+                'readsTruncated': self.reads_truncated,
+                **({'reason': self.reason} if overall == 'unverified' and self.reason else {})}

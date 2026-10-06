@@ -3382,7 +3382,8 @@ window.SW = window.SW || {};
               ? (ev.verification.stages && ev.verification.stages.runtime === 'passed'
                 && ev.verification.stages.data === 'unverified'
                 ? 'Page checks passed. Data access wasn\'t checked.'
-                : 'Code checks passed. The app wasn\'t run.')
+                : `Code checks passed. The app wasn't run${
+                  ev.verification.reason ? ` — ${ev.verification.reason}` : ''}.`)
               : ev.decision === 'answered'
               ? 'Answered'
               : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),

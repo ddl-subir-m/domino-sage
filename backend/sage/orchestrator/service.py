@@ -24632,8 +24632,19 @@ class Orchestrator:
                     and (not validation.generation
                          or supervisor.status()["generation"] == validation.generation))
 
+        def interrupted() -> str:
+            if project.stop_requested:
+                return "the build was stopped"
+            if self._project is not project or project.workspace.app_id != app.app_id:
+                return "another app was opened"
+            return "the preview was restarted by something else"
+
         try:
-            if timeout <= 0 or not current():
+            if timeout <= 0:
+                validation.reason = "page checks are turned off"
+                return validation
+            if not current():
+                validation.reason = interrupted()
                 return validation
             deadline = time.monotonic() + timeout
             accepted = False
@@ -24652,6 +24663,8 @@ class Orchestrator:
                         break
                 time.sleep(0.1)
             if validation.stages["startup"] != "passed" or not current():
+                validation.reason = (interrupted() if not current()
+                                     else f"the preview didn't start within {timeout:g}s")
                 return validation
             yield validation.event()
             deadline = time.monotonic() + timeout
@@ -24661,6 +24674,8 @@ class Orchestrator:
                     return validation
                 time.sleep(0.1)
             if not validation.acknowledged or not current():
+                validation.reason = (interrupted() if not current()
+                                     else f"the preview didn't load the changed page within {timeout:g}s")
                 return validation
             validation.stages["page"] = "passed"
             with timing.span("after.runtime_wait"):
@@ -24673,6 +24688,9 @@ class Orchestrator:
             elif (current() and validation.code_generation
                   and project.snapshot.working_tree_hash() == validation.code_generation):
                 validation.stages["runtime"] = "passed"
+            else:
+                validation.reason = (interrupted() if not current()
+                                     else "the code changed while the page was being checked")
             return validation
         finally:
             status = supervisor.status()
