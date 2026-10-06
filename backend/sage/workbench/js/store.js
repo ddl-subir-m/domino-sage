@@ -10346,14 +10346,15 @@ window.SW = window.SW || {};
       await store.openThread(id);
     },
 
-    async draftHandoffPlan(threadId) {
+    // `redraft` writes a new plan even while this handoff already holds one (#661).
+    async draftHandoffPlan(threadId, { redraft = false } = {}) {
       const id = threadId || (state.thread && state.thread.id);
       if (!id) return null;
       if (!state.thread || state.thread.id !== id) await store.openThread(id);
       state.typing = 'Writing a plan…';
       notify();
       try {
-        const draft = await SW.api.draftHandoffPlan(id);
+        const draft = await SW.api.draftHandoffPlan(id, redraft);
         state.thread = { ...state.thread, handoff: draft.handoff };
         state.messages = state.messages.filter(
           (m) => !(m.blocks || []).some((b) => b.type === 'plan_suggestion')
@@ -10369,6 +10370,21 @@ window.SW = window.SW || {};
         state.typing = null;
         notify();
       }
+    },
+
+    // Cancel on the sheet. The plan stays a document, but this handoff stops naming it, so Write a
+    // plan is offered again and the next one drafts a new plan rather than serving this one (#661).
+    cancelHandoffDraft() {
+      state.handoffOpen = false;
+      state.handoffDraft = null;
+      const thread = state.thread;
+      if (thread && thread.handoff && thread.handoff.status === 'planned') {
+        const { planId, planPath, ...rest } = thread.handoff;
+        state.thread = { ...thread, handoff: { ...rest, status: 'suggested' } };
+        state.messages = withHandoffCallout(state.messages, state.thread.handoff);
+        SW.api.patchThread(thread.id, { handoff: 'cancel' }).catch(() => {});
+      }
+      notify();
     },
 
     // `target` names the Built App the sheet picked, or is empty for a new one. Empty is passed

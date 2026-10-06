@@ -235,7 +235,9 @@ window.SW = window.SW || {};
               Button,
               {
                 size: 'small',
-                onClick: () => SW.store.draftHandoffPlan(thread && thread.id),
+                onClick: () => (thread && (thread.touched || []).length
+                  ? SW.router.go(`#/build/${thread.id}`)
+                  : SW.store.draftHandoffPlan(thread && thread.id)),
               },
               thread && (thread.touched || []).length ? 'Open in Build' : 'Build this'
             )

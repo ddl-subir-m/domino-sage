@@ -2,7 +2,7 @@ window.SW = window.SW || {};
 
 (function () {
   const { createElement: h, useState, useEffect } = React;
-  const { Modal, Radio, Space, Input, Select, Alert, Checkbox } = antd;
+  const { Modal, Radio, Space, Input, Select, Alert, Checkbox, Button } = antd;
   const { FileTextOutlined } = icons;
 
   // The date on an app row. A Project holds many Built Apps and two dashboards read the same in a
@@ -36,20 +36,34 @@ window.SW = window.SW || {};
     // Empty means New app, and it starts empty every time the sheet opens. Nothing preselects an
     // existing app, because building over an app nobody picked is a silent overwrite (#73).
     const [appId, setAppId] = useState('');
+    // The new app's name, the person's to change (#661). It starts as the title stored from the
+    // plan's own heading, and stays empty when the planner wrote none (ADR-0042).
+    const [name, setName] = useState(() => (handoffDraft && handoffDraft.appName) || '');
     const [busy, setBusy] = useState(false);
 
     useEffect(() => {
       if (handoffOpen) setAppId('');
     }, [handoffOpen]);
 
-    const close = () => SW.store.set({ handoffOpen: false });
+    useEffect(() => {
+      setName((handoffDraft && handoffDraft.appName) || '');
+    }, [handoffDraft]);
 
     const go = async () => {
       setBusy(true);
       try {
-        await SW.store.confirmHandoff(include, { appId });
+        await SW.store.confirmHandoff(include, appId ? { appId } : { appId, name: name.trim() });
       } catch (err) {
         antd.message.error(String((err && err.message) || err));
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const redraft = async () => {
+      setBusy(true);
+      try {
+        await SW.store.draftHandoffPlan(null, { redraft: true });
       } finally {
         setBusy(false);
       }
@@ -91,7 +105,7 @@ window.SW = window.SW || {};
       Modal,
       {
         open: true,
-        onCancel: close,
+        onCancel: () => SW.store.cancelHandoffDraft(),
         title: 'Build from this plan',
         width: 540,
         okText: busy ? 'Setting up…' : 'Open Builder',
@@ -101,6 +115,18 @@ window.SW = window.SW || {};
       h(
         'div',
         { className: 'sw-handoff' },
+
+        // The plan this sheet builds, and the explicit way to a different one (#661): without it
+        // the only plan on offer is the one already drafted.
+        h(
+          'div',
+          { className: 'sw-handoff-section' },
+          h('div', { className: 'sw-field-label' }, 'Plan'),
+          handoffDraft.title,
+          ' ',
+          h(Button, { type: 'link', size: 'small', disabled: busy, onClick: redraft },
+            'Write a new plan')
+        ),
 
         // The sheet's one question, and the reason it survives a ticket that shrank everything
         // else here to a saved answer (#58). A Project holds many Built Apps, so the target is
@@ -122,13 +148,7 @@ window.SW = window.SW || {};
               h(
                 Radio,
                 { value: '' },
-                h(
-                  'span',
-                  null,
-                  'A new app',
-                  ' ',
-                  h('span', { className: 'sw-caption' }, `named "${handoffDraft.title}"`)
-                )
+                'A new app'
               ),
               apps.map((app) =>
                 h(
@@ -145,6 +165,14 @@ window.SW = window.SW || {};
               )
             )
           ),
+          !appId &&
+            h(Input, {
+              'aria-label': 'New app name',
+              value: name,
+              placeholder: 'Name it later',
+              style: { marginTop: 10 },
+              onChange: (e) => setName(e.target.value),
+            }),
           target &&
             h(Alert, {
               type: 'warning',

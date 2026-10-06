@@ -649,7 +649,8 @@ SW.api = {
   thread: (id) => request(`/threads/${id}`),
   createThread: () => post('/threads', {}),
   flushChat: () => post('/threads/save', {}),
-  draftHandoffPlan: (id) => post(`/threads/${id}/handoff/plan`, {}),
+  draftHandoffPlan: (id, redraft) =>
+    post(`/threads/${id}/handoff/plan`, redraft ? { redraft: true } : {}),
   clearRecall: (id, scope) => post(`/threads/${id}/recall/clear`, { scope }),
   // Read one card's table again, as whoever is looking at it (#256). `source` is the record the
   // Artifact carries, posted back unread: the card chooses nothing, so there is nothing here for a
