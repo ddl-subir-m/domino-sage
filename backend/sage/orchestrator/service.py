@@ -9417,10 +9417,17 @@ class Orchestrator:
     def _begin_conversation(self, conversation: str | None) -> None:
         """Pin a streaming turn to its Build conversation before any of it is persisted: the
         append_history calls below read project.build_conversation, and _ensure_session opens that
-        conversation's own session."""
+        conversation's own session.
+
+        Also the conversation's activity time, which the rail sorts on and prints. Chat touches it
+        every turn; Build only did when naming, so a conversation built in all afternoon read as
+        hours old (#651). Here because a composer turn, an approve and a phased continuation all
+        come through once granted, and a turn refused at the door does not."""
         project = self.project()
         self._switch_conversation(project, conversation)
         self._adopt_legacy_build_history(project.app_for_turn(), project.record)
+        if conversation:
+            ThreadStore(project.record.path).touch(conversation)
 
     @staticmethod
     def _name_conversation(project: Project, conversation: str | None, prompt: str) -> str:
