@@ -2753,8 +2753,15 @@ window.SW = window.SW || {};
   // another assistant message rather than assuming index - 1, since a system notice can sit
   // between a question and its answer. Its own attachments ride along so the resend reproduces
   // the original turn, not a text-only echo of it.
+  //
+  // A Build turn carries its request on the message instead (#663), and only on Build's own
+  // transcript: Chat's merged read draws the same rows, and a press there would build into
+  // whichever app is selected.
   function retryTargetFor(message) {
-    const { messages } = SW.store.get();
+    const { messages, buildMessages } = SW.store.get();
+    if (message.retryPrompt && buildMessages.includes(message)) {
+      return { text: message.retryPrompt, build: true };
+    }
     const idx = messages.findIndex((m) => m.id === message.id);
     for (let i = idx - 1; i >= 0; i -= 1) {
       const m = messages[i];
@@ -2893,8 +2900,9 @@ window.SW = window.SW || {};
                   size: 'small',
                   icon: h(ReloadOutlined, null),
                   'aria-label': 'Retry',
-                  onClick: () =>
-                    SW.store.sendMessage(retryTarget.text, { attachments: retryTarget.attachments }),
+                  onClick: () => (retryTarget.build
+                    ? SW.store.retryStalledBuild(retryTarget.text)
+                    : SW.store.sendMessage(retryTarget.text, { attachments: retryTarget.attachments })),
                 })
               )
           )
