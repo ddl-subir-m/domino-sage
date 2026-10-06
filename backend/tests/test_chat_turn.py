@@ -16,7 +16,7 @@ from sage.orchestrator.service import (
     _chat_save_landed,
 )
 from sage.router.models import ModelCatalog
-from sage.workspace.threads import ThreadStore
+from sage.workspace.threads import ThreadStore, mounted_dataset_link
 
 from .fake_opencode import FakeOpenCode, Turn, execution_plan
 
@@ -968,7 +968,8 @@ def test_chat_prompt_points_at_mounted_dataset_files(tmp_path: Path):
     })
     list(orch.chat_stream(tid, "whats in autodoc"))
     prompt = oc.prompts[0]["text"]
-    assert "files at /mnt/data/autodoc" in prompt
+    # Through the Chat workdir's link: `external_directory: deny` refuses `/mnt/data` itself (#675).
+    assert f"files at {mounted_dataset_link('/mnt/data/autodoc')}." in prompt
     assert "not mounted" not in prompt
 
 
