@@ -54,15 +54,19 @@ class PreEditDecision:
 class PreEditGuard:
     """Own one implementation Build's pre-edit state and counters.
 
-    The callback returns the current authoritative working-tree identity. Result content and
-    request content never enter this object.
+    The callback returns the current authoritative working-tree identity, and `queries` the
+    query catalog's, which the tree identity cannot see. Result content and request content never
+    enter this object.
     """
 
     def __init__(self, policy: BuildPolicy, baseline: str,
-                 current_tree: Callable[[], str]) -> None:
+                 current_tree: Callable[[], str],
+                 queries: Callable[[], str] = lambda: "") -> None:
         self._policy = policy
         self._baseline = baseline
         self._current_tree = current_tree
+        self._queries = queries
+        self._queries_baseline = queries()
         self._lock = threading.RLock()
         self._state = PreEditState.INITIAL_ARMED
         self._attempt = "initial"
@@ -149,6 +153,18 @@ class PreEditGuard:
         )
         self._publish()
 
+    def _changed_locked(self, current: str) -> bool:
+        return current != self._baseline or self._queries() != self._queries_baseline
+
+    def changed(self) -> bool:
+        """Whether the app differs from the baseline now, in any state. False if unmeasurable."""
+        with self._lock:
+            try:
+                current = self._current_tree()
+            except Exception:
+                current = ""
+            return bool(current and self._baseline) and self._changed_locked(current)
+
     def _witness_locked(self, *, allow_recovery_starting: bool = False) -> PreEditDecision | None:
         eligible = {PreEditState.INITIAL_ARMED, PreEditState.RECOVERY_ARMED}
         if allow_recovery_starting:
@@ -165,7 +181,7 @@ class PreEditGuard:
                 PreEditAction.FAIL, PreEditTrigger.TREE_WITNESS_UNAVAILABLE)
             self._transition(PreEditState.TERMINAL, decision, pending=True)
             return decision
-        if current and self._baseline and current != self._baseline:
+        if current and self._baseline and self._changed_locked(current):
             self._first_edit_observed = True
             decision = PreEditDecision(PreEditAction.DISARM)
             self._pending = None

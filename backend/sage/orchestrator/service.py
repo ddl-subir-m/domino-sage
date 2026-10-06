@@ -211,7 +211,7 @@ from ..workspace.manager import (
     ensure_ignore_line,
     remove_ignore_line,
 )
-from ..workspace.snapshot import TurnSnapshot
+from ..workspace.snapshot import QUERIES, TurnSnapshot
 from ..workspace.stack import default_stack_name, preview_stack_of, resolve_stack, stack_of
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
@@ -9642,7 +9642,8 @@ class Orchestrator:
             baseline = project.snapshot.working_tree_hash()
             with project.pre_edit_tree_lock:
                 project.pre_edit_guard = PreEditGuard(
-                    self._build_policy, baseline, project.snapshot.working_tree_hash)
+                    self._build_policy, baseline, project.snapshot.working_tree_hash,
+                    project.snapshot.queries_digest)
                 project.context_rollover = ContextRolloverState(self._build_policy, baseline)
             project.active_build_intent = BuildIntent.for_direct(prompt)
             with self._stop_control_lock:
@@ -20906,6 +20907,7 @@ class Orchestrator:
                     policy,
                     baseline,
                     project.snapshot.working_tree_hash,
+                    project.snapshot.queries_digest,
                 )
         if not gate and not answer_only and not arch and project.context_rollover is None:
             with project.pre_edit_tree_lock:
@@ -21904,14 +21906,18 @@ class Orchestrator:
                 if owns_turn:
                     self._turn_gave_up = True
                 restore_mode()
+                kept = guard.changed()
                 yield persist({
                     "type": "build-pre-edit-limit",
-                    "message": ("Sage stopped before changing the app because the clean retry "
+                    "message": (("Sage stopped because the clean retry " if kept else
+                                 "Sage stopped before changing the app because the clean retry ")
                                 + ("also repeated a tool call it had already made."
                                    if decision.trigger is PreEditTrigger.REPEATED_TOOL_CALL
-                                   else "also reached the pre-edit work limit.")),
+                                   else "also reached the pre-edit work limit.")
+                                + (" What this turn already wrote is still in the app."
+                                   if kept else "")),
                     "trigger": decision.trigger.value,
-                    "kept": False,
+                    "kept": kept,
                 })
                 yield persist({"type": "done", "ok": False, "decision": "pre_edit_limit"})
                 return PreEditAction.STOP
@@ -24236,6 +24242,7 @@ class Orchestrator:
                     ([e["path"] for e in project.attachments_for_turn()] or None))
         project.active_plan_record_id = str((approved_doc or {}).get("id") or "")
         tree_before = project.snapshot.working_tree_hash()
+        queries_before = project.snapshot.queries_digest()
         rows_before = len(project.app_for_turn().read_history(project.build_conversation))
         try:
             if phased:
@@ -24261,7 +24268,8 @@ class Orchestrator:
                     # reads the plan turn already did (ADR-0070). Phased builds and the
                     # continuation path keep a session per phase.
                     fresh_session=False)
-            unbuilt = self._plan_unbuilt_event(project, plan_md, tree_before, rows_before)
+            unbuilt = self._plan_unbuilt_event(
+                project, plan_md, tree_before, queries_before, rows_before)
             if unbuilt is not None:
                 project.app_for_turn().append_history(unbuilt, project.build_conversation)
                 yield unbuilt
@@ -24305,7 +24313,7 @@ class Orchestrator:
                 app.archive_plan()
 
     def _plan_unbuilt_event(self, project: Project, plan_md: str, tree_before: str,
-                            rows_before: int) -> dict | None:
+                            queries_before: str, rows_before: int) -> dict | None:
         """The approved plan's steps this build wrote none of the named files for, or None (#662).
 
         Only for a build that finished: a turn that gave up, was stopped, or wrote nothing already
@@ -24321,6 +24329,8 @@ class Orchestrator:
             return None
         changed = project.snapshot.changed_paths(
             tree_before, project.snapshot.working_tree_hash(), limit=100_000)
+        if project.snapshot.queries_digest() != queries_before:
+            changed.append(QUERIES)
         if not changed:
             return None
 
@@ -24435,6 +24445,7 @@ class Orchestrator:
                 self._build_policy,
                 tree_before,
                 project.snapshot.working_tree_hash,
+                project.snapshot.queries_digest,
             )
             project.context_rollover = ContextRolloverState(self._build_policy, tree_before)
         # And what `examples/` held before any phase ran, for the Kept rows pass in persist(). One
