@@ -225,7 +225,7 @@ Everything below is a global the page already carries. Nothing else is, and noth
 | `React`, `ReactDOM` | Everything. `React.createElement` builds elements; `React.useState` and friends are the hooks. |
 | `antd` | Every component: `antd.Table`, `Form`, `Input`, `Select`, `DatePicker`, `Card`, `Tabs`, `Modal`, `Drawer`, `Tag`, `Alert`, `Empty`, `Spin`, `Statistic`, `Typography`, `Space`, `Flex`, `Layout`. |
 | `icons` | Ant Design's icons, by name: `icons.SearchOutlined`, `icons.PlusOutlined`. |
-| `dayjs` | Formatting, parsing and date ranges; what `antd.DatePicker` gives and takes. |
+| `dayjs` | Formatting, parsing and date ranges; what `antd.DatePicker` gives and takes. Core only: no plugin is loaded, so `isSameOrAfter`, `isSameOrBefore`, `isBetween`, `utc` and the rest are not functions here. Compare with `isAfter`, `isBefore`, `isSame` and `valueOf`. |
 | `Highcharts` | Charts. Line, area, column, bar, pie, and the `more` and `funnel` modules are loaded. |
 | `sage` | {assistantName}'s helpers: `sage.url`, `sage.theme`, `sage.accents`, `sage.ErrorBoundary`. It also carries the helpers for a {dataSource}, an {llmAlias} and a {modelApi}, but each is explained in its own section below, which is there only when this app has one bound. With no such section, do not call or look for them. |
 
@@ -448,6 +448,8 @@ with `secret("NAME")`.
 - **A remote MCP server** is called from a route with `from sage_mcp import call_tool, list_tools`:
   `list_tools(url, headers)` and `call_tool(url, name, arguments, headers)`, with headers such as
   `{"Authorization": f"Bearer {secret('CRM_TOKEN')}"}`. Both raise `sage_mcp.McpError` with a
-  sentence for the App's log.
+  sentence for the App's log. Before writing a `call_tool`, read that tool's `inputSchema` from
+  `list_tools` and pass only the arguments it names, with the exact values its enums allow: a
+  guessed argument is refused by the server, and the refusal reaches whoever pressed the button.
 - Do not build a page for entering keys: the Your keys button is already on every page.
 <!-- sage:build-profile:v1:platform:end -->

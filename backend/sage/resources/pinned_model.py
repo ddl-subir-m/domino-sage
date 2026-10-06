@@ -209,6 +209,12 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
          "evidence. Missing evidence stays unknown. A response model name does not prove receipt. "
          "After a refusal, change the request before another call; do not retry it unchanged or "
          "switch models to escape the refusal."),
+        # #658: a brief asked for JSON with `maxTokens: 260` and the reply ended before its closing
+        # brace, so the viewer saw a parse error where the brief should have been.
+        ("- **Give a structured answer room to finish.** When you ask for JSON, leave `maxTokens` "
+         "unset or at 1000 or more: a model may spend part of the budget before it writes, and a "
+         "reply cut short has no closing brace. Parse inside a `try`, and when the parse fails show "
+         "the facts the screen already has, not the parser's error."),
         ("- **Carry the model's state into the app UI.** When a screen passes selected values to "
          "`askModel`, use `onOutcome` and show that model state separately from the data it was "
          "given. Missing serving model, provider receipt, decision stage, cache, or fallback "
