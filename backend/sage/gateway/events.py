@@ -28,6 +28,16 @@ def _gemini_thought(delta: dict) -> bool:
     return isinstance(google, dict) and bool(google.get("thought"))
 
 
+def _rate_limited(error: object) -> bool:
+    """A 429 in any of the spellings providers use: Anthropic's type, OpenAI's code, Google's
+    numeric code or gRPC status."""
+    if not isinstance(error, dict):
+        return False
+    return (error.get("code") in (429, "429", "rate_limit_exceeded", "rate_limit_error")
+            or error.get("type") == "rate_limit_error"
+            or error.get("status") == "RESOURCE_EXHAUSTED")
+
+
 @dataclass
 class StreamEvents:
     protocol: Protocol
@@ -360,7 +370,9 @@ class StreamEvents:
             # history and is sent to the model next turn, so a body that echoes a prompt or an
             # opaque signature must not ride along.
             code = error.get("code") or error.get("type") if isinstance(error, dict) else None
-            self.error = code if code in {"overloaded_error", "rate_limit_error", "invalid_request_error"} else "upstream_error"
+            self.error = ("rate_limit_error" if _rate_limited(error) else
+                          code if code in {"overloaded_error", "invalid_request_error", "server_error"}
+                          else "upstream_error")
             # The body itself goes to the log ring instead (#506). The ring is local to the
             # workspace, already readable by the person whose workspace it is, and read by no
             # model — which is the distinction the stream cannot make. Without it the only
@@ -483,7 +495,8 @@ class StreamEvents:
                                 json.dumps(response.get("error") or event)[:MAX_LOGGED_ERROR_CHARS])
                 if kind != "response.completed":
                     reason = (response.get("incomplete_details") or {}).get("reason")
-                    self.error = reason if reason in {"max_output_tokens", "content_filter"} else kind
+                    self.error = ("rate_limit_error" if _rate_limited(response.get("error")) else
+                                  reason if reason in {"max_output_tokens", "content_filter"} else kind)
         if before_action is None and self.first_action_kind is None and self._is_reasoning(event):
             self.reasoning_only_chunks += 1
 

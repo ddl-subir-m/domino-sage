@@ -3403,6 +3403,9 @@ window.SW = window.SW || {};
         // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
         dropTableCard(messages, null);
         ensureAssistant().blocks.push({ type: 'status', ok: false, value: ev.message });
+        // The request a Retry sends again (#663). From the row, not the bubble above it: the
+        // bubble over a click is the click.
+        if (ev.prompt) ensureAssistant().retryPrompt = ev.prompt;
       } else if (ev.type === 'withhold-search') {
         // Build drew nothing for this frame, and Chat has drawn it since the search shipped. Live,
         // that is how it read: the refusal went up instantly, then fourteen seconds of nothing, then

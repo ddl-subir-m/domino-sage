@@ -23337,7 +23337,11 @@ class Orchestrator:
                         '\n\nThe plan is still here. Say "try again" to build it.')
                 message += _last_rung_note(build_history, reason)
                 failure_fields = _plan_failure_fields(err) if gate else {}
+                # What Build's Retry sends again (#663). Empty for an approval or a phase, as on
+                # `build-stalled`: their prompt is Sage's, and re-sent as typed text it is a new
+                # request rather than the same turn.
                 yield persist({"type": "error", "message": message, "reason": reason,
+                               "prompt": "" if is_approval or not owns_turn else prompt,
                                **failure_fields})
                 # Between the error and the `done`, for the reason Chat puts it there: a client
                 # reading the stream in order sees what failed before it is offered a way out of it.
