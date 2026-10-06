@@ -17,7 +17,7 @@ from ..context_rollover import ContextAction
 from ..gateway.capabilities import RouteStatus
 from ..gateway.client import GatewayUpstreamError, StreamCancellation
 from ..gateway.events import StreamEvents
-from ..gateway.protocol import Protocol
+from ..gateway.protocol import Protocol, endpoint
 from ..pre_edit_guard import PreEditAction
 from ..request_composition import measure, wire_bytes
 from ..router.models import Phase
@@ -68,6 +68,11 @@ _IMPLEMENT_REASONING_BUDGET_MESSAGE = (
 _PRE_EDIT_REPEATED_CALL = (
     "The model repeated a tool call it had already made in this response. "
     "Sage stopped this attempt under the active pre-edit Build policy."
+)
+# Starts "The model gateway" so OpenCode's provider (`driver/provider.mjs`) passes it through.
+_GATEWAY_SERVER_ERROR = (
+    "The model gateway failed inside itself while serving {model} over {path} (server_error). "
+    "This is a gateway-side error, not a refusal of the request; try again, or pick another model."
 )
 
 
@@ -471,6 +476,9 @@ def install(app, get_orchestrator):
                             reasoning_only_chunks=events.reasoning_only_chunks)
                     # Provider terminal failures, including output limits, own the frame on which
                     # they arrive. A text or tool announcement on the same frame is then action.
+                    if events.error == "server_error":
+                        raise ValueError(_GATEWAY_SERVER_ERROR.format(
+                            model=outbound.get("model", ""), path=endpoint("", protocol)))
                     if events.error:
                         raise ValueError("The model stream failed: " + events.error)
                     if build_watchdog:

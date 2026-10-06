@@ -360,7 +360,8 @@ class StreamEvents:
             # history and is sent to the model next turn, so a body that echoes a prompt or an
             # opaque signature must not ride along.
             code = error.get("code") or error.get("type") if isinstance(error, dict) else None
-            self.error = code if code in {"overloaded_error", "rate_limit_error", "invalid_request_error"} else "upstream_error"
+            self.error = code if code in {"overloaded_error", "rate_limit_error", "invalid_request_error",
+                                          "server_error"} else "upstream_error"
             # The body itself goes to the log ring instead (#506). The ring is local to the
             # workspace, already readable by the person whose workspace it is, and read by no
             # model — which is the distinction the stream cannot make. Without it the only
