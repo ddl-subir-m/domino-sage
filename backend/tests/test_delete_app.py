@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from sage.orchestrator.service import Orchestrator, TurnBusy
-from sage.provision.domino import FakeControlPlane
+from sage.provision.domino import FakeControlPlane, NotFound
 from sage.router.models import ModelCatalog
 
 
@@ -227,6 +227,47 @@ def test_a_control_plane_that_refuses_leaves_the_built_app_where_it_was(tmp_path
         raise RuntimeError("DELETE /api/apps/beta/apps/app-1 -> 403: not yours")
 
     cp.delete_app_deployment = refuse  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError) as caught:
+        orch.delete_app(app_id, delete_domino_app=True)
+
+    assert "still here" in str(caught.value)
+    assert app_id in [row["id"] for row in orch.list_apps()]
+    assert deployed in cp.published
+
+
+def test_a_domino_app_that_is_already_gone_counts_as_deleted(tmp_path: Path):
+    """Deleted on its own settings page in Domino (#668): the DELETE 404s, and the App is not there
+    to delete. Refusing would keep a Built App nobody can ever delete."""
+    cp = FakeControlPlane()
+    orch = _orch(tmp_path, cp)
+    app_id = orch.project(start_preview=False).workspace.app_id
+    deployed = _publish(orch)
+    cp.published.pop(deployed)
+
+    def gone(_app_id: str) -> dict:
+        raise NotFound(f"DELETE /api/apps/beta/apps/{_app_id} -> 404: No app found with id")
+
+    cp.delete_app_deployment = gone  # type: ignore[method-assign]
+
+    out = orch.delete_app(app_id, delete_domino_app=True)
+
+    assert out["dominoApp"] == "deleted"
+    assert app_id not in [row["id"] for row in orch.list_apps()]
+
+
+def test_a_404_from_an_app_that_is_still_there_keeps_the_built_app(tmp_path: Path):
+    """A deployment that does not route DELETE 404s every call. The App is still serving, so the
+    404 is not evidence it went, and losing the Built App would strand it."""
+    cp = FakeControlPlane()
+    orch = _orch(tmp_path, cp)
+    app_id = orch.project(start_preview=False).workspace.app_id
+    deployed = _publish(orch)
+
+    def unrouted(_app_id: str) -> dict:
+        raise NotFound(f"DELETE /api/apps/beta/apps/{_app_id} -> 404: Not Found")
+
+    cp.delete_app_deployment = unrouted  # type: ignore[method-assign]
 
     with pytest.raises(RuntimeError) as caught:
         orch.delete_app(app_id, delete_domino_app=True)
