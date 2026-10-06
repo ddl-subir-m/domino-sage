@@ -264,12 +264,15 @@ class _PooledHTTPClient:
         """
         import httpx
 
+        from .. import transient
         from ..transient import ATTEMPTS, TRANSIENT_STATUS, pause, transport_blip
 
         last: BaseException | None = None
+        waited = 0.0
         for attempt in range(ATTEMPTS):
             yielded = False
             retry: BaseException | None = None
+            delay: float | None = None
             try:
                 with self._http_client().stream(
                         "POST", url, json=request, headers=headers) as resp:
@@ -282,7 +285,10 @@ class _PooledHTTPClient:
                         err = GatewayUpstreamError(resp.status_code, url, body)
                         stopped = cancel is not None and cancel.event.is_set()
                         if (resp.status_code in TRANSIENT_STATUS and attempt + 1 < ATTEMPTS
-                                and not stopped):
+                                and not stopped
+                                or resp.status_code == 429 and not stopped
+                                and (delay := transient.rate_limit_delay(
+                                    attempt, waited, resp.headers.get("retry-after"))) is not None):
                             retry = err
                         else:
                             raise err
@@ -302,7 +308,12 @@ class _PooledHTTPClient:
             if retry is None:
                 return
             last = retry
-            pause(attempt)
+            if delay is None:
+                pause(attempt)
+            else:
+                waited += delay
+                if transient.wait(delay, cancel):
+                    return
         if last is not None:
             raise last
 
