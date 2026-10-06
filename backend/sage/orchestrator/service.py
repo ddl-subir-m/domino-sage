@@ -23349,6 +23349,9 @@ class Orchestrator:
                 offered = self._record_build_recall_offer(project)
                 if offered is not None:
                     yield offered
+                # After the offer: the recall ladder reads the transcript's tail for the error.
+                if owns_turn and agent_wrote():
+                    yield persist(_app_change_event(project.app_for_turn()))
                 yield persist({"type": "done", "ok": False, "decision": "gateway error",
                                **failure_fields})
                 return
