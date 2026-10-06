@@ -28,9 +28,10 @@ window.sage = window.sage || {};
    * replacing it, because the reasons need opposite responses (wait and retry, ask for access, tell
    * whoever published the app) and one generic sentence sends everyone down the wrong one.
    *
-   *     const { columns, rows } = await sage.runQuery("usage_by_account", { since: "2026-01-01" });
+   *     const { columns, rows, records } = await sage.runQuery("usage_by_account", { since: "2026-01-01" });
    *
-   * `columns` names them in order; each row has one value per column, by position. `truncated` is
+   * `columns` names them in order; each row has one value per column, by position. `records` is the
+   * same rows as objects keyed by those names, spelled the way the store spells them. `truncated` is
    * true when the store had more rows than this app will return. `dataUsed` is the source and
    * coverage evidence to show beside local tables, charts and model-assisted text.
    */
@@ -61,6 +62,7 @@ window.sage = window.sage || {};
     return {
       columns: body.columns,
       rows: body.rows,
+      records: body.rows.map((row) => Object.fromEntries(body.columns.map((c, i) => [c, row[i]]))),
       truncated,
       dataUsed: normalizeDataUsed(name, body, truncated),
     };
