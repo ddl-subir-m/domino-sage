@@ -8247,6 +8247,8 @@ class Orchestrator:
         """A plan or app name that is not already on another plan or app in this project."""
         taken: set[str] = set()
         for doc in self._plan_docs_record().list_plan_docs():
+            if doc.get("archived"):
+                continue
             title = str(doc.get("title") or "").strip()
             if title and title != except_title:
                 taken.add(title)
