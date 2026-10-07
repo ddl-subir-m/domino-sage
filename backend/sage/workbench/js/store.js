@@ -570,14 +570,21 @@ window.SW = window.SW || {};
   // last would put a row somebody just deleted back in the rail. A generation counter for the same
   // reason the two below have one: the newest read is the one that gets to write.
   let listingRead = 0;
-  // The scope load whose listing has already spent its one retry, so a leg that goes on refusing
-  // costs one extra read and not a poll.
+  // The scope load whose listing retries are being spent, and how many it has spent, so a leg that
+  // goes on refusing costs three extra reads and not a poll.
   let listingRetryFor = -1;
-  const LISTING_RETRY_MS = 4000;
+  let listingRetries = 0;
+  const LISTING_RETRY_MS = [4000, 15000, 60000];
   // When the newest listing read started, and how old it may be before opening a model picker or
   // coming back to the tab reads again (#646). Tab switches come in bursts; this bounds them.
   let listingReadAt = 0;
   const MODEL_LIST_FRESH_MS = 30000;
+  // `loadMcpServers` re-reading a row that is still loading: the waiting read, and how many it has
+  // spent since a caller other than itself asked. Twenty at three seconds is a minute of waiting.
+  let mcpRecheckTimer = null;
+  let mcpRechecks = 0;
+  const MCP_RECHECK_MS = 3000;
+  const MCP_RECHECKS = 20;
   // Which read of what the PROJECT holds is the current one — its membership and its `/project`
   // record together, which is the pair every refresh below takes. Same shape as the listing counter
   // above and needed for the same reason since #162: a working-set refresh no longer bumps
@@ -849,16 +856,21 @@ window.SW = window.SW || {};
   // then a refusal stands as a group note over rows that are the LAST good answer carried forward.
   // A gateway that refuses one read — a 40x while the token sidecar is still warming, measured at
   // boot — therefore leaves "the gateway answered 400" under a group visibly full of models, and
-  // the only thing that clears it is an unrelated act. One re-read, once per scope load, so a
-  // platform that is really down costs one extra call rather than a poll.
+  // the only thing that clears it is an unrelated act. Re-reads at 4, 15 and 60 seconds per scope
+  // load — one at four seconds left the note up over a Domino API that took longer (#667) — so a
+  // platform that is really down costs three extra calls rather than a poll.
   function retryFailedListing(listing, gen) {
-    if (listingRetryFor === gen) return;
     if (!Object.values((listing && listing.errors) || {}).some(Boolean)) return;
-    listingRetryFor = gen;
+    if (listingRetryFor !== gen) {
+      listingRetryFor = gen;
+      listingRetries = 0;
+    }
+    if (listingRetries >= LISTING_RETRY_MS.length) return;
     setTimeout(() => {
       // Not into a scope nobody is looking at any more. That load fires its own listing read.
       if (gen === scopeLoad) store.refreshResourceListing();
-    }, LISTING_RETRY_MS);
+    }, LISTING_RETRY_MS[listingRetries]);
+    listingRetries += 1;
   }
 
   async function loadScopeData() {
@@ -6282,13 +6294,25 @@ window.SW = window.SW || {};
       });
     },
 
-    async loadMcpServers() {
+    // While a row is still loading it is read again every few seconds, because OpenCode finishes
+    // loading a server after the reads that would show it — the end-of-turn one lands before the
+    // turn lock the reload waits on is released (#667). `recheck` is the timer's own call; any
+    // other caller starts a fresh budget.
+    async loadMcpServers(recheck = false) {
+      if (!recheck) mcpRechecks = 0;
+      clearTimeout(mcpRecheckTimer);
+      mcpRecheckTimer = null;
       try {
         state.mcpServers = (await SW.api.mcpServers()).servers || [];
+        notify();
       } catch (err) {
-        return;
+        // The rows on screen stand, and so does whether they are still loading.
       }
-      notify();
+      const loading = state.mcpServers.some((s) => s.status === 'pending' || s.status === 'unknown');
+      if (loading && mcpRecheckTimer === null && mcpRechecks < MCP_RECHECKS) {
+        mcpRechecks += 1;
+        mcpRecheckTimer = setTimeout(() => store.loadMcpServers(true), MCP_RECHECK_MS);
+      }
     },
 
     // `body` is `{ name, url, headers?, kind? }`. Throws, for the dialog to show.
@@ -10201,6 +10225,8 @@ window.SW = window.SW || {};
     // lock. A watcher already polling is asked now, rather than on its next two-second tick, so
     // the transcript catches up as soon as the network can answer.
     noteNetworkBack() {
+      // And the platform listing, whose group notes may be about the drop itself (#667).
+      if (state.resourceListing) store.refreshResourceListing();
       const readers = [...liveReaders];
       for (const reader of readers) cancelReader(reader);
       if (readers.length) return;
@@ -10693,7 +10719,10 @@ window.SW = window.SW || {};
   }
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') store.refreshModelList();
+      if (document.visibilityState !== 'visible') return;
+      // A group note on screen is worth a read however fresh the listing is (#667).
+      if (Object.values(state.resourceErrors || {}).some(Boolean)) store.refreshResourceListing();
+      else store.refreshModelList();
     });
   }
 

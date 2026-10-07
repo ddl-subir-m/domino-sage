@@ -115,6 +115,31 @@ def test_each_mcp_server_shows_its_status_tools_and_switch():
     assert {"cls": "sw-group-caption", "text": "Temporary until the MCP gateway."} in drawn["captions"]
 
 
+def _server(status: str) -> dict:
+    return {**SERVERS[0], "status": status}
+
+
+@pytest.mark.parametrize("waiting", ["pending", "unknown"])
+def test_a_server_still_loading_reads_connected_without_a_reload(waiting):
+    """#667: a row listed its tools and stayed "pending" until a reload, because nothing re-read
+    the status once OpenCode had finished loading it. Time is virtual in the harness."""
+    out = _run("mcp-settles", serverReads=[[_server(waiting)], [_server(waiting)],
+                                           [_server("connected")]],
+               at=[3000, 6000, 600_000])
+    assert [(look["subtitles"][0].split(" · ")[1], look["reads"]) for look in out["looks"]] == [
+        (_STATUS[waiting], 1), (_STATUS[waiting], 2), ("Connected", 3), ("Connected", 3)]
+
+
+def test_a_server_that_never_finishes_loading_is_read_a_bounded_number_of_times():
+    """Twenty rechecks after each read the panel asks for, so the next turn's end — or anything
+    else that loads the group — waits for it again."""
+    out = _run("mcp-settles", serverReads=[[_server("pending")]], at=[600_000], again=600_000)
+    assert [look["reads"] for look in out["looks"]] == [1, 21, 42]
+
+
+_STATUS = {"pending": "Loads before the next turn", "unknown": "Status unknown"}
+
+
 def test_the_switch_sends_put_enabled_for_the_project():
     out = _run("toggle-mcp")
     assert _writes(out["calls"]) == [{"url": "./api/project/mcp/crm/enabled", "method": "PUT",
