@@ -1,0 +1,21 @@
+{
+  "plugins": ["react", "oxc"],
+  "env": { "browser": true, "es2022": true },
+  "globals": {
+    "React": "readonly",
+    "ReactDOM": "readonly",
+    "antd": "readonly",
+    "icons": "readonly",
+    "dayjs": "readonly",
+    "Highcharts": "readonly",
+    "sage": "readonly",
+    "h": "readonly",
+    "app": "readonly"
+  },
+  "categories": { "correctness": "warn" },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "no-undef": "error"
+  },
+  "ignorePatterns": ["static/vendor/**", "static/sage/**"]
+}

@@ -213,7 +213,14 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import QUERIES, TurnSnapshot
-from ..workspace.stack import default_stack_name, preview_stack_of, resolve_stack, stack_of
+from ..workspace.stack import (
+    STACKS,
+    Stack,
+    default_stack_name,
+    preview_stack_of,
+    resolve_stack,
+    stack_of,
+)
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     CHAT_WORK,
@@ -252,6 +259,7 @@ from .describe import describe, fit_image
 from .plan_steps import (
     FIX_SECTIONS,
     MIN_STEPS,
+    NON_SOURCE_FILES,
     PlanContractCheck,
     PlanStep,
     is_phasable,
@@ -6703,7 +6711,8 @@ def _execution_contract_problems(check: PlanContractCheck) -> tuple[str, ...]:
     return tuple(problems)
 
 
-def _execution_contract_recovery_prompt(check: PlanContractCheck, example: str) -> str:
+def _execution_contract_recovery_prompt(check: PlanContractCheck, example: str,
+                                        stack: Stack | None = None) -> str:
     """Tell a clean planner why it is retrying without copying the rejected answer.
 
     The categories alone were not enough to retry on (#540). A plan written in some OTHER numbered
@@ -6713,9 +6722,14 @@ def _execution_contract_recovery_prompt(check: PlanContractCheck, example: str) 
     `invalid execution plan`. So the retry says which layout, in full, and shows one worked plan.
 
     `_PLAN_STEP_SHAPE` is the same string the turn carried, not a second description of it, and
-    `example` comes from `_plan_example_for` so the stack matches the app being planned.
+    `example` comes from `_plan_example_for` so the stack matches the app being planned. A `stack`
+    names that stack's files when the plan named others (#676), by the stack's globs and never
+    by a path copied from the rejected plan.
     """
     problems = "; ".join(_execution_contract_problems(check))
+    if stack is not None and check.invalid_file_fields:
+        problems += (f". Every file the plan names must be one a {stack.name} app has, matching "
+                     f"{', '.join((*stack.source_globs, *NON_SOURCE_FILES))}")
     return (
         "The previous planning attempt did not satisfy the required execution-plan structure. "
         "Write a complete replacement plan from the original request and references above. Do not "
@@ -8249,6 +8263,8 @@ class Orchestrator:
         """A plan or app name that is not already on another plan or app in this project."""
         taken: set[str] = set()
         for doc in self._plan_docs_record().list_plan_docs():
+            if doc.get("archived"):
+                continue
             title = str(doc.get("title") or "").strip()
             if title and title != except_title:
                 taken.add(title)
@@ -12683,11 +12699,13 @@ class Orchestrator:
         # Voiced for the same reason the gated turn voices its own copy: the shape's Data bullet
         # names the platform's nouns as tokens (#543).
         plan_shape = brand.apply_voice(_PLAN_SHAPE)
-        prompt = chat_handoff.plan_prompt(thread_id, digest, voice=_PLAN_VOICE, shape=plan_shape)
+        stack = _plan_stack_name(project)
+        prompt = chat_handoff.plan_prompt(thread_id, digest, voice=_PLAN_VOICE, shape=plan_shape,
+                                          stack=stack, example=_plan_example_for(project))
         # The same inputs, held for the one clean no-action retry (#561). This planner has no
         # attachments and no mentions: the digest IS the request, so it is labelled as one.
         plan_retry = PlanRetryInput(
-            request=digest, stack=_plan_stack_name(project), voice=_PLAN_VOICE, shape=plan_shape,
+            request=digest, stack=stack, voice=_PLAN_VOICE, shape=plan_shape,
             label=(f"The request: a Chat Thread in this project produced the digest below and the "
                    f"files under examples/{thread_id}/. No app exists yet. Write the plan for an "
                    "app colleagues can open from this work.\n"))
@@ -12882,12 +12900,13 @@ class Orchestrator:
         original_prompt = prompt
         current_prompt = original_prompt
         recovery = PlanRecoveryBudget(self._build_policy.plan_no_action_recovery_limit)
+        stack = STACKS.get(_plan_stack_name(project))
         while True:
             plan_md, sid = self._run_sage_plan(
                 project, current_prompt, sid, recovery=recovery, retry=retry)
             if not plan_md:
                 return plan_md, sid
-            contract = validate_execution_contract(plan_md)
+            contract = validate_execution_contract(plan_md, stack=stack)
             _record_execution_contract(contract, source_request_count)
             if contract.valid:
                 return self._repair_plan_heading(project, plan_md, where, request=request), sid
@@ -12920,7 +12939,7 @@ class Orchestrator:
             sid = client.create_session(directory=directory)
             current_prompt = (
                 original_prompt + "\n\n" +
-                _execution_contract_recovery_prompt(contract, _plan_example_for(project)))
+                _execution_contract_recovery_prompt(contract, _plan_example_for(project), stack))
 
     def _repair_plan_heading(self, project: Project, plan_md: str, where: str, *,
                              request: str) -> str:
@@ -14375,12 +14394,21 @@ class Orchestrator:
         # the Conversations that now accumulate something to recover.
         if project.control.snapshot().chat_thread_id:
             store = ThreadStore(project.record.path)
-            project.shim.data_use.restore(store.read_history(thread_id),
-                                          lambda ev: store.append_history(thread_id, ev))
+            persist = lambda ev: store.append_history(thread_id, ev)
+            project.shim.data_use.restore(store.read_history(thread_id), persist)
+            files = {str(item["path"]): f"{item['datasetName']}/{item['datasetRelPath']}"
+                     for item in store.read_context(thread_id).get("items", [])
+                     if item.get("kind") == "file" and item.get("path")
+                     and item.get("datasetName") and item.get("datasetRelPath")}
         else:
             workspace = project.app_for_turn()
-            project.shim.data_use.restore(workspace.read_history(thread_id),
-                                          lambda ev: workspace.append_history(ev, thread_id))
+            persist = lambda ev: workspace.append_history(ev, thread_id)
+            project.shim.data_use.restore(workspace.read_history(thread_id), persist)
+            files = {str(e["path"]): f"{e['dataset']}/{e.get('dataset_rel_path') or e['file']}"
+                     for e in project.attachments_for_turn()
+                     if e.get("path") and e.get("dataset") and e.get("file")}
+        # A Dataset file read with OpenCode's own `read` is seen only in the request (#688).
+        project.shim.data_use.watch_file_reads(files, persist, self._data_use_turns[thread_id])
         with self._live_read_lock:
             if thread_id in self._live_read:
                 self._live_read_earlier[thread_id] = self._live_read[thread_id][0]
