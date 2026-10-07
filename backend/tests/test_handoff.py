@@ -524,7 +524,8 @@ def test_implement_note_carries_data_used_from_the_digest(tmp_path: Path):
 
 
 def _plan_prompt(digest: str = "Thread background.") -> str:
-    return handoff.plan_prompt("thr_1", digest, voice=_PLAN_VOICE, shape=_PLAN_SHAPE)
+    return handoff.plan_prompt("thr_1", digest, voice=_PLAN_VOICE, shape=_PLAN_SHAPE,
+                               stack="react-vite", example="")
 
 
 def test_plan_prompt_points_at_examples_and_asks_for_a_plan():
