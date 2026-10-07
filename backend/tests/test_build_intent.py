@@ -468,6 +468,36 @@ def test_a_plan_quoting_a_row_of_an_attached_file_is_still_withheld():
     assert check.status == "missing"
 
 
+def _quoting_person(intent: BuildIntent) -> tuple[list, BuildIntentCheck]:
+    """The person's message quotes a row of the file the model reads later in the turn."""
+    request = _adae_read_request()
+    request["messages"][0]["content"] += f"\nThis row is wrong: {ADAE_ROW}"
+    prepared, _used = data_use.DataUse().prepare(
+        build_intent.install(request, Protocol.CHAT, intent))
+    return prepared["messages"][0]["content"], build_intent.inspect(prepared, Protocol.CHAT, intent)
+
+
+def test_a_person_quoting_a_row_read_later_keeps_their_words_and_the_carrier():
+    """#590: what the person chose to send is not local data, even when the file is read after."""
+    intent = BuildIntent.for_approved(["Fix the grouping"], "Fix the AEBODSYS grouping.", "", "")
+
+    person, check = _quoting_person(intent)
+
+    assert ADAE_ROW in person[0]["text"]
+    assert check.status == "ok"
+
+
+def test_a_plan_quoting_a_row_read_later_withholds_only_the_carrier():
+    intent = BuildIntent.for_approved(
+        ["Fix the grouping"], f"Hard-code {ADAE_ROW} as the first row.", "", "")
+
+    person, check = _quoting_person(intent)
+
+    assert ADAE_ROW in person[0]["text"]
+    assert ADAE_ROW not in person[1]["text"] and "withheld" in person[1]["text"]
+    assert check.status == "missing"
+
+
 def test_a_row_of_an_attached_file_in_a_message_is_still_withheld():
     request = _adae_read_request()
     request["messages"].append({"role": "assistant", "content": f"The first subject is {ADAE_ROW}."})
