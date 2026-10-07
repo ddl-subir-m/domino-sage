@@ -109,14 +109,14 @@ def _drafted(tmp_path: Path, chips: list[dict], history: list[dict]):
 
 
 def test_the_payload_says_what_the_chips_bind_and_what_the_conversation_read(tmp_path: Path):
-    _orch_, _root, _tid, draft = _drafted(tmp_path, [], [_READ])
+    *_, draft = _drafted(tmp_path, [], [_READ])
 
     assert draft["bindingKinds"] == []
     assert draft["dataReads"] == ["SFDC_OPPORTUNITY"]
 
 
 def test_the_payload_names_a_chip_that_binds(tmp_path: Path):
-    _orch_, _root, _tid, draft = _drafted(tmp_path, [_CHIP], [])
+    *_, draft = _drafted(tmp_path, [_CHIP], [])
 
     assert draft["bindingKinds"] == ["data_source"]
     assert draft["dataReads"] == []
