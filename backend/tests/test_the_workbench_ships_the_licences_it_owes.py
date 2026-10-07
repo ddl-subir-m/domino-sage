@@ -102,4 +102,9 @@ def test_the_no_build_template_ships_the_bundles_the_workbench_serves():
     anything (ADR-0014 refuses remote assets; #19 is the same rule for fonts)."""
     theirs = ROOT / "template" / "fastapi-antd" / "static" / "vendor"
     ours = {p.name: p.read_bytes() for p in VENDOR.iterdir() if p.is_file()}
-    assert {p.name: p.read_bytes() for p in theirs.iterdir() if p.is_file()} == ours
+    # The markdown renderer's libraries (#681) are the template's alone: the Workbench does not
+    # serve them, so NOTICE, which covers what the Workbench serves, does not name them.
+    built_app_only = {"marked.umd.js", "purify.min.js"}
+    shipped = {p.name: p.read_bytes() for p in theirs.iterdir() if p.is_file()}
+    assert {k: v for k, v in shipped.items() if k not in built_app_only} == ours
+    assert built_app_only <= shipped.keys()

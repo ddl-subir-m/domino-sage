@@ -529,6 +529,15 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
            "",
            'const { columns, rows, records } = await runQuery("usage_by_account", { since: "2026-01-01" });']),
         "```", "",
+        # #681: every screen hand-wrote the same loading/error/empty machine, and the copies differed.
+        (f"- **In a component, use `useQuery` rather than writing that state yourself:** "
+         f"`const q = {'sage.' if names.ext == 'js' else ''}useQuery(\"usage_by_account\", "
+         f"{{ since }});`"
+         + ("" if names.ext == "js" else f" (imported from `./{names.query}` beside `runQuery`)")
+         + ". `q.status` is `\"loading\"`, `\"error\"`, `\"empty\"` (the query answered with zero "
+         "records — never a failure) or `\"ready\"`; `q.data` is what `runQuery` answers; `q.error` "
+         "is the viewer's sentence; `q.refresh()` asks again. A changed param aborts the request in "
+         "flight, and answers are kept for the page's life, so a screen shown again draws at once."),
         # Measured 2026-10-06 (#662): a dashboard read `row.OPEN_PIPELINE` off the positional rows,
         # got undefined on every read, and drew $0 and "No data" over queries that had answered.
         ("- **Read a row by column name through `records`, never through `rows`.** `rows` holds one "

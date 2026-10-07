@@ -86,22 +86,26 @@ def render(intent: BuildIntent) -> str:
     return f"{start}\n{body}\n{end}"
 
 
+def carries(text: str) -> bool:
+    return _CARRIER.search(text) is not None
+
+
 def without_source_requests(text: str) -> str:
-    """A whole-carrier text with its `source_requests` emptied, for the local-data check (#590).
+    """The text with each carrier's `source_requests` emptied, for the local-data check (#590).
 
     The source requests are the person's own words, and what they chose to send is not local data
     to withhold from the request. The plan, answers and notes are model-written and stay checked.
-    Any other text is returned unchanged.
+    The carrier shares its message with the person's own text (#672), so it is found within it.
     """
-    match = _CARRIER.fullmatch(text)
-    if not match:
-        return text
-    try:
-        body = json.loads(match.group("body"))
-        body["source_requests"] = []
-    except (ValueError, TypeError):
-        return text
-    return json.dumps(body, ensure_ascii=False)
+    def emptied(match: re.Match) -> str:
+        try:
+            body = json.loads(match.group("body"))
+            body["source_requests"] = []
+        except (ValueError, TypeError):
+            return match.group(0)
+        return json.dumps(body, ensure_ascii=False)
+
+    return _CARRIER.sub(emptied, text)
 
 
 def _protocol(value) -> Protocol | None:
@@ -111,35 +115,54 @@ def _protocol(value) -> Protocol | None:
         return None
 
 
+def _is_person_message(row, protocol: Protocol) -> bool:
+    """A user message the person authored: not a tool result, which Messages carries as `user`."""
+    if not isinstance(row, dict) or row.get("role") != "user":
+        return False
+    if protocol is Protocol.RESPONSES:
+        return row.get("type", "message") == "message"
+    if protocol is Protocol.MESSAGES and isinstance(row.get("content"), list):
+        return not any(isinstance(part, dict) and part.get("type") == "tool_result"
+                       for part in row["content"])
+    return True
+
+
+def _person_index(rows: list, protocol: Protocol) -> int | None:
+    return next((i for i in range(len(rows) - 1, -1, -1)
+                 if _is_person_message(rows[i], protocol)), None)
+
+
 def install(payload, protocol, intent: BuildIntent) -> dict:
-    """Append one ordinary user-text carrier to a copied native request."""
+    """Attach one carrier text part to the last message the person authored, in a copy.
+
+    Never after the tool exchange (#672): there it read as a fresh command on every call, and the
+    model answered "already done" after each tool result. With no such message it is appended.
+    """
     kind = _protocol(protocol)
     if kind is None or not isinstance(payload, dict):
         raise ValueError("Unsupported Build intent protocol payload")
     result = copy.deepcopy(payload)
-    carrier = render(intent)
-    if kind is Protocol.CHAT:
-        messages = result.setdefault("messages", [])
-        if not isinstance(messages, list):
-            raise ValueError("Unsupported Chat Completions message payload")
-        messages.append({"role": "user", "content": carrier})
-    elif kind is Protocol.MESSAGES:
-        messages = result.setdefault("messages", [])
-        if not isinstance(messages, list):
-            raise ValueError("Unsupported Anthropic Messages payload")
-        messages.append({"role": "user", "content": [{"type": "text", "text": carrier}]})
-    else:
-        items = result.setdefault("input", [])
-        if isinstance(items, str):
-            items = [{"type": "message", "role": "user", "content": [
-                {"type": "input_text", "text": items}
-            ]}]
-            result["input"] = items
-        if not isinstance(items, list):
-            raise ValueError("Unsupported Responses input payload")
-        items.append({"type": "message", "role": "user", "content": [
-            {"type": "input_text", "text": carrier}
-        ]})
+    key = "input" if kind is Protocol.RESPONSES else "messages"
+    rows = result.setdefault(key, [])
+    if kind is Protocol.RESPONSES and isinstance(rows, str):
+        rows = [{"type": "message", "role": "user", "content": rows}]
+        result[key] = rows
+    if not isinstance(rows, list):
+        raise TypeError("Unsupported Build intent protocol payload")
+    part_type = "input_text" if kind is Protocol.RESPONSES else "text"
+    part = {"type": part_type, "text": render(intent)}
+    index = _person_index(rows, kind)
+    if index is None:
+        rows.append({"role": "user", "content": [part]})
+        if kind is Protocol.RESPONSES:
+            rows[-1]["type"] = "message"
+        return result
+    content = rows[index].get("content", "")
+    if isinstance(content, str):
+        content = [{"type": part_type, "text": content}] if content else []
+    if not isinstance(content, list):
+        raise TypeError("Unsupported Build intent protocol payload")
+    rows[index] = {**rows[index], "content": [*content, part]}
     return result
 
 
@@ -184,8 +207,20 @@ def _ordinary_user_text(payload: dict, protocol: Protocol) -> list[str] | None:
     return texts
 
 
+def _person_texts(payload: dict, protocol: Protocol) -> list[str]:
+    rows = payload.get("input" if protocol is Protocol.RESPONSES else "messages", [])
+    index = _person_index(rows, protocol) if isinstance(rows, list) else None
+    if index is None:
+        return []
+    return _content_texts(
+        rows[index].get("content", ""),
+        part_types=("text", "input_text") if protocol is Protocol.CHAT else (
+            ("input_text",) if protocol is Protocol.RESPONSES else ("text",)),
+    ) or []
+
+
 def inspect(payload, protocol, intent: BuildIntent) -> BuildIntentCheck:
-    """Verify the one exact carrier at the end of ordinary user text."""
+    """Verify the one exact carrier is a text of the last message the person authored."""
     kind = _protocol(protocol)
     if kind is None or not isinstance(payload, dict):
         return BuildIntentCheck("unsupported", 0, 0)
@@ -200,7 +235,7 @@ def inspect(payload, protocol, intent: BuildIntent) -> BuildIntentCheck:
         status: BuildIntentStatus = "missing"
     elif carrier_count > 1:
         status = "duplicate"
-    elif texts and texts[-1] == expected:
+    elif expected in _person_texts(payload, kind):
         status = "ok"
     else:
         status = "changed"
