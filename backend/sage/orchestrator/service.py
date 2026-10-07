@@ -19817,7 +19817,8 @@ class Orchestrator:
                 "listed": len(found), "matched": ranking.matched, "named": ranking.named,
                 "truncated": listing.truncated}
 
-    def _dataset_offer(self, prompt: str, answered: dict, user_text: str = ""):
+    def _dataset_offer(self, prompt: str, answered: dict, user_text: str = "", *,
+                       cards: bool = True):
         """The card for the next Dataset that needs a choice, or None, and what was attached unasked.
 
         THE DEAD END ADR-0038 CLOSED, reached through the other door. `bind_dataset` has written a
@@ -19844,6 +19845,9 @@ class Orchestrator:
         about the next. The answered Dataset does not ask again because its click attached a file
         or recorded the way past. A Dataset whose listing holds exactly one file is not a question,
         so that file is attached here and the sentence saying so is returned instead of a card.
+
+        `cards=False` is the approve path's (#687): it attaches single-file Datasets and draws no
+        card, so a Dataset that needs a choice is left as it was and the offer is always None.
         """
         project = self.project()
 
@@ -19883,6 +19887,8 @@ class Orchestrator:
                     attached_now.append(brand.text("Using {file} from {name}.", file=only["path"],
                                                    name=binding.display_name))
                     continue
+            if not cards:
+                continue
             return self._dataset_files_events(prompt, binding, card, answered, user_text,
                                               datasets), attached_now
         return None, attached_now
@@ -24437,6 +24443,12 @@ class Orchestrator:
         # build and keep its plan alive for ever. What this turn owes is written by the two things
         # that can know it — the give-up flag below, and a phase as it starts.
         project.app_for_turn().set_plan_retry_step(0)
+        # A plan drafted by the Chat handoff never passed `build_stream`'s Dataset gate, so this
+        # approve is its first build and the only place a single-file Dataset gets attached (#687).
+        # Before `mentions` below, which reads the attachments. No card: a Dataset that needs a
+        # choice builds unattached here, as it always has.
+        _, attached_now = self._dataset_offer("", {}, cards=False)
+        dataset_note = " ".join(attached_now)
         # An approve turn types no message of its own, so it has no `mentions` to carry — but the
         # files already attached to this app are exactly what the build may need to read, and
         # without this the model finds them itself via glob/find and can land on the absolute
@@ -24453,7 +24465,8 @@ class Orchestrator:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
                                                 start_step=resume_from, mentions=mentions,
                                                 explicit_references=explicit_references,
-                                                source_requests=source_requests)
+                                                source_requests=source_requests,
+                                                dataset_note=dataset_note)
             else:
                 # The bubble is what the person did, not what we sent. Approving from the card passes
                 # no `user_text`, and _build_stream's fallback is the prompt itself — so the whole
@@ -24465,6 +24478,7 @@ class Orchestrator:
                     mentions, is_approval=True, mode=run_as,
                     user_text=user_text if user_text is not None else "Approved the plan.",
                     explicit_references=explicit_references,
+                    dataset_note=dataset_note,
                     build_intent=BuildIntent.for_approved(
                         source_requests, plan_md, answers,
                         chat_handoff.implement_note(project.app_for_turn().path)),
@@ -24571,7 +24585,8 @@ class Orchestrator:
                         continuation_note: str = "",
                         initial_repair_objective: str = "implementation",
                         resumed_phase_intent: BuildIntent | None = None,
-                        completion_guard: Callable[[], bool] | None = None):
+                        completion_guard: Callable[[], bool] | None = None,
+                        dataset_note: str = ""):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -24636,6 +24651,8 @@ class Orchestrator:
         project.app_for_turn().append_history(
             {"type": "user", "text": user_text if user_text is not None else "Approved the plan."},
             project.build_conversation)
+        if dataset_note:
+            yield persist({"type": "dataset-attached", "message": dataset_note})
         # ONE revert point for the whole build. _build_stream still checkpoints per phase (which is
         # what gives a gate violation its correct, narrow scope), so undoing everything needs a ref
         # that reaches back past all of them — hence discard_to rather than discard_changes.
