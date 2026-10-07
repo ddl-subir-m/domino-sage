@@ -453,6 +453,7 @@ def analyze(args: dict, turn) -> str:
         # (ADR-0063, *What this does not decide*).
         "role": "answer",
         "source": source,
+        "source_kind": "data_source" if args.get("source") else "file",
         "source_sha256": source_sha,
         "artifact": receipt.path,
         "columns": [c for c in [id_column, text_column, group_by] if c],

@@ -50,6 +50,7 @@ from ..assets.provider import (
     DatasetFile,
     FakeAssetProvider,
     FileListing,
+    resolve_mount_roots,
 )
 from ..build_intent import BuildIntent
 from ..build_policy import BuildPolicy, load_build_policy
@@ -2239,25 +2240,50 @@ def _describe_context_file(workspace: Path, item: dict) -> str:
     return str(d.get("shape") or d.get("summary") or "").strip()
 
 
+def _mounted_dataset_of(item: dict) -> str | None:
+    """The mounted Dataset folder a chip's absolute path names or sits in, or None.
+
+    A Dataset chip's path is the folder. A file chip's is a file inside one, and Domino mounts each
+    Dataset at `<mount root>/<name>` (`DominoAssetProvider._mount_path_for`), so its folder is the
+    first segment under the first root holding it, in the order that lookup tries them.
+    """
+    path = str(item.get("path") or "")
+    if not Path(path).is_absolute() or _dataset_pseudo_path(item):
+        return None
+    kind = str(item.get("kind") or "")
+    if kind == "dataset":
+        return path
+    if kind not in ("file", "artifact"):
+        return None
+    for root in resolve_mount_roots():
+        inside = Path(path).relative_to(root).parts if Path(path).is_relative_to(root) else ()
+        if len(inside) > 1:
+            return str(Path(root) / inside[0])
+    return None
+
+
 def _mounted_dataset_paths(items: list[dict]) -> list[str]:
-    """The absolute folders of the mounted Dataset chips among `items`, for the Chat workdir."""
-    return [str(it["path"]) for it in items
-            if str(it.get("kind") or "") == "dataset" and not _dataset_pseudo_path(it)
-            and Path(str(it.get("path") or "")).is_absolute()]
+    """The absolute folders of the mounted Datasets the chips among `items` name or sit in, for the
+    Chat workdir."""
+    return [m for it in items if (m := _mounted_dataset_of(it))]
 
 
 def _linked_dataset_chip(workspace: Path, item: dict) -> dict:
-    """`item` naming its mounted folder by the Chat-workdir link, when that link is there.
+    """`item` naming its mounted folder, or its file in one, by the Chat-workdir link, when that
+    link is there.
 
     `external_directory: deny` refuses the file tools on `/mnt/data/...`, and the agent follows the
     path the chip line gives it (#675). The link resolves to the same folder, so the folder note
     still lists the real files.
     """
-    path = str(item.get("path") or "")
-    if not path or not Path(path).is_absolute() or _dataset_pseudo_path(item):
+    mount = _mounted_dataset_of(item)
+    if not mount:
         return item
-    link = mounted_dataset_link(path)
-    return {**item, "path": link} if (workspace / link).is_symlink() else item
+    link = mounted_dataset_link(mount)
+    if not (workspace / link).is_symlink():
+        return item
+    inside = Path(str(item["path"])).relative_to(mount).as_posix()
+    return {**item, "path": link if inside == "." else f"{link}/{inside}"}
 
 
 def _context_folder_state(workspace: Path, item: dict) -> str:
@@ -11828,7 +11854,7 @@ class Orchestrator:
                     skip_investigation_gate: bool = False, declined: bool = False,
                     other_lane_grant: str = "", task_id: str = "", turn_id: str | None = None,
                     turn_ticket: _TurnTicket | None = None,
-                    how_sage_works: str = "guided",
+                    how_sage_works: str = "guided", retry_of: str = "",
                     _already_granted: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
@@ -11864,6 +11890,10 @@ class Orchestrator:
 
         `how_sage_works` is this turn's choice, `direct` or `guided` (ADR-0070). Anything else is
         Guided. `_chat_stream` is what branches on it.
+
+        `retry_of` is the failed turn a Retry press replaces (#665). The question is already on the
+        Thread above that turn, so it is not written again; a `turn-retried` row is written instead,
+        and both the live view and a reload draw the failed answer collapsed under it.
         """
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
@@ -11936,6 +11966,7 @@ class Orchestrator:
                                         other_lane_grant=other_lane_grant,
                                         task_id=task_id,
                                         how_sage_works=how_sage_works,
+                                        retry_of=retry_of,
                                         timing_record=timing_record,
                                         turn_generation=turn_generation):
                 if ev.get("type") == "done":
@@ -12571,6 +12602,7 @@ class Orchestrator:
         thread = store.get(thread_id) or {}
         plan_id = str((handoff or {}).get("planId") or "")
         doc = project.record.read_plan_doc(plan_id) if plan_id else None
+        context = store.read_context(thread_id).get("items") or []
         return {
             "ok": True,
             "threadId": thread_id,
@@ -12583,7 +12615,13 @@ class Orchestrator:
             "handoff": handoff,
             "untitled": project.record.is_untitled(),
             "artifacts": _artifacts_present(project.record.path, store.read_artifacts(thread_id)),
-            "context": store.read_context(thread_id).get("items") or [],
+            "context": context,
+            # What the chips would bind, and which Data Sources the conversation read. A read never
+            # becomes a Binding (ADR-0010), so the sheet warns when one was read and none crosses
+            # (#669).
+            "bindingKinds": [b.kind for b in (chat_handoff.binding_from_context(i) for i in context)
+                             if b is not None],
+            "dataReads": chat_handoff.data_source_reads(store.read_history(thread_id)),
             # The apps this handoff could build into, so the sheet can offer them (#73). The rail's
             # `selected` flag is dropped on the way out: the only default is New app, and a payload
             # that named one of these would give the markup something to preselect — which is the
@@ -13137,8 +13175,12 @@ class Orchestrator:
             include_artifacts=include_artifacts,
             include_resources=include_resources,
             data_used=chat_handoff.data_use_summaries(history) if include_resources else [],
+            read_a_data_source=bool(chat_handoff.data_source_reads(history)),
         )
         (project.workspace.path / ".sage" / "handoff.md").write_text(digest)
+        # The note is one of the things the data region reads, and the app was bound before it
+        # existed, so the region is re-derived now rather than at the end of the first turn.
+        self._write_app_data(project)
         transcript_path = project.workspace.path / ".sage" / "handoff-transcript.md"
         if include_transcript:
             # `strict` here is defence in depth, not the guard that holds #331's named trap. The
@@ -13462,14 +13504,15 @@ class Orchestrator:
                 continue
             if path in seen:
                 continue
+            given = str(_linked_dataset_chip(workspace, it).get("path") or "")
             try:
-                real = Path(path) if Path(path).is_absolute() else _safe_join(workspace, path)
+                real = Path(given) if Path(given).is_absolute() else _safe_join(workspace, given)
                 d = describe(str(real))
             except (ValueError, OSError, TypeError):
                 continue
             seen.add(path)
             out.append({
-                "path": path,
+                "path": given,
                 "name": name,
                 "summary": str(d.get("summary") or ""),
                 "detail": _mention_block(d),
@@ -15988,6 +16031,7 @@ class Orchestrator:
                 if it in same[1:]:
                     continue
                 if workspace is not None and kind in ("file", "artifact"):
+                    it = _linked_dataset_chip(workspace, it)
                     note = _describe_context_file(workspace, it)
                 elif workspace is not None and kind == "dataset":
                     it = _linked_dataset_chip(workspace, it)
@@ -16114,7 +16158,8 @@ class Orchestrator:
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                      skip_investigation_gate: bool = False, declined: bool = False,
                      other_lane_grant: str = "", task_id: str = "", timing_record=None,
-                     turn_generation: int = 0, how_sage_works: str = "guided"):
+                     turn_generation: int = 0, how_sage_works: str = "guided",
+                     retry_of: str = ""):
         import time
 
         project = self._chat_project()
@@ -16265,7 +16310,11 @@ class Orchestrator:
         # prints the person's question twice under one card.
         asking = (not already_asked and not skip_table_gate and not skip_dataset_gate
                   and not skip_investigation_gate and not other_lane_granted)
-        if asking:
+        if asking and retry_of:
+            retried = {"type": "turn-retried", "of": retry_of}
+            store.append_history(thread_id, retried)
+            yield retried
+        elif asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
 
@@ -30882,6 +30931,10 @@ class Orchestrator:
         reads a store. The `src/` walk skips the helpers Sage owns: `runQuery` is DEFINED in one of
         them, so counting it would make every app look like it were reaching.
 
+        A handoff note saying the conversation read a Data Source that did not cross is a third, and
+        the only one there on the first turn: neither of the others exists until a query has been
+        written (#669).
+
         Cheap by construction — a stat and a walk of `src/`, once at the end of a build turn, against
         a tree of tens of files. Errors read as "not reaching": this decides what to say, never what
         to allow, and an unreadable file is not grounds to start shouting at an app that is fine.
@@ -30890,8 +30943,12 @@ class Orchestrator:
         catalog = getattr(module, "_QUERIES_REL", ".sage/queries.json")
         if (root / catalog).is_file():
             return True
+        note = root / ".sage" / "handoff.md"
         owned = project.workspace.helpers.owned
         try:
+            if note.is_file() and chat_handoff.note_reads_unbound_data(
+                    note.read_text(errors="ignore")):
+                return True
             # Where a call can appear is the stack's to say (#490): `src/*.ts*` for react-vite, the
             # page's own scripts for fastapi-antd.
             for glob in project.workspace.stack.query_globs:

@@ -836,6 +836,7 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
         event = {
             "operation_id": operation,
             "source": str(args.get("source") or ""),
+            "source_kind": "data_source",
             # The HASH, never the statement. The event is persisted into the Thread's history, which
             # is committed, and a statement carries literals — see `_statement`'s docstring. This is
             # the same thing `calculate` does with the CSV bytes it read, for the same reason.
