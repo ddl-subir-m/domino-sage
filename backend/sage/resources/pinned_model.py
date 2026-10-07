@@ -228,6 +228,17 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
          "kind }`. `fallback` is required — draw the screen from `value` either way, from the facts "
          "it already has, and show `error` beside it when `ok` is false. If you call `askModel` for "
          "JSON anyway, leave `maxTokens` unset or at 1200 or more."),
+        # #681: a brief drew `## Deal brief` and `**at risk**` literally. The obvious repair,
+        # innerHTML over a markdown parser, runs any HTML the model quotes.
+        ("- **Show model prose through the Markdown renderer, never as raw text and never with "
+         "`dangerouslySetInnerHTML`.** A model answers in markdown, so a text node shows `##` and "
+         "`**` literally, and unsanitised HTML can carry a script. "
+         + ("`React.createElement(sage.Markdown, { text })` (from `static/sage/markdown.js`)" if js
+            else '`<Markdown text={text} />` (`import { Markdown } from "./Markdown";`, '
+                 "`src/Markdown.tsx`)")
+         + " parses and sanitises it. An app created before the renderer shipped has no such file; "
+         "there, show the text in an element with `white-space: pre-wrap`. For data the screen lays "
+         "out itself, ask with `askJson` rather than for prose."),
         ("- **Carry the model's state into the app UI.** When a screen passes selected values to "
          "`askModel`, use `onOutcome` and show that model state separately from the data it was "
          "given. Missing serving model, provider receipt, decision stage, cache, or fallback "

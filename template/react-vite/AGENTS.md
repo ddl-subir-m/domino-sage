@@ -143,6 +143,8 @@ Build the user's app by editing `src/`. There is no install or build step to run
   chosen in {assistantName}. `src/appModelApi.ts` and `src/appQuery.ts` are {assistantName}'s on the
   same terms, whether or not this app has a {modelApi} or a {dataSource} yet: they are on disk from
   the start, {assistantName} rewrites them, and an edit to either is lost rather than kept.
+  `src/Markdown.tsx` and everything under `src/vendor/` are {assistantName}'s too: import
+  `Markdown` from them, never edit them.
 - **Never run `npm install` / `yarn add` / `pnpm add`.** It does not just fail — it breaks the
   workspace. `node_modules` here is a symlink to a warm, pre-installed copy, and npm refuses to
   write into a symlinked one: it deletes the link *before* it knows whether the install resolves.

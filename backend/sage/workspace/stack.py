@@ -104,6 +104,7 @@ REACT_VITE = Stack(
     checker="tsc",
     source_globs=("src/**/*",),
     query_globs=("src/**/*.ts", "src/**/*.tsx"),
+    vendored=("src/vendor/",),
 )
 
 # FastAPI serving a page that loads React, Ant Design, Day.js and Highcharts as plain scripts — the
