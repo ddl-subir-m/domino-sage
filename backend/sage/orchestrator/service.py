@@ -6743,9 +6743,15 @@ _PLAN_NAME_SYSTEM = (
 _PLAN_NAME_TIMEOUT_S = 30.0
 
 
-def _repair_heading_name(answer: str) -> str:
-    """Return the planner's written app name, or "" when it did not write one."""
+def _repair_heading_name(answer: str, request: str) -> str:
+    """Return the planner's written app name, or "" when it did not write one.
+
+    A name the request gives word for word is the app's name whatever its shape (#670): "an app
+    called Sage" is one word, and no invented name may be.
+    """
     name = (answer or "").strip()
+    if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request):
+        return name
     if not 2 <= len(name.split()) <= 4:
         return ""
     if name.split()[0].lower() in ("a", "an", "the"):
@@ -6755,8 +6761,8 @@ def _repair_heading_name(answer: str) -> str:
     return name
 
 
-def _prepend_repaired_heading(plan_md: str, answer: str) -> str:
-    name = _repair_heading_name(answer)
+def _prepend_repaired_heading(plan_md: str, answer: str, request: str) -> str:
+    name = _repair_heading_name(answer, request)
     if not name:
         return ""
     repaired = f"# {name}\n\n{plan_md}"
@@ -12895,14 +12901,14 @@ class Orchestrator:
         except Exception as e:
             log.warning("%s: plan heading repair failed: %s: %s", where, type(e).__name__, e)
             return plan_md
-        repaired = _prepend_repaired_heading(plan_md, answer)
+        repaired = _prepend_repaired_heading(plan_md, answer, request)
         if not repaired:
             log.warning("%s: plan heading repair returned no valid app name: %r",
                         where, answer[:120])
             return plan_md
         return repaired
 
-    def _ask_for_app_name(self, project: Project, plan_md: str, request: str) -> str:
+    def _ask_for_app_name(self, project: Project, plan_md: str, asked: str) -> str:
         """The gateway half of the repair: the request and plan in, the model's text out. Raises on
         any fault.
 
@@ -12920,7 +12926,7 @@ class Orchestrator:
             "model": model,
             "messages": [{"role": "system", "content": _PLAN_NAME_SYSTEM},
                          {"role": "user",
-                          "content": f"The request:\n{request}\n\nThe plan:\n{plan_md}"}],
+                          "content": f"The request:\n{asked}\n\nThe plan:\n{plan_md}"}],
             "max_tokens": 32,
             "temperature": 0,
             "stream": True,
@@ -12954,7 +12960,7 @@ class Orchestrator:
                 if not complete:
                     raise ValueError("name answer ended without a completion signal")
                 answer = scope._extract(raw)
-                if not _repair_heading_name(answer):
+                if not _repair_heading_name(answer, asked):
                     raise ValueError("name answer was not a valid app name")
             except BaseException as e:
                 call.done(ok=False, error=f"{type(e).__name__}: {e}")

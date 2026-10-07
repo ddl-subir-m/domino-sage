@@ -353,6 +353,39 @@ def test_a_handoff_repair_sends_the_request_and_the_name_rule(tmp_path: Path):
     assert user.endswith("\n\nThe plan:\n" + UNNAMED.strip())
 
 
+def _repaired_build(tmp_path: Path, asked: str, answer: str) -> str:
+    orch, gateway, _root = _orch(tmp_path, [Turn(text=UNNAMED)])
+    gateway.word = "BUILD"
+    gateway.name = answer
+    events = list(orch.build_stream(asked, conversation=CONVERSATION))
+    return next(e for e in events if e["type"] == "plan-proposed")["plan"]
+
+
+@pytest.mark.parametrize("name", ["Sage", "The Signal Room", "Signal Room 2.0"])
+def test_a_name_the_request_gives_is_kept_though_no_invented_name_could_be_it(tmp_path: Path,
+                                                                              name: str):
+    """One word, a leading article, a full stop: each fails the shape an invented name must have,
+    and each is still the app's name when the person wrote it."""
+    plan = _repaired_build(tmp_path, f"build me an app called {name} for desk exposure", name)
+
+    assert plan == f"# {name}\n\n" + UNNAMED.strip()
+
+
+_LONG_NAME = " ".join(["Desk Exposure Signal Room"] * 4)  # 103 characters, past the title bound
+
+
+@pytest.mark.parametrize("asked, answer", [
+    (f"build me an app called {_LONG_NAME}", _LONG_NAME),
+    ("build me an app called Sage for desk exposure", "Sag"),
+    ("build me an app called Sage for desk exposure", "sage"),
+    ("build me a desk exposure dashboard", "The Desk Dashboard"),
+])
+def test_a_name_the_request_does_not_give_word_for_word_keeps_the_shape_rules(tmp_path: Path,
+                                                                              asked: str,
+                                                                              answer: str):
+    assert _repaired_build(tmp_path, asked, answer) == UNNAMED.strip()
+
+
 def test_named_plans_do_not_run_a_repair_pass(tmp_path: Path):
     direct, _plan_md, _plan_id = _gated(tmp_path / "direct", NAMED)
     chat = _handed_off(tmp_path / "chat", NAMED)
