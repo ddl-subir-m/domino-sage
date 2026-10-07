@@ -166,6 +166,9 @@ def parse_steps(plan_md: str) -> list[PlanStep]:
 
 
 _REQUIRED_SECTIONS = ("problem", "users", "outcomes", "screens", "acceptance", "plan")
+# A fix to a built app after a failed turn or a scope-gated follow-up (#677): Screens and the
+# problem framing belong to the first-build plan, the one a person reads as "what this app will be".
+FIX_SECTIONS = ("acceptance", "plan")
 
 
 def _present(value) -> bool:
@@ -205,13 +208,14 @@ def _only_multi_sentence_summary_fault(check: PlanContractCheck) -> bool:
     )
 
 
-def repair_execution_summary(markdown: str) -> str:
+def repair_execution_summary(markdown: str,
+                             required: tuple[str, ...] = _REQUIRED_SECTIONS) -> str:
     """If the only contract fault is a second sentence on the lead line, keep the first.
 
     A summary that continues on a later line is left untouched: that line is narration, and
     the plan should retry. Missing sections, bad steps, and any other fault also stay as written.
     """
-    check = _validate_execution_contract(markdown)
+    check = _validate_execution_contract(markdown, required)
     if not _only_multi_sentence_summary_fault(check):
         return markdown
     parsed = plan_doc.parse_sections(markdown)
@@ -225,7 +229,7 @@ def repair_execution_summary(markdown: str) -> str:
     if not first or first == parsed["summary"] or not _one_sentence(first):
         return markdown
     repaired = plan_doc.render(first, parsed["sections"], parsed["title"])
-    if not _validate_execution_contract(repaired).valid:
+    if not _validate_execution_contract(repaired, required).valid:
         return markdown
     return repaired
 
@@ -251,7 +255,9 @@ def _valid_workspace_path(value: str, stack: Stack | None = None) -> bool:
     return stack is None or _in_stack(parsed.as_posix(), stack)
 
 
-def _validate_execution_contract(markdown: str, stack: Stack | None = None) -> PlanContractCheck:
+def _validate_execution_contract(markdown: str,
+                                 required: tuple[str, ...] = _REQUIRED_SECTIONS,
+                                 stack: Stack | None = None) -> PlanContractCheck:
     """Strict check with no summary repair. Used by the public validator and the repair path."""
     parsed = plan_doc.parse_sections(markdown)
     sections = parsed["sections"]
@@ -260,7 +266,7 @@ def _validate_execution_contract(markdown: str, stack: Stack | None = None) -> P
     # bounded name-only call fails; a display caption must never become a stored heading.
     if not _one_sentence(parsed["summary"]):
         missing.append("summary")
-    missing.extend(key for key in _REQUIRED_SECTIONS if not _present(sections.get(key)))
+    missing.extend(key for key in required if not _present(sections.get(key)))
 
     plan = str(sections.get("plan") or "")
     candidate_count = sum(
@@ -305,7 +311,9 @@ def _validate_execution_contract(markdown: str, stack: Stack | None = None) -> P
     )
 
 
-def validate_execution_contract(markdown: str, *, stack: Stack | None = None) -> PlanContractCheck:
+def validate_execution_contract(markdown: str,
+                                required: tuple[str, ...] = _REQUIRED_SECTIONS, *,
+                                stack: Stack | None = None) -> PlanContractCheck:
     """Check the durable plan shape without reading files or calling a model.
 
     `parse_steps` stays backward compatible. This stricter door compares every numbered candidate
@@ -317,13 +325,18 @@ def validate_execution_contract(markdown: str, *, stack: Stack | None = None) ->
     were its first sentence. Callers that store the markdown should also run
     `repair_execution_summary` so the durable copy matches what was accepted.
     """
-    check = _validate_execution_contract(markdown, stack)
+    check = _validate_execution_contract(markdown, required, stack)
     if check.valid or not _only_multi_sentence_summary_fault(check):
         return check
-    repaired = repair_execution_summary(markdown)
+    repaired = repair_execution_summary(markdown, required)
     if repaired == markdown:
         return check
-    return _validate_execution_contract(repaired, stack)
+    return _validate_execution_contract(repaired, required, stack)
+
+
+def is_prose_answer(markdown: str) -> bool:
+    """No recognised section, so no Plan and no step: the planner answered instead of planning."""
+    return not any(_present(v) for v in plan_doc.parse_sections(markdown)["sections"].values())
 
 
 def is_phasable(plan_md: str, min_steps: int = MIN_STEPS) -> bool:

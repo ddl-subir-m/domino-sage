@@ -257,11 +257,13 @@ from . import (
 from . import handoff as chat_handoff
 from .describe import describe, fit_image
 from .plan_steps import (
+    FIX_SECTIONS,
     MIN_STEPS,
     NON_SOURCE_FILES,
     PlanContractCheck,
     PlanStep,
     is_phasable,
+    is_prose_answer,
     parse_steps,
     step_index,
     validate_execution_contract,
@@ -8261,6 +8263,8 @@ class Orchestrator:
         """A plan or app name that is not already on another plan or app in this project."""
         taken: set[str] = set()
         for doc in self._plan_docs_record().list_plan_docs():
+            if doc.get("archived"):
+                continue
             title = str(doc.get("title") or "").strip()
             if title and title != except_title:
                 taken.add(title)
@@ -20806,6 +20810,9 @@ class Orchestrator:
             wants_plan=wants_plan,
             direct=direct,
         )
+        # Plan mode, an asked-for plan and the first build keep the full contract. A gate opened
+        # below, by a failure or by the scope classifier, is planning a fix to a built app (#677).
+        fix_contract = not gate
         # --- failure-triggered replan (case 3), reading half -------------------------------------
         # Read here and consumed below, both before the request goes out — the gate can only be
         # applied before it, because read-only is enforced by stripping write/shell tools from the
@@ -23753,7 +23760,14 @@ class Orchestrator:
                     return
                 if not arch:
                     source_request_messages = (prompt,)
-                    contract = validate_execution_contract(plan_md)
+                    if fix_contract and is_prose_answer(plan_md):
+                        log.info("plan gate: the planner answered instead of planning a fix")
+                        restore_mode()
+                        yield persist({"type": "agent", "kind": "text", "text": plan_md})
+                        yield plan_done(ok=True, decision="answered")
+                        return
+                    contract = validate_execution_contract(
+                        plan_md, FIX_SECTIONS) if fix_contract else validate_execution_contract(plan_md)
                     _record_execution_contract(contract, len(source_request_messages))
                     if not contract.valid:
                         attempt, action = plan_recovery.choose()
@@ -23834,6 +23848,7 @@ class Orchestrator:
                         previous_plan_id=project.app_for_turn().read_archived_plan_doc_id(),
                         explicit_references=plan_reference_records,
                         execution_contract_version=1,
+                        fix_contract=fix_contract,
                         source_request_messages_version=1,
                         source_request_messages=source_request_messages,
                     )["id"]
@@ -24319,7 +24334,8 @@ class Orchestrator:
         if approved_doc and live_plan.strip() != (approved_doc.get("markdown") or "").strip():
             project.record.write_plan_doc_version(approved_doc["id"], live_plan)
         if approved_doc and approved_doc.get("executionContractVersion") == 1:
-            contract = validate_execution_contract(plan_md)
+            contract = validate_execution_contract(plan_md, FIX_SECTIONS) if approved_doc.get(
+                "executionContract") == "fix" else validate_execution_contract(plan_md)
             source_messages = approved_doc.get("sourceRequestMessages") or []
             _record_execution_contract(
                 contract,
