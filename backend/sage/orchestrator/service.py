@@ -25059,18 +25059,20 @@ class Orchestrator:
         validation.dataset_ids = tuple(b.id for b in bindings if b.kind == KIND_DATASET)
         project.page_validation = validation
         timeout = self._build_policy.page_ack_wait_seconds
-        supervisor = project.supervisor
+        # The turn's app, not the one on screen: a `?app=` tab builds an app it never selects (#692).
+        view = self._view_for(project, app.app_id)
+        supervisor = view.supervisor
 
         def current():
-            return (self._project is project and project.workspace.app_id == app.app_id
-                    and project.supervisor is supervisor and not project.stop_requested
+            return (self._project is project and view.workspace.app_id == app.app_id
+                    and view.supervisor is supervisor and not project.stop_requested
                     and (not validation.generation
                          or supervisor.status()["generation"] == validation.generation))
 
         def interrupted() -> str:
             if project.stop_requested:
                 return "the build was stopped"
-            if self._project is not project or project.workspace.app_id != app.app_id:
+            if self._project is not project or view.workspace.app_id != app.app_id:
                 return "another app was opened"
             return "the preview was restarted by something else"
 
@@ -25136,11 +25138,16 @@ class Orchestrator:
             validation.closed = True
 
     def _active_validation(self, validation_id: str) -> PageValidation | None:
+        """The open validation `validation_id` names, checked against its own app's preview.
+
+        The preview's ack and crash reports carry no `X-Sage-App`, so the selected app is no
+        evidence about them (#692)."""
         project = self._project
         validation = project.page_validation if project is not None else None
-        if (validation is not None and not validation.closed and validation.id == validation_id
-                and validation.app_id == project.workspace.app_id
-                and validation.generation == project.supervisor.status()["generation"]):
+        if validation is None or validation.closed or validation.id != validation_id:
+            return None
+        view = self._view_for(project, validation.app_id)
+        if validation.generation == view.supervisor.status()["generation"]:
             return validation
         return None
 
@@ -25265,14 +25272,15 @@ class Orchestrator:
         while True:
             validation = project.page_validation
             if validation is not None and not validation.closed:
-                if (project.stop_requested or project.workspace.app_id != validation.app_id
-                        or project.supervisor.status()["generation"] != validation.generation):
+                supervisor = self._view_for(project, validation.app_id).supervisor
+                if (project.stop_requested
+                        or supervisor.status()["generation"] != validation.generation):
                     return None
                 if validation.error is not None:
                     return validation.error
                 # A route that raised while this document loaded. The browser saw only a 500 it
                 # may render as an empty state; the server's log holds the traceback.
-                fault = project.supervisor.runtime_fault()
+                fault = supervisor.runtime_fault()
                 if fault is not None and fault["generation"] == validation.generation:
                     return {"message": fault["message"], "stack": "\n".join(fault["output"]),
                             "source": "server"}
