@@ -37,8 +37,9 @@ class Gateway:
     """A gateway whose answers are set per wire. Records every request it was sent."""
 
     def __init__(self, *, native=False, validates=("chat",), accepts=(), accepts_with_tools=None,
-                 control=200, broken_level=None, controls_after=None):
+                 control=200, broken_level=None, controls_after=None, unechoed=()):
         self.native = native
+        self.unechoed = set(unechoed)          # levels answered 200 on responses without the echo
         self.validates = set(validates)       # wires that 400 the nonsense value
         self.accepts = set(accepts)
         self.accepts_with_tools = set(accepts if accepts_with_tools is None else accepts_with_tools)
@@ -51,7 +52,7 @@ class Gateway:
     def __call__(self, url: str, body: dict) -> tuple[int, str]:
         wire = _wire(url)
         self.sent.append((wire, body))
-        if "metadata" in body:  # the Responses contract check
+        if "sage_nonce" in (body.get("metadata") or {}):  # the Responses contract check
             echo = ({"store": False, "metadata": body["metadata"], "reasoning": body["reasoning"]}
                     if self.native else {"store": None})
             return 200, json.dumps(echo)
@@ -67,6 +68,16 @@ class Gateway:
         if effort == self.broken_level:
             return 500, json.dumps({"error": "upstream exploded"})
         allowed = self.accepts_with_tools if "tools" in body else self.accepts
+        if effort in allowed and wire == "responses":
+            # Echoed only on a stream, as the runtime reads it; a level in `unechoed` comes back
+            # with no effort, the way a gateway that rewrote or dropped it answers.
+            response = {"store": body.get("store"), "metadata": body.get("metadata"),
+                        "reasoning": {} if effort in self.unechoed else body["reasoning"]}
+            if not body.get("stream"):
+                return 200, json.dumps(response)
+            events = [{"type": "response.created", "response": response},
+                      {"type": "response.completed", "response": response}]
+            return 200, "".join(f"data: {json.dumps(e)}\n\n" for e in events)
         return (200 if effort in allowed else 400), "{}"
 
 
@@ -77,6 +88,14 @@ def _measure(gateway: Gateway, previous: dict | None = None, row: dict = ROW) ->
 def test_a_native_responses_route_is_recorded_with_its_levels():
     row = _measure(Gateway(native=True, validates=("chat", "responses"), accepts=("low", "high")))
     assert row["protocol"] == "responses" and row["native"] is True
+    assert row["efforts"] == row["efforts_with_tools"] == ["low", "high"]
+
+
+def test_a_level_answered_200_without_its_echo_is_not_recorded():
+    """Gemini 3.8 Flash (#664): `none` answered 200 and was recorded, and then every classifier
+    call that sent it was refused at runtime because the level did not come back."""
+    row = _measure(Gateway(native=True, validates=("chat", "responses"),
+                           accepts=("none", "low", "high"), unechoed=("none",)))
     assert row["efforts"] == row["efforts_with_tools"] == ["low", "high"]
 
 
