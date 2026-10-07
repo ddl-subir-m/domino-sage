@@ -17,6 +17,8 @@ from sage.build_policy import BuildPolicy
 from sage.driver.server import OpenCodeServer
 from sage.orchestrator import service
 from sage.orchestrator.service import Orchestrator
+from sage.workspace.manager import WorkspaceManager
+from sage.workspace.stack import STACKS
 
 # For `test_a_leaked_turn_lock_fails_the_test_that_took_it`, which runs pytest inside pytest to
 # watch the autouse check below actually fire. A fixture nobody ever sees fail is indistinguishable
@@ -153,6 +155,27 @@ def _a_fake_template_is_a_react_vite_one(monkeypatch):
     templates. A test about the OTHER stack names it (`create_app(stack=...)`) or removes the pin.
     """
     monkeypatch.setenv("SAGE_DEFAULT_STACK", "react-vite")
+
+
+@pytest.fixture(autouse=True)
+def _no_test_npm_installs_the_repos_template(monkeypatch):
+    """Never `npm ci` into `template/react-vite` from a test (#689).
+
+    A worktree has no `node_modules` there, and `link_warm_deps` installs one when it is missing,
+    so any test that opened a workspace on the real template did a ~190 MB network install. After
+    it, the worktree ran the tests gated on those packages, which a fresh worktree skips, so the
+    skip set depended on which tests had run there before. A test that needs the packages gates on
+    them existing. Only the repo's own templates are held back: a test template still reaches the
+    real method, which is what `test_workspace.py` tests.
+    """
+    real = {s.template_dir.resolve() for s in STACKS.values()}
+    original = WorkspaceManager.install_template_deps
+
+    def install(self):
+        if self.stack.template_dir.resolve() not in real:
+            original(self)
+
+    monkeypatch.setattr(WorkspaceManager, "install_template_deps", install)
 
 
 @pytest.fixture(autouse=True)
