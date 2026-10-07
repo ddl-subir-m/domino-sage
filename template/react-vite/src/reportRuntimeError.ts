@@ -4,9 +4,9 @@
 // feeds the message + stack back as another iteration.
 //
 // DEV-only: a published Domino App has no Sage backend to report to. The endpoint is derived from
-// Vite's base (`<prefix>/preview/` in dev) by swapping the trailing `preview/` for the control
-// app's `api/preview/runtime-error`; both are same-origin behind the one proxy.
-const API = import.meta.env.BASE_URL.replace(/preview\/?$/, "") + "api/";
+// Vite's base (`<prefix>/preview/<appId>/` in dev) by swapping the trailing `preview/<appId>/` for
+// the control app's `api/preview/runtime-error`; both are same-origin behind the one proxy.
+const API = import.meta.env.BASE_URL.replace(/preview(?:\/[^/]+)?\/?$/, "") + "api/";
 const ENDPOINT = API + "preview/runtime-error";
 // Fixed when this document loads; a later app selection cannot retag its reports.
 const validationId = new URLSearchParams(window.location.search).get("sageValidation") || "";
