@@ -7220,7 +7220,7 @@ window.SW = window.SW || {};
         text: one
           ? `1 item in this Conversation isn't in ${app}: ${names}.`
           : `${rows.length} items in this Conversation aren't in ${app}: ${names}.`,
-        label: one ? 'Add it' : 'Add them',
+        label: `${one ? 'Add it' : 'Add them'}${store.crossingReplay(rows) ? ' and build' : ''}`,
       };
     },
 
@@ -7405,6 +7405,36 @@ window.SW = window.SW || {};
       return true;
     },
 
+    // The refused request the bar's click finishes (#656), or null. The card under a refusal binds
+    // and then sends `block.prompt` again (#213); the bar crosses the same chips, so it owes the
+    // same send — and only when the card would make it: a live card with a prompt, whose every
+    // entry that builds (`mentionFixes`'s `sends`, for this app) is held by the app or moved by
+    // `rows`, the chips the crossing is about to carry. Asked with the bar's rows for its label,
+    // and with none after the click, off the lists the click's own refresh read back.
+    crossingReplay(rows) {
+      const app = state.activeApp;
+      if (!app) return null;
+      let block = null;
+      for (let i = (state.buildMessages || []).length - 1; i >= 0 && !block; i -= 1) {
+        block = [...(state.buildMessages[i].blocks || [])].reverse()
+          .find((b) => b.type === 'mentions_unresolved' && b.live) || null;
+      }
+      if (!block || !block.prompt) return null;
+      const owed = store.mentionFixes(block.entries, app.id, () => null)
+        .filter((fix) => fix.sends).flatMap((fix) => fix.keys);
+      if (!owed.length) return null;
+      // A file meets its Attachment by basename, for the reason `unusableMentions` gives.
+      const held = (key) => (key.startsWith('file:') ? `file:${key.split('/').pop()}` : key);
+      const chips = new Map((state.attachments || []).map((att) => [att.id, att]));
+      const have = new Set([
+        ...(state.bindings || []).map((b) => SW.util.bindingId(b)),
+        ...(state.appAttachments || []).map((a) => held(`file:${a.path || ''}`)),
+        ...(rows || []).map((r) => chips.get(r.id)).filter(Boolean).map((att) => (att.bindingKey
+          ? att.bindingKey.join(':') : held(`file:${att.datasetRelPath || att.path || ''}`))),
+      ]);
+      return owed.every((key) => have.has(held(key))) ? block : null;
+    },
+
     // The click behind the bar (#275). It offers first and crosses second, because a Binding is a
     // person's pick (ADR-0010) and arriving in Build is not one.
     //
@@ -7438,6 +7468,12 @@ window.SW = window.SW || {};
       // then refuse under the person — the stale-unlocked direction.
       if (!state.sensitivity || state.sensitivity.enabled) refreshSensitivity();
       notify();
+      // The request a live refusal card holds, sent the way that card sends it (#656). Not awaited:
+      // the turn streams for minutes, and the bar's receipt names what was added now.
+      const landed = gen === appGen && state.activeApp
+        && ((res && res.appId) || (app && app.id)) === state.activeApp.id;
+      const replay = landed && !((res && res.refused) || []).length && store.crossingReplay([]);
+      if (replay) store.sendBuildPrompt(replay.prompt);
       return res;
     },
 
