@@ -117,6 +117,72 @@ def test_different_app_cannot_acknowledge_or_report_into_validation(build):
     assert done['verification']['overall'] == 'unverified'
 
 
+def _unselected_app(orch, project, monkeypatch):
+    """The fixture's app stops being the selected one: a second app is minted, which selects it."""
+    monkeypatch.setattr(orch, '_restart_preview_for_config_change', lambda project, view=None: None)
+    built = project.workspace.app_id
+    selected = orch.create_app()['id']
+    assert orch._wm.selected_app_id() == selected != built
+    project._selected_view.supervisor = Preview(selected)
+    view = orch._view_for(project, built)
+    view.supervisor = Preview(built)
+    return view
+
+
+def run_through_request_view(orch, view, report, *, bind_view):
+    """Build the way a `?app=` tab does. The preview's ack and crash reports carry no
+    X-Sage-App header, so they arrive with no request view bound (#692).
+
+    `bind_view=False` stashes only the workspace: a request that waited for the lock while a
+    select moved the selection elsewhere, so the whole turn runs with no view bound."""
+    def unbound(event):
+        token = service._request_view.set(None)
+        try:
+            report(event)
+        finally:
+            service._request_view.reset(token)
+    view_token = service._request_view.set(view) if bind_view else None
+    workspace_token = service._request_workspace.set(view.workspace)
+    try:
+        return run(orch, report=unbound)
+    finally:
+        service._request_workspace.reset(workspace_token)
+        if view_token is not None:
+            service._request_view.reset(view_token)
+
+
+unselected = pytest.mark.parametrize('bind_view', [True, False],
+                                     ids=['request-view', 'pinned-before-a-select'])
+
+
+@unselected
+def test_an_unselected_apps_page_is_acknowledged_by_its_own_validation(build, monkeypatch, bind_view):
+    orch, project, _ = build
+    view = _unselected_app(orch, project, monkeypatch)
+    def acknowledge(event):
+        assert orch.record_preview_ack('old-document') is False
+        assert orch.record_preview_ack(event['validationId']) is True
+    _, done = run_through_request_view(orch, view, acknowledge, bind_view=bind_view)
+    assert done['verification']['stages']['page'] == 'passed'
+    assert done['verification']['overall'] == 'passed'
+    assert view.supervisor.restarts == 1
+    assert project._selected_view.supervisor.restarts == 0
+    assert (view.workspace.path / 'src/App.tsx').read_text() == '// changed\n'
+
+
+@unselected
+def test_an_unselected_apps_crash_fails_its_runtime_stage(build, monkeypatch, bind_view):
+    orch, project, _ = build
+    orch._build_policy = replace(orch._build_policy, runtime_repair_limit=0)
+    view = _unselected_app(orch, project, monkeypatch)
+    def crash(event):
+        orch.record_preview_ack(event['validationId'])
+        orch.record_runtime_error('render crashed', validation_id=event['validationId'])
+    _, done = run_through_request_view(orch, view, crash, bind_view=bind_view)
+    assert done['ok'] is False
+    assert done['verification']['stages']['runtime'] == 'failed'
+
+
 def test_repair_uses_a_new_document_and_ignores_the_old_crash(build):
     orch, project, oc = build
     oc.turns.append(Turn(writes={'src/App.tsx': '// repaired\n'}))
