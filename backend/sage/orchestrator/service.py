@@ -11243,8 +11243,12 @@ class Orchestrator:
             # Put away, not deleted, so it frees its name and stays under "Show archived" (#686).
             # A refusal leaves it live: Cancel itself must never fail.
             if drafted:
-                with contextlib.suppress(PlanArchiveRefused):
+                try:
                     self.archive_plan_doc(drafted, True)
+                except PlanArchiveRefused:
+                    pass
+                except Exception:
+                    log.exception("handoff cancel: could not archive plan %s", drafted)
         row = store.update(
             thread_id,
             title=body.get("title") if isinstance(body, dict) else None,

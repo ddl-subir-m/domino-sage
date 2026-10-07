@@ -192,6 +192,21 @@ def test_a_refused_archive_does_not_stop_the_cancel(tmp_path: Path, monkeypatch)
     assert orch.read_plan_doc(plan_id)["archived"] is False
 
 
+def test_a_failed_archive_does_not_stop_the_cancel(tmp_path: Path, monkeypatch):
+    orch, _root, tid = _orch(tmp_path, [Turn(text=_BOARD)])
+    orch.draft_handoff_plan(tid)
+
+    def fail(plan_id, archived):
+        raise OSError("disk full")
+    monkeypatch.setattr(orch, "archive_plan_doc", fail)
+
+    orch.patch_thread(tid, {"handoff": "cancel"})
+
+    row = orch.get_thread(tid)["handoff"]
+    assert row["status"] == "suggested"
+    assert "planId" not in row
+
+
 def test_an_explicit_redraft_regenerates_the_plan(tmp_path: Path):
     orch, _root, tid = _orch(tmp_path, [Turn(text=_BOARD), Turn(text=_ROOM)])
     first = orch.draft_handoff_plan(tid)
