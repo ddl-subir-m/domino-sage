@@ -667,7 +667,8 @@ def _request_lines(raw: object) -> list[str]:
     return out
 
 
-def plan_prompt(thread_id: str, digest: str, *, voice: str, shape: str) -> str:
+def plan_prompt(thread_id: str, digest: str, *, voice: str, shape: str, stack: str,
+                example: str) -> str:
     """The prompt sage-plan writes the first plan from (docs/workbench/handoff.md §5).
 
     Deliberately NOT the implement line below. That line says "the plan is what to build", which
@@ -685,6 +686,11 @@ def plan_prompt(thread_id: str, digest: str, *, voice: str, shape: str) -> str:
     sections, and the plan page showed a title over eight empty ones while the same text sat whole
     in the transcript. The spec has always asked for the sections (docs/workbench/handoff.md §5);
     now the prompt does.
+
+    `stack` and `example` are the gated turn's too (service._plan_stack_name,
+    service._plan_example_for). Without them the planner picked a stack itself — live, Sonnet
+    planned React files for a fastapi-antd app, and the build was told it built none of the plan
+    (#676).
     """
     return (
         f"A Chat Thread in this project asked the questions below and produced the files under "
@@ -692,7 +698,9 @@ def plan_prompt(thread_id: str, digest: str, *, voice: str, shape: str) -> str:
         f"turn is where the plan for one gets written.\n\n"
         f"{digest}\n\n"
         "Write a concrete build plan for an app colleagues can open from this work. "
-        + voice + "\n\n" + shape
+        f"The app is a {stack} app: every file the plan names must be one a {stack} app has, "
+        "like the files in the example below. "
+        + voice + "\n\n" + shape + "\n\n" + example
     )
 
 
