@@ -13,6 +13,7 @@ const cases = JSON.parse(fs.readFileSync(0, 'utf8'));
 let cells = [];
 let cursor = 0;
 let prefs = {};
+let draft = {};
 
 const sandbox = {
   console, JSON, Math, Date, Set, Map, Promise, Array, Object, String, Number, Boolean, RegExp,
@@ -47,12 +48,16 @@ const sandbox = {
           artifacts: [{ path: 'examples/conv_1/by-desk.table.json' },
                       { path: 'examples/conv_1/by-book.table.json' }],
           apps: [],
+          bindingKinds: ['data_source'],
+          dataReads: [],
+          ...draft,
         },
       }),
       set() {},
       confirmHandoff() { return Promise.resolve({ ok: true }); },
     },
     prefs: { get: (name) => prefs[name] },
+    brand: { text: (s) => s.replace('{dataSource}', 'Data Source') },
   },
 };
 sandbox.window = sandbox;
@@ -80,11 +85,14 @@ function render(c) {
     handoffArtifacts: c.artifacts,
     handoffTranscript: c.transcript,
   };
+  draft = c.draft || {};
   cells = [];
   cursor = 0;
   const tree = sandbox.SW.HandoffSheet();
   return {
     text: strings(tree).join(' '),
+    alerts: [...walk(tree)].filter((n) => n.t === sandbox.antd.Alert)
+      .map((n) => `${n.p.message} ${n.p.description || ''}`),
     sections: byClass(tree, 'sw-handoff-files').map((section) => ({
       text: strings(section).join(' '),
       rows: byClass(section, 'sw-handoff-file').map((row) => strings(row).join(' ')),
