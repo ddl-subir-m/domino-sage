@@ -127,11 +127,12 @@ def test_a_react_vite_hook_after_an_early_return_fails_both_checks(tmp_path):
 def test_the_page_globals_are_not_undefined(tmp_path, react_template):
     """Without the globals declared, `no-undef` would flag every line of every app. The starter's
     own scripts and an app using every global the page loads lint clean; a name nothing declares
-    is still an error, so the rule is on and not just quiet."""
+    is still an error, so the rule is on and not just quiet. The unused name is a warning, and a
+    warning is not a failure."""
     template = ROOT / "template" / "fastapi-antd"
     app = _fastapi_app(tmp_path, """\
 (function () {
-  const { Card } = antd;
+  const { Card, Button } = antd;
   function App() {
     const [n] = React.useState(0);
     return h(Card, { title: dayjs().format('YYYY'), extra: h(icons.ReloadOutlined) },
@@ -145,6 +146,7 @@ def test_the_page_globals_are_not_undefined(tmp_path, react_template):
     for name in ("static/app.js", "static/theme.js"):
         report = check_file(app, name)
         assert report is not None and report.ok, report.as_agent_message()
+    assert "no-unused-vars" in check_file(app, "static/app.js").raw
 
     (app / "static" / "app.js").write_text("console.log(notDeclaredAnywhere);\n")
     report = check_file(app, "static/app.js")
