@@ -10,8 +10,7 @@
     "Highcharts": "readonly",
     "sage": "readonly",
     "h": "readonly",
-    "appLlmConfig": "readonly",
-    "appModelApiConfig": "readonly"
+    "app": "readonly"
   },
   "categories": { "correctness": "warn" },
   "rules": {

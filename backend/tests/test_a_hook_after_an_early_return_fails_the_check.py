@@ -153,6 +153,20 @@ def test_the_page_globals_are_not_undefined(tmp_path, react_template):
     assert [(e.file, e.code) for e in report.errors] == [("static/app.js", "eslint(no-undef)")]
 
 
+@needs_oxlint
+def test_code_shared_through_window_app_is_not_undefined(tmp_path, react_template):
+    """The template shares code between files through `window.app`, and in a browser that makes a
+    bare `app` a working global: a page that uses it must not fail the build. A component used
+    without taking it from `antd` is still undefined."""
+    app = _fastapi_app(tmp_path, "window.app = window.app || {};\napp.Deal = function () {};\n")
+    report = check_file(app, "static/app.js")
+    assert report is not None and report.ok, report.as_agent_message()
+
+    (app / "static" / "app.js").write_text("console.log(Typography);\n")
+    report = check_file(app, "static/app.js")
+    assert [(e.file, e.code) for e in report.errors] == [("static/app.js", "eslint(no-undef)")]
+
+
 def test_a_missing_oxlint_changes_nothing(tmp_path, monkeypatch):
     """No binary is no new failure mode: the check passes and says nothing, as `check_file` already
     does when `node` is missing."""
