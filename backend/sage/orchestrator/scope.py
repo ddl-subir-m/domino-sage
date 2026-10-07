@@ -293,6 +293,21 @@ def _classifier_effort(capability: RouteCapability, picked: str | None) -> str |
     return capability.efforts[0] if capability.verified and capability.efforts else None
 
 
+def _without_unechoed_effort(request: dict, error: ValueError) -> bool:
+    """Drop the level a native route did not echo, and say whether to ask once more (#664).
+
+    The stream check that raised stays strict: it is what tells a native route from a translated
+    one. A classifier can do without the level, so it asks again with none. Only once: the second
+    request carries no level, so a route that also dropped `store` or the nonce fails again here.
+    """
+    if ("reasoning_effort" not in request
+            or "did not preserve the requested Responses settings" not in str(error)):
+        return False
+    log.warning("classifier: %s did not preserve the Responses settings with reasoning level %s"
+                " — asking again without one", request["model"], request.pop("reasoning_effort"))
+    return True
+
+
 def _classifier_route(gateway: GatewayClient, request: dict, labels: CostLabels,
                       capability: RouteCapability):
     """Stream a chat-shaped classifier request over the route's verified protocol (#593).

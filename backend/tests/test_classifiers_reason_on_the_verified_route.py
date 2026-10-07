@@ -41,18 +41,27 @@ UNVERIFIED = resolve("https://elsewhere.example/v1", {"id": "x", "name": "mimo-v
 class RouteGateway:
     """Answers each protocol in its own wire shape, and records which one it was asked on."""
 
-    def __init__(self, intent: str = INTENT):
+    def __init__(self, intent: str = INTENT, verdict: str = "CHAT", echo: dict | None = None,
+                 store: bool = True):
         self.intent = intent
+        self.verdict = verdict
+        # What a gateway that rewrites the level sends back in place of the one it was asked for.
+        self.echo = echo
+        # False: a translated route, which drops `store` whatever level it is asked for.
+        self.store = store
         self.seen: list = []
         self.seen_protocols: list[Protocol] = []
 
     def route(self, request, labels, *, protocol=Protocol.CHAT, cancel=None):
         self.seen.append((request, labels))
         self.seen_protocols.append(Protocol(protocol))
-        verdict = self.intent if labels.component == "chat-intent" else "CHAT"
+        verdict = self.intent if labels.component == "chat-intent" else self.verdict
         if protocol is Protocol.RESPONSES:
-            response = {"store": request.get("store"), "metadata": request.get("metadata", {}),
-                        "reasoning": request.get("reasoning", {})}
+            reasoning = request.get("reasoning", {})
+            if self.echo is not None and "effort" in reasoning:
+                reasoning = self.echo
+            response = {"store": request.get("store") if self.store else None,
+                        "metadata": request.get("metadata", {}), "reasoning": reasoning}
             events = [{"type": "response.created", "response": response},
                       {"type": "response.output_text.delta", "delta": verdict},
                       {"type": "response.completed", "response": response}]
@@ -171,6 +180,50 @@ def test_handoff_on_an_unverified_route_sends_no_effort_over_chat(effort):
     assert _handoff(UNVERIFIED, effort, gateway) is False
     assert gateway.seen_protocols == [Protocol.CHAT]
     assert not {"reasoning", "reasoning_effort"} & set(gateway.seen[0][0])
+
+
+def _efforts(gateway) -> list:
+    return [request.get("reasoning", {}).get("effort") for request, _ in gateway.seen]
+
+
+@pytest.mark.parametrize("echo", [{"effort": "low"}, {}], ids=["different", "missing"])
+def test_intent_asks_again_without_a_level_the_gateway_did_not_echo(echo):
+    """Gemini 3.8 Flash (#664): `store` and the nonce come back, the level does not."""
+    gateway = RouteGateway(echo=echo)
+    assert _intent(MIMO, None, gateway).valid
+    assert _efforts(gateway) == ["none", None]
+
+
+@pytest.mark.parametrize("echo", [{"effort": "low"}, {}], ids=["different", "missing"])
+def test_handoff_asks_again_without_a_level_the_gateway_did_not_echo(echo):
+    gateway = RouteGateway(verdict="APP", echo=echo)
+    assert _handoff(MIMO, None, gateway) is True
+    assert _efforts(gateway) == ["none", None]
+
+
+def test_a_translated_route_is_asked_once_more_and_still_fails(caplog):
+    """Dropping `store` is not a level the classifier can do without; the second ask holds the
+    rest of the contract and fails the same way, and the log names that failure."""
+    gateway = RouteGateway(verdict="APP", store=False)
+    assert _intent(MIMO, None, gateway).fallback == "error"
+    assert _handoff(MIMO, None, gateway) is False
+    assert _efforts(gateway) == ["none", None, "none", None]
+    failed = [r.getMessage() for r in caplog.records if "classify failed" in r.getMessage()]
+    assert len(failed) == 2
+    assert all("ValueError: The gateway did not preserve" in line for line in failed)
+
+
+class BrokenStreamGateway(RouteGateway):
+    def route(self, request, labels, *, protocol=Protocol.CHAT, cancel=None):
+        self.seen.append((request, labels))
+        yield b"data: {not json\n\n"
+
+
+def test_a_stream_that_breaks_for_another_reason_is_not_asked_again():
+    gateway = BrokenStreamGateway()
+    assert _intent(MIMO, None, gateway).fallback == "error"
+    assert _handoff(MIMO, None, gateway) is False
+    assert _efforts(gateway) == ["none", "none"]
 
 
 def test_a_sensitivity_move_takes_the_moved_models_route_and_default():

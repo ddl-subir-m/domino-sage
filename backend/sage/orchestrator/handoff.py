@@ -31,7 +31,13 @@ from ..timing import model_call
 from ..workspace import plan_doc
 from ..workspace.threads import handoff_unresolved
 from . import brand
-from .scope import _classifier_effort, _classifier_route, _extract, _model_for
+from .scope import (
+    _classifier_effort,
+    _classifier_route,
+    _extract,
+    _model_for,
+    _without_unechoed_effort,
+)
 
 log = logging.getLogger(__name__)
 _CURRENT_TIMING_RECORD = object()
@@ -300,12 +306,17 @@ def wants_an_app(
         picked = catalog.ask_effort if model == catalog.ask else None
         if effort := _classifier_effort(route, picked):
             request["reasoning_effort"] = effort
-        chunks = []
-        for chunk in _classifier_route(gateway, request, labels, route):
-            call.first_byte()
-            call.chunk()
-            chunks.append(chunk)
-        return _extract(b"".join(chunks))
+        while True:
+            chunks = []
+            try:
+                for chunk in _classifier_route(gateway, request, labels, route):
+                    call.first_byte()
+                    call.chunk()
+                    chunks.append(chunk)
+                return _extract(b"".join(chunks))
+            except ValueError as e:
+                if not _without_unechoed_effort(request, e):
+                    raise
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-handoff")
     try:
