@@ -25237,7 +25237,12 @@ class Orchestrator:
 
     def record_preview_data_error(self, validation_id: str, path: str) -> None:
         """A caught fetch rejection is a failed read even when no proxy response arrived."""
+        from ..preview.proxy import _APP_ID
+
         path = path.rsplit("/preview/", 1)[-1]
+        segment, _sep, rest = path.lstrip("/").partition("/")
+        if _APP_ID.fullmatch(segment):
+            path = rest
         path = "/" + path.lstrip("/")
         kind = "query" if path.startswith("/api/queries/") else "platform"
         if path.startswith("/api/domino/"):
