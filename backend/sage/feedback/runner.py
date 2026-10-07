@@ -40,6 +40,12 @@ _WINDOW_MEMBER_RE = re.compile(r"\bwindow\.([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*
 # which every component file opens with, defines nothing.
 _WINDOW_NAMESPACE_RE = re.compile(r"\bwindow\.([A-Za-z_$][\w$]*)\s*=(?!=)\s*(?!window\.\1\b)")
 _SCRIPT_SRC_RE = re.compile(r"""<script\b[^>]*\bsrc\s*=\s*["']([^"'?#]+)""", re.IGNORECASE)
+# What a plain script puts on the page for the others (#691): an unindented declaration (one
+# inside a wrapper function is that function's), or a `window.x =` anywhere.
+_SCRIPT_GLOBAL_RE = re.compile(
+    r"^(?:(?:async\s+)?function\s*\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)"
+    r"|\bwindow\.([A-Za-z_$][\w$]*)\s*=(?!=)", re.MULTILINE)
+_NO_UNDEF_RE = re.compile(r"^'([^']+)' is not defined\.$")
 
 
 @dataclass(frozen=True)
@@ -165,10 +171,28 @@ def _lint(workspace: Path, files: list[Path], timeout_s: float) -> tuple[str, li
         return None
     if not files:
         return "", []
-    config = stack_of(workspace).template_dir / ".oxlintrc.json"
+    stack = stack_of(workspace)
+    config = stack.template_dir / ".oxlintrc.json"
     proc = subprocess.run([binary, "-c", str(config), "--format", "json", *map(str, files)],
                           cwd=workspace, capture_output=True, text=True, timeout=timeout_s, check=False)
-    return (proc.stdout or "") + (proc.stderr or ""), parse_oxlint(proc.stdout or "", workspace)
+    errors = parse_oxlint(proc.stdout or "", workspace)
+    if stack.checker == "python":
+        shared = _script_globals(workspace)
+        errors = [e for e in errors if not (e.code == "eslint(no-undef)" and (m := _NO_UNDEF_RE.match(e.message))
+                                            and m[1] in shared)]
+    return (proc.stdout or "") + (proc.stderr or ""), errors
+
+
+def _script_globals(workspace: Path) -> set[str]:
+    """The top-level names the app's own page scripts declare. The page loads them as plain scripts,
+    so each one's are defined in the others, and the template's fixed `globals` cannot list them."""
+    names: set[str] = set()
+    for js in (workspace / "static").rglob("*.js"):
+        if any(js.relative_to(workspace).as_posix().startswith(skip) for skip in _JS_SKIP):
+            continue
+        for m in _SCRIPT_GLOBAL_RE.finditer(js.read_text(errors="ignore")):
+            names.add(m[1] or m[2])
+    return names
 
 
 def _relative(path: str, workspace: Path | None) -> str:
