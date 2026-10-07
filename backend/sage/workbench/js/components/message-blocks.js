@@ -2338,6 +2338,36 @@ window.SW = window.SW || {};
     );
   }
 
+  // A turn's Project MCP calls (#666), folded the way its working reads are. Each row is the tool
+  // and what it was asked; what came back went to the model and was never kept.
+  function ExternalCallsFold({ block }) {
+    const [open, setOpen] = useState(false);
+    const items = block.items || [];
+    const count = typeof block.count === 'number' ? block.count : items.length;
+    return h(
+      'div',
+      { className: 'sw-leadin sw-working-reads' },
+      h(
+        'div',
+        { className: 'sw-leadin-head' },
+        h('span', { className: 'sw-leadin-face' },
+          SW.brand.text('{assistantName} made {count} MCP call{plural} to answer this',
+                        { count, plural: count === 1 ? '' : 's' })),
+        h(
+          Button,
+          { type: 'link', size: 'small', onClick: () => setOpen(!open) },
+          open ? 'Hide the steps' : 'Show the steps'
+        )
+      ),
+      open && h(
+        'div',
+        { className: 'sw-leadin-turns' },
+        items.map((item, i) => h('div', { key: `mcp_${i}`, className: 'sw-block-sub' },
+          item.detail ? `${item.tool} · ${item.detail}` : item.tool))
+      )
+    );
+  }
+
   function FileCard({ block }) {
     const href = `./api/project/file/raw?path=${encodeURIComponent(block.path || '')}`;
     return h(
@@ -2455,6 +2485,8 @@ window.SW = window.SW || {};
         const documentOperation = event.operation === 'document_reference';
         const tableReference = event.operation === 'table_reference';
         const imageReference = event.operation === 'image_reference';
+        // A Project MCP call (#666): Sage knows the server it went to and nothing of what it said.
+        const externalCall = event.operation === 'external_mcp';
         const tablePrepared = tableReference && (!event.status || event.status === 'prepared');
         const documentPrepared = documentOperation && (!event.status || event.status === 'prepared');
         const selectedPages = Array.isArray(coverage.selected_pages) ? coverage.selected_pages : [];
@@ -2483,7 +2515,14 @@ window.SW = window.SW || {};
           page_selection_not_supported: "This document type doesn't support page selection.",
           extraction_unavailable: "Couldn't extract text from this PDF.",
         })[event.status] || "Couldn't read this document.";
-        const source = String(event.source || 'unknown source');
+        const source = String(event.source || event.server || 'unknown source');
+        if (externalCall) {
+          return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
+            h('p', null, 'Called the MCP server ',
+              h(Tag, { 'aria-label': `MCP server: ${source}` }, source), '.'),
+            h('p', null, `Tool: ${event.tool}. Its result went to the model; ` +
+              'Sage did not check what it contained.'));
+        }
         return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
           h('p', null, imageReference && event.delivery === 'sent'
             ? 'Sent the image from '
@@ -2616,6 +2655,8 @@ window.SW = window.SW || {};
         return h(LeadInFold, { block });
       case 'working_reads_fold':
         return h(WorkingReadsFold, { block });
+      case 'external_calls_fold':
+        return h(ExternalCallsFold, { block });
       case 'plan_card':
         return h(SW.PlanCard, { planId: block.planId });
       case 'build_plan':

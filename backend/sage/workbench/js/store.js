@@ -1892,6 +1892,16 @@ window.SW = window.SW || {};
     return blocks;
   }
 
+  // A turn's Project MCP calls (#666), one fold per message, sitting where the first call did. A
+  // new array rather than an edit in place, so the live reducer's message changes identity.
+  function withExternalCall(blocks, ev) {
+    const item = { tool: ev.tool, detail: ev.detail || '' };
+    const at = blocks.findIndex((b) => b.type === 'external_calls_fold');
+    if (at < 0) return [...blocks, { type: 'external_calls_fold', count: 1, items: [item] }];
+    const items = [...blocks[at].items, item];
+    return blocks.map((b, i) => (i === at ? { ...b, count: items.length, items } : b));
+  }
+
   // Which row in a transcript still holds a LIVE offer to start the model over, or -1 (ADR-0022).
   // Shared by both transcripts, because the ladder is one ladder and the two halves disagreeing
   // about which rung a Conversation is on would be worse than either answer.
@@ -2039,6 +2049,7 @@ window.SW = window.SW || {};
     build_run: shown,
     lead_in_fold: shown,
     working_reads_fold: shown,
+    external_calls_fold: shown,
     plan_card: shown,
     build_plan: shown,
     status: (block) => block.fromEvent === 'investigation-state',
@@ -2300,6 +2311,9 @@ window.SW = window.SW || {};
         const last = blocks[blocks.length - 1];
         if (last && last.type === 'reasoning') last.value = `${last.value}\n\n${ev.text}`;
         else blocks.push({ type: 'reasoning', value: ev.text });
+      } else if (ev.type === 'agent' && ev.kind === 'tool' && ev.external) {
+        const owner = ensureAssistant();
+        owner.blocks = withExternalCall(owner.blocks, ev);
       } else if (ev.type === 'agent' && ev.kind === 'tool') {
         continue;
       } else if (ev.type === 'artifacts' || (ev.type === 'done' && ev.artifacts && ev.artifacts.length)) {
@@ -9842,6 +9856,10 @@ window.SW = window.SW || {};
               ...assistant.blocks.filter((b) => !b.fromStream),
               ...(ev.text ? [{ type: 'text', value: ev.text }] : []),
             ];
+            notify();
+          } else if (ev.type === 'agent' && ev.kind === 'tool' && ev.external) {
+            ensurePushed();
+            assistant.blocks = withExternalCall(assistant.blocks, ev);
             notify();
           } else if (ev.type === 'agent' && ev.kind === 'tool') {
             // A step running is newer than the sentence before it; a step ending hands the line

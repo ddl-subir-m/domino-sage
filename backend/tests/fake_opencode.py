@@ -96,6 +96,9 @@ class Turn:
     # Completed calls with no file effect that land AFTER the invalid ones: a different tool
     # finishing is not proof the invalid call was recovered from, and this is how a test plants it.
     tools_after: list[str] = field(default_factory=list)
+    # Settled calls WITH an input and an output, as (tool, input, output, status) — a Project MCP
+    # call is one, and what it was asked and what came back are the two things a test tells apart.
+    calls: list[tuple[str, dict, str, str]] = field(default_factory=list)
     # Tool calls left IN FLIGHT with a WELL-FORMED input, as {tool: subject} — a path for
     # write/edit/read, a command for bash. `broken_write` above is the other shape, where OpenCode
     # hands over a raw unparsed string; this one is the ordinary case and it is where the time goes.
@@ -266,6 +269,12 @@ class FakeOpenCode:
                           "time": {"created": 1_700_000_000_000, "ran": 1_700_000_000_100,
                                    "completed": 1_700_000_000_350},
                           "state": {"status": "completed", "input": {}}})
+        for j, (tool, inp, output, status) in enumerate(turn.calls):
+            parts.append({"id": f"m{n}-c{j}", "type": "tool", "callID": f"call-m{n}-c{j}",
+                          "tool": tool,
+                          "time": {"created": 1_700_000_000_000, "ran": 1_700_000_000_100,
+                                   "completed": 1_700_000_000_350},
+                          "state": {"status": status, "input": inp, "output": output}})
         # Writes land where the real agent's would: relative to the directory the session was
         # opened in. A Build session stands in the Built App (`apps/<appId>/`) and a Chat session
         # in `.sage/chat-work`, whose links are what make a Chat path resolve at all.
