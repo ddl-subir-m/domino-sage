@@ -148,7 +148,7 @@ def install(payload, protocol, intent: BuildIntent) -> dict:
         rows = [{"type": "message", "role": "user", "content": rows}]
         result[key] = rows
     if not isinstance(rows, list):
-        raise ValueError("Unsupported Build intent protocol payload")
+        raise TypeError("Unsupported Build intent protocol payload")
     part_type = "input_text" if kind is Protocol.RESPONSES else "text"
     part = {"type": part_type, "text": render(intent)}
     index = _person_index(rows, kind)
@@ -161,7 +161,7 @@ def install(payload, protocol, intent: BuildIntent) -> dict:
     if isinstance(content, str):
         content = [{"type": part_type, "text": content}] if content else []
     if not isinstance(content, list):
-        raise ValueError("Unsupported Build intent protocol payload")
+        raise TypeError("Unsupported Build intent protocol payload")
     rows[index] = {**rows[index], "content": [*content, part]}
     return result
 
