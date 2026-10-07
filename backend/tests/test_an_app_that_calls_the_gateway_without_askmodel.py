@@ -287,9 +287,9 @@ def _plan_then(writes: dict[str, str], repeats: int = 0) -> list[Turn]:
     """A plan turn, a build turn that writes `writes`, then `repeats` turns that touch a scratch
     file and leave the offending one alone — an agent handed the nudge and failing to act on it.
 
-    Each retry has to write SOMETHING: a turn that changes no file is a turn that never reaches the
-    end-of-turn scans at all, because the loop takes the "you planned but wrote no code" branch
-    above them instead.
+    A turn whose script runs out answers the nudge with no edit, which counts as a repair that
+    didn't fix it (#694) and is nudged again up to the bound, so a test after exactly one nudge
+    scripts the fix (`FIXED`).
     """
     return ([Turn(text=execution_plan("Model Chat", "A chat box.", "Box", files=", ".join(writes),
                                       work="Add a box that asks the model.")),
@@ -298,12 +298,15 @@ def _plan_then(writes: dict[str, str], repeats: int = 0) -> list[Turn]:
                for i in range(repeats)])
 
 
+FIXED = Turn(text="Routed it through askModel.", writes={"src/Chat.tsx": USES_HELPER})
+
+
 def _of(events: list[dict], kind: str) -> list[dict]:
     return [e for e in events if e.get("type") == kind]
 
 
 def test_a_raw_gateway_call_nudges_the_agent_to_rewrite_it(tmp_path: Path):
-    orch, oc = _orch(tmp_path, _plan_then({"src/Chat.tsx": RAW_AT_BASE}))
+    orch, oc = _orch(tmp_path, _plan_then({"src/Chat.tsx": RAW_AT_BASE}) + [FIXED])
     orch.bind_llm_alias("id-sonnet")
 
     events = _build(orch)
@@ -349,7 +352,7 @@ def test_an_undeclared_alias_says_so_to_the_creator_too(tmp_path: Path):
     # The app declares qwen-2-5 and the raw call asks for sonnet. Rewriting it to `askModel` makes
     # the app honestly broken-until-bound rather than quietly working off the record, and only a
     # person can bind the Alias that would fix it.
-    orch, _oc = _orch(tmp_path, _plan_then({"src/Chat.tsx": RAW_AT_BASE}))
+    orch, _oc = _orch(tmp_path, _plan_then({"src/Chat.tsx": RAW_AT_BASE}) + [FIXED])
     orch.bind_llm_alias("id-qwen")
 
     events = _build(orch)
