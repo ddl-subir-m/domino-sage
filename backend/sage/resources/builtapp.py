@@ -130,3 +130,19 @@ def catalog_problems(template_dir: Path, workspace_dir: Path) -> list[str] | Non
             fault = ""
     problems = [q.problem for q in queries.values() if q.problem]
     return ([fault] if fault else []) + problems
+
+
+def query_problems(template_dir: Path, workspace_dir: Path) -> dict[str, str]:
+    """`catalog_problems`' per-query sentences, by query name; `{}` when Sage could not check.
+
+    The app refuses an unusable query before its executor runs, so the preview records no reason for
+    it and a failed read of it would otherwise be reported by its HTTP status alone (#678).
+    """
+    module = serve_module(template_dir)
+    if module is None:
+        return {}
+    try:
+        queries = module.load_queries(workspace_dir)
+    except Exception:
+        return {}
+    return {name: q.problem for name, q in queries.items() if q.problem}

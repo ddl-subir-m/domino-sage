@@ -138,7 +138,8 @@ class QueryProblem(Exception):
 
     Carries the status because the three cases need different ones and a viewer-facing app should
     not have to guess: 404 for a name that is not in the catalog, 400 for parameters that do not fit
-    what the query declared, 503 for a query that is in the catalog but unusable.
+    what the query declared, 422 for a query that is in the catalog but unusable, and 503 only for
+    an app that cannot reach its Data Source.
     """
 
     def __init__(self, status: int, message: str) -> None:
@@ -200,7 +201,7 @@ class Param:
                     pass    # well-shaped but not a real date, e.g. 2024-02-31
             raise QueryProblem(HTTPStatus.BAD_REQUEST,
                                f"'{self.name}' must be a date, written as YYYY-MM-DD.")
-        raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE,
+        raise QueryProblem(HTTPStatus.UNPROCESSABLE_ENTITY,
                            f"'{self.name}' is declared with a type this app cannot check.")
 
 
@@ -272,7 +273,7 @@ class Query:
         answer rather than a partial one.
         """
         if self.problem:
-            raise QueryProblem(HTTPStatus.SERVICE_UNAVAILABLE, self.problem)
+            raise QueryProblem(HTTPStatus.UNPROCESSABLE_ENTITY, self.problem)
         if supplied is None:
             supplied = {}
         if not isinstance(supplied, dict):

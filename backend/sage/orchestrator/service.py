@@ -120,7 +120,7 @@ from ..resources.bound_schema import (
     render_schema,
 )
 from ..resources.bound_schema import agents_block as data_agents_block
-from ..resources.builtapp import catalog_problems, serve_module, stranded_levels
+from ..resources.builtapp import catalog_problems, query_problems, serve_module, stranded_levels
 from ..resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
 from ..resources.model_api_credentials import (
     Credential,
@@ -30392,11 +30392,14 @@ class Orchestrator:
         """
         validation = project.page_validation
         if validation is not None:
-            return {read["path"].rsplit("/", 1)[-1]: validation.query_failures.get(
-                read["path"].rsplit("/", 1)[-1],
-                f"Read failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')}).")
-                for read in validation.data_reads
-                if read["kind"] == "query" and read["outcome"] == "failed"}
+            failed = {read["path"].rsplit("/", 1)[-1]: read for read in validation.data_reads
+                      if read["kind"] == "query" and read["outcome"] == "failed"}
+            # A query its own catalog refuses never reaches the executor, so it has no recorded
+            # reason; the catalog's sentence is that reason (#678).
+            unusable = query_problems(self._wm.template, project.workspace.path) if failed else {}
+            return {name: validation.query_failures.get(name) or unusable.get(name) or
+                    f"Read failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')})."
+                    for name, read in failed.items()}
         try:
             return project.queries.failures() or {}
         except Exception:
