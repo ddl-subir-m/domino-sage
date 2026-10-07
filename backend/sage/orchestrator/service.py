@@ -8712,6 +8712,8 @@ class Orchestrator:
             # Project-wide, so every row carries the same one. Only the selected app's row is drawn,
             # and a merge is the Project's rather than any app's.
             "resolvedMerge": self._resolved_merge_row(),
+            # The handoff sheet's "none crosses" warning stays quiet for an app that has one (#669).
+            "boundDataSource": bool(self._data_source_bindings(workspace)),
         }
 
     def _one_app(self, app_id: str) -> dict:
@@ -12589,11 +12591,7 @@ class Orchestrator:
             # `selected` flag is dropped on the way out: the only default is New app, and a payload
             # that named one of these would give the markup something to preselect — which is the
             # silent overwrite this row exists to prevent (docs/workbench/handoff.md §4).
-            # `boundDataSource` quiets the "none crosses" warning for an app that already has one.
-            "apps": [{**{k: v for k, v in row.items() if k != "selected"},
-                      "boundDataSource": bool(self._data_source_bindings(
-                          self._wm.app_workspace(self._project_id, row["id"])))}
-                     for row in self.list_apps()],
+            "apps": [{k: v for k, v in row.items() if k != "selected"} for row in self.list_apps()],
         }
 
     @staticmethod
