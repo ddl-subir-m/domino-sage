@@ -527,11 +527,13 @@ class ProjectRecord:
                         app_id: str = "", previous_plan_id: str = "",
                         explicit_references: list[dict] | None = None,
                         execution_contract_version: int | None = None,
+                        fix_contract: bool = False,
                         source_request_messages_version: int | None = None,
                         source_request_messages: tuple[str, ...] = ()) -> dict:
         """Store a plan's markdown as version 1 of a new document, and return the whole document."""
-        from sage.orchestrator.plan_steps import repair_execution_summary
-        markdown = repair_execution_summary(markdown)
+        from sage.orchestrator.plan_steps import FIX_SECTIONS, repair_execution_summary
+        markdown = (repair_execution_summary(markdown, FIX_SECTIONS) if fix_contract
+                    else repair_execution_summary(markdown))
         self.plan_docs_dir.mkdir(parents=True, exist_ok=True)
         n = len([p for p in self.plan_docs_dir.iterdir() if p.is_dir()]) + 1
         plan_id = f"{n:03d}"
@@ -577,6 +579,8 @@ class ProjectRecord:
             # path. The source messages are the one durable verbatim copy of the user's request.
             **({"executionContractVersion": execution_contract_version}
                if execution_contract_version is not None else {}),
+            # The approval re-checks a fix plan against the contract it was proposed under (#677).
+            **({"executionContract": "fix"} if fix_contract else {}),
             **({"sourceRequestMessagesVersion": source_request_messages_version,
                 "sourceRequestMessages": list(source_request_messages)}
                if source_request_messages_version is not None else {}),
