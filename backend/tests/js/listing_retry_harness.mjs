@@ -6,14 +6,16 @@
 // somebody happened to do one of those two things. The claim here is about a read that leaves the
 // browser on its own afterwards, which no amount of grepping the source can settle.
 //
-// Input on stdin: `{ "act": "clears" | "once" }` — whether the platform recovers by the second read
-// or goes on refusing.
+// Input on stdin: `{ refusals, at, then }`. The platform refuses its first `refusals` reads, or every
+// read when that is null. `at` lists the moments, in virtual milliseconds after the first read, at
+// which to look. `then` is `"online"` or `"visible"`: once the looks are done the platform recovers
+// and that browser event fires, and the panel is looked at once more straight after.
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { unrefTimeout } from './sandbox_timeout.mjs';
+import { fakeClock } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
-const { act } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { refusals, at, then } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const REFUSAL = 'The LLM Gateway answered 400 at /v1/models.';
 const MODELS = [{ id: 'm1', name: 'risk-scorer', display_name: 'Risk scorer' }];
@@ -24,20 +26,24 @@ const REFUSED = { data_sources: [], llm_aliases: [], model_apis: [], errors: { l
 const ANSWERED = { data_sources: [], llm_aliases: MODELS, model_apis: [], errors: {} };
 
 let resourceReads = 0;
+let recovered = false;
 function answer(url) {
   if (url.endsWith('/api/assets')) return { assets: [], default_dataset_id: null };
   if (url.endsWith('/api/resources')) {
     resourceReads += 1;
-    if (act === 'once') return REFUSED;
-    return resourceReads === 1 ? REFUSED : ANSWERED;
+    const refused = !recovered && (refusals === null || resourceReads <= refusals);
+    return refused ? REFUSED : ANSWERED;
   }
   return {};
 }
 
+const clock = fakeClock();
+const listeners = {};
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
-  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: unrefTimeout, clearTimeout, setInterval,
-  clearInterval, URLSearchParams, TextEncoder, TextDecoder, URL, Blob, ArrayBuffer, Uint8Array,
+  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: clock.setTimeout,
+  clearTimeout: clock.clearTimeout, setInterval: () => 1, clearInterval: () => {},
+  URLSearchParams, TextEncoder, TextDecoder, URL, Blob, ArrayBuffer, Uint8Array,
   fetch: (url) => Promise.resolve({
     ok: true,
     status: 200,
@@ -47,11 +53,12 @@ const sandbox = {
   }),
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   document: {
-    title: '', documentElement: { style: { setProperty: () => {} } },
-    addEventListener: () => {}, removeEventListener: () => {}, getElementById: () => ({}),
+    title: '', documentElement: { style: { setProperty: () => {} } }, visibilityState: 'visible',
+    addEventListener: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); }, removeEventListener: () => {},
+    getElementById: () => ({}),
   },
   location: { search: '', pathname: '/', href: 'http://localhost/', hash: '#/build' },
-  addEventListener: () => {}, removeEventListener: () => {},
+  addEventListener: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); }, removeEventListener: () => {},
   React: {
     createElement: (t, p, ...c) => ({ t, p: p || {}, c }),
     useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
@@ -75,21 +82,25 @@ const SW = sandbox.SW;
 
 SW.store.set({ scope: { id: 'p1', name: 'quick-start' }, resourceGroups: {}, resourceErrors: {} });
 
+const look = () => ({
+  note: (SW.store.get().resourceErrors || {}).llm_aliases || null,
+  models: (((SW.store.get().resourceListing || {}).groups || {}).model_llm || []).map((m) => m.name),
+  reads: resourceReads,
+});
+
 await SW.store.refreshResourceListing();
-const afterRefusal = {
-  note: (SW.store.get().resourceErrors || {}).llm_aliases || null,
-  reads: resourceReads,
-};
+const looks = [{ at: 0, ...look() }];
+let elapsed = 0;
+for (const t of at) {
+  await clock.advance(t - elapsed);
+  elapsed = t;
+  looks.push({ at: t, ...look() });
+}
+if (then) {
+  recovered = true;
+  listeners[then === 'online' ? 'online' : 'visibilitychange'].forEach((fn) => fn());
+  await clock.advance(0);
+  looks.push({ at: then, ...look() });
+}
 
-// Past the retry window, and then some: the claim is that a read leaves on its own, and a second
-// wait of the same length is what tells one retry from a poll.
-await new Promise((resolve) => setTimeout(resolve, 5000));
-const afterRetry = {
-  note: (SW.store.get().resourceErrors || {}).llm_aliases || null,
-  models: ((SW.store.get().resourceListing || {}).groups || {}).model_llm || [],
-  reads: resourceReads,
-};
-await new Promise((resolve) => setTimeout(resolve, 4000));
-const later = { reads: resourceReads };
-
-console.log(JSON.stringify({ afterRefusal, afterRetry, later }));
+console.log(JSON.stringify(looks));
