@@ -142,7 +142,8 @@ def test_a_file_the_stack_does_not_check_is_not_checked(tmp_path: Path):
     _landed(outside, BROKEN_PY)
     assert check_file(app, str(outside)) is None
 
-    # And the whole react-vite stack is out, because it has no per-file check to run.
+    # And a react-vite file outside `src/` is out: that stack's only per-file check is the lint of
+    # its sources (#679).
     vite = _app(tmp_path / "vite-app", stack="react-vite")
     _landed(vite / "app.py", BROKEN_PY)
     assert check_file(vite, "app.py") is None
