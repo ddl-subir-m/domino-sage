@@ -119,6 +119,38 @@ def test_resources_left_out_draw_no_warning():
     assert sheet["alerts"] == []
 
 
+def _into(app: dict | None) -> dict:
+    return {**_ON, "appId": app["id"] if app else "",
+            "draft": {"bindingKinds": [], "dataReads": ["SFDC_OPPORTUNITY"],
+                      "apps": [app] if app else []}}
+
+
+def _none_crosses(sheet: dict) -> bool:
+    return any("No Data Source will carry over" in a for a in sheet["alerts"])
+
+
+@node
+def test_an_app_that_already_binds_a_data_source_draws_no_warning():
+    [sheet] = _render_sheet([_into({"id": "app_1", "name": "Desk", "boundDataSource": True})])
+
+    assert not _none_crosses(sheet)
+
+
+@node
+def test_an_app_that_binds_no_data_source_still_warns():
+    [sheet] = _render_sheet([_into({"id": "app_1", "name": "Desk", "boundDataSource": False})])
+
+    assert _none_crosses(sheet)
+
+
+@node
+def test_a_new_app_still_warns_beside_an_app_that_binds_one():
+    case = _into({"id": "app_1", "name": "Desk", "boundDataSource": True})
+    [sheet] = _render_sheet([{**case, "appId": ""}])
+
+    assert _none_crosses(sheet)
+
+
 # ---- the sheet payload -------------------------------------------------------------------------
 
 
@@ -165,6 +197,25 @@ def test_the_payload_names_a_chip_that_binds(tmp_path: Path):
     assert draft["dataReads"] == []
 
 
+def _app_binding(orch, root: Path, binding: dict | None) -> str:
+    app_id = orch.create_app()["id"]
+    if binding is not None:
+        (root / "apps" / app_id / ".sage" / "bindings.json").write_text(json.dumps([binding]))
+    return app_id
+
+
+def test_the_payload_says_which_apps_already_bind_a_data_source(tmp_path: Path):
+    orch, root, tid, _draft = _drafted(tmp_path, [], [_READ])
+    bound = _app_binding(orch, root, {"kind": "data_source", "id": "ds-1", "name": "trades"})
+    dataset = _app_binding(orch, root, {"kind": "dataset", "id": "dset-1", "name": "sales"})
+    bare = _app_binding(orch, root, None)
+
+    apps = {a["id"]: a["boundDataSource"] for a in orch.draft_handoff_plan(tid)["apps"]}
+
+    assert {k: apps[k] for k in (bound, dataset, bare)} == {bound: True, dataset: False,
+                                                            bare: False}
+
+
 # ---- the build agent ---------------------------------------------------------------------------
 
 
@@ -191,6 +242,38 @@ def test_a_handoff_that_read_only_files_is_told_none_of_it(tmp_path: Path):
     agents = _agents_after_confirm(tmp_path, [_FILE_READ])
 
     assert "Stop calling `runQuery`" not in agents
+
+
+def _note_after_confirm_into(tmp_path: Path, binding: dict | None) -> str:
+    orch, root, tid, _draft = _drafted(tmp_path, [], [_READ])
+    app_id = _app_binding(orch, root, binding)
+    orch.confirm_handoff(tid, ALL_ON, {"appId": app_id})
+    return (root / "apps" / app_id / ".sage" / "handoff.md").read_text()
+
+
+def test_a_handoff_into_an_app_that_binds_a_data_source_does_not_say_none_crosses(
+        tmp_path: Path):
+    note = _note_after_confirm_into(tmp_path, {"kind": "data_source", "id": "ds-1",
+                                               "name": "trades"})
+
+    assert "SFDC_OPPORTUNITY" in note
+    assert not handoff.note_reads_unbound_data(note)
+
+
+def test_a_handoff_into_an_app_that_binds_no_data_source_still_says_none_crosses(
+        tmp_path: Path):
+    note = _note_after_confirm_into(tmp_path, {"kind": "dataset", "id": "dset-1", "name": "sales"})
+
+    assert handoff.note_reads_unbound_data(note)
+
+
+def test_a_handoff_into_a_new_app_still_says_none_crosses(tmp_path: Path):
+    orch, root, tid, _draft = _drafted(tmp_path, [], [_READ])
+    orch.confirm_handoff(tid, ALL_ON)
+    app_id = orch.project(start_preview=False).workspace.app_id
+
+    assert handoff.note_reads_unbound_data(
+        (root / "apps" / app_id / ".sage" / "handoff.md").read_text())
 
 
 def _digest(context: list[dict], read_a_data_source: bool) -> str:

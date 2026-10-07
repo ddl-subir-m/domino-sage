@@ -83,10 +83,12 @@ window.SW = window.SW || {};
     ];
     // What the chips would bind, and the Data Sources the conversation read. A read is never bound
     // for the person (ADR-0010), so with none of these among the chips the app is born unable to
-    // query what the conversation did (#669). A conversation that only read files is not warned.
+    // query what the conversation did (#669). A conversation that only read files is not warned,
+    // and neither is an existing app that already binds a Data Source.
     const bindingKinds = handoffDraft.bindingKinds || [];
     const reads = handoffDraft.dataReads || [];
-    const unbound = include.resources && reads.length > 0 && !bindingKinds.includes('data_source');
+    const unbound = include.resources && reads.length > 0 && !bindingKinds.includes('data_source')
+      && !(target && target.boundDataSource);
     const preferenceFiles = [
       include.artifacts && artifacts.length && `examples/ (${artifacts.length})`,
       include.resources && bindingKinds.length && '.sage/bindings.json',
