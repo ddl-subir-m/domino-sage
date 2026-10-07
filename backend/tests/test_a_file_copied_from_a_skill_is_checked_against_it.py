@@ -11,12 +11,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from sage import extensions
+from sage.orchestrator.service import Orchestrator
+from sage.resources.provider import FakeResourceProvider
+from sage.workspace.snapshot import TurnSnapshot
 
 from .fake_opencode import Turn
 from .test_a_dead_alias_stops_the_turn_before_it_starts import (  # noqa: F401
+    ALIASES,
+    LIVE,
+    BreakingOpenCode,
+    OkFeedback,
+    ScriptedGateway,
     _no_waiting,
     _orch,
     _skip_planning,
+    _template,
 )
 from .test_a_failed_build_turn_stays_on_screen import UNREADABLE
 from .test_a_partial_build_says_what_it_left_out import THREE_STEPS
@@ -92,9 +101,10 @@ def test_a_python_copy_ignores_its_leading_hash_comment(tmp_path: Path):
     assert _drift(history) == []
 
 
-def test_a_skill_with_only_markdown_is_not_compared(tmp_path: Path):
-    history = _build(tmp_path, Turn(writes={"static/notes.md": "different\n"}),
-                     skills={"deal-brief": {"notes.md": "notes\n"}})
+def test_a_skills_markdown_is_not_compared(tmp_path: Path):
+    history = _build(tmp_path, Turn(writes={"static/notes.md": "different\n",
+                                            "static/dealDesk.js": DEAL_DESK}),
+                     skills={"deal-brief": {"notes.md": "notes\n", "dealDesk.js": DEAL_DESK}})
     assert _drift(history) == []
 
 
@@ -123,6 +133,45 @@ def test_a_turn_that_gave_up_is_not_checked(tmp_path: Path):
     history = _build(tmp_path, Turn(writes={"static/dealDesk.js": edited}, error=UNREADABLE),
                      skills={"deal-brief": {"dealDesk.js": DEAL_DESK}})
     assert _drift(history) == []
+
+
+def test_the_first_build_does_not_flag_what_seeding_wrote(tmp_path: Path):
+    ws = tmp_path / "mnt" / "code"
+    oc = BreakingOpenCode(ws, [Turn(writes={"static/app.js": "// first\n"})], break_on=None)
+    orch = Orchestrator(
+        workspace_dir=ws, template=_template(tmp_path), gateway=ScriptedGateway(), catalog=LIVE,
+        project_id="Sage", feedback=OkFeedback(), opencode_client=oc,
+        resources=FakeResourceProvider(list(ALIASES)), gateway_mode="domino")
+    oc.orch = orch
+    project = orch.project(start_preview=False, seed_app=False)   # Chat attached; no app yet
+    project.record.write_settings({"skip_planning": True})
+    _skill(orch, "layout", {"App.tsx": "export default function App() { return 1 }\n"})
+
+    list(orch.build_stream("build it", conversation="c1"))
+    history = orch.project(start_preview=False).app_for_turn().read_history("c1")
+
+    assert "done" in [r["type"] for r in history]
+    assert _drift(history) == []
+
+
+def _snapshots_taken(tmp_path: Path, monkeypatch, skill_files: dict[str, str]) -> int:
+    orch, _ = _orch(tmp_path, turns=[Turn(writes={"static/dealDesk.js": DEAL_DESK})])
+    _skip_planning(orch)
+    _skill(orch, "deal-brief", skill_files)
+    taken = []
+    real = TurnSnapshot.working_tree_hash
+    monkeypatch.setattr(TurnSnapshot, "working_tree_hash",
+                        lambda self: taken.append(1) or real(self))
+    list(orch.build_stream("change it", conversation="c1"))
+    return len(taken)
+
+
+def test_a_project_with_no_code_shipping_skill_takes_no_snapshot_for_it(tmp_path: Path,
+                                                                        monkeypatch):
+    markdown_only = _snapshots_taken(tmp_path / "a", monkeypatch, {"guide.md": "Read me.\n"})
+    shipping_code = _snapshots_taken(tmp_path / "b", monkeypatch, {"dealDesk.js": DEAL_DESK})
+
+    assert markdown_only == shipping_code - 2
 
 
 def test_the_transcript_draws_it_as_a_warning():

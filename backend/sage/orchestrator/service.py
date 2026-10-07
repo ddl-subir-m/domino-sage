@@ -10774,8 +10774,12 @@ class Orchestrator:
             # gets the short line the click deserves, the way an Approve click does, instead of
             # echoing the same sentence twice. Whether they reset first is already on the record
             # above it as an `app-reset` marker.
-            tree_before = project.snapshot.working_tree_hash()
-            rows_before = len(project.app_for_turn().read_history(project.build_conversation))
+            # Not on a turn that seeds the app: the template's files would read as this turn's.
+            check_copies = bool(skill_copies.shipped_basenames(project.record.path)
+                                and resolve_stack(project.workspace.path).ready)
+            if check_copies:
+                tree_before = project.snapshot.working_tree_hash()
+                rows_before = len(project.app_for_turn().read_history(project.build_conversation))
             yield from self._build_stream(
                 prompt, mentions, resources, mode=mode, how_sage_works=how_sage_works,
                 dataset_note=dataset_note,
@@ -10785,7 +10789,8 @@ class Orchestrator:
                 user_text=(picked or typed or ("Build it." if skip_reset_gate or skip_incoming_gate
                                       or skip_table_gate or skip_source_gate or skip_dataset_gate
                                       else None)))
-            yield from self._skill_copy_drift(project, tree_before, rows_before)
+            if check_copies:
+                yield from self._skill_copy_drift(project, tree_before, rows_before)
         except TurnWedged:
             # Swallowed, not re-reported: the turn already said what happened in its own stream, and
             # a traceback on top of it would only be a second, worse version of the same sentence.
@@ -24561,7 +24566,7 @@ class Orchestrator:
         Not fed to the model, and nothing repairs it: the person may have asked for the edit, and a
         repair would fight them. Same gate as `_plan_unbuilt_event`: only a turn that ended `done`.
         """
-        if self._turn_gave_up:
+        if self._turn_gave_up or not skill_copies.shipped_basenames(project.record.path):
             return
         app = project.app_for_turn()
         rows = app.read_history(project.build_conversation)[rows_before:]

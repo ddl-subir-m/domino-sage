@@ -15,6 +15,14 @@ from . import extensions
 _SLASH_COMMENTED = {".js", ".ts", ".jsx", ".tsx"}
 
 
+def shipped_basenames(project_root: Path) -> frozenset[str]:
+    """The basenames of the non-markdown files the Project's skills ship, read off the manifest
+    alone, so a Project whose skills ship no code can skip the check for the price of one read."""
+    names = (PurePosixPath(rel).name for entry in extensions.read_manifest(project_root)
+             if entry["kind"] == "skill" for rel in entry.get("files") or [] if isinstance(rel, str))
+    return frozenset(name for name in names if not name.endswith(".md"))
+
+
 def _normalised(text: str, suffix: str) -> list[str]:
     lines = [line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     i = 0
