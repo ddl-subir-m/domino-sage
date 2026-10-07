@@ -61,8 +61,14 @@ class _Script:
                 pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=script.server.serve_forever, daemon=True).start()
+        self.thread = threading.Thread(target=script.server.serve_forever, daemon=True)
+        self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=10)
 
 
 def _reads(client: OpenCodeClient, sid: str) -> list[dict]:
@@ -108,8 +114,7 @@ def test_the_mount_is_refused_and_the_link_to_it_is_read(tmp_path: Path):
                 assert time.monotonic() < deadline, (runtime / "opencode.log").read_text()[-4000:]
                 time.sleep(0.2)
     finally:
-        script.server.shutdown()
-        script.server.server_close()
+        script.stop()
 
     outside, linked = reads
     assert outside["state"]["status"] == "error", outside["state"]
