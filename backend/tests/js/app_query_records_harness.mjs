@@ -3,43 +3,157 @@
 // Input on stdin: `{ "template": "fastapi-antd" | "react-vite", "body": <the server's JSON answer>,
 // "reads": [<keys read off every record>] }`. "Symbol.iterator" reads that symbol.
 // Output: `{ "result": <the value runQuery resolved to>, "reports": [<reportRuntimeError messages>] }`.
+//
+// With `"steps"` instead of `"body"`, it drives `useQuery` through a minimal hooks runtime (#681):
+// `answers` are the server's replies in request order (`{ "body": ..., "status": 200 }`), each held
+// until a `"settle"` step. Steps: `{ "mount": [name, params, opts] }`, `{ "props": [...] }`,
+// `"settle"`, `"tick"` (lets settled promises run, releases nothing), `"refresh"`, `"unmount"`. Output: `{ "snapshots": [...], "requests": [...] }`.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 
 const TEMPLATE = new URL('../../../template/', import.meta.url).pathname;
-const { template, body, reads = [] } = JSON.parse(fs.readFileSync(0, 'utf8'));
-const fetch = async () => ({ ok: true, status: 200, json: async () => body });
+const { template, body, reads = [], steps, answers = [] } = JSON.parse(fs.readFileSync(0, 'utf8'));
 const reports = [];
 
-let result;
-if (template === 'fastapi-antd') {
-  const sandbox = { fetch, JSON, Array, Object, String, Number, Boolean, Error, encodeURIComponent };
-  sandbox.window = sandbox;
-  sandbox.sage = { url: (p) => p, reportRuntimeError: (message) => reports.push(message) };
-  vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(TEMPLATE + 'fastapi-antd/static/sage/appQuery.js', 'utf8'), sandbox);
-  result = await sandbox.sage.runQuery('q');
-} else {
+// Just enough of React's hook contract: state, refs, memo, and effects that run after a render
+// and clean up when their deps change or the component unmounts.
+function hooksRuntime() {
+  const slots = [];
+  let index = 0;
+  let pending = [];
+  let rendering = false;
+  let dirty = false;
+  let mounted = null;
+  const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
+  const React = {
+    useState(init) {
+      const slot = slots[index++] ||= { value: typeof init === 'function' ? init() : init };
+      return [slot.value, (next) => {
+        const value = typeof next === 'function' ? next(slot.value) : next;
+        if (Object.is(value, slot.value)) return;
+        slot.value = value;
+        if (rendering) dirty = true; else if (mounted) render();
+      }];
+    },
+    useRef(init) { return slots[index++] ||= { current: init }; },
+    useMemo(make, deps) {
+      const slot = slots[index++] ||= {};
+      if (!same(slot.deps, deps)) { slot.value = make(); slot.deps = deps; }
+      return slot.value;
+    },
+    useCallback(fn, deps) { return React.useMemo(() => fn, deps); },
+    useEffect(effect, deps) {
+      const slot = slots[index++] ||= { cleanup: null };
+      if (same(slot.deps, deps)) return;
+      slot.deps = deps;
+      pending.push(() => { if (slot.cleanup) slot.cleanup(); slot.cleanup = effect() || null; });
+    },
+  };
+  let output;
+  function render() {
+    do {
+      dirty = false;
+      rendering = true;
+      index = 0;
+      pending = [];
+      output = mounted.component(...mounted.props);
+      const effects = pending;
+      for (const run of effects) run();
+      rendering = false;
+    } while (dirty);
+  }
+  return {
+    React,
+    mount(component, props) { slots.length = 0; mounted = { component, props }; render(); return output; },
+    props(props) { mounted.props = props; render(); return output; },
+    current() { return output; },
+    unmount() {
+      for (const slot of slots) if (slot && slot.cleanup) slot.cleanup();
+      mounted = null;
+    },
+  };
+}
+
+// Replies held until a "settle" step, so a test sees the state while a request is in flight.
+const requests = [];
+const held = [];
+async function controlledFetch(url, init) {
+  const request = { query: decodeURIComponent(url.split('/').pop()), params: JSON.parse(init.body).params, aborted: false };
+  requests.push(request);
+  const answer = answers[requests.length - 1] || { body: { columns: [], rows: [] } };
+  return new Promise((resolve, reject) => {
+    init.signal?.addEventListener('abort', () => {
+      request.aborted = true;
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    });
+    held.push(() => resolve({ ok: (answer.status || 200) < 400, status: answer.status || 200,
+                              json: async () => answer.body }));
+  });
+}
+
+const runtime = steps ? hooksRuntime() : null;
+const fetch = steps ? controlledFetch : async () => ({ ok: true, status: 200, json: async () => body });
+
+async function load() {
+  if (template === 'fastapi-antd') {
+    const sandbox = { fetch, JSON, Array, Object, String, Number, Boolean, Error, Map, Promise,
+                      AbortController, encodeURIComponent, React: runtime?.React };
+    sandbox.window = sandbox;
+    sandbox.sage = { url: (p) => p, reportRuntimeError: (message) => reports.push(message) };
+    vm.createContext(sandbox);
+    vm.runInContext(fs.readFileSync(TEMPLATE + 'fastapi-antd/static/sage/appQuery.js', 'utf8'), sandbox);
+    return sandbox.sage;
+  }
   // The module imports `appBase` from a file the dev server resolves; it is "" in the preview.
   const source = fs.readFileSync(TEMPLATE + 'react-vite/src/appQuery.ts', 'utf8')
     .replace(/^import \{ appBase \} from "\.\/appBase";$/m, 'const appBase = "";')
     .replace(/^import \{ reportRuntimeError \} from "\.\/reportRuntimeError";$/m,
-             'const reportRuntimeError = (message) => globalThis.reports.push(message);');
+             'const reportRuntimeError = (message) => globalThis.reports.push(message);')
+    .replace(/^import \{ ([\w, ]+) \} from "react";$/m, 'const { $1 } = globalThis.React;');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-query-'));
   const file = path.join(dir, 'appQuery.ts');
   fs.writeFileSync(file, source);
   globalThis.fetch = fetch;
   globalThis.reports = reports;
+  globalThis.React = runtime ? runtime.React : {};
   try {
-    result = await (await import(file)).runQuery('q');
+    return await import(file);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
-for (const record of result.records) {
-  for (const key of reads) record[key === 'Symbol.iterator' ? Symbol.iterator : key];
+
+const helpers = await load();
+
+if (steps) {
+  const snapshot = (state) => ({
+    status: state.status, error: state.error, refreshing: state.refreshing,
+    records: state.data ? JSON.parse(JSON.stringify(state.data.records)) : null,
+    query: state.data ? state.data.dataUsed.query : null,
+  });
+  const snapshots = [];
+  const tick = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); };
+  const settle = async () => {
+    while (held.length) held.shift()();
+    await tick();
+  };
+  for (const step of steps) {
+    if (step.mount) runtime.mount(helpers.useQuery, step.mount);
+    else if (step.props) runtime.props(step.props);
+    else if (step === 'settle') await settle();
+    else if (step === 'tick') await tick();
+    else if (step === 'refresh') runtime.current().refresh();
+    else if (step === 'unmount') { runtime.unmount(); await settle(); continue; }
+    snapshots.push(snapshot(runtime.current()));
+  }
+  process.stdout.write(JSON.stringify({ snapshots, requests }));
+} else {
+  const result = await helpers.runQuery('q');
+  for (const record of result.records) {
+    for (const key of reads) record[key === 'Symbol.iterator' ? Symbol.iterator : key];
+  }
+  const serialized = JSON.parse(JSON.stringify(result));
+  process.stdout.write(JSON.stringify({ result: serialized, reports }));
 }
-const serialized = JSON.parse(JSON.stringify(result));
-process.stdout.write(JSON.stringify({ result: serialized, reports }));

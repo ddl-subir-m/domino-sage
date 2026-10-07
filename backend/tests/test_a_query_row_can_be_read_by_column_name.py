@@ -84,8 +84,112 @@ def test_a_probe_that_is_not_a_column_read_reports_nothing(template: str, probe:
 
 @pytest.mark.parametrize("names", [FASTAPI, TEMPLATE_NAMES], ids=["fastapi-antd", "react-vite"])
 def test_the_instructions_an_agent_reads_show_the_by_name_read(names):
-    binding = Binding(KIND_DATA_SOURCE, "ds-dwh", "warehouse", "warehouse",
-                      "DWH", "MARTS", None, "SnowflakeConfig")
-    block = agents_block([BoundSource(binding, [], [], None)], [], 5000, names=names)
+    block = _block(names)
     assert "const { columns, rows, records } = await" in block
     assert "`records`" in block and "positional" in block
+
+
+def _block(names) -> str:
+    binding = Binding(KIND_DATA_SOURCE, "ds-dwh", "warehouse", "warehouse",
+                      "DWH", "MARTS", None, "SnowflakeConfig")
+    return agents_block([BoundSource(binding, [], [], None)], [], 5000, names=names)
+
+
+# ---- useQuery (#681): the loading/error/empty/ready machine every screen used to hand-write --------
+
+TWO = {"body": ANSWER}
+NONE = {"body": {"columns": ["OWNER"], "rows": [], "truncated": False}}
+FAILED = {"status": 403, "body": {"error": "You cannot read this data."}}
+
+
+def _hook(template: str, steps: list, answers: list) -> dict:
+    out = subprocess.run(
+        ["node", str(HARNESS)],
+        input=json.dumps({"template": template, "steps": steps, "answers": answers}),
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    return json.loads(out.stdout)
+
+
+TEMPLATES = ["fastapi-antd", "react-vite"]
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_use_query_loads_then_is_ready_with_the_records_and_their_evidence(template: str):
+    got = _hook(template, [{"mount": ["q", {"since": "2026-01-01"}]}, "settle"], [TWO])
+    loading, ready = got["snapshots"]
+    assert (loading["status"], loading["records"]) == ("loading", None)
+    assert ready["status"] == "ready" and ready["error"] is None and ready["refreshing"] is False
+    assert ready["records"] == [{"OWNER": "Ana", "OPEN_PIPELINE": 1200.5},
+                                {"OWNER": "Bo", "OPEN_PIPELINE": None}]
+    assert ready["query"] == "q"            # dataUsed passes through
+    assert got["requests"] == [{"query": "q", "params": {"since": "2026-01-01"}, "aborted": False}]
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_use_query_is_empty_only_for_zero_records_and_a_failure_is_an_error(template: str):
+    empty = _hook(template, [{"mount": ["q"]}, "settle"], [NONE])["snapshots"][-1]
+    assert (empty["status"], empty["records"]) == ("empty", [])
+    failed = _hook(template, [{"mount": ["q"]}, "settle"], [FAILED])["snapshots"][-1]
+    assert failed["status"] == "error"
+    assert failed["error"] == "You cannot read this data."   # the viewer's sentence, unchanged
+    assert failed["records"] is None
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_use_query_answers_a_second_mount_from_the_page_cache(template: str):
+    got = _hook(template, [{"mount": ["q", {"a": 1, "b": 2}]}, "settle", "unmount",
+                           {"mount": ["q", {"b": 2, "a": 1}]}], [TWO])
+    assert got["snapshots"][-1]["status"] == "ready"         # on its first render, no spinner
+    assert len(got["requests"]) == 1
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_refresh_refetches_and_keeps_the_old_answer_on_screen_meanwhile(template: str):
+    got = _hook(template, [{"mount": ["q"]}, "settle", "refresh", "settle"], [TWO, NONE])
+    _, ready, refreshing, after = got["snapshots"]
+    assert refreshing["status"] == "ready" and refreshing["refreshing"] is True
+    assert refreshing["records"] == ready["records"]
+    assert (after["status"], after["refreshing"]) == ("empty", False)
+    assert len(got["requests"]) == 2
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_superseded_request_is_aborted_and_its_abort_is_not_an_error(template: str):
+    got = _hook(template, [{"mount": ["q", {"r": "east"}]}, {"props": ["q", {"r": "west"}]}, "settle"],
+                [TWO, NONE])
+    assert [r["aborted"] for r in got["requests"]] == [True, False]
+    assert got["snapshots"][-1]["status"] == "empty"
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_refresh_during_a_request_is_not_reported_as_a_failure(template: str):
+    # The same key both times, so only the AbortError guard keeps the aborted first request's
+    # rejection off the screen.
+    got = _hook(template, [{"mount": ["q"]}, "refresh", "tick", "settle"], [TWO, TWO])
+    assert got["snapshots"][2]["status"] == "loading" and got["snapshots"][2]["error"] is None
+    assert got["snapshots"][-1]["status"] == "ready"
+    assert [r["aborted"] for r in got["requests"]] == [True, False]
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_unmounting_aborts_the_request_in_flight(template: str):
+    got = _hook(template, [{"mount": ["q"]}, "unmount"], [TWO])
+    assert got["requests"][0]["aborted"] is True
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_disabled_query_sends_nothing_until_it_is_enabled(template: str):
+    got = _hook(template, [{"mount": ["q", {}, {"enabled": False}]},
+                           {"props": ["q", {}, {"enabled": True}]}, "settle"], [TWO])
+    held, _, ready = got["snapshots"]
+    assert held["status"] == "loading"
+    assert ready["status"] == "ready"
+    assert len(got["requests"]) == 1
+
+
+@pytest.mark.parametrize("names", [FASTAPI, TEMPLATE_NAMES], ids=["fastapi-antd", "react-vite"])
+def test_the_instructions_an_agent_reads_offer_use_query(names):
+    block = _block(names)
+    assert "useQuery(" in block
+    assert "refresh" in block and '"empty"' in block

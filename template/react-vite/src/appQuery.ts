@@ -11,6 +11,7 @@
 //
 // Sage owns this file. Do not edit it — which Data Source this app reads is chosen in Sage, and the
 // queries it can run are declared in `.sage/queries.json`.
+import { useCallback, useEffect, useRef, useState } from "react";
 import { appBase } from "./appBase";
 import { reportRuntimeError } from "./reportRuntimeError";
 
@@ -114,6 +115,80 @@ export async function runQuery(
     truncated,
     dataUsed: normalizeDataUsed(name, result, truncated),
   };
+}
+
+/** What `useQuery` reports. `"empty"` means the query answered with zero records, never that it
+ * failed. `error` is the viewer's sentence. `refreshing` is true while `refresh()` asks again with
+ * the previous `data` still on screen. */
+export type QueryState = {
+  status: "loading" | "error" | "empty" | "ready";
+  data: QueryResult | null;
+  error: string | null;
+  refreshing: boolean;
+  refresh: () => void;
+};
+
+// Answers kept for the page's life, keyed by query name and params in a fixed order, so a screen
+// shown again draws at once. Only answers are kept; a failure is asked again next time.
+const answers = new Map<string, QueryResult>();
+const keyOf = (name: string, params: Record<string, QueryParam>) =>
+  JSON.stringify([name, Object.keys(params).sort().map((k) => [k, params[k]])]);
+
+type Held = { key: string | null; data: QueryResult | null; error: string | null; pending: boolean };
+
+/**
+ * Run a named query from a component and track its state (#681).
+ *
+ *     const q = useQuery("usage_by_account", { since });
+ *     if (q.status === "ready") draw(q.data.records);
+ *
+ * A changed param or an unmount aborts the request in flight. `{ enabled: false }` sends nothing
+ * (status stays `"loading"`) until a value the query needs exists. Answers are kept for the page's
+ * life; `refresh()` asks again.
+ */
+export function useQuery(
+  name: string,
+  params: Record<string, QueryParam> = {},
+  opts: { enabled?: boolean } = {},
+): QueryState {
+  const key = keyOf(name, params);
+  const enabled = opts.enabled !== false;
+  const [run, setRun] = useState(0);
+  const [state, setState] = useState<Held>({ key: null, data: null, error: null, pending: false });
+  const latest = useRef(params);
+  latest.current = params;
+  const lastRun = useRef(0);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const forced = run !== lastRun.current;
+    lastRun.current = run;
+    const kept = answers.get(key);
+    if (kept && !forced) {
+      setState({ key, data: kept, error: null, pending: false });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setState((s) => ({ key, data: s.key === key ? s.data : kept || null, error: null, pending: true }));
+    runQuery(name, latest.current, { signal: controller.signal }).then(
+      (data) => {
+        answers.set(key, data);
+        setState({ key, data, error: null, pending: false });
+      },
+      (error) => {
+        if ((error as Error)?.name === "AbortError") return;
+        setState((s) => ({ key, data: s.key === key ? s.data : null,
+                           error: (error as Error)?.message || String(error), pending: false }));
+      });
+    return () => controller.abort();
+  }, [key, enabled, run]);
+
+  const refresh = useCallback(() => setRun((n) => n + 1), []);
+  const kept = answers.get(key) || null;
+  const view: Held = state.key === key ? state : { key, data: kept, error: null, pending: enabled && !kept };
+  const status = view.error ? "error"
+    : view.data ? (view.data.records.length ? "ready" : "empty") : "loading";
+  return { status, data: view.data, error: view.error, refreshing: view.pending && !!view.data, refresh };
 }
 
 // A read of a name the query does not return is `undefined`, which a page draws as 0 or an empty
