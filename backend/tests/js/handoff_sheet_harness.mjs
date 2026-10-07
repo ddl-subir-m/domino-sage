@@ -86,7 +86,8 @@ function render(c) {
     handoffTranscript: c.transcript,
   };
   draft = c.draft || {};
-  cells = [];
+  // The first state cell is the sheet's chosen app.
+  cells = c.appId ? [c.appId] : [];
   cursor = 0;
   const tree = sandbox.SW.HandoffSheet();
   return {

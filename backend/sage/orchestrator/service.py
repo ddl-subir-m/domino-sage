@@ -8738,6 +8738,8 @@ class Orchestrator:
             # Project-wide, so every row carries the same one. Only the selected app's row is drawn,
             # and a merge is the Project's rather than any app's.
             "resolvedMerge": self._resolved_merge_row(),
+            # The handoff sheet's "none crosses" warning stays quiet for an app that has one (#669).
+            "boundDataSource": bool(self._data_source_bindings(workspace)),
         }
 
     def _one_app(self, app_id: str) -> dict:
@@ -13159,7 +13161,8 @@ class Orchestrator:
             include_artifacts=include_artifacts,
             include_resources=include_resources,
             data_used=chat_handoff.data_use_summaries(history) if include_resources else [],
-            read_a_data_source=bool(chat_handoff.data_source_reads(history)),
+            read_a_data_source=(bool(chat_handoff.data_source_reads(history))
+                                and not self._data_source_bindings(project.workspace)),
         )
         (project.workspace.path / ".sage" / "handoff.md").write_text(digest)
         # The note is one of the things the data region reads, and the app was bound before it
@@ -30867,8 +30870,7 @@ class Orchestrator:
         and which queries the app will refuse — come from the Built App's own `serve.py`, so Sage
         cannot promise something the published app then rejects.
         """
-        bindings = [b for b in parse_bindings(project.workspace.read_bindings())
-                    if b.kind == KIND_DATA_SOURCE]
+        bindings = self._data_source_bindings(project.workspace)
         schema_file = project.workspace.path / SCHEMA_PATH
         if not bindings:
             # An unbound Data Source leaves no columns behind. A schema describing a store this app no
@@ -30900,6 +30902,12 @@ class Orchestrator:
             unasked=[b.display_name for b in self._data_sources_never_asked(project.workspace)],
         )
         self._splice_agents(project, self._DATA_BEGIN, self._DATA_END, block)
+
+    @staticmethod
+    def _data_source_bindings(workspace: Workspace) -> list[Binding]:
+        """The Data Sources this app records as bound. Whether it reaches for a store is only asked
+        when this is empty, and a handoff into it says none crosses only then too (#669)."""
+        return [b for b in parse_bindings(workspace.read_bindings()) if b.kind == KIND_DATA_SOURCE]
 
     @staticmethod
     def _reaches_for_a_store(project: Project, module: object) -> bool:

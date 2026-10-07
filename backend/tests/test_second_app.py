@@ -461,7 +461,7 @@ def test_the_sheet_lists_the_projects_apps_and_preselects_none_of_them(tmp_path:
         # it, which is why none of them is stripped the way `selected` is.
         assert set(row) == {"id", "name", "stack", "publishName", "built", "createdAt", "builtAt",
                             "planId", "published", "publishedAt", "url", "building", "behind",
-                            "resolvedMerge"}
+                            "resolvedMerge", "boundDataSource"}
 
 
 def test_an_app_row_carries_the_date_of_its_last_build(tmp_path: Path):
