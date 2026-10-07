@@ -70,7 +70,7 @@ def _no_waiting(monkeypatch):
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *a, **k: None)
 
 
-def _build(tmp: Path, turns: list[Turn], *, verdict: str = "BUILD"):
+def _build(tmp: Path, turns: list[Turn], *, verdict: str = "BUILD", fake=FakeOpenCode):
     """An orchestrator wired to fakes, plus the fake agent and gateway for assertions."""
     template = tmp / "template"
     (template / "src").mkdir(parents=True, exist_ok=True)
@@ -79,7 +79,7 @@ def _build(tmp: Path, turns: list[Turn], *, verdict: str = "BUILD"):
 
     ws = tmp / "mnt" / "code"
     gateway = ScriptedGateway(verdict)
-    oc = FakeOpenCode(ws, turns)
+    oc = fake(ws, turns)
     orch = Orchestrator(workspace_dir=ws, template=template, gateway=gateway, catalog=_catalog(),
                         project_id="Sage", feedback=OkFeedback(), opencode_client=oc)
     orch.project(start_preview=False)
@@ -619,6 +619,64 @@ def test_the_build_prompt_teaches_the_line_sage_reads(stack: str):
 
     agents = (Path(__file__).resolve().parents[2] / "template" / stack / "AGENTS.md").read_text()
     assert f"`{ALREADY_DONE_MARKER}` on a line by" in agents
+
+
+class _OnlyWhatItIsTold(FakeOpenCode):
+    """A model that writes ALREADY_DONE only when the request in front of it teaches the line. An
+    app keeps the AGENTS.md it was born with, so for every app older than the marker this is the
+    only place it can learn it — and a fake that wrote it anyway proved nothing live (#680)."""
+
+    def send_prompt(self, session_id: str, text: str, *args, **kwargs) -> None:
+        if "ALREADY_DONE" in text and self._next < len(self.turns):
+            self.turns[self._next] = Turn(text=ALREADY_DONE_REPLY)
+        super().send_prompt(session_id, text, *args, **kwargs)
+
+
+def _app_agents_md_lacks_the_marker(orch) -> None:
+    agents = orch.project(start_preview=False).workspace.path / "AGENTS.md"
+    assert not agents.exists() or "ALREADY_DONE" not in agents.read_text()
+
+
+def test_the_no_edit_restart_teaches_the_marker(tmp_path: Path):
+    """The restart after a turn with no edit is text Sage writes at turn time, so it reaches an app
+    whose AGENTS.md predates the marker."""
+    orch, oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Here's how I'd approach it: first the schema, then the table."),
+    ], verdict="BUILD")
+    _get_built(orch)
+    _app_agents_md_lacks_the_marker(orch)
+
+    events = _run(orch, "add a severity filter")
+
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    restart = oc.prompts[-1]["text"]
+    assert "previous attempt made no app edit" in restart
+    assert "ALREADY_DONE on a line by itself" in restart
+
+
+def test_a_repeat_on_an_app_born_before_the_marker_ends_cleanly(tmp_path: Path):
+    """The live replay on 575905b1: turn two said the change was already made, without the marker
+    its AGENTS.md never taught, and recovery ended "Sage stopped before changing the app". Taught by
+    the restart, the model writes the line there, and the evidence check honours it."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Added the filter.", writes={"src/App.tsx": "// v2 severity filter\n"}),
+        Turn(text="This change is already made at src/App.tsx:1."),
+        Turn(),
+    ], verdict="BUILD", fake=_OnlyWhatItIsTold)
+    _get_built(orch)
+    _app_agents_md_lacks_the_marker(orch)
+    assert _done(_run(orch, "add a severity filter"))["ok"] is True
+
+    events = _run(orch, "add a severity filter")
+    assert _done(events)["decision"] == "already done"
+    assert _done(events)["ok"] is True
+    assert [event["type"] for event in events].count("build-recovery") == 1
+    assert "build-pre-edit-limit" not in [event["type"] for event in events]
+    assert _app(orch) == "// v2 severity filter\n"
 
 
 def test_a_claim_that_also_edits_is_an_ordinary_build(tmp_path: Path):
