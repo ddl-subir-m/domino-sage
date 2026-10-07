@@ -941,7 +941,7 @@ def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
                 # copy, and wrote every query against one it made up (#669).
                 parts.append(brand.text(
                     "No {dataSource} crosses with this handoff, so the app cannot query any of "
-                    "these. They are background on what the Chat work read, not sources to name "
+                    "these. They are background on what the {chat} work read, not sources to name "
                     "in a query."))
             parts.extend(f"- {line}" for line in lines)
             parts.append("")
