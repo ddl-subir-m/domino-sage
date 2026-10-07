@@ -258,7 +258,7 @@ def _unloaded_definitions(workspace: Path, js_files: list[Path]) -> list[Feedbac
     unloaded: dict[str, tuple[str, str, str]] = {}
     for (ns, name), readers in sorted(read.items()):
         definers = defined.get((ns, name)) or namespaces.get(ns, set())
-        others = sorted(readers - definers)
+        others = sorted((readers - definers) & loaded)
         if definers and others and not definers & loaded:
             unloaded.setdefault(min(definers), (ns, name, others[0]))
     return [FeedbackError(

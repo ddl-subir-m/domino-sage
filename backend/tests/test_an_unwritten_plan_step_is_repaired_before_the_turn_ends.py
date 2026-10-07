@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .fake_opencode import Turn, execution_plan
 from .test_a_dead_alias_stops_the_turn_before_it_starts import _no_waiting, _orch  # noqa: F401
+from .test_build_conversation_return import run as render
 
 FOUR_STEPS = Turn(text=execution_plan(
     "Signal Room", "A product signal room.", "Product page", files="static/productpage.js",
@@ -62,3 +63,13 @@ def test_a_step_still_unwritten_after_it_ends_the_turn_incomplete(tmp_path: Path
     assert [r["steps"] for r in history if r["type"] == "plan-unbuilt"] == [[4]]
     # The work the turn did write is still saved: incomplete is not a failed turn.
     assert "app_change" in [r["type"] for r in history]
+
+
+def test_the_status_line_says_incomplete_not_stopped():
+    rows = render({"savedHistory": [
+        {"type": "user", "text": "Approved the plan."},
+        {"type": "done", "ok": False,
+         "decision": "incomplete — plan step 4 (Register the component script) not built"},
+    ]})
+    assert rows[-1] == {"type": "status", "ok": False, "warn": False,
+                        "value": "Incomplete — plan step 4 (Register the component script) not built"}

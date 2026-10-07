@@ -68,6 +68,21 @@ def test_a_skill_helper_namespace_with_no_script_tag_fails_naming_its_file(tmp_p
     assert "static/dealDesk.js defines window.dealDesk.score" in report.errors[0].message
 
 
+def test_a_reader_the_page_never_loads_is_not_reported(tmp_path: Path):
+    # Two leftover files `index.html` no longer lists: the read never runs, so nothing crashes.
+    app = _app(tmp_path, extra='  <script src="static/components/AskReview.js"></script>\n')
+    (app / "static" / "components" / "Gone.js").write_text(
+        "window.app.GoneSection = function GoneSection() { return null; };\n")
+    (app / "static" / "components" / "Old.js").write_text(
+        "window.app.OldPage = function OldPage() {\n"
+        "  return React.createElement(window.app.GoneSection, null);\n"
+        "};\n")
+
+    report = FeedbackRunner().check(app)
+
+    assert report.ok, report.as_agent_message()
+
+
 def test_the_same_app_with_the_tag_passes(tmp_path: Path):
     report = FeedbackRunner().check(_app(
         tmp_path, extra='  <script src="static/components/AskReview.js"></script>\n'))
