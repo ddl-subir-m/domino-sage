@@ -52,6 +52,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .capabilities import RouteCapability
+from .events import StreamEvents
 from .protocol import Protocol, endpoint
 
 # Not a level anything advertises, and not a typo for one either: a value some provider quietly
@@ -231,11 +232,41 @@ class Prober:
             return None
         return Protocol.CHAT, False
 
+    def _echoed(self, alias: str, level: str, tools: bool) -> tuple[int, str, bool]:
+        """(status, body, whether the level came back) for one level on a native Responses route.
+
+        Asked the way the runtime asks: streamed, unstored, with a `sage_route_check` nonce, and
+        read by the same `StreamEvents` contract that refuses the stream when any of the three is
+        not echoed. A 200 alone is not enough — Gemini 3.8 Flash answered 200 to its lowest level
+        and did not send it back, so a level recorded on status was refused on every call (#664).
+        """
+        nonce = uuid.uuid4().hex
+        body = _body(alias, Protocol.RESPONSES, level, tools) | {
+            "stream": True, "store": False, "include": ["reasoning.encrypted_content"],
+            "metadata": {"sage_route_check": nonce}}
+        status, raw = self.call(endpoint(self.root, Protocol.RESPONSES), body)
+        if status != 200:
+            return status, raw, False
+        events = StreamEvents(Protocol.RESPONSES, response_contract={"nonce": nonce, "effort": level})
+        try:
+            events.feed(raw.encode())
+            events.finish()
+        except (ValueError, TypeError):
+            return status, raw, False
+        return status, raw, True
+
     def _levels(self, alias: str, protocol: Protocol, tools: bool) -> list[str] | None:
         """The levels this route accepts. None = a level went unanswered, so no row is writable."""
         usable, unanswered = [], []
         for level in LEVELS:
-            status, raw = self._ask(alias, protocol, level, tools)
+            if protocol is Protocol.RESPONSES:
+                status, raw, echoed = self._echoed(alias, level, tools)
+                if status == 200 and not echoed:
+                    self.say(f"  {level}{' with tools' if tools else ''} answered 200 but did not "
+                             "come back on the stream, so it is not usable")
+                    continue
+            else:
+                status, raw = self._ask(alias, protocol, level, tools)
             if status == 200:
                 usable.append(level)
             elif status != 400:
