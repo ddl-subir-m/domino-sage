@@ -567,6 +567,51 @@ def test_a_claim_after_a_failed_turn_still_recovers(tmp_path: Path):
     assert [event["type"] for event in events].count("build-recovery") == 1
 
 
+def test_a_file_sage_refreshed_is_not_the_previous_turns_change(tmp_path: Path):
+    """Sage rewrites its own files (the crash card, the helpers, the preview config) at the start of
+    a Build turn, before that turn's snapshot, so the refresh lands between the previous turn's two
+    snapshots. Credited to that turn, it would honour a claim about a turn that changed nothing."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="There is no clickstream table yet.\nNOTHING_TO_BUILD"),
+        Turn(text=ALREADY_DONE_REPLY),
+    ], verdict="BUILD")
+    _get_built(orch)
+    assert _done(_run(orch, "i attached it"))["decision"] == "nothing to build"
+    app = orch.project(start_preview=False).workspace
+    (app.path / "src" / "ErrorBoundary.tsx").write_text("// refreshed by Sage\n")
+
+    events = _run(orch, "add a severity filter")
+
+    assert _done(events)["decision"] == "pre_edit_limit"
+    assert [event["type"] for event in events].count("build-recovery") == 1
+
+
+def test_another_conversations_change_is_not_this_conversations_evidence(tmp_path: Path):
+    """The previous turn is this Conversation's. Another Conversation changed the app in between,
+    but this one's previous turn changed nothing, so there is nothing for the claim to point at."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="There is no clickstream table yet.\nNOTHING_TO_BUILD"),
+        Turn(text="Added the filter.", writes={"src/App.tsx": "// v2 severity filter\n"}),
+        Turn(text=ALREADY_DONE_REPLY),
+    ], verdict="BUILD")
+    _get_built(orch)
+    orch.project(start_preview=False).control.set_mode(Mode.AUTO)
+    ours = list(orch.build_stream("i attached it", conversation="c_ours"))
+    assert _done(ours)["decision"] == "nothing to build"
+    theirs = list(orch.build_stream("add a severity filter", conversation="c_theirs"))
+    assert _done(theirs)["ok"] is True
+    assert _app(orch) == "// v2 severity filter\n"
+
+    events = list(orch.build_stream("add a severity filter", conversation="c_ours"))
+
+    assert _done(events)["decision"] == "pre_edit_limit"
+    assert [event["type"] for event in events].count("build-recovery") == 1
+
+
 @pytest.mark.parametrize("stack", ["react-vite", "fastapi-antd"])
 def test_the_build_prompt_teaches_the_line_sage_reads(stack: str):
     """A marker the model is never told about is a branch no live turn reaches."""

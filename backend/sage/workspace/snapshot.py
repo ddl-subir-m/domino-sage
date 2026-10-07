@@ -55,11 +55,13 @@ class TurnSnapshot:
         self._run("commit", "--allow-empty", "-q", "-m", f"{_PRE_TURN} {turn_id}".strip())
         return self._run("rev-parse", "HEAD").stdout.strip()
 
-    def turn_changed_app(self, turn_id: str) -> bool:
-        """True if the turn `turn_id` changed any workspace file: the tree of its first snapshot
-        against the tree of the first snapshot taken after it, which is that turn's end state. A
-        phased build commits once per phase under the same id, so every one of those is skipped.
-        False when the turn is not in the log, or no later snapshot has been taken yet."""
+    def turn_changed_app(self, turn_id: str, ignore: frozenset[str] = frozenset()) -> bool:
+        """True if the turn `turn_id` changed any workspace file outside `ignore`: the tree of its
+        first snapshot against the tree of the first snapshot taken after it, which is that turn's end
+        state. A phased build commits once per phase under the same id, so every one of those is
+        skipped. False when the turn is not in the log, or no later snapshot has been taken yet.
+
+        `ignore` is for the files Sage writes itself, which land between the same two snapshots."""
         if not turn_id:
             return False
         tag = f"{_PRE_TURN} {turn_id}"
@@ -72,7 +74,9 @@ class TurnSnapshot:
             if not before:
                 before = tree if subject == tag else ""
             elif subject != tag:
-                return tree != before
+                diff = self._run("diff", "--name-only", "--no-renames", before, tree, "--")
+                return diff.returncode == 0 and any(
+                    path not in ignore for path in diff.stdout.splitlines() if path)
         return False
 
     def discard_changes(self) -> None:

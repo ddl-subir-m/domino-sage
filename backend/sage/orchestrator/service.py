@@ -20485,15 +20485,18 @@ class Orchestrator:
     def _previous_turn_did_it(self, project: Project) -> bool:
         """ALREADY_DONE's evidence (#680), read by Sage rather than taken from the model: this turn
         changed no app file, the previous Build turn on this app in this Conversation did not fail,
-        and that turn changed the app's files according to the pre-turn snapshots."""
+        and that turn changed the app's own files according to the pre-turn snapshots — not only
+        files Sage writes itself, which can change between the same two snapshots."""
         if project.snapshot.changed_since_pre_turn():
             return False
+        app = project.app_for_turn()
         this_turn = self._turn_id_fields().get("turnId")
-        rows = project.app_for_turn().read_history(project.build_conversation, tool_detail=False)
+        rows = app.read_history(project.build_conversation, tool_detail=False)
         previous = next((row for row in reversed(rows)
                          if row.get("type") == "done" and row.get("turnId") != this_turn), None)
         return bool(previous is not None and previous.get("ok") is True
-                    and project.snapshot.turn_changed_app(str(previous.get("turnId") or "")))
+                    and project.snapshot.turn_changed_app(str(previous.get("turnId") or ""),
+                                                          ignore=app.sage_owned_paths))
 
     def _mark_turn_wedged(self) -> None:
         """Keep ownership of the tree and release every queued caller with a refusal."""
