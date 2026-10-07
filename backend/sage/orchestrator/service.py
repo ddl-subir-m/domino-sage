@@ -20677,6 +20677,11 @@ class Orchestrator:
              if trigger is PreEditTrigger.REPEATED_TOOL_CALL else
              "The previous attempt made no app edit. This is the only clean recovery. "
              "Implement the same Build intent now."),
+            # Here and not only in AGENTS.md: an app keeps the AGENTS.md it was born with, so this
+            # is the one place every app older than the marker can learn it (#680).
+            ("If your previous turn already made exactly what this request asks, say so in a "
+             "sentence naming the file and line, write nothing, and end your reply with "
+             f"{ALREADY_DONE_MARKER} on a line by itself."),
             cls._build_source_note(project.app_for_turn().path),
         ]
         if changed:
