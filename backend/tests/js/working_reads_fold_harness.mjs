@@ -178,6 +178,8 @@ function render(node, path, out) {
   return out;
 }
 
+// Drawn rather than put away, so a test can read what the "Data used" card says.
+if (spec.dataAccessShown) SW.prefs.set('dataAccessShown', true);
 if (spec.live) {
   // No `openThread`: this is a turn sent into an empty transcript, which is what the reducer sees.
   // `seedArtifacts` is what this session already holds from EARLIER turns — the rows
