@@ -68,6 +68,21 @@ def test_a_refusal_that_is_not_the_remote_being_ahead_does_not_say_to_pull():
 
 
 @needs_node
+def test_a_remote_5xx_says_sage_pushes_again_on_the_next_save():
+    # A GitHub outage is not a refusal of this work and not the person's to fix (#678): the next
+    # save pushes whatever is unsent (ADR-0064).
+    row = _drawn({"type": "saved", "ok": True, "pushed": False, "rejected": True,
+                  "behind": False,
+                  "detail": "push failed: fatal: unable to access 'https://github.com/o/r.git/': "
+                            "The requested URL returned error: 500"})
+
+    assert row["className"] == "sw-status-line is-warn"
+    assert "GitHub returned an error; Sage pushes again on the next save" in row["text"]
+    assert "refused" not in row["text"]
+    assert "error: 500" in row["text"]
+
+
+@needs_node
 def test_a_behind_flag_says_to_pull_when_the_detail_does_not_name_it():
     row = _drawn({"type": "saved", "ok": True, "pushed": False, "rejected": True,
                   "behind": True, "detail": "push failed: the remote rejected the update"})

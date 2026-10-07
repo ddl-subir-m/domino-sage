@@ -285,7 +285,7 @@ def test_a_query_naming_a_binding_this_app_no_longer_has_says_so(app: Path):
     fake = FakeExecutor()
     with running(app, fake) as base:
         r = _ask(base, "revenue_by_region", {"region": "EMEA"})
-    assert r.status_code == 503
+    assert r.status_code == 422
     assert "ds-gone" in r.json()["error"]
     assert not fake.calls
 
@@ -296,7 +296,7 @@ def test_a_query_using_a_placeholder_it_never_declared_is_unusable(app: Path):
                           "params": [{"name": "region", "type": "string"}]}])
     with running(app, FakeExecutor()) as base:
         r = _ask(base, "q", {"region": "EMEA"})
-    assert r.status_code == 503
+    assert r.status_code == 422
     assert "yr" in r.json()["error"]
 
 
@@ -307,7 +307,7 @@ def test_a_query_declaring_a_parameter_its_statement_never_uses_is_unusable(app:
                           "params": [{"name": "region", "type": "string"}]}])
     with running(app, FakeExecutor()) as base:
         r = _ask(base, "q", {"region": "EMEA"})
-    assert r.status_code == 503
+    assert r.status_code == 422
     assert "region" in r.json()["error"]
 
 
@@ -315,7 +315,7 @@ def test_a_broken_query_does_not_stop_a_healthy_one(app: Path):
     _write_queries(app, [{**REVENUE, "binding": "ds-gone"},
                          {"name": "totals", "binding": "ds-dwh", "sql": "SELECT 1"}])
     with running(app, FakeExecutor()) as base:
-        assert _ask(base, "revenue_by_region", {"region": "EMEA"}).status_code == 503
+        assert _ask(base, "revenue_by_region", {"region": "EMEA"}).status_code == 422
         assert _ask(base, "totals", {}).status_code == 200
 
 
@@ -324,7 +324,24 @@ def test_a_query_with_no_statement_is_unusable_rather_than_missing(app: Path):
     # name that is spelled correctly.
     _write_queries(app, [{"name": "q", "binding": "ds-dwh", "sql": ""}])
     with running(app, FakeExecutor()) as base:
-        assert _ask(base, "q", {}).status_code == 503
+        assert _ask(base, "q", {}).status_code == 422
+
+
+def test_an_app_fault_is_422_and_a_store_that_cannot_be_reached_is_503():
+    # 503 had three meanings, and a catalog refusal read as "the warehouse is down" (#678). The
+    # app's own faults are unprocessable; only the store not being reachable is unavailable.
+    broken = sq.Query("drift_bins", "ds-dwh", "SELECT 1",
+                      problem="The query drift_bins declares region, which its statement never uses.")
+    assert sq.answer({"drift_bins": broken}, FakeExecutor(), "drift_bins", {}) == (
+        422, {"error": broken.problem})
+
+    odd = sq.Query("q", "ds-dwh", "SELECT :v", params=(sq.Param("v", "uuid"),))
+    status, body = sq.answer({"q": odd}, FakeExecutor(), "q", {"params": {"v": "x"}})
+    assert status == 422 and "cannot check" in body["error"]
+
+    usable = sq.Query("totals", "ds-dwh", "SELECT 1")
+    status, body = sq.answer({"totals": usable}, None, "totals", {})
+    assert status == 503 and "cannot reach" in body["error"]
 
 
 def test_the_startup_log_names_every_unusable_query(app: Path, capsys):
