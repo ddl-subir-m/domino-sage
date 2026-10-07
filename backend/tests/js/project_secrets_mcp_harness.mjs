@@ -18,9 +18,13 @@
 //   add-mcp         Add MCP server from the Add menu, a header from the secret `CRM_TOKEN`, Add
 //   add-domino-mcp  Add MCP server, an Authorization header typed, then Domino-hosted, another
 //                   header, Add
+//   mcp-settles     load the servers as the panel does on mount, where `serverReads[i]` is what
+//                   the i-th read of `/project/mcp` answers (the last one repeats), then look at
+//                   each virtual moment in `at` — the row subtitles and how many reads went out;
+//                   with `again`, load them once more and look `again` milliseconds later
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { unrefTimeout } from './sandbox_timeout.mjs';
+import { fakeClock } from './sandbox_timeout.mjs';
 
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -47,13 +51,19 @@ const answer = (url, method, body) => {
     return method === 'DELETE' ? { ok: true }
       : { name: decodeURIComponent(path.split('/').pop()), note: (body && body.note) || '' };
   }
+  if (path === '/project/mcp' && method === 'GET' && input.serverReads) {
+    const reads = calls.filter((c) => c.url.endsWith('/project/mcp') && c.method === 'GET').length;
+    return { servers: input.serverReads[Math.min(reads, input.serverReads.length) - 1] };
+  }
   if (path === '/project/mcp' && method === 'GET') return { servers: input.servers || [] };
   if (path === '/project/mcp') return { ...body, enabled: true, tools: [], status: 'pending', warning: null };
   return {};
 };
+const clock = fakeClock();
 const sandbox = {
   console, JSON, Object, String, Array, Error, Map, Set, Promise, Date, Math, Number, Boolean,
-  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: unrefTimeout, clearTimeout,
+  RegExp, encodeURIComponent, decodeURIComponent, setTimeout: clock.setTimeout,
+  clearTimeout: clock.clearTimeout,
   setInterval: () => 1, clearInterval: () => {}, requestAnimationFrame: (fn) => fn(),
   URLSearchParams, TextEncoder, TextDecoder, URL, Blob,
   fetch: async (url, options = {}) => {
@@ -252,6 +262,25 @@ if (act === 'drawn') {
   await modal(panel()).p.onOk();
   await settle();
   report.calls = calls;
+} else if (act === 'mcp-settles') {
+  const look = (t) => ({
+    at: t,
+    subtitles: rowsOf(panel(), 'sw-mcp-row').map((r) => r.subtitle),
+    reads: calls.filter((c) => c.url.endsWith('/project/mcp') && c.method === 'GET').length,
+  });
+  await SW.store.loadMcpServers();
+  report.looks = [look(0)];
+  let elapsed = 0;
+  for (const t of input.at) {
+    await clock.advance(t - elapsed);
+    elapsed = t;
+    report.looks.push(look(t));
+  }
+  if (input.again) {
+    await SW.store.loadMcpServers();
+    await clock.advance(input.again);
+    report.looks.push(look('again'));
+  }
 }
 
 console.log(JSON.stringify(report));
