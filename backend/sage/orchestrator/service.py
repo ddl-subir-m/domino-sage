@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
     from ..workspace.chat_tables import ChatTables
 
-from .. import build_diagnostics, degraded, extension_mcp, project_secrets, timing
+from .. import build_diagnostics, degraded, extension_mcp, project_secrets, skill_copies, timing
 from .. import extensions as project_extensions
 from ..assets.provider import (
     Asset,
@@ -10780,6 +10780,12 @@ class Orchestrator:
             # gets the short line the click deserves, the way an Approve click does, instead of
             # echoing the same sentence twice. Whether they reset first is already on the record
             # above it as an `app-reset` marker.
+            # Not on a turn that seeds the app: the template's files would read as this turn's.
+            check_copies = bool(skill_copies.shipped_basenames(project.record.path)
+                                and resolve_stack(project.workspace.path).ready)
+            if check_copies:
+                tree_before = project.snapshot.working_tree_hash()
+                rows_before = len(project.app_for_turn().read_history(project.build_conversation))
             yield from self._build_stream(
                 prompt, mentions, resources, mode=mode, how_sage_works=how_sage_works,
                 dataset_note=dataset_note,
@@ -10789,6 +10795,8 @@ class Orchestrator:
                 user_text=(picked or typed or ("Build it." if skip_reset_gate or skip_incoming_gate
                                       or skip_table_gate or skip_source_gate or skip_dataset_gate
                                       else None)))
+            if check_copies:
+                yield from self._skill_copy_drift(project, tree_before, rows_before)
         except TurnWedged:
             # Swallowed, not re-reported: the turn already said what happened in its own stream, and
             # a traceback on top of it would only be a second, worse version of the same sentence.
@@ -19823,7 +19831,8 @@ class Orchestrator:
                 "listed": len(found), "matched": ranking.matched, "named": ranking.named,
                 "truncated": listing.truncated}
 
-    def _dataset_offer(self, prompt: str, answered: dict, user_text: str = ""):
+    def _dataset_offer(self, prompt: str, answered: dict, user_text: str = "", *,
+                       cards: bool = True):
         """The card for the next Dataset that needs a choice, or None, and what was attached unasked.
 
         THE DEAD END ADR-0038 CLOSED, reached through the other door. `bind_dataset` has written a
@@ -19850,6 +19859,9 @@ class Orchestrator:
         about the next. The answered Dataset does not ask again because its click attached a file
         or recorded the way past. A Dataset whose listing holds exactly one file is not a question,
         so that file is attached here and the sentence saying so is returned instead of a card.
+
+        `cards=False` is the approve path's (#687): it attaches single-file Datasets and draws no
+        card, so a Dataset that needs a choice is left as it was and the offer is always None.
         """
         project = self.project()
 
@@ -19889,6 +19901,8 @@ class Orchestrator:
                     attached_now.append(brand.text("Using {file} from {name}.", file=only["path"],
                                                    name=binding.display_name))
                     continue
+            if not cards:
+                continue
             return self._dataset_files_events(prompt, binding, card, answered, user_text,
                                               datasets), attached_now
         return None, attached_now
@@ -24468,6 +24482,12 @@ class Orchestrator:
         # build and keep its plan alive for ever. What this turn owes is written by the two things
         # that can know it — the give-up flag below, and a phase as it starts.
         project.app_for_turn().set_plan_retry_step(0)
+        # A plan drafted by the Chat handoff never passed `build_stream`'s Dataset gate, so this
+        # approve is its first build and the only place a single-file Dataset gets attached (#687).
+        # Before `mentions` below, which reads the attachments. No card: a Dataset that needs a
+        # choice builds unattached here, as it always has.
+        _, attached_now = self._dataset_offer("", {}, cards=False)
+        dataset_note = " ".join(attached_now)
         # An approve turn types no message of its own, so it has no `mentions` to carry — but the
         # files already attached to this app are exactly what the build may need to read, and
         # without this the model finds them itself via glob/find and can land on the absolute
@@ -24484,7 +24504,8 @@ class Orchestrator:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
                                                 start_step=resume_from, mentions=mentions,
                                                 explicit_references=explicit_references,
-                                                source_requests=source_requests)
+                                                source_requests=source_requests,
+                                                dataset_note=dataset_note)
             else:
                 # The bubble is what the person did, not what we sent. Approving from the card passes
                 # no `user_text`, and _build_stream's fallback is the prompt itself — so the whole
@@ -24496,6 +24517,7 @@ class Orchestrator:
                     mentions, is_approval=True, mode=run_as,
                     user_text=user_text if user_text is not None else "Approved the plan.",
                     explicit_references=explicit_references,
+                    dataset_note=dataset_note,
                     build_intent=BuildIntent.for_approved(
                         source_requests, plan_md, answers,
                         chat_handoff.implement_note(project.app_for_turn().path)),
@@ -24510,6 +24532,7 @@ class Orchestrator:
             if unbuilt is not None:
                 project.app_for_turn().append_history(unbuilt, project.build_conversation)
                 yield unbuilt
+            yield from self._skill_copy_drift(project, tree_before, rows_before)
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs
@@ -24589,6 +24612,29 @@ class Orchestrator:
 
         return [s for s in parse_steps(plan_md) if s.files and not any(map(written, s.files))]
 
+    def _skill_copy_drift(self, project: Project, tree_before: str, rows_before: int):
+        """Yields and records the `skill-copy-drift` row for a build that finished (#682).
+
+        Not fed to the model, and nothing repairs it: the person may have asked for the edit, and a
+        repair would fight them. Same gate as `_plan_unbuilt_event`: only a turn that ended `done`.
+        """
+        if self._turn_gave_up or not skill_copies.shipped_basenames(project.record.path):
+            return
+        app = project.app_for_turn()
+        rows = app.read_history(project.build_conversation)[rows_before:]
+        ended = next((r for r in reversed(rows) if r.get("type") in ("done", "stopped")), None)
+        if ended is None or ended["type"] != "done":
+            return
+        changed = project.snapshot.changed_paths(
+            tree_before, project.snapshot.working_tree_hash(), limit=100_000)
+        if not changed:
+            return
+        event = skill_copies.drift(project.record.path, project.workspace.path, changed,
+                                   project.workspace.helpers.owned)
+        if event is not None:
+            app.append_history(event, project.build_conversation)
+            yield event
+
     def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:
         """The document the approved plan.md belongs to, or None.
 
@@ -24609,7 +24655,8 @@ class Orchestrator:
                         continuation_note: str = "",
                         initial_repair_objective: str = "implementation",
                         resumed_phase_intent: BuildIntent | None = None,
-                        completion_guard: Callable[[], bool] | None = None):
+                        completion_guard: Callable[[], bool] | None = None,
+                        dataset_note: str = ""):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -24674,6 +24721,8 @@ class Orchestrator:
         project.app_for_turn().append_history(
             {"type": "user", "text": user_text if user_text is not None else "Approved the plan."},
             project.build_conversation)
+        if dataset_note:
+            yield persist({"type": "dataset-attached", "message": dataset_note})
         # ONE revert point for the whole build. _build_stream still checkpoints per phase (which is
         # what gives a gate violation its correct, narrow scope), so undoing everything needs a ref
         # that reaches back past all of them — hence discard_to rather than discard_changes.
