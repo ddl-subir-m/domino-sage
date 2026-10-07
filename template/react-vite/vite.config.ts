@@ -40,7 +40,7 @@ const shipped = Object.keys(
 function buildAwareOverlay(base: string) {
   // Derived from `base` exactly as `src/reportRuntimeError.ts` derives it, and same-origin for the
   // same reason: dev preview and control app sit behind the one proxy.
-  const api = base.replace(/preview\/?$/, "") + "api/";
+  const api = base.replace(/preview(?:\/[^/]+)?\/?$/, "") + "api/";
   return {
     name: "sage-build-aware-overlay",
     apply: "serve" as const,
