@@ -7,12 +7,17 @@ git history is therefore never read, committed to, or reset by this.
 """
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
 # Never snapshotted: heavy/regenerated dirs, our own internal state, and any real repo
 # the workspace root itself might already have.
 _EXCLUDE = ["node_modules", "dist", ".sage", ".git", ".DS_Store", "__pycache__"]
+
+# The one file under `.sage` the agent writes. _EXCLUDE hides it from every tree identity here, and
+# un-excluding `.sage` would let Stop's reset and clean reach Sage's own state (#671, #672).
+QUERIES = ".sage/queries.json"
 
 
 class TurnSnapshot:
@@ -79,6 +84,14 @@ class TurnSnapshot:
         self._ensure_repo()
         self._run("add", "-A")
         return self._run("write-tree").stdout.strip()
+
+    def queries_digest(self) -> str:
+        """A content hash of QUERIES, or "" when there is none. Pair it with working_tree_hash()
+        wherever the question is whether the agent changed the app."""
+        try:
+            return hashlib.sha256((self._root / QUERIES).read_bytes()).hexdigest()
+        except OSError:
+            return ""
 
     def changed_paths(self, before: str, after: str, *, limit: int = 60) -> list[str]:
         """Return bounded app-relative paths changed between two tree identities."""
