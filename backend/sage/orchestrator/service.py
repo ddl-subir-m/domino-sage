@@ -222,6 +222,7 @@ from ..workspace.threads import (
     _ensure_dir_link,
     ensure_chat_workdir,
     findings_file,
+    mounted_dataset_link,
     new_artifact_paths,
     new_id,
     oversized_artifacts,
@@ -2236,6 +2237,27 @@ def _describe_context_file(workspace: Path, item: dict) -> str:
     except (ValueError, OSError, TypeError):
         return ""
     return str(d.get("shape") or d.get("summary") or "").strip()
+
+
+def _mounted_dataset_paths(items: list[dict]) -> list[str]:
+    """The absolute folders of the mounted Dataset chips among `items`, for the Chat workdir."""
+    return [str(it["path"]) for it in items
+            if str(it.get("kind") or "") == "dataset" and not _dataset_pseudo_path(it)
+            and Path(str(it.get("path") or "")).is_absolute()]
+
+
+def _linked_dataset_chip(workspace: Path, item: dict) -> dict:
+    """`item` naming its mounted folder by the Chat-workdir link, when that link is there.
+
+    `external_directory: deny` refuses the file tools on `/mnt/data/...`, and the agent follows the
+    path the chip line gives it (#675). The link resolves to the same folder, so the folder note
+    still lists the real files.
+    """
+    path = str(item.get("path") or "")
+    if not path or not Path(path).is_absolute() or _dataset_pseudo_path(item):
+        return item
+    link = mounted_dataset_link(path)
+    return {**item, "path": link} if (workspace / link).is_symlink() else item
 
 
 def _context_folder_state(workspace: Path, item: dict) -> str:
@@ -13462,7 +13484,8 @@ class Orchestrator:
         work = str(ensure_chat_workdir(
             project.record.path, self._chat_agents_md(),
             data_dir=data_dir,
-            thread_id=thread_id))
+            thread_id=thread_id,
+            mounts=_mounted_dataset_paths(store.read_context(thread_id).get("items") or [])))
         # That link creates `public/data/` in order to point at it, so the tree can now exist
         # before anything has been attached. It must be out of git either way: the gitignore line
         # is what keeps Dataset bytes from ever reaching the app's repo.
@@ -15925,6 +15948,7 @@ class Orchestrator:
                 if workspace is not None and kind in ("file", "artifact"):
                     note = _describe_context_file(workspace, it)
                 elif workspace is not None and kind == "dataset":
+                    it = _linked_dataset_chip(workspace, it)
                     # A Dataset chip names a FOLDER, so the file describer cannot answer for it —
                     # `describe()` on a directory says "Is a directory", which is true and useless.
                     folder = _context_folder_state(workspace, it)
