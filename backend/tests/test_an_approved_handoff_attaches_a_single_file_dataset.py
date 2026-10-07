@@ -43,11 +43,16 @@ def _no_waiting(monkeypatch):
 
 
 _PLAN = execution_plan("Sales Playbook Board", "A sales playbook board.", "Playbook table")
+_PHASED_PLAN = _PLAN + "".join(
+    f"\n\n### {n}. {step}\n- Files — {rel}\n- Do — {step}.\n- Done when — {step} is visible."
+    for n, step, rel in ((2, "Add filters", "src/Filters.tsx"), (3, "Add a chart", "src/Chart.tsx")))
 _NOTHING_EXTRA = {"resources": False, "artifacts": False, "transcript": False}
 
 
 def _approved_handoff(tmp: Path, files: dict[str, str],
-                      also: dict[str, dict[str, str]] | None = None):
+                      also: dict[str, dict[str, str]] | None = None, plan: str = _PLAN,
+                      builds: tuple[Turn, ...] = (
+                          Turn(writes={"src/App.tsx": "// the playbook table\n"}),)):
     """A confirmed handoff whose app binds `sales-playbooks` holding `files`, then each Dataset in
     `also` (name to files, id `ds_<name>`), in that order, with nothing attached."""
     t = tmp / "template"
@@ -64,8 +69,7 @@ def _approved_handoff(tmp: Path, files: dict[str, str],
             (where / rel).write_text(body)
         assets.assets.append(Asset(dataset_id, name, project="Sage", mount_path=str(where)))
     root = tmp / "mnt" / "code"
-    oc = FakeOpenCode(root, [Turn(text="A board, then."), Turn(text=_PLAN),
-                             Turn(writes={"src/App.tsx": "// the playbook table\n"})])
+    oc = FakeOpenCode(root, [Turn(text="A board, then."), Turn(text=plan), *builds])
     orch = Orchestrator(workspace_dir=root, template=t, gateway=ScriptedGateway(),
                         catalog=ModelCatalog(sovereign_plan="s", sovereign_implement="s",
                                              sovereign_ask="s", plan="p", implement="i", ask="a"),
@@ -114,7 +118,10 @@ def test_approving_a_handoff_attaches_the_only_file_before_the_build(tmp_path, m
 
 
 def test_a_phased_approve_attaches_the_only_file_and_says_so(tmp_path, monkeypatch):
-    orch, oc, tid, plan_id = _approved_handoff(tmp_path, {"playbook.md": "# Playbook\n"})
+    orch, oc, tid, plan_id = _approved_handoff(
+        tmp_path, {"playbook.md": "# Playbook\n"}, plan=_PHASED_PLAN,
+        builds=tuple(Turn(writes={rel: f"// {rel}\n"})
+                     for rel in ("src/App.tsx", "src/Filters.tsx", "src/Chart.tsx")))
     orch.project(start_preview=False).record.write_settings({"phased_build": True})
     calls = _spy_attach(orch, monkeypatch, oc)
     before = len(oc.prompts)
@@ -122,6 +129,7 @@ def test_a_phased_approve_attaches_the_only_file_and_says_so(tmp_path, monkeypat
     events = list(orch.approve_stream(conversation=tid, plan_id=plan_id))
 
     assert calls == [("ds_playbooks", "playbook.md", before)]
+    assert any(e["type"] == "build-plan" for e in events), "the build did not run phased"
     assert [e["message"] for e in events if e["type"] == "dataset-attached"] == [
         "Using playbook.md from sales-playbooks."]
     project = orch.project(start_preview=False)
