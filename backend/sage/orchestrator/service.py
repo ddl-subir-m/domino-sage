@@ -6779,8 +6779,12 @@ _PLAN_OPENER = ("Format it exactly like this, in Markdown, and write nothing out
                 "has one — 'Support Ticket Explorer', not 'An app for looking through support "
                 "tickets'. No leading 'A' or 'The', no trailing full stop, and never a sentence: it "
                 "is shown as a title, in a list beside other apps, and in a header that "
-                "capitalises it. It must not be the name of an app or a plan already in this "
-                "project.\n"
+                "capitalises it. If the request names the app (for example 'an app called Signal "
+                "Room'), that name is the heading, word for word, even if it breaks the 2-4 word "
+                "rule. Only invent a name when the request gives none. It must not be the name of "
+                "an app or a plan already in this project, unless the request gave that name. A "
+                "plan written again keeps its own name, unless the request gives a new name: a "
+                "name the request gives always wins.\n"
                 # One full stop, then the next heading. `_one_sentence` rejects a second sentence,
                 # and a weaker model that writes two loses the whole plan. Say the rule in the
                 # words the check uses.
@@ -6819,7 +6823,8 @@ _PLAN_DOC_SECTIONS = (
     "- Then a '## Done when' heading and short bullets, each one an observable result "
     "someone can check without reading the code.\n"
     "Normalize the request into these sections. Do not copy or quote the user's request "
-    "verbatim; the plan document saves that original separately.\n"
+    "verbatim, except a name the request gives the app; the plan document saves that original "
+    "separately.\n"
     # #594: the sections are the contract a person approves, so they must agree with each other.
     "Add no capability, screen or control the request did not ask for.\n"
     "Nothing under 'Not doing' may exclude anything named in 'What it does' or 'Screens'.\n")
@@ -12974,7 +12979,19 @@ class Orchestrator:
         # tell the two apart — a minted app and a reselected one look identical on disk.
         existing_before = set(self._wm.app_ids())
         # The app: the one the sheet named, or a directory named for a newly minted id.
-        project = self._open_app(chat, handoff_row, chosen, str(target.get("name") or "").strip())
+        name = str(target.get("name") or "").strip()
+        project = self._open_app(chat, handoff_row, chosen, name)
+        # The sheet's name for a new app names its plan too, so the plan and the app agree (#670).
+        # The app's name rather than the typed one: `_open_app` may have numbered it off a clash.
+        app_name = project.workspace.display_name()
+        plan_id = str(handoff_row.get("planId") or "")
+        if (name and plan_id and project.workspace.app_id not in existing_before
+                and chat_handoff.plan_heading(plan_md) != app_name):
+            body = (plan_md.partition("\n")[2].lstrip("\n") if chat_handoff.plan_heading(plan_md)
+                    else plan_md)
+            doc = project.record.write_plan_doc_version(
+                plan_id, f"# {app_name}\n\n{body}", title=app_name)
+            plan_md = str((doc or {}).get("markdown") or plan_md).strip()
         # A plan somebody put away is taken back out, not refused (#170). Confirming is an
         # unambiguous act of wanting this plan, and writing `plan.md` from a document the Plans
         # group hides is the disagreement `archive_plan_doc`'s refusal exists to prevent, reached
