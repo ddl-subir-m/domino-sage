@@ -64,11 +64,19 @@ let served = [];
 // Every read the click made, in order: a crossing can arm the lock, and the only way to tell that
 // it re-asks from one that never does is whether the request went out.
 let asked = [];
+// What the click sent as a Build turn (#656). Recorded rather than run: the turn itself is
+// `sendBuildPrompt`'s, and what this harness answers is whether the bar asked for one, with what.
+let sent = [];
+SW.store.sendBuildPrompt = (text) => {
+  sent.push(text);
+  return Promise.resolve(null);
+};
 
 const out = [];
 for (const c of spec.cases || []) {
   served = [];
   asked = [];
+  sent = [];
   serve(c);
   // `app: null` is a real state — Build with nothing selected — so it is honoured rather than
   // defaulted, which is the whole point of the case that sends it.
@@ -84,6 +92,9 @@ for (const c of spec.cases || []) {
     bindings: c.bindings || [],
     appAttachments: c.attached || [],
   });
+  // The Build transcript as the store derives it. Placed after `set`, whose target switch re-derives
+  // it from `buildHistory`; how a `mentions-unresolved` row becomes a live card is #213's to pin.
+  SW.store.get().buildMessages = c.buildMessages || [];
   const row = {
     notInApp: SW.store.chipsNotInApp().map((e) => e.name),
     offer: SW.store.crossingOffer(),
@@ -99,6 +110,7 @@ for (const c of spec.cases || []) {
     // What the STORE kept, rather than what the answer said: the reason a chip draws comes off this,
     // and reading the answer back would only prove the harness can echo its own fixture.
     row.refusedState = SW.store.get().crossingRefused;
+    row.sent = sent;
   }
   out.push(row);
 }
