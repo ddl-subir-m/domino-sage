@@ -5,21 +5,24 @@ can consume on its next turn. For a react-vite app the check is the typecheck (`
 fast, high-value signal that catches most of what small models get wrong (types, missing imports,
 bad JSX) without a full build. For a fastapi-antd app (#490) there is nothing to type: the check
 compiles every `.py` and syntax-checks every `.js` the page loads, which catches the file that
-would have failed to import or to parse before a viewer does. Browser-console capture is a
-Phase-1 add (needs a headless view of the preview).
+would have failed to import or to parse before a viewer does. On both stacks oxlint then reads the
+app's own scripts for what parses and still crashes — a hook after an early return (#679). Browser-
+console capture is a Phase-1 add (needs a headless view of the preview).
 
 Deep module, narrow interface: `FeedbackRunner.check(workspace) -> FeedbackReport`. Which check
 runs is the workspace's stack's to say; the parsers are pure and unit-tested.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..workspace.stack import stack_of
+from ..workspace.stack import REACT_VITE, stack_of
 
 # tsc line: "src/App.tsx(12,5): error TS2304: Cannot find name 'foo'."
 _TSC_RE = re.compile(r"^(?P<file>[^(]+)\((?P<line>\d+),(?P<col>\d+)\):\s+error\s+(?P<code>TS\d+):\s+(?P<msg>.*)$")
@@ -116,6 +119,52 @@ def parse_node_check(output: str, workspace: Path | None = None) -> list[Feedbac
     return errors
 
 
+def parse_oxlint(output: str, workspace: Path | None = None) -> list[FeedbackError]:
+    """The errors in `oxlint --format json` output. Warnings are not failures, and output that is
+    not the report (a launcher that could not start) is no errors rather than a crash."""
+    try:
+        diagnostics = json.loads(output).get("diagnostics", [])
+    except (ValueError, AttributeError):
+        return []
+    errors: list[FeedbackError] = []
+    for d in diagnostics:
+        if d.get("severity") != "error":
+            continue
+        span = ((d.get("labels") or [{}])[0]).get("span", {})
+        file = str(Path(workspace, d["filename"])) if workspace is not None else d["filename"]
+        errors.append(FeedbackError(file=_relative(file, workspace), line=int(span.get("line", 1)),
+                                    col=int(span.get("column", 1)), code=d.get("code", ""),
+                                    message=d.get("message", "")))
+    return sorted(errors, key=lambda e: (e.file, e.line, e.col))
+
+
+def _oxlint(workspace: Path) -> str | None:
+    """The app's own oxlint (a react-vite app links the template's `node_modules`), else the React
+    template's — a fastapi-antd app has no `node_modules`, and the image installs the template's
+    in full. The template is the one the workspace manager seeds from (`SAGE_TEMPLATE`)."""
+    template = Path(os.environ.get("SAGE_TEMPLATE", REACT_VITE.template_dir))
+    for root in (workspace, template):
+        binary = root / "node_modules" / ".bin" / "oxlint"
+        if binary.is_file():
+            return str(binary)
+    return None
+
+
+def _lint(workspace: Path, files: list[Path], timeout_s: float) -> tuple[str, list[FeedbackError]] | None:
+    """oxlint over workspace-relative `files`, with the stack template's config — Sage's rules, so an
+    app seeded before the config shipped is read the same as a new one. `None` when there is no
+    binary to run: the check is then what it was before oxlint. Raises `TimeoutExpired`."""
+    binary = _oxlint(workspace)
+    if binary is None:
+        return None
+    if not files:
+        return "", []
+    config = stack_of(workspace).template_dir / ".oxlintrc.json"
+    proc = subprocess.run([binary, "-c", str(config), "--format", "json", *map(str, files)],
+                          cwd=workspace, capture_output=True, text=True, timeout=timeout_s, check=False)
+    return (proc.stdout or "") + (proc.stderr or ""), parse_oxlint(proc.stdout or "", workspace)
+
+
 def _relative(path: str, workspace: Path | None) -> str:
     if workspace is None:
         return path
@@ -158,6 +207,12 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
                 errors += parse_node_check(out, workspace)
         elif js_files:
             raw_parts.append("node is not on PATH, so the page's scripts were not syntax-checked")
+        # Only a script that parses is linted: a syntax error is already its file's one error.
+        broken = {e.file for e in errors}
+        parsed = [rel for rel in (p.relative_to(workspace) for p in js_files) if rel.as_posix() not in broken]
+        if (lint := _lint(workspace, parsed, timeout_s)) is not None:
+            raw_parts.append(lint[0])
+            errors += lint[1]
     except subprocess.TimeoutExpired as e:
         return FeedbackReport(ok=False, raw=f"syntax check timed out after {timeout_s}s: {e}",
                               kind="Syntax check")
@@ -187,19 +242,19 @@ def check_file(workspace: Path, path: str) -> FeedbackReport | None:
     """One file's own check, for the moment its write lands rather than after the turn ends (#547).
 
     `None` is "this stack does not check this file", and it is the answer for most writes: a
-    react-vite app (whose check is `tsc`, project-wide by construction — see `FeedbackRunner.check`),
-    a file that is not a `.py` or a page `.js`, a vendored bundle, a path outside the workspace, a
-    write that left nothing on disk. The caller says nothing then, and says nothing on a clean
-    report either — the model hears from this only when the file it just wrote will not parse.
+    file that is not a `.py`, a page `.js` or a react-vite `src/` `.ts`/`.tsx`, a vendored bundle,
+    a path outside the workspace, a write that left nothing on disk, a react-vite file where oxlint
+    is not installed. The caller says nothing then, and says nothing on a clean report either — the
+    model hears from this only when the file it just wrote will not parse or breaks a lint rule.
 
-    The two commands are the ones `check_python_stack` runs over the whole workspace, each over one
-    file. That is what makes running them per write affordable: a `py_compile` of one module and a
-    `node --check` of one script are tens of milliseconds, where the workspace pass is every file
-    the app has. The end-of-turn check is unchanged and still runs.
+    The commands are the ones the end-of-turn check runs over the whole workspace, each over one
+    file. That is what makes running them per write affordable: a `py_compile` of one module, a
+    `node --check` and an oxlint of one script are tens of milliseconds, where the workspace pass is
+    every file the app has. A react-vite file gets only the lint: `tsc` is project-wide by
+    construction and stays at the end of the turn. The end-of-turn check is unchanged and still runs.
     """
     workspace = Path(workspace)
-    if stack_of(workspace).checker != "python":
-        return None
+    checker = stack_of(workspace).checker
     target = Path(path)
     if not target.is_absolute():
         target = workspace / target
@@ -216,6 +271,19 @@ def check_file(workspace: Path, path: str) -> FeedbackReport | None:
     # Which file gets which check is the same rule the end-of-turn pass uses, read off the same
     # constants: every `.py`, and the `.js` under `static/` that the page loads, minus the bundles
     # and Sage's own scripts.
+    if checker == "tsc":
+        if not (parts[0] == "src" and target.suffix in (".ts", ".tsx")):
+            return None
+        try:
+            lint = _lint(workspace, [rel], _PER_FILE_TIMEOUT_S)
+        except subprocess.TimeoutExpired as e:
+            return FeedbackReport(ok=False, raw=f"lint timed out after {_PER_FILE_TIMEOUT_S}s: {e}",
+                                  kind="Lint")
+        if lint is None:
+            return None
+        return FeedbackReport(ok=not lint[1], errors=lint[1], raw=lint[0], kind="Lint")
+    if checker != "python":
+        return None
     if target.suffix == ".py":
         command = [_python(), "-m", "py_compile", str(target)]
         parse = parse_py_compile
@@ -231,11 +299,15 @@ def check_file(workspace: Path, path: str) -> FeedbackReport | None:
     try:
         proc = subprocess.run(command, cwd=workspace, capture_output=True, text=True,
                               timeout=_PER_FILE_TIMEOUT_S, check=False)
+        out = (proc.stdout or "") + (proc.stderr or "")
+        errors = parse(out, workspace)
+        # A script that parses is then linted, as the end-of-turn pass does.
+        if parse is parse_node_check and not errors and (lint := _lint(workspace, [rel], _PER_FILE_TIMEOUT_S)):
+            out += lint[0]
+            errors = lint[1]
     except subprocess.TimeoutExpired as e:
         return FeedbackReport(ok=False, raw=f"syntax check timed out after {_PER_FILE_TIMEOUT_S}s: {e}",
                               kind="Syntax check")
-    out = (proc.stdout or "") + (proc.stderr or "")
-    errors = parse(out, workspace)
     return FeedbackReport(ok=not errors, errors=errors, raw=out, kind="Syntax check")
 
 
@@ -257,11 +329,16 @@ class FeedbackRunner:
                 timeout=self._timeout_s,
                 check=False,  # tsc exits nonzero ON type errors — that's the result being read, not a failure
             )
+            out = (proc.stdout or "") + (proc.stderr or "")
+            errors = parse_tsc(out)
+            sources = sorted(p.relative_to(workspace) for pattern in ("*.ts", "*.tsx")
+                             for p in (Path(workspace) / "src").rglob(pattern))
+            if (lint := _lint(Path(workspace), sources, self._timeout_s)) is not None:
+                out += lint[0]
+                errors += lint[1]
         except subprocess.TimeoutExpired as e:
             return FeedbackReport(ok=False, raw=f"typecheck timed out after {self._timeout_s}s: {e}")
 
-        out = (proc.stdout or "") + (proc.stderr or "")
-        errors = parse_tsc(out)
         # The shipped starter typechecks even when every generated component is unused. Feed
         # that exact unfinished screen into the existing repair loop before accepting the build.
         entry = workspace / "src" / "App.tsx"
