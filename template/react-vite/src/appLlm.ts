@@ -279,7 +279,7 @@ function callForm<O>(input: ChatMessage[] | (O & { messages: ChatMessage[] }), o
  *
  * Rejects with an `Error` whose `message` is written for the viewer — show it as-is.
  *
- *     const answer = await askModel([{ role: "user", content: question }]);
+ *     const text = await askModel([{ role: "user", content: question }]);   // a string
  *
  * Pass `onToken` to render the answer as it arrives:
  *

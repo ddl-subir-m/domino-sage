@@ -180,6 +180,16 @@ def test_the_agent_is_told_a_structured_answer_needs_room_to_finish(names):
 
 
 @pytest.mark.parametrize("names", [TEMPLATE, FASTAPI], ids=["react-vite", "fastapi-antd"])
+def test_the_example_names_the_answer_as_the_text_it_is(names):
+    # #681: `const res = await sage.askModel(...)` then `res.text` — undefined, because askModel
+    # resolves with the string itself. An example naming it `answer` invites an SDK-shaped read.
+    block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [], names)
+    assert "const text = await " in block
+    assert "const answer = await" not in block
+    assert "not an object" in block and "`.text`" in block
+
+
+@pytest.mark.parametrize("names", [TEMPLATE, FASTAPI], ids=["react-vite", "fastapi-antd"])
 def test_the_agent_is_shown_ask_json_with_its_fallback_and_its_result(names):
     # #681: an app parsed `res.text` off a string and drew nothing, silently. askJson's `ok` and
     # required `fallback` make that failure a value the screen has to handle.

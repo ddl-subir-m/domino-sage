@@ -180,7 +180,7 @@ window.sage = window.sage || {};
    *
    * Rejects with a `sage.ModelError` whose `message` is written for the viewer — show it as-is.
    *
-   *     const answer = await sage.askModel([{ role: "user", content: question }]);
+   *     const text = await sage.askModel([{ role: "user", content: question }]);   // a string
    *
    * Pass `onToken` to render the answer as it arrives; `onOutcome` for one final outcome per
    * request; `alias` when this app uses more than one model (the names are in `models` in

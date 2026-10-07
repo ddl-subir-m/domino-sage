@@ -166,7 +166,8 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
               f'  // from a subfolder: "../{names.llm}"')])
     code += [
         "",
-        f'const answer = await {call}askModel([{{ role: "user", content: question }}]);',
+        "// Resolves with the answer's text: a string, not an object — there is no `.text` to read.",
+        f'const text = await {call}askModel([{{ role: "user", content: question }}]);',
     ]
     if several:
         code += [
