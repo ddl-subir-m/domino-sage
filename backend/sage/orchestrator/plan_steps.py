@@ -318,10 +318,8 @@ def validate_execution_contract(markdown: str,
 
 
 def is_prose_answer(markdown: str) -> bool:
-    """No numbered step and no recognised section: the planner answered instead of planning."""
-    sections = plan_doc.parse_sections(markdown)["sections"]
-    return not parse_steps(str(sections.get("plan") or "")) and not any(
-        _present(value) for value in sections.values())
+    """No recognised section, so no Plan and no step: the planner answered instead of planning."""
+    return not any(_present(v) for v in plan_doc.parse_sections(markdown)["sections"].values())
 
 
 def is_phasable(plan_md: str, min_steps: int = MIN_STEPS) -> bool:
