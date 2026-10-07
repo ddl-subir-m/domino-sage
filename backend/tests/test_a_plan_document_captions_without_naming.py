@@ -295,8 +295,10 @@ def test_direct_build_repairs_once_and_preserves_the_existing_plan(tmp_path: Pat
     # task and whose user content is the plan, bounded and tagged as its own cost component.
     assert [p["agent"] for p in orch._oc_client.prompts] == ["sage-plan"]
     (request, labels), = gateway.repair_requests()
-    assert request["messages"] == [{"role": "system", "content": _PLAN_NAME_SYSTEM},
-                                   {"role": "user", "content": plan.strip()}]
+    assert request["messages"] == [
+        {"role": "system", "content": _PLAN_NAME_SYSTEM},
+        {"role": "user", "content": "The request:\nbuild me a desk exposure dashboard\n\n"
+                                    "The plan:\n" + plan.strip()}]
     assert request["max_tokens"] == 32 and request["temperature"] == 0 and request["stream"] is True
     assert (labels.phase, labels.component) == ("plan", "repair")
 
@@ -307,7 +309,48 @@ def test_handoff_repairs_once_with_the_same_name_only_prompt(tmp_path: Path):
     assert orch.project(start_preview=False).workspace.read_plan() == "# Desk Exposure\n\n" + UNNAMED.strip()
     assert [p["agent"] for p in orch._oc_client.prompts if p["agent"] == "sage-plan"] == ["sage-plan"]
     (request, _labels), = orch._gateway.repair_requests()
-    assert request["messages"][1] == {"role": "user", "content": UNNAMED.strip()}
+    assert request["messages"][1]["content"].endswith("\n\nThe plan:\n" + UNNAMED.strip())
+
+
+# ---- a name the request gives is the repaired name (#670) ---------------------------------------
+
+_NAME_RULE = ("If the request names the app (for example 'an app called Signal Room'), that name is "
+              "the answer, word for word, even if it breaks the 2-4 word rule. Only invent a name "
+              "when the request gives none.")
+
+
+def test_a_direct_build_repair_sends_the_request_and_the_name_rule(tmp_path: Path):
+    """A headingless plan for "an app called Signal Room" used to be named from the plan alone, so
+    the repair invented a name and undid the request's."""
+    orch, gateway, _root = _orch(tmp_path, [Turn(text=UNNAMED)])
+    gateway.word = "BUILD"
+    gateway.name = "Signal Room"
+    asked = "build me an app called Signal Room for desk exposure"
+
+    events = list(orch.build_stream(asked, conversation=CONVERSATION))
+
+    (request, _labels), = gateway.repair_requests()
+    assert _NAME_RULE in request["messages"][0]["content"]
+    assert request["messages"][1]["content"] == (
+        f"The request:\n{asked}\n\nThe plan:\n{UNNAMED.strip()}")
+    assert next(e for e in events if e["type"] == "plan-proposed")["plan"].startswith(
+        "# Signal Room\n")
+
+
+def test_a_handoff_repair_sends_the_request_and_the_name_rule(tmp_path: Path):
+    orch, gateway, _root = _orch(tmp_path, [Turn(text="A dashboard, then."), Turn(text=UNNAMED)])
+    gateway.name = "Signal Room"
+    thread = orch.create_thread()["id"]
+    list(orch.chat_stream(thread, "build me an app called Signal Room for desk exposure"))
+
+    orch.draft_handoff_plan(thread)
+
+    (request, _labels), = gateway.repair_requests()
+    assert _NAME_RULE in request["messages"][0]["content"]
+    user = request["messages"][1]["content"]
+    assert user.startswith("The request:\n")
+    assert "Asked: build me an app called Signal Room for desk exposure." in user
+    assert user.endswith("\n\nThe plan:\n" + UNNAMED.strip())
 
 
 def test_named_plans_do_not_run_a_repair_pass(tmp_path: Path):
@@ -336,7 +379,8 @@ def test_partial_main_plan_is_rejected_before_name_repair(tmp_path, witness):
 
         client.send_prompt = fail
     with pytest.raises(service.PlanCallFailed, match="provider refused the main plan") as caught:
-        orch._run_sage_execution_plan(project, "write a plan", sid, where="test", source_request_count=1)
+        orch._run_sage_execution_plan(project, "write a plan", sid, where="test",
+                                      source_request_count=1, request="write a plan")
     assert caught.value.failure == {"errorStage": "planning", "errorCode": (
         "provider_error" if witness == "gateway" else "model_call_failed")}
     assert gateway.repair_requests() == []
@@ -397,7 +441,8 @@ def test_a_recovered_or_previous_failure_does_not_reject_a_plan(tmp_path, older)
             send(*args, **kwargs)
 
         client.send_prompt = recover
-    plan, _ = orch._run_sage_execution_plan(project, "write a plan", sid, where="test", source_request_count=1)
+    plan, _ = orch._run_sage_execution_plan(project, "write a plan", sid, where="test",
+                                            source_request_count=1, request="write a plan")
     assert plan == NAMED.strip()
 
 
@@ -441,7 +486,8 @@ def test_complete_optional_name_reply_keeps_the_name(tmp_path, wire):
             yield f"data: {json.dumps(body)}\n\n".encode()
 
     gateway.route = answer
-    assert orch._repair_plan_heading(project, UNNAMED, "test").startswith("# Desk Exposure\n")
+    assert orch._repair_plan_heading(project, UNNAMED, "test", request="write a plan").startswith(
+        "# Desk Exposure\n")
 
 
 def test_unnamed_plan_edit_archive_and_later_name_do_not_invent_a_heading(tmp_path):

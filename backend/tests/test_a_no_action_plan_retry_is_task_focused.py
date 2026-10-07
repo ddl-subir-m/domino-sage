@@ -266,7 +266,8 @@ def test_the_helper_planner_shares_one_budget_in_both_orderings(tmp_path: Path, 
     with pytest.raises(ValueError, match=("also invalid" if no_action_first
                                           else "also produced no text")):
         orch._run_sage_execution_plan(project, "write a plan", sid, where="test",
-                                      source_request_count=1, retry=retry)
+                                      source_request_count=1, request="write a plan",
+                                      retry=retry)
 
     assert len(oc.prompts) == 2 and len(oc.sessions) == 2
     if no_action_first:

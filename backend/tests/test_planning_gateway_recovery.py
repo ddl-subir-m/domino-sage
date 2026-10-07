@@ -114,7 +114,8 @@ def test_recovered_gateway_call_allows_the_completed_main_plan(running, monkeypa
     monkeypatch.setattr(driver, "send_prompt", recovered)
     with active(orch):
         plan, _ = orch._run_sage_execution_plan(
-            project, "write a plan", sid, where="test", source_request_count=1)
+            project, "write a plan", sid, where="test", source_request_count=1,
+            request="write a plan")
     assert plan == NAMED.strip()
 
 
