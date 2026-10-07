@@ -368,6 +368,19 @@ class DataUse:
                         message = {**message,
                                    "content": _redact_message_text(message.get("content"), source)}
                 messages.append(message)
+            # The Build carrier rides the person's message, ahead of this turn's reads (#672), so
+            # it is checked against every local text, not only those read before it.
+            for i, message in enumerate(messages):
+                if not isinstance(message, dict) or message.get("role") != "user":
+                    continue
+                text = _tool_content_text(message.get("content"))
+                if not build_intent.carries(text):
+                    continue
+                source = _source_for_local_text(build_intent.without_source_requests(text),
+                                                local_texts, direct.values())
+                if source:
+                    messages[i] = {**message,
+                                   "content": _redact_message_text(message.get("content"), source)}
             # Only the bounded tail can be new in a cumulative request. Looking at the whole
             # history after an eviction would make old ids look new and recreate the warning spam.
             recent, selected = [], set()

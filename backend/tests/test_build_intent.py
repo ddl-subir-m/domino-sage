@@ -14,6 +14,7 @@ from sage.gateway.protocol import Protocol
 from sage.liveread import data_use
 from sage.orchestrator import native_routes
 from sage.pre_edit_guard import PreEditAction, PreEditGuard, PreEditTrigger
+from sage.shim.secret_values import note_secret_mentions
 
 from .test_native_model_controls import active, dispatch
 from .test_native_model_controls import running as _running
@@ -103,6 +104,78 @@ def test_install_is_a_copy_and_carrier_is_last_ordinary_user_text(protocol):
     assert _body(intent)["source_requests"] == [TRICKY]
     assert json.dumps(installed, ensure_ascii=False).index("prepared reference") < json.dumps(
         installed, ensure_ascii=False).index(intent.intent_id)
+
+
+def _tool_exchange(protocol: Protocol, n: int) -> list[dict]:
+    if protocol is Protocol.CHAT:
+        return [{"role": "assistant", "tool_calls": [{"id": f"c{n}", "type": "function",
+                 "function": {"name": "read", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": f"c{n}", "content": f"result {n}"}]
+    if protocol is Protocol.MESSAGES:
+        return [{"role": "assistant", "content": [{"type": "tool_use", "id": f"c{n}",
+                                                   "name": "read", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"c{n}",
+                                              "content": f"result {n}"}]}]
+    return [{"type": "function_call", "call_id": f"c{n}", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": f"c{n}", "output": f"result {n}"}]
+
+
+def _person_turn(protocol: Protocol, calls: int) -> list[dict]:
+    """The rows of one turn's `calls`-th model call: the person's message, then each tool exchange."""
+    rows = [{"role": "user", "content": "PERSON_REQUEST_672"}]
+    for n in range(1, calls):
+        rows += _tool_exchange(protocol, n)
+    return rows
+
+
+def _carrier_rows(rows: list, intent: BuildIntent) -> list[int]:
+    return [i for i, row in enumerate(rows) if intent.intent_id in json.dumps(row)]
+
+
+@pytest.mark.parametrize("protocol", list(Protocol))
+def test_after_a_tool_result_the_carrier_rides_the_persons_message_not_the_end(protocol):
+    """#672: appended after the tool exchange, the task read as a fresh command on every call, and
+    the model re-answered "already done" until `repeat_brake` stopped a turn whose edit landed."""
+    intent = BuildIntent.for_direct("fix the brief buttons")
+    key = "messages" if protocol is not Protocol.RESPONSES else "input"
+    for calls in (1, 2, 3):
+        rows = _person_turn(protocol, calls)
+        installed = build_intent.install({key: rows}, protocol, intent)[key]
+
+        assert build_intent.inspect({key: installed}, protocol, intent).status == "ok"
+        assert len(installed) == len(rows)
+        assert _carrier_rows(installed, intent) == [0]
+        assert "PERSON_REQUEST_672" in json.dumps(installed[0])
+
+
+def test_a_note_after_the_carrier_in_the_persons_message_keeps_it_intact():
+    """The shim adds its secret-mention note as a later part of that same message."""
+    intent = BuildIntent.for_direct("read {env:API_KEY} in the app")
+    installed = build_intent.install(
+        {"messages": _person_turn(Protocol.CHAT, 3)}, Protocol.CHAT, intent)
+
+    noted = {"messages": note_secret_mentions(installed["messages"])}
+
+    assert noted["messages"][0]["content"][-1]["text"].startswith("{env:API_KEY} names a secret")
+    assert build_intent.inspect(noted, Protocol.CHAT, intent).status == "ok"
+
+
+@pytest.mark.parametrize("model,protocol", LANES)
+def test_native_boundary_keeps_the_carrier_on_the_persons_message_after_tools(
+        native_env, model, protocol):
+    client, orch, gateway = native_env
+    client.post("/api/project/model", json={"pick": model, "mode": "implement"})
+    intent = BuildIntent.for_direct("fix the brief buttons")
+    with active(orch) as headers:
+        orch._project.active_build_intent = intent
+        response = dispatch(client, headers, protocol, model, _person_turn(protocol, 3))
+    assert response.status_code == 200, response.text
+    outbound = gateway.seen[-1][0]
+    rows = outbound["messages" if protocol is not Protocol.RESPONSES else "input"]
+    assert build_intent.inspect(outbound, protocol, intent).status == "ok"
+    carriers = _carrier_rows(rows, intent)
+    assert len(carriers) == 1 and "PERSON_REQUEST_672" in json.dumps(rows[carriers[0]])
+    assert carriers[0] < len(rows) - 1
 
 
 def test_prepared_reference_shapes_precede_one_task_and_repeated_calls_do_not_accumulate():
