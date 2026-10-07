@@ -107,3 +107,36 @@ def test_a_callers_system_message_is_kept_and_carries_the_json_rule(template: st
 def test_the_answer_gets_room_to_finish(template: str, asked, sent: int):
     opts = {} if asked is None else {"maxTokens": asked}
     assert _json(template, _answer("{}"), opts)["requests"][0]["max_tokens"] == sent
+
+
+# ---- the single-object call form (#681, showcase prompt 9) ----------------------------------------
+# An app called `sage.askModel({ messages, maxTokens: 1200, alias: 'haiku' })`. The whole object
+# became `messages`, `alias` and `maxTokens` were dropped, and the gateway answered 422, which the
+# viewer read as "The model did not answer (error 422)". Both forms are now the same call.
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_ask_model_accepts_one_object_holding_the_messages_and_the_options(template: str):
+    got = _run(template, {
+        "one": {"call": "askModel", "args": [{"messages": ASK, "alias": "second", "maxTokens": 1200}],
+                "reply": _answer("Renewal at risk.")},
+        "two": {"call": "askModel", "args": [ASK, {"alias": "second", "maxTokens": 1200}],
+                "reply": _answer("Renewal at risk.")},
+    })
+    assert got["one"]["result"] == got["two"]["result"] == "Renewal at risk."
+    assert got["one"]["requests"] == got["two"]["requests"]
+    sent = got["one"]["requests"][0]
+    assert (sent["model"], sent["max_tokens"], sent["messages"]) == ("second", 1200, ASK)
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_ask_json_accepts_one_object_holding_the_messages_and_the_options(template: str):
+    opts = {"alias": "second", "fallback": FALLBACK, "schemaHint": "{ summary: string }"}
+    got = _run(template, {
+        "one": {"call": "askJson", "args": [{"messages": ASK, **opts}], "reply": _answer('{"summary": "x"}')},
+        "two": {"call": "askJson", "args": [ASK, opts], "reply": _answer('{"summary": "x"}')},
+    })
+    assert got["one"]["result"] == got["two"]["result"]
+    assert got["one"]["result"]["value"] == {"summary": "x"}
+    assert got["one"]["requests"] == got["two"]["requests"]
+    assert got["one"]["requests"][0]["model"] == "second"

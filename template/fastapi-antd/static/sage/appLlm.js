@@ -164,6 +164,17 @@ window.sage = window.sage || {};
     }
   }
 
+  // `askModel({ messages, alias, maxTokens })`, the shape of an SDK call, is the same call as
+  // `askModel(messages, { alias, maxTokens })` (#681): taken as messages, it lost the options and
+  // the gateway refused the object with a 422.
+  function callForm(input, options) {
+    if (input && typeof input === "object" && !Array.isArray(input)) {
+      const { messages, ...rest } = input;
+      return [messages, { ...rest, ...options }];
+    }
+    return [input, options || {}];
+  }
+
   /**
    * Ask one of this app's models a question, and resolve with its whole answer.
    *
@@ -177,7 +188,8 @@ window.sage = window.sage || {};
    *
    * Streaming is off unless `onToken` is given, because not every Alias offers it.
    */
-  sage.askModel = async function askModel(messages, opts = {}) {
+  sage.askModel = async function askModel(input, options) {
+    const [messages, opts] = callForm(input, options);
     if (!config.base || !models.length) throw new Error(NO_MODEL);
     const model = pick(opts.alias);
     if (!model) throw new Error(unknownModel(opts.alias));
@@ -245,7 +257,8 @@ window.sage = window.sage || {};
    * `unavailable` (no model, or an Alias this app does not use). No streaming. `maxTokens` is at
    * least 1200 (1500 when unset), because a JSON answer cut short has no closing brace.
    */
-  sage.askJson = async function askJson(messages, opts = {}) {
+  sage.askJson = async function askJson(input, options) {
+    const [messages, opts] = callForm(input, options);
     let evidence = null;
     const rule = JSON_ONLY + (opts.schemaHint ? ` Its shape: ${opts.schemaHint}` : "");
     const first = messages[0];

@@ -265,6 +265,15 @@ function checkChoice(choice: Json, evidence: ModelEvidence, partial: string): vo
   }
 }
 
+/** `askModel({ messages, alias, maxTokens })`, the shape of an SDK call, is the same call as
+ * `askModel(messages, { alias, maxTokens })` (#681): taken as messages, it lost the options and the
+ * gateway refused the object with a 422. */
+function callForm<O>(input: ChatMessage[] | (O & { messages: ChatMessage[] }), options?: O): [ChatMessage[], O] {
+  if (Array.isArray(input)) return [input, (options ?? {}) as O];
+  const { messages, ...rest } = input;
+  return [messages, { ...rest, ...options } as O];
+}
+
 /**
  * Ask one of this app's models a question, and resolve with its whole answer.
  *
@@ -284,7 +293,11 @@ function checkChoice(choice: Json, evidence: ModelEvidence, partial: string): vo
  * Streaming is off unless `onToken` is given, because not every Alias offers it — the capability is
  * per-Alias in the gateway, and asking for a stream from one that has none fails the whole call.
  */
-export async function askModel(messages: ChatMessage[], opts: AskOptions = {}): Promise<string> {
+export async function askModel(
+  input: ChatMessage[] | (AskOptions & { messages: ChatMessage[] }),
+  options?: AskOptions,
+): Promise<string> {
+  const [messages, opts] = callForm(input, options);
   if (!config.base || !models.length) throw new Error(NO_MODEL);
   const model = pick(opts.alias);
   if (!model) throw new Error(unknownModel(opts.alias as string));
@@ -360,7 +373,13 @@ const JSON_ONLY = "Answer with one JSON value only: no prose before or after it,
  * `unavailable` (no model, or an Alias this app does not use). No streaming. `maxTokens` is at
  * least 1200 (1500 when unset), because a JSON answer cut short has no closing brace.
  */
-export async function askJson<T>(messages: ChatMessage[], opts: JsonOptions<T>): Promise<JsonAnswer<T>> {
+export function askJson<T>(messages: ChatMessage[], opts: JsonOptions<T>): Promise<JsonAnswer<T>>;
+export function askJson<T>(request: JsonOptions<T> & { messages: ChatMessage[] }): Promise<JsonAnswer<T>>;
+export async function askJson<T>(
+  input: ChatMessage[] | (JsonOptions<T> & { messages: ChatMessage[] }),
+  options?: JsonOptions<T>,
+): Promise<JsonAnswer<T>> {
+  const [messages, opts] = callForm(input, options);
   let evidence: ModelEvidence | null = null;
   const rule = JSON_ONLY + (opts.schemaHint ? ` Its shape: ${opts.schemaHint}` : "");
   const first = messages[0];
