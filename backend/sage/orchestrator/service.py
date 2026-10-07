@@ -4736,6 +4736,15 @@ def _chat_live_event(ev) -> dict | None:
 # it would have to survive a reload to be worth keeping at all.
 _CHAT_SHOWN_TOOLS = frozenset()
 _CHAT_AT = re.compile(r"@([^\s@]+)")
+# How much of a Project MCP call's input its Thread row keeps (#666). The row names the call; the
+# input is the model's own words and can be long.
+_EXTERNAL_DETAIL_MAX = 80
+
+
+def _project_mcp_server(tool: str, servers: set[str]) -> str:
+    """The Project MCP server a call went to, or ''. OpenCode names a server's tool
+    `<server>_<tool>`; `extension_mcp._check_name` refuses two names where one prefixes the other."""
+    return next((s for s in servers if tool.startswith(s + "_")), "")
 
 # The one correction a Chat turn sends for a tool call whose intended tool never ran (#567). The
 # same rule as Build's BROKEN_CALL_RETRY_NOTE: `{tool}` is an allowlisted name or "tool", `{fault}`
@@ -17044,6 +17053,7 @@ class Orchestrator:
             # ran the same `ls` five times and was still counted alive each time.
             tool_observer = timing.tool_observer()
             brake = _RepeatBrake()
+            mcp_servers = extension_mcp.registered(project.record.path)
             # The fingerprint of each open call, by call id, waiting for the close that counts it.
             # Beside `running_tools` rather than in it: that one holds a label written to be read
             # by a person, and a label cannot key a repeat (see `_call_fingerprint`).
@@ -17737,7 +17747,26 @@ class Orchestrator:
                                     told=self._last_live_read_refusal(thread_id))
                             ev = {"type": "agent", "kind": "tool", "tool": tool,
                                   "detail": _tool_detail(tool, part)}
-                            if str(tool).lower() in _CHAT_SHOWN_TOOLS:
+                            server = _project_mcp_server(str(tool), mcp_servers)
+                            if server and status == "completed":
+                                # Kept, unlike every other tool: the call left Sage, and this row
+                                # and its "Data used" entry are the only trace of it (#666). The
+                                # input names the call; the output stays with the model.
+                                ev["external"] = True
+                                ev["detail"] = extension_mcp.ENV_REF.sub(
+                                    "", ev["detail"])[:_EXTERNAL_DETAIL_MAX]
+                                store.append_history(thread_id, ev)
+                                yield ev
+                                # `server` and never `source`: `DataUse.prepare` redacts any text
+                                # naming a recorded source, and a server name is not a local file.
+                                project.shim.data_use.record(
+                                    {"operation_id": new_id("du"), "operation": "external_mcp",
+                                     "server": server, "tool": str(tool),
+                                     "carrier": "external MCP result",
+                                     "purpose": "Call a Project MCP server", "requests": []},
+                                    {}, lambda row: store.append_history(thread_id, row),
+                                    self._data_use_turns.get(thread_id, ""))
+                            elif str(tool).lower() in _CHAT_SHOWN_TOOLS:
                                 store.append_history(thread_id, ev)
                                 yield ev
                             elif str(tool).lower() == "bash" and not tap.ok:
