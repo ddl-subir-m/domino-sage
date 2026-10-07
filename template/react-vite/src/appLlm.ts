@@ -269,7 +269,7 @@ function checkChoice(choice: Json, evidence: ModelEvidence, partial: string): vo
  * `askModel(messages, { alias, maxTokens })` (#681): taken as messages, it lost the options and the
  * gateway refused the object with a 422. */
 function callForm<O>(input: ChatMessage[] | (O & { messages: ChatMessage[] }), options?: O): [ChatMessage[], O] {
-  if (Array.isArray(input)) return [input, (options ?? {}) as O];
+  if (Array.isArray(input) || !input) return [input as ChatMessage[], (options ?? {}) as O];
   const { messages, ...rest } = input;
   return [messages, { ...rest, ...options } as O];
 }
@@ -382,12 +382,12 @@ export async function askJson<T>(
   const [messages, opts] = callForm(input, options);
   let evidence: ModelEvidence | null = null;
   const rule = JSON_ONLY + (opts.schemaHint ? ` Its shape: ${opts.schemaHint}` : "");
-  const first = messages[0];
-  const asked: ChatMessage[] = first?.role === "system"
-    ? [{ role: "system", content: `${first.content}\n\n${rule}` }, ...messages.slice(1)]
-    : [{ role: "system", content: rule }, ...messages];
   let text: string;
   try {
+    const first = messages[0];
+    const asked: ChatMessage[] = first?.role === "system"
+      ? [{ role: "system", content: `${first.content}\n\n${rule}` }, ...messages.slice(1)]
+      : [{ role: "system", content: rule }, ...messages];
     text = await askModel(asked, {
       alias: opts.alias, signal: opts.signal, temperature: opts.temperature,
       maxTokens: Math.max(opts.maxTokens ?? 1500, 1200),

@@ -261,12 +261,12 @@ window.sage = window.sage || {};
     const [messages, opts] = callForm(input, options);
     let evidence = null;
     const rule = JSON_ONLY + (opts.schemaHint ? ` Its shape: ${opts.schemaHint}` : "");
-    const first = messages[0];
-    const asked = first && first.role === "system"
-      ? [{ role: "system", content: `${first.content}\n\n${rule}` }, ...messages.slice(1)]
-      : [{ role: "system", content: rule }, ...messages];
     let text;
     try {
+      const first = messages[0];
+      const asked = first && first.role === "system"
+        ? [{ role: "system", content: `${first.content}\n\n${rule}` }, ...messages.slice(1)]
+        : [{ role: "system", content: rule }, ...messages];
       text = await sage.askModel(asked, {
         alias: opts.alias, signal: opts.signal, temperature: opts.temperature,
         maxTokens: Math.max(opts.maxTokens === undefined ? 1500 : opts.maxTokens, 1200),

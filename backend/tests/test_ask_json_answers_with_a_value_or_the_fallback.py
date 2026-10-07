@@ -84,6 +84,13 @@ def test_an_alias_the_app_does_not_use_still_does_not_throw(template: str):
 
 
 @pytest.mark.parametrize("template", TEMPLATES)
+def test_a_call_with_no_messages_still_resolves_with_the_fallback(template: str):
+    row = _run(template, {"c": {"call": "askJson", "args": [None, {"fallback": FALLBACK}]}})["c"]
+    assert "thrown" not in row, row
+    assert row["result"]["ok"] is False and row["result"]["value"] == FALLBACK
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
 def test_the_request_asks_for_json_only_with_the_hint_and_never_streams(template: str):
     sent = _json(template, _answer("{}"), {"schemaHint": '{ "summary": string, "risks": string[] }'})["requests"][0]
     system = sent["messages"][0]
