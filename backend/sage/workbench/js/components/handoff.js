@@ -74,6 +74,12 @@ window.SW = window.SW || {};
     const artifacts = handoffDraft.artifacts || [];
     const apps = handoffDraft.apps || [];
     const target = apps.find((a) => a.id === appId);
+    // The name this handoff builds under, so the Plan line and the field below never disagree
+    // (#685). A blank field sends no name, and the server then names the app from the plan
+    // document — `appName`. The heading is the last resort, for a plan the planner left untitled.
+    const planName = target
+      ? target.name || target.id
+      : name.trim() || handoffDraft.appName || handoffDraft.title;
     const alwaysFiles = [
       { path: '.sage/plan.md', note: 'Always included. Build uses this plan.' },
       {
@@ -130,7 +136,7 @@ window.SW = window.SW || {};
           'div',
           { className: 'sw-handoff-section' },
           h('div', { className: 'sw-field-label' }, 'Plan'),
-          handoffDraft.title,
+          planName,
           ' ',
           h(Button, { type: 'link', size: 'small', disabled: busy, onClick: redraft },
             'Write a new plan')

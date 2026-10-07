@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
 from ..workspace import plan_doc
+from ..workspace.stack import Stack
 
 # "### 1. Sample data module" — 2-4 hashes, and '.' or ')' optional, because models drift between
 # heading levels and numbering styles even when the prompt pins one.
@@ -164,6 +166,9 @@ def parse_steps(plan_md: str) -> list[PlanStep]:
 
 
 _REQUIRED_SECTIONS = ("problem", "users", "outcomes", "screens", "acceptance", "plan")
+# A fix to a built app after a failed turn or a scope-gated follow-up (#677): Screens and the
+# problem framing belong to the first-build plan, the one a person reads as "what this app will be".
+FIX_SECTIONS = ("acceptance", "plan")
 
 
 def _present(value) -> bool:
@@ -203,13 +208,14 @@ def _only_multi_sentence_summary_fault(check: PlanContractCheck) -> bool:
     )
 
 
-def repair_execution_summary(markdown: str) -> str:
+def repair_execution_summary(markdown: str,
+                             required: tuple[str, ...] = _REQUIRED_SECTIONS) -> str:
     """If the only contract fault is a second sentence on the lead line, keep the first.
 
     A summary that continues on a later line is left untouched: that line is narration, and
     the plan should retry. Missing sections, bad steps, and any other fault also stay as written.
     """
-    check = _validate_execution_contract(markdown)
+    check = _validate_execution_contract(markdown, required)
     if not _only_multi_sentence_summary_fault(check):
         return markdown
     parsed = plan_doc.parse_sections(markdown)
@@ -223,20 +229,35 @@ def repair_execution_summary(markdown: str) -> str:
     if not first or first == parsed["summary"] or not _one_sentence(first):
         return markdown
     repaired = plan_doc.render(first, parsed["sections"], parsed["title"])
-    if not _validate_execution_contract(repaired).valid:
+    if not _validate_execution_contract(repaired, required).valid:
         return markdown
     return repaired
 
 
-def _valid_workspace_path(value: str) -> bool:
+# Files outside every stack's `source_globs` that a plan may still name (#676).
+NON_SOURCE_FILES = (".sage/queries.json",)
+
+
+def _in_stack(path: str, stack: Stack) -> bool:
+    # `**/` matches zero directories in `Path.glob`, which `fnmatch` cannot say on its own.
+    return path in NON_SOURCE_FILES or any(
+        fnmatchcase(path, glob) or fnmatchcase(path, glob.replace("**/", ""))
+        for glob in stack.source_globs)
+
+
+def _valid_workspace_path(value: str, stack: Stack | None = None) -> bool:
     path = value.strip()
     if not path or path.startswith("/") or "\\" in path:
         return False
     parsed = PurePosixPath(path)
-    return not parsed.is_absolute() and ".." not in parsed.parts
+    if parsed.is_absolute() or ".." in parsed.parts:
+        return False
+    return stack is None or _in_stack(parsed.as_posix(), stack)
 
 
-def _validate_execution_contract(markdown: str) -> PlanContractCheck:
+def _validate_execution_contract(markdown: str,
+                                 required: tuple[str, ...] = _REQUIRED_SECTIONS,
+                                 stack: Stack | None = None) -> PlanContractCheck:
     """Strict check with no summary repair. Used by the public validator and the repair path."""
     parsed = plan_doc.parse_sections(markdown)
     sections = parsed["sections"]
@@ -245,7 +266,7 @@ def _validate_execution_contract(markdown: str) -> PlanContractCheck:
     # bounded name-only call fails; a display caption must never become a stored heading.
     if not _one_sentence(parsed["summary"]):
         missing.append("summary")
-    missing.extend(key for key in _REQUIRED_SECTIONS if not _present(sections.get(key)))
+    missing.extend(key for key in required if not _present(sections.get(key)))
 
     plan = str(sections.get("plan") or "")
     candidate_count = sum(
@@ -264,7 +285,7 @@ def _validate_execution_contract(markdown: str) -> PlanContractCheck:
     for step in steps:
         if not step.files:
             invalid_files += 1
-        invalid_files += sum(not _valid_workspace_path(path) for path in step.files)
+        invalid_files += sum(not _valid_workspace_path(path, stack) for path in step.files)
 
         fields: dict[str, str] = {}
         for line in step.raw.splitlines()[1:]:
@@ -274,7 +295,7 @@ def _validate_execution_contract(markdown: str) -> PlanContractCheck:
                 if key and key not in fields:
                     fields[key] = match.group(2).strip()
         dont_touch = _split_list(fields.get("dont_touch", ""))
-        invalid_files += sum(not _valid_workspace_path(path) for path in dont_touch)
+        invalid_files += sum(not _valid_workspace_path(path, stack) for path in dont_touch)
         files_normalized = {str(PurePosixPath(path)) for path in step.files}
         dont_touch_normalized = {str(PurePosixPath(path)) for path in dont_touch}
         contradictory += len(files_normalized & dont_touch_normalized)
@@ -290,25 +311,32 @@ def _validate_execution_contract(markdown: str) -> PlanContractCheck:
     )
 
 
-def validate_execution_contract(markdown: str) -> PlanContractCheck:
+def validate_execution_contract(markdown: str,
+                                required: tuple[str, ...] = _REQUIRED_SECTIONS, *,
+                                stack: Stack | None = None) -> PlanContractCheck:
     """Check the durable plan shape without reading files or calling a model.
 
     `parse_steps` stays backward compatible. This stricter door compares every numbered candidate
     with the steps that survived that parser, then checks the fields that a cold implementation
-    session needs.
+    session needs. Given a `stack`, every named file must also be one of that stack's (#676).
 
     A multi-sentence summary alone is not a refusal: weaker models (Haiku) pad the lead while
     every other section is fine. When that is the only fault, accept the plan as if the summary
     were its first sentence. Callers that store the markdown should also run
     `repair_execution_summary` so the durable copy matches what was accepted.
     """
-    check = _validate_execution_contract(markdown)
+    check = _validate_execution_contract(markdown, required, stack)
     if check.valid or not _only_multi_sentence_summary_fault(check):
         return check
-    repaired = repair_execution_summary(markdown)
+    repaired = repair_execution_summary(markdown, required)
     if repaired == markdown:
         return check
-    return _validate_execution_contract(repaired)
+    return _validate_execution_contract(repaired, required, stack)
+
+
+def is_prose_answer(markdown: str) -> bool:
+    """No recognised section, so no Plan and no step: the planner answered instead of planning."""
+    return not any(_present(v) for v in plan_doc.parse_sections(markdown)["sections"].values())
 
 
 def is_phasable(plan_md: str, min_steps: int = MIN_STEPS) -> bool:
