@@ -31,6 +31,8 @@ window.sage = window.sage || {};
       const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
       headers.set("X-Sage-Validation", validationId);
       return originalFetch(input, { ...init, headers }).catch((error) => {
+        // appQuery.js aborts a superseded request on purpose; that is not a failed read.
+        if (error?.name === "AbortError") throw error;
         void originalFetch(API + "preview/data-error", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ validationId, path: url.pathname }), keepalive: true,
