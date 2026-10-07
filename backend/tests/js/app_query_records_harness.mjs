@@ -32,8 +32,11 @@ if (template === 'fastapi-antd') {
   fs.writeFileSync(file, source);
   globalThis.fetch = fetch;
   globalThis.reports = reports;
-  result = await (await import(file)).runQuery('q');
-  fs.rmSync(dir, { recursive: true, force: true });
+  try {
+    result = await (await import(file)).runQuery('q');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 for (const record of result.records) {
   for (const key of reads) record[key === 'Symbol.iterator' ? Symbol.iterator : key];
