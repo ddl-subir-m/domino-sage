@@ -77,6 +77,12 @@ OPEN_CODE_DATA_CARRIERS = (
         "model_view": "unknown-lineage receipt; image bytes are not replayed",
         "lineage": "unknown unless a supported data operation recorded it",
     },
+    {
+        "carrier": "external MCP result",
+        "coverage": "recorded, not withheld",
+        "model_view": "the Project MCP server's output as it returned it",
+        "lineage": "server and tool known; the data behind the output is not",
+    },
 )
 
 
