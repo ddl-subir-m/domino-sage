@@ -27,12 +27,21 @@ ANSWER = {"columns": ["OWNER", "OPEN_PIPELINE"], "rows": [["Ana", 1200.5], ["Bo"
           "truncated": False}
 
 
-def _run(template: str) -> dict:
+def _harness(template: str, reads: list[str]) -> dict:
     out = subprocess.run(
-        ["node", str(HARNESS)], input=json.dumps({"template": template, "body": ANSWER}),
+        ["node", str(HARNESS)],
+        input=json.dumps({"template": template, "body": ANSWER, "reads": reads}),
         capture_output=True, text=True, timeout=30, check=True,
     )
     return json.loads(out.stdout)
+
+
+def _run(template: str) -> dict:
+    return _harness(template, [])["result"]
+
+
+def _reports(template: str, reads: list[str]) -> list[str]:
+    return _harness(template, reads)["reports"]
 
 
 @pytest.mark.parametrize("template", ["fastapi-antd", "react-vite"])
@@ -47,6 +56,30 @@ def test_the_positional_rows_are_unchanged(template: str):
     got = _run(template)
     assert got["columns"] == ANSWER["columns"]
     assert got["rows"] == ANSWER["rows"]
+
+
+@pytest.mark.parametrize("template", ["fastapi-antd", "react-vite"])
+def test_reading_a_column_the_query_does_not_return_is_reported(template: str):
+    """#673: a page read `'Change %'` off rows keyed `ChangePct`, got undefined on every row and drew
+    zeros. The report goes where a crash goes, so the build that wrote the read is told to fix it —
+    once per name, not once per row."""
+    assert _reports(template, ["Open pipeline"]) == [
+        "query q has no column 'Open pipeline'; columns are OWNER, OPEN_PIPELINE"]
+
+
+@pytest.mark.parametrize("template", ["fastapi-antd", "react-vite"])
+def test_reading_a_returned_column_reports_nothing(template: str):
+    assert _reports(template, ["OWNER", "OPEN_PIPELINE"]) == []
+
+
+@pytest.mark.parametrize("template", ["fastapi-antd", "react-vite"])
+@pytest.mark.parametrize("probe", ["Symbol.iterator", "hasOwnProperty", "constructor", "toJSON",
+                                   "then", "key", "children"])
+def test_a_probe_that_is_not_a_column_read_reports_nothing(template: str, probe: str):
+    """Symbols and Object.prototype names are the language's own reads; `toJSON` is
+    JSON.stringify's, `then` is await's, and `key` and `children` are what antd's Table reads off
+    every row it is given (rowKey "key", childrenColumnName "children")."""
+    assert _reports(template, [probe]) == []
 
 
 @pytest.mark.parametrize("names", [FASTAPI, TEMPLATE_NAMES], ids=["fastapi-antd", "react-vite"])

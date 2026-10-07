@@ -62,11 +62,32 @@ window.sage = window.sage || {};
     return {
       columns: body.columns,
       rows: body.rows,
-      records: body.rows.map((row) => Object.fromEntries(body.columns.map((c, i) => [c, row[i]]))),
+      records: recordsOf(name, body.columns, body.rows),
       truncated,
       dataUsed: normalizeDataUsed(name, body, truncated),
     };
   };
+
+  // A read of a name the query does not return is `undefined`, which a page draws as 0 or an empty
+  // state over rows that are there (#673). Report it the way a crash is reported, once per name, so
+  // the build that wrote the read is told which names exist. Not reads: symbols, Object.prototype
+  // names, `toJSON` (JSON.stringify), `then` (await), and `key` and `children`, which antd's Table
+  // reads off every row.
+  const PROBES = new Set(["toJSON", "then", "key", "children"]);
+
+  function recordsOf(name, columns, rows) {
+    const reported = new Set();
+    return rows.map((row) => new Proxy(Object.fromEntries(columns.map((c, i) => [c, row[i]])), {
+      get(record, key, receiver) {
+        if (typeof key === "string" && !(key in record) && !PROBES.has(key) && !reported.has(key)) {
+          reported.add(key);
+          sage.reportRuntimeError(
+            `query ${name} has no column '${key}'; columns are ${columns.join(", ")}`, new Error().stack);
+        }
+        return Reflect.get(record, key, receiver);
+      },
+    }));
+  }
 
   function normalizeDataUsed(name, result, truncated) {
     const raw = result.dataUsed || {};

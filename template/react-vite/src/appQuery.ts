@@ -12,6 +12,7 @@
 // Sage owns this file. Do not edit it — which Data Source this app reads is chosen in Sage, and the
 // queries it can run are declared in `.sage/queries.json`.
 import { appBase } from "./appBase";
+import { reportRuntimeError } from "./reportRuntimeError";
 
 /** A parameter value, in the types a declared parameter may take. A date is written `YYYY-MM-DD`. */
 export type QueryParam = string | number | boolean;
@@ -109,10 +110,31 @@ export async function runQuery(
   return {
     columns: result.columns,
     rows: result.rows,
-    records: result.rows.map((row) => Object.fromEntries(result.columns.map((c, i) => [c, row[i]]))),
+    records: recordsOf(name, result.columns, result.rows),
     truncated,
     dataUsed: normalizeDataUsed(name, result, truncated),
   };
+}
+
+// A read of a name the query does not return is `undefined`, which a page draws as 0 or an empty
+// state over rows that are there (#673). Report it the way a crash is reported, once per name, so
+// the build that wrote the read is told which names exist. Not reads: symbols, Object.prototype
+// names, `toJSON` (JSON.stringify), `then` (await), and `key` and `children`, which antd's Table
+// reads off every row.
+const PROBES = new Set(["toJSON", "then", "key", "children"]);
+
+function recordsOf(name: string, columns: string[], rows: QueryValue[][]): Record<string, QueryValue>[] {
+  const reported = new Set<string>();
+  return rows.map((row) => new Proxy(Object.fromEntries(columns.map((c, i) => [c, row[i]])), {
+    get(record, key, receiver) {
+      if (typeof key === "string" && !(key in record) && !PROBES.has(key) && !reported.has(key)) {
+        reported.add(key);
+        reportRuntimeError(`query ${name} has no column '${key}'; columns are ${columns.join(", ")}`,
+                           new Error().stack);
+      }
+      return Reflect.get(record, key, receiver);
+    },
+  }));
 }
 
 function normalizeDataUsed(name: string, result: QueryResult, truncated: boolean): QueryDataUse {
