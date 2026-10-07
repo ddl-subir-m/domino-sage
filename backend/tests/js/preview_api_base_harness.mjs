@@ -1,9 +1,10 @@
 // Where a template's preview reporters send Sage's control calls, run from the template's own files.
 //
-// Input on stdin: `{ "stack": "fastapi-antd" | "react-vite", "base": <the preview's base> }`, or
-// `{ "stack": "vite-config", "prefix": <SAGE_BASE_PREFIX>, "app": <SAGE_PREVIEW_APP> }`.
+// Input on stdin: `{ "stack": "fastapi-antd" | "react-vite", "base": <the preview's base>,
+// "abort"?: true }`, or `{ "stack": "vite-config", "prefix": <SAGE_BASE_PREFIX>, "app": <SAGE_PREVIEW_APP> }`.
 // Output: `{ "calls": [<pathnames fetched>] }` for a reporter — after the page loads, reports one
-// runtime error, has one data fetch refused and asks whether a build is running — or
+// runtime error, has one data fetch refused (or aborted, with `abort`) and asks whether a build is
+// running — or
 // `{ "api": <the API the build-aware overlay asks> }` for `vite.config.ts`.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,7 +21,9 @@ function browser(base) {
   const fetch = async (url) => {
     const pathname = new URL(String(url), location.href).pathname;
     calls.push(pathname);
-    if (pathname.includes('/api/queries/')) throw new Error('refused');
+    if (pathname.includes('/api/queries/')) {
+      throw input.abort ? new DOMException('aborted', 'AbortError') : new Error('refused');
+    }
     return { ok: true, json: async () => ({ running: false }) };
   };
   const document = { readyState: 'complete', visibilityState: 'visible', addEventListener() {} };
