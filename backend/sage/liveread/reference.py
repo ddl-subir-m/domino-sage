@@ -406,6 +406,7 @@ def data_use(prepared: Prepared, *, purpose: str) -> tuple[dict, dict]:
         "operation_id": operation_id,
         "operation": operation,
         "source": prepared.source,
+        "source_kind": "file",
         "source_type": prepared.source_type,
         "requested_selector": prepared.requested_selector,
         "selected_selector": prepared.selected_selector,

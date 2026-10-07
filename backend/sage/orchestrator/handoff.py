@@ -39,9 +39,11 @@ _CURRENT_TIMING_RECORD = object()
 TIMEOUT_S = 8.0
 MAX_UNREADABLE = 3
 
-# Heads the handoff note's data-used lines. The app's data region reads the note for it, so a build
-# that has bound nothing is warned before its first turn writes a query.
-DATA_USED_HEADING = "Data used in the Chat work:"
+# Under the handoff note's data-used lines when the Chat work read a Data Source and none crosses.
+# The app's data region looks for it, so the build is warned before its first turn writes a query.
+_UNBOUND_READS = ("No {dataSource} crosses with this handoff, so no {dataSource} below can be "
+                  "queried from the app. They are background on what the {chat} work read, not "
+                  "sources to name in a query.")
 
 # Only the last user + last assistant + title. Truncate rather than refuse.
 _TITLE_CHARS = 200
@@ -536,6 +538,23 @@ def data_reads_by_source(history: list[dict]) -> list[dict]:
             for e in ordered]
 
 
+def data_source_reads(history: list[dict]) -> list[str]:
+    """The sources this Thread read through a Data Source, newest first (#669).
+
+    A file read (a Dataset file or an Upload) records `source_kind: "file"` and is left out: it
+    crosses as a file, not as a Binding. A read recorded before `source_kind` existed counts as a
+    Data Source, so an old Thread is warned rather than silently not.
+    """
+    rows = [{"dataUsed": [e for e in _row_data_used(row) if e.get("source_kind") != "file"]}
+            for row in history or [] if isinstance(row, dict)]
+    return [r["source"] for r in data_reads_by_source(rows)]
+
+
+def note_reads_unbound_data(note: str) -> bool:
+    """Whether a handoff note says the Chat work read a Data Source that did not cross."""
+    return brand.text(_UNBOUND_READS) in note
+
+
 def _row_data_used(row: dict) -> list[dict]:
     raw = row.get("dataUsed")
     if isinstance(raw, list):
@@ -914,7 +933,8 @@ def union_table_chips(bindings: list[Binding]) -> dict[tuple[str, str], Binding]
 
 def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
                    include_artifacts: bool, include_resources: bool,
-                   data_used: list[str] | None = None) -> str:
+                   data_used: list[str] | None = None,
+                   read_a_data_source: bool = False) -> str:
     parts = [draft.strip(), ""]
     if include_artifacts:
         parts.append("Artifacts to treat as examples:")
@@ -933,16 +953,13 @@ def confirm_digest(draft: str, *, artifacts: list[dict], context: list[dict],
         parts.append("")
         lines = [line for line in (data_used or []) if line]
         if lines:
-            parts.append(DATA_USED_HEADING)
+            parts.append("Data used in the Chat work:")
             bound = [b for b in (binding_from_context(i) for i in context)
                      if b is not None and b.kind == KIND_DATA_SOURCE]
-            if not bound:
+            if read_a_data_source and not bound:
                 # Unlabelled, a build read these names as sources it could query, found no id to
                 # copy, and wrote every query against one it made up (#669).
-                parts.append(brand.text(
-                    "No {dataSource} crosses with this handoff, so the app cannot query any of "
-                    "these. They are background on what the {chat} work read, not sources to name "
-                    "in a query."))
+                parts.append(brand.text(_UNBOUND_READS))
             parts.extend(f"- {line}" for line in lines)
             parts.append("")
     # No closing "the plan is what to build" line. `implement_note` puts that sentence in front of

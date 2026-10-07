@@ -152,6 +152,7 @@ def calculate(args, turn):
     unfinished = 1 if args.get("source") and scope is not None and count > processed else 0
     event = {
         "operation_id": operation, "source": source,
+        "source_kind": "data_source" if args.get("source") else "file",
         "source_sha256": hashlib.sha256(raw or json.dumps([columns, source_rows]).encode()).hexdigest(),
         # A calculation is something the turn was ASKED to do, so its card always draws (ADR-0063,
         # *What this does not decide*). The field is on every operation so the event shape stays

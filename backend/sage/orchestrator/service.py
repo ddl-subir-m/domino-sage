@@ -12538,12 +12538,12 @@ class Orchestrator:
             "untitled": project.record.is_untitled(),
             "artifacts": _artifacts_present(project.record.path, store.read_artifacts(thread_id)),
             "context": context,
-            # What the chips would bind, and what the conversation read. A read never becomes a
-            # Binding (ADR-0010), so the sheet warns when no Data Source crosses (#669).
+            # What the chips would bind, and which Data Sources the conversation read. A read never
+            # becomes a Binding (ADR-0010), so the sheet warns when one was read and none crosses
+            # (#669).
             "bindingKinds": [b.kind for b in (chat_handoff.binding_from_context(i) for i in context)
                              if b is not None],
-            "dataReads": [r["source"] for r in
-                          chat_handoff.data_reads_by_source(store.read_history(thread_id))],
+            "dataReads": chat_handoff.data_source_reads(store.read_history(thread_id)),
             # The apps this handoff could build into, so the sheet can offer them (#73). The rail's
             # `selected` flag is dropped on the way out: the only default is New app, and a payload
             # that named one of these would give the markup something to preselect — which is the
@@ -13080,6 +13080,7 @@ class Orchestrator:
             include_artifacts=include_artifacts,
             include_resources=include_resources,
             data_used=chat_handoff.data_use_summaries(history) if include_resources else [],
+            read_a_data_source=bool(chat_handoff.data_source_reads(history)),
         )
         (project.workspace.path / ".sage" / "handoff.md").write_text(digest)
         # The note is one of the things the data region reads, and the app was bound before it
@@ -30805,8 +30806,9 @@ class Orchestrator:
         reads a store. The `src/` walk skips the helpers Sage owns: `runQuery` is DEFINED in one of
         them, so counting it would make every app look like it were reaching.
 
-        A handoff note listing data the conversation read is a third, and the only one there on the
-        first turn: neither of the others exists until a query has been written (#669).
+        A handoff note saying the conversation read a Data Source that did not cross is a third, and
+        the only one there on the first turn: neither of the others exists until a query has been
+        written (#669).
 
         Cheap by construction — a stat and a walk of `src/`, once at the end of a build turn, against
         a tree of tens of files. Errors read as "not reaching": this decides what to say, never what
@@ -30819,7 +30821,8 @@ class Orchestrator:
         note = root / ".sage" / "handoff.md"
         owned = project.workspace.helpers.owned
         try:
-            if note.is_file() and chat_handoff.DATA_USED_HEADING in note.read_text(errors="ignore"):
+            if note.is_file() and chat_handoff.note_reads_unbound_data(
+                    note.read_text(errors="ignore")):
                 return True
             # Where a call can appear is the stack's to say (#490): `src/*.ts*` for react-vite, the
             # page's own scripts for fastapi-antd.

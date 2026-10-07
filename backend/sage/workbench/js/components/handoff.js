@@ -81,11 +81,12 @@ window.SW = window.SW || {};
         note: 'Always included. Build reads this summary, which can include your questions.',
       },
     ];
-    // What the chips would bind. A source the conversation only read is never bound for the person
-    // (ADR-0010), so with no Data Source among these the app is born unable to query (#669).
+    // What the chips would bind, and the Data Sources the conversation read. A read is never bound
+    // for the person (ADR-0010), so with none of these among the chips the app is born unable to
+    // query what the conversation did (#669). A conversation that only read files is not warned.
     const bindingKinds = handoffDraft.bindingKinds || [];
     const reads = handoffDraft.dataReads || [];
-    const unbound = include.resources && !bindingKinds.includes('data_source');
+    const unbound = include.resources && reads.length > 0 && !bindingKinds.includes('data_source');
     const preferenceFiles = [
       include.artifacts && artifacts.length && `examples/ (${artifacts.length})`,
       include.resources && bindingKinds.length && '.sage/bindings.json',
@@ -211,10 +212,8 @@ window.SW = window.SW || {};
               showIcon: true,
               style: { marginTop: 10 },
               message: SW.brand.text('No {dataSource} will carry over'),
-              description: reads.length
-                ? `This conversation read ${reads.join(', ')}, but the app will not be able to `
-                  + 'query them. Add them to the conversation before you build to include them.'
-                : SW.brand.text('The app will not be able to query a {dataSource}.'),
+              description: `This conversation read ${reads.join(', ')}, but the app will not be `
+                + 'able to query them. Add them to the conversation before you build to include them.',
             })
         )
       )
