@@ -773,6 +773,7 @@ def test_supported_mcp_and_image_carriers_are_inventoried():
     assert rows["user image attachment"]["model_view"] == "image content reaches only vision-capable models"
     assert rows["tool-result image part"]["coverage"] == "unsupported-state handled"
     assert rows["tool-result image part"]["lineage"] == "unknown unless a supported data operation recorded it"
+    assert rows["external MCP result"]["coverage"] == "recorded, not withheld"
 
 
 def test_mcp_text_result_parts_track_the_selected_data_operation(tmp_path):
