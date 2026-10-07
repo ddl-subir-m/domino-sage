@@ -70,7 +70,7 @@ def test_a_requested_name_is_used_even_if_the_project_already_has_it():
 
 def test_the_handoff_plan_prompt_carries_the_request_and_the_naming_rule():
     prompt = plan_prompt("thr_1", "Asked: an app called Signal Room.", voice=_PLAN_VOICE,
-                         shape=_PLAN_SHAPE)
+                         shape=_PLAN_SHAPE, stack="react-vite", example="")
     assert "Asked: an app called Signal Room." in prompt
     assert "that name is the heading, word for word" in prompt
 
