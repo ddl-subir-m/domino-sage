@@ -14377,12 +14377,21 @@ class Orchestrator:
         # the Conversations that now accumulate something to recover.
         if project.control.snapshot().chat_thread_id:
             store = ThreadStore(project.record.path)
-            project.shim.data_use.restore(store.read_history(thread_id),
-                                          lambda ev: store.append_history(thread_id, ev))
+            persist = lambda ev: store.append_history(thread_id, ev)
+            project.shim.data_use.restore(store.read_history(thread_id), persist)
+            files = {str(item["path"]): f"{item['datasetName']}/{item['datasetRelPath']}"
+                     for item in store.read_context(thread_id).get("items", [])
+                     if item.get("kind") == "file" and item.get("path")
+                     and item.get("datasetName") and item.get("datasetRelPath")}
         else:
             workspace = project.app_for_turn()
-            project.shim.data_use.restore(workspace.read_history(thread_id),
-                                          lambda ev: workspace.append_history(ev, thread_id))
+            persist = lambda ev: workspace.append_history(ev, thread_id)
+            project.shim.data_use.restore(workspace.read_history(thread_id), persist)
+            files = {str(e["path"]): f"{e['dataset']}/{e.get('dataset_rel_path') or e['file']}"
+                     for e in project.attachments_for_turn()
+                     if e.get("path") and e.get("dataset") and e.get("file")}
+        # A Dataset file read with OpenCode's own `read` is seen only in the request (#688).
+        project.shim.data_use.watch_file_reads(files, persist, self._data_use_turns[thread_id])
         with self._live_read_lock:
             if thread_id in self._live_read:
                 self._live_read_earlier[thread_id] = self._live_read[thread_id][0]
