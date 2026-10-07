@@ -134,6 +134,64 @@ def test_writing_the_plan_again_after_cancel_drafts_a_new_plan(tmp_path: Path):
     assert second["handoff"]["planId"] != first["handoff"]["planId"]
 
 
+def test_cancelling_the_sheet_gives_the_drafted_plans_name_back(tmp_path: Path):
+    """#686: each cancel-and-redraft left a live "Signal Room N" behind, so names climbed."""
+    orch, _root, tid = _orch(tmp_path, [Turn(text=_ROOM)])
+    orch.project(start_preview=False).workspace.set_display_name("Signal Room")
+    plan_id = orch.draft_handoff_plan(tid)["handoff"]["planId"]
+    assert orch.read_plan_doc(plan_id)["title"] == "Signal Room 2"
+
+    orch.patch_thread(tid, {"handoff": "cancel"})
+
+    assert orch._fresh_label("Signal Room") == "Signal Room 2"
+
+
+def test_cancelling_the_sheet_archives_the_draft_and_keeps_it(tmp_path: Path):
+    orch, _root, tid = _orch(tmp_path, [Turn(text=_BOARD)])
+    plan_id = orch.draft_handoff_plan(tid)["handoff"]["planId"]
+    before = orch.read_plan_doc(plan_id)
+
+    orch.patch_thread(tid, {"handoff": "cancel"})
+
+    after = orch.read_plan_doc(plan_id)
+    assert after["archived"] is True
+    assert after["sections"] == before["sections"]
+    assert orch.read_plan_doc_markdown(plan_id) is not None
+
+
+def test_cancel_on_a_bound_handoff_archives_nothing(tmp_path: Path, monkeypatch):
+    """Asked of the attempt, not only the flag: a bound plan is usually live and awaiting its
+    first approval, so `archive_plan_doc` would refuse it anyway and hide a missing guard."""
+    orch, _root, tid = _orch(tmp_path, [Turn(text=_BOARD)])
+    plan_id = orch.draft_handoff_plan(tid)["handoff"]["planId"]
+    orch.confirm_handoff(tid, _NOTHING_EXTRA)
+    attempts: list[tuple] = []
+    monkeypatch.setattr(orch, "archive_plan_doc", lambda *a: attempts.append(a))
+
+    orch.patch_thread(tid, {"handoff": "cancel"})
+
+    assert attempts == []
+    assert orch.read_plan_doc(plan_id)["archived"] is False
+
+
+def test_a_refused_archive_does_not_stop_the_cancel(tmp_path: Path, monkeypatch):
+    from sage.orchestrator.service import PlanArchiveRefused
+
+    orch, _root, tid = _orch(tmp_path, [Turn(text=_BOARD)])
+    plan_id = orch.draft_handoff_plan(tid)["handoff"]["planId"]
+
+    def refuse(plan_id, archived):
+        raise PlanArchiveRefused("busy")
+    monkeypatch.setattr(orch, "archive_plan_doc", refuse)
+
+    orch.patch_thread(tid, {"handoff": "cancel"})
+
+    row = orch.get_thread(tid)["handoff"]
+    assert row["status"] == "suggested"
+    assert "planId" not in row
+    assert orch.read_plan_doc(plan_id)["archived"] is False
+
+
 def test_an_explicit_redraft_regenerates_the_plan(tmp_path: Path):
     orch, _root, tid = _orch(tmp_path, [Turn(text=_BOARD), Turn(text=_ROOM)])
     first = orch.draft_handoff_plan(tid)

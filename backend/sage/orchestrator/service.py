@@ -11239,7 +11239,12 @@ class Orchestrator:
         if isinstance(body, dict) and body.get("handoff") == "suppress":
             store.suppress_handoff(thread_id)
         if isinstance(body, dict) and body.get("handoff") == "cancel":
-            store.cancel_handoff_plan(thread_id)
+            drafted = store.cancel_handoff_plan(thread_id)
+            # Put away, not deleted, so it frees its name and stays under "Show archived" (#686).
+            # A refusal leaves it live: Cancel itself must never fail.
+            if drafted:
+                with contextlib.suppress(PlanArchiveRefused):
+                    self.archive_plan_doc(drafted, True)
         row = store.update(
             thread_id,
             title=body.get("title") if isinstance(body, dict) else None,
