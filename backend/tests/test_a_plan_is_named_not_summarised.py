@@ -58,6 +58,12 @@ def test_a_redraft_may_keep_its_own_name():
     assert "A plan written again keeps its own name" in _PLAN_SHAPE
 
 
+def test_a_rename_asked_for_on_a_redraft_beats_the_plans_own_name():
+    """"Call it X instead" before a redraft must win over the redraft keeping its old name."""
+    assert ("unless the request gives a new name: a name the request gives always wins"
+            in _PLAN_SHAPE)
+
+
 def test_a_requested_name_is_used_even_if_the_project_already_has_it():
     assert "already in this project, unless the request gave that name" in _PLAN_SHAPE
 

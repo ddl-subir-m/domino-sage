@@ -6761,7 +6761,8 @@ _PLAN_OPENER = ("Format it exactly like this, in Markdown, and write nothing out
                 "Room'), that name is the heading, word for word, even if it breaks the 2-4 word "
                 "rule. Only invent a name when the request gives none. It must not be the name of "
                 "an app or a plan already in this project, unless the request gave that name. A "
-                "plan written again keeps its own name.\n"
+                "plan written again keeps its own name, unless the request gives a new name: a "
+                "name the request gives always wins.\n"
                 # One full stop, then the next heading. `_one_sentence` rejects a second sentence,
                 # and a weaker model that writes two loses the whole plan. Say the rule in the
                 # words the check uses.
