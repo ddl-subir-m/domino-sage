@@ -13,7 +13,13 @@ from .. import degraded, timing
 from ..gateway.capabilities import RouteCapability, legacy
 from ..gateway.client import CostLabels, GatewayClient
 from ..router.models import ModelCatalog
-from .scope import _classifier_effort, _classifier_route, _extract, _model_for
+from .scope import (
+    _classifier_effort,
+    _classifier_route,
+    _extract,
+    _model_for,
+    _without_unechoed_effort,
+)
 
 log = logging.getLogger(__name__)
 
@@ -230,10 +236,17 @@ def start(
                 if effort != route.efforts[0]:
                     request["max_tokens"] = REASONING_MAX_TOKENS
                     box["deadline"] = started + REASONING_TIMEOUT_S
-            for chunk in _classifier_route(gateway, request, labels, route):
-                call.first_byte()
-                call.chunk()
-                chunks.append(chunk)
+            while True:
+                chunks = []
+                try:
+                    for chunk in _classifier_route(gateway, request, labels, route):
+                        call.first_byte()
+                        call.chunk()
+                        chunks.append(chunk)
+                    break
+                except ValueError as e:
+                    if not _without_unechoed_effort(request, e):
+                        raise
         except BaseException as e:
             call.done(ok=False, error=f"{type(e).__name__}: {e}")
             raise
