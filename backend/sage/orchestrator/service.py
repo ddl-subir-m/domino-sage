@@ -9203,20 +9203,35 @@ class Orchestrator:
                 {"type": "plan-superseded", "planId": earlier["id"], "by": new_plan_id,
                  "byConversation": conversation}, origin)
 
-    def _prepare_app_files(self) -> bool:
-        if not resolve_stack(self._wm.app_path).ready:
+    def _prepare_app_files(self, wm: WorkspaceManager | None = None) -> bool:
+        wm = self._wm if wm is None else wm
+        if not resolve_stack(wm.app_path).ready:
             return False
-        preview_config_changed = self._wm.refresh_preview_config()
-        self._wm.ensure_llm_helper()
-        self._wm.refresh_owned_sources()
+        preview_config_changed = wm.refresh_preview_config()
+        wm.ensure_llm_helper()
+        wm.refresh_owned_sources()
         return preview_config_changed
 
-    def _restart_preview_for_config_change(self, project: Project) -> None:
-        project.supervisor.stop()
-        app_id = getattr(project.workspace, "app_id", None)
+    def _prepare_turn_app(self, project: Project) -> None:
+        """Refresh the Sage-owned files of the app this Build turn writes into, selected or not.
+
+        A `?app=` tab builds through a request view and never selects its app, so the refreshes at
+        attach and select never reach it (#690). Called after `_pin_turn_app`, under the turn lock.
+        """
+        app_id = getattr(project.app_for_turn(), "app_id", None)
+        if not app_id:
+            return
+        if self._prepare_app_files(self._wm.for_app(app_id)):
+            self._restart_preview_for_config_change(project, self._view_for(project, app_id))
+
+    def _restart_preview_for_config_change(self, project: Project,
+                                           view: AppView | None = None) -> None:
+        view = project._active_view() if view is None else view
+        view.supervisor.stop()
+        app_id = getattr(view.workspace, "app_id", None)
         pinned = bool(app_id) and app_id == self._wm.selected_app_id()
-        project.supervisor = _supervisor_for(
-            project.workspace.path, domino_base_prefix(), pinned_port=pinned)
+        view.supervisor = _supervisor_for(
+            view.workspace.path, domino_base_prefix(), pinned_port=pinned)
 
     def view_for_preview(self, project: Project) -> AppView:
         """The preview a `/preview/...` request is for. An app id in the path is that app.
@@ -9735,6 +9750,7 @@ class Orchestrator:
         try:
             project = self._ensure_seeded()
             self._pin_turn_app(project, ticket.turn_workspace)
+            self._prepare_turn_app(project)
             timing.bind_context(
                 ticket.id, app_id=project.app_for_turn().app_id,
                 conversation_id=conversation, record=ticket.timing_record)
@@ -10546,6 +10562,7 @@ class Orchestrator:
             self._turn_gave_up = False
             project = self.project()
             self._pin_turn_app(project, ticket.turn_workspace)
+            self._prepare_turn_app(project)
             self._begin_conversation(conversation)
             # Name the Conversation off the first thing typed into it, exactly as Chat does at the
             # top of _chat_stream. Build shared the record all along and never wrote the one field
@@ -11046,6 +11063,7 @@ class Orchestrator:
                 yield {"type": "done", "ok": False, "decision": "invalid continuation",
                        **self._turn_id_fields()}
                 return
+            self._prepare_turn_app(project)
             timing.bind_context(
                 turn_ticket.id, app_id=continuation.app_id,
                 conversation_id=continuation.conversation,
@@ -24264,6 +24282,7 @@ class Orchestrator:
             self._turn_gave_up = False
             project = self.project()
             self._pin_turn_app(project, ticket.turn_workspace)
+            self._prepare_turn_app(project)
             self._begin_conversation(conversation)
             project.context_continuations.invalidate_available()
             timing.bind_context(

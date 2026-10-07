@@ -2219,6 +2219,13 @@ class WorkspaceManager:
         self._selected = app_id
         return app_id
 
+    def for_app(self, app_id: str) -> WorkspaceManager:
+        """A manager pointed at another Built App, for a caller that must act on an app that is
+        not the selected one (#690). This manager's selection does not move."""
+        other = WorkspaceManager(self._dir, self._template)
+        other._selected = app_id
+        return other
+
     def create_app(self, project_id: str, stack: str | None = None) -> Workspace:
         """Mint a Built App, seed it from the template, and select it.
 
