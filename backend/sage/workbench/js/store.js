@@ -2290,6 +2290,11 @@ window.SW = window.SW || {};
         else blocks.push({ type: 'reasoning', value: ev.text });
       } else if (ev.type === 'agent' && ev.kind === 'tool') {
         continue;
+      } else if (ev.type === 'turn-retried') {
+        // Retry on a failed answer (#665). No question row follows, so the retried answer starts
+        // its own message here rather than joining the one it replaces.
+        for (const m of messages) if (m.turnId === ev.of) m.superseded = true;
+        assistant = null;
       } else if (ev.type === 'artifacts' || (ev.type === 'done' && ev.artifacts && ev.artifacts.length)) {
         const items = (ev.items || ev.artifacts || []).filter((a) => {
           const key = a.path || a.id;
@@ -2551,6 +2556,7 @@ window.SW = window.SW || {};
         ensureAssistant().blocks.push(card);
         ensureContinueChecked(card);
       }
+      if (ev.type === 'done' && ev.turnId && assistant) assistant.turnId = ev.turnId;
     }
     if (hiddenTables.size) {
       for (const message of messages.filter((m) => m.role === 'assistant')) {
@@ -9503,7 +9509,7 @@ window.SW = window.SW || {};
     async sendMessage(text, { echo = true, url = '', body = null, attachments: attachmentsOverride,
                               skipTableGate = false, skipDatasetGate = false,
                               datasetDismissed = '', investigationAnswered = false, taskId = '',
-                              otherLaneGrant = '', alreadyAsked = false,
+                              otherLaneGrant = '', alreadyAsked = false, retryOf = '',
                               onAccepted = null, onRefused = null } = {}) {
       if (!text.trim()) return;
       // A second question used to be dropped here, because the server would only have refused it
@@ -9663,7 +9669,8 @@ window.SW = window.SW || {};
           // stale tab cannot put a turn under a question it does not match.
           body: JSON.stringify(postedTurnBody(body || { prompt: text, skipTableGate, skipDatasetGate,
                                          datasetDismissed, investigationAnswered, otherLaneGrant,
-                                         alreadyAsked, ...(taskId ? { taskId } : {}) }, url)),
+                                         alreadyAsked, ...(taskId ? { taskId } : {}),
+                                         ...(retryOf ? { retryOf } : {}) }, url)),
         });
         if (!res.ok) {
           const payload = await res.json().catch(() => ({}));
@@ -9775,7 +9782,12 @@ window.SW = window.SW || {};
             putDataUsed(state.messages, () => assistant, ev.dataUsed);
             notify();
           }
-          if (ev.type === 'narration') {
+          if (ev.type === 'turn-retried') {
+            // Retry on a failed answer (#665). The same mark `historyToMessages` makes on a reload.
+            state.messages = state.messages.map((m) => (m.turnId === ev.of
+              ? { ...m, superseded: true } : m));
+            notify();
+          } else if (ev.type === 'narration') {
             // The one plain sentence of the thought the server picked. It is the indicator's line
             // and nothing else: no block, and the Thread keeps none of it.
             thought = String(ev.text || '');
@@ -9908,6 +9920,8 @@ window.SW = window.SW || {};
                                 { type: 'status', ok: true, value: ev.message }];
             notify();
           } else if (ev.type === 'done') {
+            // What a Retry on this answer names (#665).
+            if (ev.turnId) assistant.turnId = ev.turnId;
             // A failed turn that names its cause is one another model can pick up (ADR-0069,
             // #570). The row that arrived is the promise itself, so the card is drawn available
             // without asking the route; the GET is for a reload.

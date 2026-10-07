@@ -2765,6 +2765,8 @@ window.SW = window.SW || {};
     const idx = messages.findIndex((m) => m.id === message.id);
     for (let i = idx - 1; i >= 0; i -= 1) {
       const m = messages[i];
+      // A retried answer sits under the attempt it replaced, and still answers the same question.
+      if (m.role === 'assistant' && m.superseded) continue;
       if (m.role === 'assistant') return null;
       if (m.role === 'user') {
         const text = (m.blocks || [])
@@ -2772,18 +2774,34 @@ window.SW = window.SW || {};
           .map((b) => b.value)
           .join('\n\n')
           .trim();
-        return text ? { text, attachments: m.attachments || [] } : null;
+        return text ? { text, attachments: m.attachments || [], retryOf: message.turnId || '' } : null;
       }
     }
     return null;
   }
 
+  // A failed attempt a Retry replaced (#665): kept, but folded under one line.
+  function supersededLabel(message) {
+    const failed = (message.blocks || []).some((b) => b.type === 'status' && b.ok === false);
+    return failed ? 'Earlier attempt failed — show' : 'Earlier attempt — show';
+  }
+
   SW.Message = function Message({ message, onSave }) {
     const { me } = SW.store.get();
+    const [shown, setShown] = useState(false);
     const isUser = message.role === 'user';
     const isSystem = message.role === 'system';
     const pinTarget = isUser ? null : pinTargetFor(message);
     const retryTarget = isUser ? null : retryTargetFor(message);
+
+    if (message.superseded && !shown) {
+      return h(
+        'div',
+        { className: 'sw-msg sw-msg-assistant' },
+        h(Button, { type: 'link', size: 'small', onClick: () => setShown(true) },
+          supersededLabel(message))
+      );
+    }
 
     if (isSystem) {
       return h(
@@ -2902,7 +2920,11 @@ window.SW = window.SW || {};
                   'aria-label': 'Retry',
                   onClick: () => (retryTarget.build
                     ? SW.store.retryStalledBuild(retryTarget.text)
-                    : SW.store.sendMessage(retryTarget.text, { attachments: retryTarget.attachments })),
+                    : SW.store.sendMessage(retryTarget.text, {
+                      attachments: retryTarget.attachments,
+                      echo: !retryTarget.retryOf,
+                      retryOf: retryTarget.retryOf,
+                    })),
                 })
               )
           )
