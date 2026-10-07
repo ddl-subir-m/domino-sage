@@ -68,6 +68,65 @@ window.sage = window.sage || {};
     };
   };
 
+  // Answers kept for the page's life, keyed by query name and params in a fixed order, so a screen
+  // shown again draws at once. Only answers are kept; a failure is asked again next time.
+  const answers = new Map();
+  const keyOf = (name, params) =>
+    JSON.stringify([name, Object.keys(params).sort().map((k) => [k, params[k]])]);
+
+  /**
+   * Run a named query from a component and track its state (#681).
+   *
+   *     const q = sage.useQuery("usage_by_account", { since });
+   *     // q.status: "loading" | "error" | "empty" | "ready"; q.data is runQuery's answer;
+   *     // q.error is the viewer's sentence; q.refresh() asks again, keeping q.data on screen
+   *     // with q.refreshing true meanwhile.
+   *
+   * `"empty"` means the query answered with zero records, never that it failed. A changed param or
+   * an unmount aborts the request in flight. `{ enabled: false }` sends nothing (status stays
+   * `"loading"`) until a value the query needs exists. Answers are kept for the page's life.
+   */
+  sage.useQuery = function useQuery(name, params = {}, opts = {}) {
+    const key = keyOf(name, params);
+    const enabled = opts.enabled !== false;
+    const [run, setRun] = React.useState(0);
+    const [state, setState] = React.useState({ key: null, data: null, error: null, pending: false });
+    const latest = React.useRef(params);
+    latest.current = params;
+    const lastRun = React.useRef(0);
+
+    React.useEffect(() => {
+      if (!enabled) return undefined;
+      const forced = run !== lastRun.current;
+      lastRun.current = run;
+      const kept = answers.get(key);
+      if (kept && !forced) {
+        setState({ key, data: kept, error: null, pending: false });
+        return undefined;
+      }
+      const controller = new AbortController();
+      setState((s) => ({ key, data: s.key === key ? s.data : kept || null, error: null, pending: true }));
+      sage.runQuery(name, latest.current, { signal: controller.signal }).then(
+        (data) => {
+          answers.set(key, data);
+          setState({ key, data, error: null, pending: false });
+        },
+        (error) => {
+          if (error && error.name === "AbortError") return;
+          setState((s) => ({ key, data: s.key === key ? s.data : null,
+                             error: (error && error.message) || String(error), pending: false }));
+        });
+      return () => controller.abort();
+    }, [key, name, enabled, run]);
+
+    const refresh = React.useCallback(() => setRun((n) => n + 1), []);
+    const kept = answers.get(key) || null;
+    const view = state.key === key ? state : { data: kept, error: null, pending: enabled && !kept };
+    const status = view.error ? "error"
+      : view.data ? (view.data.records.length ? "ready" : "empty") : "loading";
+    return { status, data: view.data, error: view.error, refreshing: view.pending && !!view.data, refresh };
+  };
+
   // A read of a name the query does not return is `undefined`, which a page draws as 0 or an empty
   // state over rows that are there (#673). Report it the way a crash is reported, once per name, so
   // the build that wrote the read is told which names exist. Not reads: symbols, Object.prototype
