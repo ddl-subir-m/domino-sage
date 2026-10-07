@@ -11817,7 +11817,7 @@ class Orchestrator:
                     skip_investigation_gate: bool = False, declined: bool = False,
                     other_lane_grant: str = "", task_id: str = "", turn_id: str | None = None,
                     turn_ticket: _TurnTicket | None = None,
-                    how_sage_works: str = "guided",
+                    how_sage_works: str = "guided", retry_of: str = "",
                     _already_granted: bool = False):
         """A Chat turn: sage-chat, no plan gate, no typecheck. History goes on the Thread.
 
@@ -11853,6 +11853,10 @@ class Orchestrator:
 
         `how_sage_works` is this turn's choice, `direct` or `guided` (ADR-0070). Anything else is
         Guided. `_chat_stream` is what branches on it.
+
+        `retry_of` is the failed turn a Retry press replaces (#665). The question is already on the
+        Thread above that turn, so it is not written again; a `turn-retried` row is written instead,
+        and both the live view and a reload draw the failed answer collapsed under it.
         """
         # Waits its turn rather than refusing (#79). `app=False`: Chat writes Artifacts under the
         # Thread's own `examples/`, so which Built App the rail points at is not something this turn
@@ -11925,6 +11929,7 @@ class Orchestrator:
                                         other_lane_grant=other_lane_grant,
                                         task_id=task_id,
                                         how_sage_works=how_sage_works,
+                                        retry_of=retry_of,
                                         timing_record=timing_record,
                                         turn_generation=turn_generation):
                 if ev.get("type") == "done":
@@ -16098,7 +16103,8 @@ class Orchestrator:
                      skip_dataset_gate: bool = False, dismissed_dataset: str = "",
                      skip_investigation_gate: bool = False, declined: bool = False,
                      other_lane_grant: str = "", task_id: str = "", timing_record=None,
-                     turn_generation: int = 0, how_sage_works: str = "guided"):
+                     turn_generation: int = 0, how_sage_works: str = "guided",
+                     retry_of: str = ""):
         import time
 
         project = self._chat_project()
@@ -16249,7 +16255,11 @@ class Orchestrator:
         # prints the person's question twice under one card.
         asking = (not already_asked and not skip_table_gate and not skip_dataset_gate
                   and not skip_investigation_gate and not other_lane_granted)
-        if asking:
+        if asking and retry_of:
+            retried = {"type": "turn-retried", "of": retry_of}
+            store.append_history(thread_id, retried)
+            yield retried
+        elif asking:
             store.append_history(thread_id, user_ev)
             yield user_ev
 

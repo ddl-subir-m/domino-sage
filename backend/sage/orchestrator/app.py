@@ -4352,6 +4352,8 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
     dropped = str((body or {}).get("datasetDismissed") or "")
     invq = bool((body or {}).get("investigationAnswered"))
     task_id = str((body or {}).get("taskId") or "")
+    # Retry on a failed answer (#665): the turn it replaces, so the question is not written twice.
+    retry = str((body or {}).get("retryOf") or "")
     # Same closed pair as the build route: only `direct` is Direct.
     works = "direct" if str((body or {}).get("howSageWorks") or "") == "direct" else "guided"
     turn_id = new_id("turn")
@@ -4362,7 +4364,7 @@ def chat_stream(thread_id: str, body: dict) -> StreamingResponse:
             thread_id, prompt, already_asked=asked, skip_table_gate=tbl,
             skip_dataset_gate=dset, dismissed_dataset=dropped,
             skip_investigation_gate=invq, task_id=task_id,
-            other_lane_grant=grant, how_sage_works=works,
+            other_lane_grant=grant, how_sage_works=works, retry_of=retry,
             turn_ticket=turn_ticket), "chat_stream"),
         media_type="text/event-stream",
         headers={"X-Sage-Turn-Id": turn_id, "X-Sage-Turn-State": turn_state,
