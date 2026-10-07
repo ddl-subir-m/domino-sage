@@ -179,7 +179,15 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
         "",
         "// Stream provisional text. Mark it incomplete until this promise resolves:",
         ("await sage.askModel(messages, { onToken: (t) => { answerEl.textContent += t; } });" if js
-         else "await askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });"),
+         else         "await askModel(messages, { onToken: (t) => setAnswer((a) => a + t) });"),
+        "",
+        "// Structured data: resolves { ok, value } either way and never throws.",
+        *([] if js else [f'import {{ askJson }} from "./{names.llm}";']),
+        f"const brief = await {call}askJson(messages, {{",
+        "  schemaHint: '{ \"summary\": string, \"risks\": string[] }',",
+        '  fallback: { summary: "", risks: [] },',
+        "});",
+        "if (!brief.ok) { /* brief.value is the fallback; show brief.error beside it */ }",
         "```", "",
     ]
     rules = []
@@ -210,11 +218,15 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
          "After a refusal, change the request before another call; do not retry it unchanged or "
          "switch models to escape the refusal."),
         # #658: a brief asked for JSON with `maxTokens: 260` and the reply ended before its closing
-        # brace, so the viewer saw a parse error where the brief should have been.
-        ("- **Give a structured answer room to finish.** When you ask for JSON, leave `maxTokens` "
-         "unset or at 1000 or more: a model may spend part of the budget before it writes, and a "
-         "reply cut short has no closing brace. Parse inside a `try`, and when the parse fails show "
-         "the facts the screen already has, not the parser's error."),
+        # brace, so the viewer saw a parse error where the brief should have been. #681: another
+        # read `.text` off askModel's string and drew nothing; askJson makes both failures a value.
+        ("- **Ask for data with `askJson`, never `askModel` plus your own `JSON.parse`.** It asks for "
+         "JSON only, reads through a code fence, gives the answer at least 1200 tokens of room "
+         "(1500 when `maxTokens` is unset) because a reply cut short has no closing brace, and "
+         "never throws: it resolves `{ ok: true, value }` or `{ ok: false, value: fallback, error, "
+         "kind }`. `fallback` is required — draw the screen from `value` either way, from the facts "
+         "it already has, and show `error` beside it when `ok` is false. If you call `askModel` for "
+         "JSON anyway, leave `maxTokens` unset or at 1200 or more."),
         ("- **Carry the model's state into the app UI.** When a screen passes selected values to "
          "`askModel`, use `onOutcome` and show that model state separately from the data it was "
          "given. Missing serving model, provider receipt, decision stage, cache, or fallback "

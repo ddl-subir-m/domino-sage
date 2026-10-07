@@ -176,7 +176,20 @@ def test_the_agent_is_told_a_structured_answer_needs_room_to_finish(names):
     block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [], names)
     assert "maxTokens" in block
     assert "JSON" in block
-    assert "1000" in block
+    assert "1200" in block and "1000" not in block   # #681: askJson's own floor
+
+
+@pytest.mark.parametrize("names", [TEMPLATE, FASTAPI], ids=["react-vite", "fastapi-antd"])
+def test_the_agent_is_shown_ask_json_with_its_fallback_and_its_result(names):
+    # #681: an app parsed `res.text` off a string and drew nothing, silently. askJson's `ok` and
+    # required `fallback` make that failure a value the screen has to handle.
+    block = agents_block([_binding("id-sonnet", "sonnet", "Claude Sonnet 4.6")], [], names)
+    call = "sage.askJson(" if names is FASTAPI else "askJson("
+    assert call in block
+    assert "fallback:" in block and "schemaHint:" in block
+    assert ".ok" in block and "never throws" in block
+    if names is TEMPLATE:
+        assert 'import { askJson } from "./appLlm"' in block
 
 
 def test_the_agent_is_told_the_preview_proxy_is_not_there_once_the_app_ships():

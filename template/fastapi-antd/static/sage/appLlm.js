@@ -229,6 +229,51 @@ window.sage = window.sage || {};
     return answer;
   };
 
+  const JSON_ONLY = "Answer with one JSON value only: no prose before or after it, no markdown, no code fence.";
+
+  /**
+   * Ask for a structured answer, and resolve with a value either way (#681). Never throws.
+   *
+   *     const brief = await sage.askJson(messages, {
+   *       schemaHint: '{ "summary": string, "risks": string[] }',
+   *       fallback: { summary: "", risks: [] },
+   *     });
+   *     if (!brief.ok) showNotice(brief.error);   // brief.value is the fallback
+   *
+   * Resolves `{ ok: true, value, evidence }` or `{ ok: false, value: fallback, error, kind }`, where
+   * `error` is written for the viewer and `kind` is a `ModelError` kind, `invalid_json`, or
+   * `unavailable` (no model, or an Alias this app does not use). No streaming. `maxTokens` is at
+   * least 1200 (1500 when unset), because a JSON answer cut short has no closing brace.
+   */
+  sage.askJson = async function askJson(messages, opts = {}) {
+    let evidence = null;
+    const rule = JSON_ONLY + (opts.schemaHint ? ` Its shape: ${opts.schemaHint}` : "");
+    const first = messages[0];
+    const asked = first && first.role === "system"
+      ? [{ role: "system", content: `${first.content}\n\n${rule}` }, ...messages.slice(1)]
+      : [{ role: "system", content: rule }, ...messages];
+    let text;
+    try {
+      text = await sage.askModel(asked, {
+        alias: opts.alias, signal: opts.signal, temperature: opts.temperature,
+        maxTokens: Math.max(opts.maxTokens === undefined ? 1500 : opts.maxTokens, 1200),
+        onOutcome: (outcome) => {
+          evidence = outcome.evidence;
+          if (opts.onOutcome) opts.onOutcome(outcome);
+        },
+      });
+    } catch (error) {
+      return { ok: false, value: opts.fallback, error: error.message, kind: error.kind || "unavailable" };
+    }
+    const fenced = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i.exec(text);
+    try {
+      return { ok: true, value: JSON.parse(fenced ? fenced[1] : text), evidence };
+    } catch {
+      return { ok: false, value: opts.fallback, kind: "invalid_json",
+               error: "The model's answer could not be read as data. Try again." };
+    }
+  };
+
   async function readWhole(res, evidence) {
     let body;
     try { body = await res.json(); } catch (error) {
