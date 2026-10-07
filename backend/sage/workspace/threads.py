@@ -880,20 +880,22 @@ class ThreadStore:
         self._write_handoffs(thread_id, entries)
         return row
 
-    def cancel_handoff_plan(self, thread_id: str) -> dict | None:
+    def cancel_handoff_plan(self, thread_id: str) -> str:
         """Cancel on the sheet: a `planned` handoff goes back to `suggested`, so Write a plan is
         offered again and the next draft writes a new plan (#661). The plan document stays — it is
         durable (ADR-0007) — but this handoff no longer names it. Anything else is left alone: a
-        bound entry is finished and a suppressed one is the person saying stop."""
+        bound entry is finished and a suppressed one is the person saying stop.
+
+        Returns the id of the plan it unlinked, or "" when it unlinked none."""
         entries = self.read_handoffs(thread_id)
         row = entries[-1] if entries else None
         if row is None or row.get("status") != "planned":
-            return row
+            return ""
         row["status"] = "suggested"
-        row.pop("planId", None)
+        plan_id = str(row.pop("planId", None) or "")
         row.pop("planPath", None)
         self._write_handoffs(thread_id, entries)
-        return row
+        return plan_id
 
     def mark_handoff_bound(self, thread_id: str, app_id: str = "") -> dict:
         """Confirm the newest handoff, naming the Built App it made.
