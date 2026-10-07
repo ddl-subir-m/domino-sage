@@ -117,7 +117,7 @@ window.sage = window.sage || {};
                              error: (error && error.message) || String(error), pending: false }));
         });
       return () => controller.abort();
-    }, [key, enabled, run]);
+    }, [key, name, enabled, run]);
 
     const refresh = React.useCallback(() => setRun((n) => n + 1), []);
     const kept = answers.get(key) || null;
