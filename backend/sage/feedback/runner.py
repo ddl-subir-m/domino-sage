@@ -34,6 +34,12 @@ _NODE_FILE_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+)$")
 # Sage's own scripts and the vendored bundles are not the agent's to fix, and a bundle is one
 # 1.2 MB line that `node --check` would spend a second on for nothing.
 _JS_SKIP = ("static/vendor", "static/sage")
+# `window.app.AskReview = …` defines a name; any other `window.app.AskReview` reads it.
+_WINDOW_MEMBER_RE = re.compile(r"\bwindow\.([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)(\s*=(?!=))?")
+# `window.dealDesk = { score }` defines every `window.dealDesk.*`; `window.app = window.app || {}`,
+# which every component file opens with, defines nothing.
+_WINDOW_NAMESPACE_RE = re.compile(r"\bwindow\.([A-Za-z_$][\w$]*)\s*=(?!=)\s*(?!window\.\1\b)")
+_SCRIPT_SRC_RE = re.compile(r"""<script\b[^>]*\bsrc\s*=\s*["']([^"'?#]+)""", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -216,6 +222,7 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
     except subprocess.TimeoutExpired as e:
         return FeedbackReport(ok=False, raw=f"syntax check timed out after {timeout_s}s: {e}",
                               kind="Syntax check")
+    errors += _unloaded_definitions(workspace, js_files)
     entry = workspace / "static" / "app.js"
     if not errors and entry.is_file() and re.search(r"""className:\s*["']sage-placeholder["']""",
                                                     entry.read_text(errors="ignore")):
@@ -225,6 +232,40 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
                     "the requested app and connect the components you wrote.",
         ))
     return FeedbackReport(ok=not errors, errors=errors, raw="\n".join(raw_parts), kind="Syntax check")
+
+
+def _unloaded_definitions(workspace: Path, js_files: list[Path]) -> list[FeedbackError]:
+    """A `window.<ns>.<Name>` that one script reads and only scripts `static/index.html` never loads
+    define (#684). The page runs the scripts it lists and no others, so the name is undefined where
+    it is read — React error #130 for a component — and every file still parses. A name nothing
+    here defines is not this check's: Sage's helpers and the vendored globals are loaded by the
+    template, and are not in `js_files`."""
+    index = workspace / "static" / "index.html"
+    if not index.is_file():
+        return []
+    loaded = {re.sub(r"^(\./|/)+", "", src.strip())
+              for src in _SCRIPT_SRC_RE.findall(index.read_text(errors="ignore"))}
+    defined: dict[tuple[str, str], set[str]] = {}
+    namespaces: dict[str, set[str]] = {}
+    read: dict[tuple[str, str], set[str]] = {}
+    for js in js_files:
+        rel = js.relative_to(workspace).as_posix()
+        source = js.read_text(errors="ignore")
+        for m in _WINDOW_MEMBER_RE.finditer(source):
+            (defined if m[3] else read).setdefault((m[1], m[2]), set()).add(rel)
+        for ns in _WINDOW_NAMESPACE_RE.findall(source):
+            namespaces.setdefault(ns, set()).add(rel)
+    unloaded: dict[str, tuple[str, str, str]] = {}
+    for (ns, name), readers in sorted(read.items()):
+        definers = defined.get((ns, name)) or namespaces.get(ns, set())
+        others = sorted(readers - definers)
+        if definers and others and not definers & loaded:
+            unloaded.setdefault(min(definers), (ns, name, others[0]))
+    return [FeedbackError(
+        file="static/index.html", line=1, col=1, code="SAGE002",
+        message=(f"{file} defines window.{ns}.{name}, which {reader} uses, but static/index.html "
+                 f'has no <script src="{file}"> for it. Add one above the script that uses it.'),
+    ) for file, (ns, name, reader) in sorted(unloaded.items())]
 
 
 def _python() -> str:
