@@ -2487,6 +2487,9 @@ window.SW = window.SW || {};
         const imageReference = event.operation === 'image_reference';
         // A Project MCP call (#666): Sage knows the server it went to and nothing of what it said.
         const externalCall = event.operation === 'external_mcp';
+        // A file the agent opened with its own `read` (#688): Sage saw the call, and measured
+        // nothing about how much of the file it returned.
+        const fileRead = event.carrier === 'OpenCode read of an attached Dataset file';
         const tablePrepared = tableReference && (!event.status || event.status === 'prepared');
         const documentPrepared = documentOperation && (!event.status || event.status === 'prepared');
         const selectedPages = Array.isArray(coverage.selected_pages) ? coverage.selected_pages : [];
@@ -2524,7 +2527,8 @@ window.SW = window.SW || {};
               'Sage did not check what it contained.'));
         }
         return h('div', { key: event.operation_id, className: 'sw-data-used-op' },
-          h('p', null, imageReference && event.delivery === 'sent'
+          h('p', null, fileRead ? 'Read '
+            : imageReference && event.delivery === 'sent'
             ? 'Sent the image from '
             : imageReference ? 'Image reference was not sent from '
             : tablePrepared ? 'Prepared the table from '
@@ -2533,7 +2537,11 @@ window.SW = window.SW || {};
             : documentOperation ? 'Couldn\'t read '
             : textOperation ? 'Analyzed from ' : 'Calculated in Domino from ',
             h(Tag, { 'aria-label': `Source file: ${source}` }, source.split('/').pop()), '.'),
-          imageReference
+          fileRead
+            ? h('p', null, event.status === 'withheld'
+              ? 'The agent read this file; its content was withheld from this conversation.'
+              : 'The agent read this file directly.')
+            : imageReference
             ? h('p', null, event.delivery === 'sent'
               ? 'The model received the image.'
               : event.failure === 'capability'

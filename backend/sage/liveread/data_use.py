@@ -83,7 +83,14 @@ OPEN_CODE_DATA_CARRIERS = (
         "model_view": "the Project MCP server's output as it returned it",
         "lineage": "server and tool known; the data behind the output is not",
     },
+    {
+        "carrier": "OpenCode read of an attached Dataset file",
+        "coverage": "recorded, not withheld",
+        "model_view": "the file as `read` returned it",
+        "lineage": "Dataset file known from the turn's attachments",
+    },
 )
+_READ_CARRIER = OPEN_CODE_DATA_CARRIERS[-1]["carrier"]
 
 
 class DataUse:
@@ -97,6 +104,14 @@ class DataUse:
         self._logged_marker_echoes: set[str] = set()
         self._logged_marker_echo_order: deque[str] = deque()
         self._observed_marker_echoes = 0
+        self._file_reads = ({}, None, "")
+
+    def watch_file_reads(self, files, persist, turn_id):
+        """The attached Dataset files this turn can `read` directly, workspace path -> the Dataset
+        name and relative path. `prepare` is the only place such a read is seen, so it records it."""
+        with self.lock:
+            self._file_reads = ({normalize_write_path(path): source
+                                 for path, source in files.items()}, persist, turn_id)
 
     def record(self, event, reply, persist, turn_id):
         with self.lock:
@@ -327,6 +342,8 @@ class DataUse:
                                 message = {**message, "content": json.dumps(shape)}
                                 break
                     cid = str(message.get("tool_call_id") or "")
+                    if path and cid:
+                        self._record_file_read(cid, path, content)
                     call = calls.get(message.get("tool_call_id"), {})
                     if _echoes_the_withheld_mark(call):
                         # Answered BEFORE the receipt branch, and keyed on the call rather than on
@@ -417,6 +434,22 @@ class DataUse:
         used.difference_update(image_operations)
         used.update(current_image_operations)
         return {**request, "messages": messages}, used
+
+    def _record_file_read(self, cid, path, content):
+        """One row per read call: the request carries the whole history every time (#688)."""
+        files, persist, turn_id = self._file_reads
+        read = normalize_write_path(path)
+        source = next((name for rel, name in files.items()
+                       if read == rel or read.endswith("/" + rel)), None)
+        oid = "du_read_" + cid
+        if source is None or oid in self.operations:
+            return
+        withheld = _tool_content_text(content).startswith("[withheld:")
+        self.record({"operation_id": oid, "operation": "document_reference", "source": source,
+                     "source_kind": "file", "carrier": _READ_CARRIER,
+                     "purpose": "Read an attached Dataset file",
+                     "status": "withheld" if withheld else "prepared", "requests": []},
+                    {}, persist, turn_id)
 
     def _remember_sources(self, sources):
         by_path = {normalize_write_path(str(s.get("path") or "")): copy.deepcopy(s)
@@ -656,6 +689,9 @@ def _shape_from_text(text):
 
 
 def _source_from_event(event):
+    if event.get("carrier") == _READ_CARRIER:
+        # `prepare` turns a read of any remembered source into a receipt; the model keeps this one.
+        return {"path": ""}
     return {"path": str(event.get("source") or event.get("artifact") or ""),
             "columns": list(event.get("columns") or []),
             "rows": (None if event.get("operation") == "document_reference"
