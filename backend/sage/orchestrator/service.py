@@ -21866,6 +21866,10 @@ class Orchestrator:
         # no-edit turn that would set aside what the build already wrote.
         plan_fixes = 0
         answering_plan_fix = False
+        # The same for every repair (#694): once an iteration of this turn wrote, a later reply that
+        # writes nothing ends the way an unsuccessful repair ends, not on the no-edit ladder, which
+        # would report "didn't change any files" and leave the earlier work unsaved.
+        wrote_earlier = False
         GATEWAY_FIX_NUDGE = (
             # Self-contained rather than pointing at a heading in AGENTS.md: `agents_block` writes
             # no model section at all for an app with no Alias bound, and titles it in the plural for
@@ -24049,8 +24053,9 @@ class Orchestrator:
             # old error into typecheck repair spends three model turns without ever asking for the
             # requested implementation. The same tree witness catches opaque shell writes, so they
             # remain real edits and take the repair path below.
-            wrote_code = agent_wrote() or answering_plan_fix
+            wrote_code = agent_wrote() or answering_plan_fix or wrote_earlier
             answering_plan_fix = False
+            wrote_earlier = wrote_code
             if turn_span is not None:
                 turn_span.fields.update(stack=project.app_for_turn().stack.name,
                                         no_edit_attempt=nudges, wrote_code=wrote_code)
