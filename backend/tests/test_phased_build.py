@@ -511,6 +511,9 @@ def test_the_toggle_off_leaves_the_approve_path_untouched(tmp_path: Path):
     orch, oc, _project, plan_events = _plan_then_phases(tmp_path, phased=False)
     # No step count on the card, so the Approve button reads exactly as it does today.
     assert _of(plan_events, "plan-proposed")[0]["steps"] == 0
+    # Unphased, one build turn writes every step's file, or the turn ends incomplete (#684).
+    oc.turns[1:] = [Turn(writes={rel: f"// {rel}\nexport const x = 1;\n"
+                                 for rel in ("src/data.ts", "src/Table.tsx", "src/Filter.tsx")})]
 
     events = list(orch.approve_stream())
     assert "build-plan" not in _kinds(events)

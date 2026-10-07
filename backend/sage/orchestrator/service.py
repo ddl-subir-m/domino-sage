@@ -6115,6 +6115,12 @@ def _app_change_event(workspace: Workspace) -> dict:
     return {"type": "app_change", "appId": workspace.app_id, "name": _app_display_name(workspace)}
 
 
+def _listed_steps(steps: list[PlanStep]) -> str:
+    """`step 2 (Charts) and step 3 (Deal desk)`: plan steps as one phrase."""
+    named = [f"step {s.n} ({s.label})" for s in steps]
+    return ", ".join(named[:-1]) + f" and {named[-1]}" if len(named) > 1 else named[0]
+
+
 def _crossing_minted_app(workspace: Workspace, conversation: str) -> bool:
     """Did this conversation's crossing MAKE this app, or find it already standing?
 
@@ -20679,7 +20685,8 @@ class Orchestrator:
                       validate_page: bool | None = None,
                       continuation_note: str = "",
                       initial_repair_objective: str = "implementation",
-                      how_sage_works: str = "guided", dataset_note: str = ""):
+                      how_sage_works: str = "guided", dataset_note: str = "",
+                      unbuilt_steps: Callable[[], list[PlanStep]] | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -21791,6 +21798,12 @@ class Orchestrator:
         # beside it, and for the same reason: a defect we can describe but cannot make the agent fix.
         gateway_fixes = 0
         max_gateway_fixes = self._build_policy.gateway_repair_limit
+        # An approved plan's step this build wrote none of the files for (#684). Once: the step is
+        # named, and a second copy of the same sentence would not name it better. A reply that
+        # writes nothing is still this build's reply, so it ends incomplete rather than as a
+        # no-edit turn that would set aside what the build already wrote.
+        plan_fixes = 0
+        answering_plan_fix = False
         GATEWAY_FIX_NUDGE = (
             # Self-contained rather than pointing at a heading in AGENTS.md: `agents_block` writes
             # no model section at all for an app with no Alias bound, and titles it in the plural for
@@ -23965,7 +23978,8 @@ class Orchestrator:
             # old error into typecheck repair spends three model turns without ever asking for the
             # requested implementation. The same tree witness catches opaque shell writes, so they
             # remain real edits and take the repair path below.
-            wrote_code = agent_wrote()
+            wrote_code = agent_wrote() or answering_plan_fix
+            answering_plan_fix = False
             if turn_span is not None:
                 turn_span.fields.update(stack=project.app_for_turn().stack.name,
                                         no_edit_attempt=nudges, wrote_code=wrote_code)
@@ -24125,6 +24139,20 @@ class Orchestrator:
                             files=", ".join(n for n, _ in raw_calls),
                             helper=project.app_for_turn().helpers.llm_path)
                         continue
+                # The footnote under an approved build (#662), read while the model can still act
+                # on it.
+                unbuilt = (unbuilt_steps() if unbuilt_steps is not None and report.ok and wrote_code
+                           else [])
+                if unbuilt and not plan_fixes and not project.stop_requested:
+                    plan_fixes += 1
+                    answering_plan_fix = True
+                    iterate_reason = "a plan step wrote none of its files — building it"
+                    yield {"type": "iterate", "reason": iterate_reason}
+                    current = " ".join(
+                        f"Plan step {s.n} ({s.label}) names {', '.join(s.files)}; none were written."
+                        for s in unbuilt) + (" Do those steps now." if len(unbuilt) > 1
+                                             else " Do that step now.")
+                    continue
                 restore_mode()
                 # The receipt for what this turn changed, before the line that closes the turn.
                 # `owns_turn` because a phase is not a turn: one approved plan changed one app, and
@@ -24163,9 +24191,12 @@ class Orchestrator:
                 if verification is not None and (failed or refused):
                     verification["stages"]["data"] = "failed"
                     verification["overall"] = "failed"
-                yield persist({"type": "done", "ok": report.ok and not failed and rt is None and refused is None,
+                yield persist({"type": "done", "ok": (report.ok and not failed and rt is None
+                                                      and refused is None and not unbuilt),
                                "decision": ("queries failed" if failed else "runtime failed" if rt
-                                            else "platform read failed" if refused else decision.reason),
+                                            else "platform read failed" if refused
+                                            else f"incomplete — plan {_listed_steps(unbuilt)} not built"
+                                            if unbuilt else decision.reason),
                                **({"verification": verification} if verification is not None else {})})
                 if wrote_code and owns_turn:
                     # Written work is durable even when verification fails. A phase leaves this
@@ -24493,7 +24524,9 @@ class Orchestrator:
                     # The planning session is the implement session. A fresh one dropped the
                     # reads the plan turn already did (ADR-0070). Phased builds and the
                     # continuation path keep a session per phase.
-                    fresh_session=False)
+                    fresh_session=False,
+                    unbuilt_steps=lambda: self._unbuilt_plan_steps(
+                        project, plan_md, tree_before, queries_before))
             unbuilt = self._plan_unbuilt_event(
                 project, plan_md, tree_before, queries_before, rows_before)
             if unbuilt is not None:
@@ -24554,25 +24587,30 @@ class Orchestrator:
         ended = next((r for r in reversed(rows) if r.get("type") in ("done", "stopped")), None)
         if ended is None or ended["type"] != "done":
             return None
+        unbuilt = self._unbuilt_plan_steps(project, plan_md, tree_before, queries_before)
+        if not unbuilt:
+            return None
+        return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": (
+            f"Not built from the plan: {_listed_steps(unbuilt)}. This build wrote none of the files "
+            + ("those steps name." if len(unbuilt) > 1 else "that step names."))}
+
+    @staticmethod
+    def _unbuilt_plan_steps(project: Project, plan_md: str, tree_before: str,
+                            queries_before: str) -> list[PlanStep]:
+        """The plan's steps that name files, none of which changed since `tree_before`. Empty for a
+        build that changed nothing: that turn already says so in its own words."""
         changed = project.snapshot.changed_paths(
             tree_before, project.snapshot.working_tree_hash(), limit=100_000)
         if project.snapshot.queries_digest() != queries_before:
             changed.append(QUERIES)
         if not changed:
-            return None
+            return []
 
         def written(name: str) -> bool:
             path = str(PurePosix(name))
             return any(c == path or c.startswith(path + "/") for c in changed)
 
-        unbuilt = [s for s in parse_steps(plan_md) if s.files and not any(map(written, s.files))]
-        if not unbuilt:
-            return None
-        named = [f"step {s.n} ({s.label})" for s in unbuilt]
-        listed = ", ".join(named[:-1]) + f" and {named[-1]}" if len(named) > 1 else named[0]
-        return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": (
-            f"Not built from the plan: {listed}. This build wrote none of the files "
-            + ("those steps name." if len(named) > 1 else "that step names."))}
+        return [s for s in parse_steps(plan_md) if s.files and not any(map(written, s.files))]
 
     def _skill_copy_drift(self, project: Project, tree_before: str, rows_before: int):
         """Yields and records the `skill-copy-drift` row for a build that finished (#682).

@@ -3418,7 +3418,10 @@ window.SW = window.SW || {};
                   ev.verification.reason ? ` — ${ev.verification.reason}` : ''}.`)
               : ev.decision === 'answered'
               ? 'Answered'
-              : (ev.ok ? 'Done — build is clean' : `Stopped — ${ev.decision}`),
+              : ev.ok ? 'Done — build is clean'
+              // A build that finished short of its plan did not stop (#684).
+              : /^incomplete — /.test(ev.decision || '') ? `I${ev.decision.slice(1)}`
+              : `Stopped — ${ev.decision}`,
           });
         }
         // The way back into a failed build that names its cause (ADR-0069, #570), under the line

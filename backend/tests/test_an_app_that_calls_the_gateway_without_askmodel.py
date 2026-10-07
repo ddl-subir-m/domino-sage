@@ -291,7 +291,7 @@ def _plan_then(writes: dict[str, str], repeats: int = 0) -> list[Turn]:
     end-of-turn scans at all, because the loop takes the "you planned but wrote no code" branch
     above them instead.
     """
-    return ([Turn(text=execution_plan("Model Chat", "A chat box.", "Box",
+    return ([Turn(text=execution_plan("Model Chat", "A chat box.", "Box", files=", ".join(writes),
                                       work="Add a box that asks the model.")),
              Turn(text="Built it.", writes=writes)]
             + [Turn(text="Trying again.", writes={f"src/note{i}.ts": f"export const n = {i};\n"})
