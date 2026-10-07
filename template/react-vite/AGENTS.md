@@ -329,6 +329,10 @@ components outside what was asked.
   `useEffect`** — a loader defined but only called from a retry button leaves the page stuck on the
   spinner forever. Every non-terminal state must have a code path that reaches a terminal one.
 - **Error:** a human-readable message plus how to recover.
+- **Tabs keep what is in them.** Switching tabs must not reload a panel or lose its filters.
+  Render every panel all the time and hide the inactive ones — `<section hidden={active !== key}>`
+  — rather than rendering only the active one; define panel components at top level, not inside
+  render.
 - **Data reads have separate loading, failure, and valid-empty states.** Check `response.ok`
   before using its JSON as data. A rejected request, 401/403, ambiguous 404, timeout, or unavailable
   credentials is an error with a retry action, never “No tags” or zero results. Show an empty state

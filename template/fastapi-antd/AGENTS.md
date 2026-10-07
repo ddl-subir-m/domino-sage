@@ -223,7 +223,7 @@ Everything below is a global the page already carries. Nothing else is, and noth
 | Global | Use it for |
 |--------|-----------|
 | `React`, `ReactDOM` | Everything. `React.createElement` builds elements; `React.useState` and friends are the hooks. |
-| `antd` | Every component: `antd.Table`, `Form`, `Input`, `Select`, `DatePicker`, `Card`, `Tabs`, `Modal`, `Drawer`, `Tag`, `Alert`, `Empty`, `Spin`, `Statistic`, `Typography`, `Space`, `Flex`, `Layout`. |
+| `antd` | Every component: `antd.Table`, `Form`, `Input`, `Select`, `DatePicker`, `Card`, `Tabs`, `Modal`, `Drawer`, `Tag`, `Alert`, `Empty`, `Spin`, `Statistic`, `Typography`, `Space`, `Flex`, `Layout`. `Tabs` keeps every pane mounted, with its state, as long as each pane goes in through `items` with a fixed `key`: never render a pane conditionally, and define each pane's component at top level, never inside another component's render. |
 | `icons` | Ant Design's icons, by name: `icons.SearchOutlined`, `icons.PlusOutlined`. |
 | `dayjs` | Formatting, parsing and date ranges; what `antd.DatePicker` gives and takes. Core only: no plugin is loaded, so `isSameOrAfter`, `isSameOrBefore`, `isBetween`, `utc` and the rest are not functions here. Compare with `isAfter`, `isBefore`, `isSame` and `valueOf`. |
 | `Highcharts` | Charts. Line, area, column, bar, pie, and the `more` and `funnel` modules are loaded. |
@@ -327,6 +327,9 @@ components outside what was asked.
   `React.useEffect`** — a loader defined but only called from a retry button leaves the page stuck
   on the spinner forever. Every non-terminal state must have a code path that reaches a terminal one.
 - **Error:** `antd.Alert` with a human-readable message plus how to recover.
+- **Tabs keep what is in them.** Switching tabs must not reload a pane or lose its filters. Pass
+  every pane through `antd.Tabs` `items` with a fixed `key`; never render a pane conditionally or
+  only while it is active; define pane components at top level, not inside render.
 - **Data reads have separate loading, failure, and valid-empty states.** Check `response.ok`
   before using its JSON as data. A rejected request, 401/403, ambiguous 404, timeout, or unavailable
   credentials is an error with a retry action, never “No tags” or zero results. Show an empty state
