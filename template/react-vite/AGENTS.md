@@ -96,6 +96,12 @@ Build the user's app by editing `src/`. There is no install or build step to run
 > This is for having **nothing** to build. It is not a way to stop at a plan, to ask what to do next,
 > to check a decision first, or to put off something awkward. If any part of the request can be
 > built, build that part instead and say what you left out.
+>
+> **The other exception is a repeat.** If your previous turn in this conversation already made
+> exactly what is being asked, and nothing in the request is new, say so in a sentence, naming the
+> file and line where it is, and write nothing. End that reply with `ALREADY_DONE` on a line by
+> itself. {assistantName} checks that your previous turn really did change the app; if it did not,
+> the turn carries on as a build.
 
 ## {project} rules
 - **Plan proportionally, then build.** Match the planning to the task. A simple app (one screen, a
@@ -109,9 +115,10 @@ Build the user's app by editing `src/`. There is no install or build step to run
   accomplished nothing. Do the minimal planning the task needs, then **edit `src/App.tsx` (and any
   other files) in that same turn** — never stop to wait for confirmation before writing code. If you
   find yourself planning a second time without having written anything, stop planning and start
-  editing now. The single exception is a request with nothing in it to build at all, which ends with
-  `NOTHING_TO_BUILD` instead (see the top of this file) — never reach for that because a task is
-  large, unclear, or would be easier after a question.
+  editing now. The two exceptions, a request with nothing in it to build at all and a repeat of what
+  your previous turn already made, end with `NOTHING_TO_BUILD` or `ALREADY_DONE` instead (see the
+  top of this file) — never reach for either because a task is large, unclear, or would be easier
+  after a question.
 - **Do not touch** `vite.config.ts`, `tsconfig*.json`, `package.json`, or `index.html`. The config
   is known-good; regenerating it wastes turns and breaks the preview. The same holds for
   `src/ErrorBoundary.tsx` and `src/reportRuntimeError.ts`, which are how a crash in this app

@@ -489,6 +489,112 @@ def test_a_marker_on_a_plan_turn_is_stripped_from_the_card(tmp_path: Path):
     assert "NOTHING_TO_BUILD" not in plan
 
 
+# --- a request the previous turn already did (#680) ----------------------------------------------
+
+ALREADY_DONE_REPLY = "The severity filter is already in place at src/App.tsx:1.\nALREADY_DONE"
+
+
+def test_the_same_request_twice_ends_cleanly_on_the_second_turn(tmp_path: Path):
+    """The live replay. Turn two answered correctly that it was done, then recovery restarted it,
+    spent the budget looking for something to change, and ended "Sage stopped before changing the
+    app". The previous turn did change the app and did not fail, so the claim is honoured."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Added the filter.", writes={"src/App.tsx": "// v2 severity filter\n"}),
+        Turn(text=ALREADY_DONE_REPLY),
+    ], verdict="BUILD")
+    _get_built(orch)
+    assert _done(_run(orch, "add a severity filter"))["ok"] is True
+
+    events = _run(orch, "add a severity filter")
+
+    done = dict(_done(events))
+    assert done.pop("turnId")
+    assert done == {"type": "done", "ok": True, "decision": "already done"}
+    assert _app(orch) == "// v2 severity filter\n"
+    kinds = [event["type"] for event in events]
+    assert "build-recovery" not in kinds
+    assert "build-pre-edit-limit" not in kinds
+    assert "iterate" not in kinds
+    assert "typecheck" not in kinds
+    said = "\n".join(e["text"] for e in events if e.get("type") == "agent" and e.get("kind") == "text")
+    assert "already in place" in said
+    assert "ALREADY_DONE" not in said
+
+
+def test_a_claim_with_no_earlier_change_still_recovers(tmp_path: Path):
+    """The fail-safe. The previous turn finished cleanly but changed nothing, so there is no earlier
+    change for this turn to point at and the pre-edit guard runs exactly as it does without the
+    marker."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="There is no clickstream table yet.\nNOTHING_TO_BUILD"),
+        Turn(text=ALREADY_DONE_REPLY),
+    ], verdict="BUILD")
+    _get_built(orch)
+    assert _done(_run(orch, "i attached it"))["decision"] == "nothing to build"
+
+    events = _run(orch, "add a severity filter")
+
+    assert _done(events)["ok"] is False
+    assert _done(events)["decision"] == "pre_edit_limit"
+    assert [event["type"] for event in events].count("build-recovery") == 1
+
+
+def test_a_claim_after_a_failed_turn_still_recovers(tmp_path: Path):
+    """The previous turn changed the app but ended badly, so what it left is not evidence that the
+    request is done. The row is rewritten here rather than produced by a real failure, because the
+    one fact under test is what the saved `done` says."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Added the filter.", writes={"src/App.tsx": "// v2 severity filter\n"}),
+        Turn(text=ALREADY_DONE_REPLY),
+    ], verdict="BUILD")
+    _get_built(orch)
+    _run(orch, "add a severity filter")
+    log = orch.project(start_preview=False).workspace.history_path
+    rows = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+    last_done = max(i for i, row in enumerate(rows) if row.get("type") == "done")
+    rows[last_done] = {**rows[last_done], "ok": False, "decision": "stalled"}
+    log.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    events = _run(orch, "add a severity filter")
+
+    assert _done(events)["decision"] == "pre_edit_limit"
+    assert [event["type"] for event in events].count("build-recovery") == 1
+
+
+@pytest.mark.parametrize("stack", ["react-vite", "fastapi-antd"])
+def test_the_build_prompt_teaches_the_line_sage_reads(stack: str):
+    """A marker the model is never told about is a branch no live turn reaches."""
+    from sage.orchestrator.service import ALREADY_DONE_MARKER
+
+    agents = (Path(__file__).resolve().parents[2] / "template" / stack / "AGENTS.md").read_text()
+    assert f"`{ALREADY_DONE_MARKER}` on a line by" in agents
+
+
+def test_a_claim_that_also_edits_is_an_ordinary_build(tmp_path: Path):
+    """This turn changed a file, so it is not "already done" whatever it says: the edit is kept and
+    checked like any other build's."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Added the filter.", writes={"src/App.tsx": "// v2 severity filter\n"}),
+        Turn(text=ALREADY_DONE_REPLY, writes={"src/App.tsx": "// v3\n"}),
+    ], verdict="BUILD")
+    _get_built(orch)
+    _run(orch, "add a severity filter")
+
+    events = _run(orch, "add a severity filter")
+
+    assert _done(events)["decision"] != "already done"
+    assert _done(events)["ok"] is True
+    assert _app(orch) == "// v3\n"
+
+
 # --- @mentioned Resources (#31) ------------------------------------------------------------------
 
 

@@ -19,6 +19,8 @@ _EXCLUDE = ["node_modules", "dist", ".sage", ".git", ".DS_Store", "__pycache__"]
 # un-excluding `.sage` would let Stop's reset and clean reach Sage's own state (#671, #672).
 QUERIES = ".sage/queries.json"
 
+_PRE_TURN = "pre-turn snapshot"
+
 
 class TurnSnapshot:
     def __init__(self, workspace_root: Path) -> None:
@@ -44,12 +46,34 @@ class TurnSnapshot:
         exclude.parent.mkdir(parents=True, exist_ok=True)
         exclude.write_text("\n".join(_EXCLUDE) + "\n")
 
-    def commit_before_turn(self) -> str:
-        """Snapshot the workspace's current file state before a turn starts."""
+    def commit_before_turn(self, turn_id: str = "") -> str:
+        """Snapshot the workspace's current file state before a turn starts.
+
+        `turn_id` goes into the message so turn_changed_app() can find this turn's snapshots later."""
         self._ensure_repo()
         self._run("add", "-A")
-        self._run("commit", "--allow-empty", "-q", "-m", "pre-turn snapshot")
+        self._run("commit", "--allow-empty", "-q", "-m", f"{_PRE_TURN} {turn_id}".strip())
         return self._run("rev-parse", "HEAD").stdout.strip()
+
+    def turn_changed_app(self, turn_id: str) -> bool:
+        """True if the turn `turn_id` changed any workspace file: the tree of its first snapshot
+        against the tree of the first snapshot taken after it, which is that turn's end state. A
+        phased build commits once per phase under the same id, so every one of those is skipped.
+        False when the turn is not in the log, or no later snapshot has been taken yet."""
+        if not turn_id:
+            return False
+        tag = f"{_PRE_TURN} {turn_id}"
+        result = self._run("log", "--reverse", "--format=%T %s")
+        if result.returncode != 0:
+            return False
+        before = ""
+        for line in result.stdout.splitlines():
+            tree, _, subject = line.partition(" ")
+            if not before:
+                before = tree if subject == tag else ""
+            elif subject != tag:
+                return tree != before
+        return False
 
     def discard_changes(self) -> None:
         """Undo everything since the last commit_before_turn(): restore tracked files,

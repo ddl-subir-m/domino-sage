@@ -148,3 +148,22 @@ def test_history_truncate_drops_entries_after_baseline(tmp_path: Path):
     ws.truncate_history(baseline)
 
     assert [h["text"] for h in ws.read_history()] == ["first"]
+
+
+def test_a_turn_changed_the_app_reads_across_its_phase_checkpoints(tmp_path: Path):
+    """#680's evidence. A phased turn commits once per phase under one id, so its end state is the
+    next turn's snapshot, not the next commit."""
+    snap = TurnSnapshot(tmp_path)
+    (tmp_path / "app.js").write_text("v0")
+    snap.commit_before_turn("turn_a")
+    snap.commit_before_turn("turn_a")  # phase two; phase one changed nothing
+    (tmp_path / "app.js").write_text("v1")
+    snap.commit_before_turn("turn_b")
+    snap.commit_before_turn("turn_c")
+
+    assert snap.turn_changed_app("turn_a") is True
+    assert snap.turn_changed_app("turn_b") is False
+    # No snapshot after it yet, and no such turn: neither is evidence of a change.
+    assert snap.turn_changed_app("turn_c") is False
+    assert snap.turn_changed_app("turn_x") is False
+    assert snap.turn_changed_app("") is False

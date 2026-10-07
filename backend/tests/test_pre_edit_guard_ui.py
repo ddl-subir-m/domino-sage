@@ -40,6 +40,23 @@ def test_recovery_and_terminal_events_render_once_and_keep_an_approved_plan():
     assert payload["plans"] == [{"pending": True, "cancelled": False}]
 
 
+@needs_node
+def test_an_already_done_turn_ends_on_a_success_line():
+    """#680: a turn whose request the previous turn already did is a finished turn, drawn as one."""
+    history = [
+        {"type": "user", "text": "add a severity filter"},
+        {"type": "agent", "kind": "text", "text": "The filter is already in place."},
+        {"type": "done", "ok": True, "decision": "already done"},
+    ]
+    result = subprocess.run(
+        ["node", str(_HARNESS)], input=json.dumps({"history": history}), text=True,
+        capture_output=True, check=False, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["values"] == ["Already done in the previous turn — nothing changed."]
+
+
 def test_live_event_handlers_only_update_ui_state_and_cannot_start_recovery_work():
     source = _STORE.read_text()
     branch = source[source.index("function applyBuildEvent(ev)"):
