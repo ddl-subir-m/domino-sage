@@ -7,6 +7,9 @@ CUMULATIVE history on every request, which is why each case that records also se
 """
 
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -128,3 +131,35 @@ def test_the_turn_hands_its_attached_dataset_files_to_data_use(tmp_path, mode):
     [event] = [e for row in history for e in row.get("dataUsed", [])]
     assert event["source"] == SOURCE
     assert event["source_kind"] == "file"
+
+
+def drawn(event):
+    """The words the real "Data used" card draws for one event, through the block dispatcher."""
+    harness = Path(__file__).resolve().parent / "js" / "data_used_grouping_harness.mjs"
+    out = subprocess.run(["node", str(harness)],
+                         input=json.dumps({"block": {"type": "data_used", "events": [event]}}),
+                         check=False, capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])["rendered"][0]["words"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not on PATH (it is in the Sage image)")
+@pytest.mark.parametrize("content, sentence", [
+    (TEXT, "The agent read this file directly."),
+    (withheld_result("/work/chat/" + FILE),
+     "The agent read this file; its content was withheld from this conversation."),
+], ids=["prepared", "withheld"])
+def test_the_card_claims_only_that_the_agent_read_the_file(content, sentence):
+    """Sage measured no characters, pages or truncation for a `read`, so the card claims none.
+    The event is the backend's own, so the carrier the card keys on cannot drift from it."""
+    data, journal = watched()
+    data.prepare(read_request("/work/chat/" + FILE, content))
+    [event] = rows(journal)
+
+    words = drawn(event)
+
+    assert "battlecards.md" in words
+    assert sentence in words
+    for claim in ("Prepared", "Couldn't read", "characters", "Whole document", "selected text",
+                  "Selected fields"):
+        assert claim not in words
