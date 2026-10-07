@@ -49,6 +49,28 @@ def test_a_plan_does_not_take_an_apps_name(tmp_path: Path):
     assert doc["title"] == "Support Ticket Explorer 2"
 
 
+def test_an_archived_plan_gives_its_name_back(tmp_path: Path):
+    """#686: a plan put away no longer holds its name, so the next one is not numbered past it."""
+    orch, _oc = _orch(tmp_path)
+    old = orch.create_plan_doc({"title": "Signal Room"})
+    orch.archive_plan_doc(old["id"], True)
+    assert orch.create_plan_doc({"title": "Signal Room"})["title"] == "Signal Room"
+
+
+def test_an_archived_plan_named_like_an_app_does_not_free_the_apps_name(tmp_path: Path):
+    orch, _oc = _orch(tmp_path)
+    old = orch.create_plan_doc({"title": "Signal Room"})
+    orch.archive_plan_doc(old["id"], True)
+    orch.project(start_preview=False).workspace.set_display_name("Signal Room")
+    assert orch.create_plan_doc({"title": "Signal Room"})["title"] == "Signal Room 2"
+
+
+def test_a_plan_not_put_away_still_holds_its_name(tmp_path: Path):
+    orch, _oc = _orch(tmp_path)
+    orch.create_plan_doc({"title": "Signal Room"})
+    assert orch.create_plan_doc({"title": "Signal Room"})["title"] == "Signal Room 2"
+
+
 def _arm_read(operation_id: str = "op-arm", *, total: int = 43026, requests: int = 40) -> dict:
     return {
         "operation_id": operation_id,
