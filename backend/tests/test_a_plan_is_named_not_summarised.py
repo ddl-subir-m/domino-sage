@@ -16,8 +16,8 @@ it did.
 """
 from __future__ import annotations
 
-from sage.orchestrator.handoff import plan_heading, plan_title
-from sage.orchestrator.service import _PLAN_SHAPE
+from sage.orchestrator.handoff import plan_heading, plan_prompt, plan_title
+from sage.orchestrator.service import _PLAN_SHAPE, _PLAN_VOICE
 from sage.workspace import plan_doc
 
 # What the live planner wrote, exactly.
@@ -39,6 +39,40 @@ def test_the_shape_says_what_a_name_is_not():
     """The planner's default is a description. It has to be told the difference."""
     assert "never a sentence" in _PLAN_SHAPE
     assert "No leading 'A' or 'The'" in _PLAN_SHAPE
+
+
+def test_a_name_the_request_gives_is_the_heading_word_for_word():
+    """#670: asked for "an app called Signal Room", the planner coined three other names in a row."""
+    assert "If the request names the app" in _PLAN_SHAPE
+    assert "that name is the heading, word for word" in _PLAN_SHAPE
+    assert "Only invent a name when the request gives none." in _PLAN_SHAPE
+
+
+def test_the_verbatim_rule_lets_the_requested_name_through():
+    assert "verbatim, except a name the request gives the app" in _PLAN_SHAPE
+
+
+def test_a_redraft_may_keep_its_own_name():
+    """A redraft runs in the same session, so the plan it replaces is already in the project. The
+    fresh-name rule must not push it off the name it was given."""
+    assert "A plan written again keeps its own name" in _PLAN_SHAPE
+
+
+def test_a_rename_asked_for_on_a_redraft_beats_the_plans_own_name():
+    """"Call it X instead" before a redraft must win over the redraft keeping its old name."""
+    assert ("unless the request gives a new name: a name the request gives always wins"
+            in _PLAN_SHAPE)
+
+
+def test_a_requested_name_is_used_even_if_the_project_already_has_it():
+    assert "already in this project, unless the request gave that name" in _PLAN_SHAPE
+
+
+def test_the_handoff_plan_prompt_carries_the_request_and_the_naming_rule():
+    prompt = plan_prompt("thr_1", "Asked: an app called Signal Room.", voice=_PLAN_VOICE,
+                         shape=_PLAN_SHAPE)
+    assert "Asked: an app called Signal Room." in prompt
+    assert "that name is the heading, word for word" in prompt
 
 
 def test_the_example_name_does_not_teach_the_control_rule_the_wrong_key():

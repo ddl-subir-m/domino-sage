@@ -179,6 +179,45 @@ def test_the_confirm_names_the_new_app_what_the_sheet_says(tmp_path: Path):
     assert names[result["handoff"]["appId"]] == "Signal Room"
 
 
+def test_the_confirm_renames_the_plan_to_what_the_sheet_says(tmp_path: Path):
+    """#670: the app took the sheet's name and the plan kept the planner's, so the two disagreed."""
+    orch, _root, tid = _orch(tmp_path, [Turn(text=_BOARD)])
+    plan_id = orch.draft_handoff_plan(tid)["handoff"]["planId"]
+
+    orch.confirm_handoff(tid, _NOTHING_EXTRA, {"name": "Signal Room"})
+
+    doc = orch.read_plan_doc(plan_id)
+    assert doc["title"] == "Signal Room"
+    assert doc["markdown"].startswith("# Signal Room\n")
+    assert "# Pipeline Signal Board" not in doc["markdown"]
+
+
+def test_the_confirm_gives_a_plan_with_no_heading_the_sheets_name(tmp_path: Path):
+    orch, _root, tid = _orch(tmp_path, [Turn(text=execution_plan(
+        "Pipeline Signal Board", "A pipeline signal board.", "Signal table", include_title=False))])
+    plan_id = orch.draft_handoff_plan(tid)["handoff"]["planId"]
+
+    orch.confirm_handoff(tid, _NOTHING_EXTRA, {"name": "Signal Room"})
+
+    doc = orch.read_plan_doc(plan_id)
+    assert doc["title"] == "Signal Room"
+    assert doc["markdown"].startswith("# Signal Room\n\nA pipeline signal board.")
+
+
+def test_a_plan_built_into_an_existing_app_keeps_its_own_name(tmp_path: Path):
+    """The sheet names only a NEW app; an existing one keeps its name, so the plan keeps its own."""
+    orch, _root, tid = _orch(tmp_path, [Turn(text=_BOARD), Turn(text=_ROOM)])
+    orch.draft_handoff_plan(tid)
+    first = orch.confirm_handoff(tid, _NOTHING_EXTRA)["handoff"]["appId"]
+    plan_id = orch.draft_handoff_plan(tid)["handoff"]["planId"]
+
+    orch.confirm_handoff(tid, _NOTHING_EXTRA, {"appId": first, "name": "Something Else"})
+
+    doc = orch.read_plan_doc(plan_id)
+    assert doc["title"] == "Signal Room"
+    assert doc["markdown"].startswith("# Signal Room\n")
+
+
 # ---- 4. each handoff has its own plan ----------------------------------------------------------
 
 
