@@ -89,3 +89,48 @@ def test_the_turn_names_the_linked_path_and_lists_the_real_folder(tmp_path: Path
     assert f"files at {mounted_dataset_link(str(mount))}." in prompt
     assert "Read these files: `playbook.md`." in prompt
     assert str(mount) not in prompt
+
+
+def _pinned_file_turn(tmp_path: Path, monkeypatch, path: Path, prompt: str) -> dict:
+    """One Chat turn on a Thread holding a single file chip at absolute `path`."""
+    monkeypatch.setenv("DOMINO_DATASET_MOUNT_PATH", str(tmp_path / "mnt" / "data"))
+    orch, oc = _orch(tmp_path, [Turn(text="ok")])
+    tid = orch.create_thread()["id"]
+    orch.add_thread_context(tid, {"kind": "file", "name": path.name, "path": str(path)})
+    list(orch.chat_stream(tid, prompt))
+    return oc.prompts[0]
+
+
+def test_a_file_pinned_from_a_mounted_dataset_is_named_through_its_dataset_link(
+        tmp_path: Path, monkeypatch):
+    """One file pinned from a mounted Dataset sits outside the project just as its folder does, so
+    it is named inside the link to the Dataset that holds it — the same link a Dataset chip gets."""
+    mount = _mount(tmp_path, "data", "sales-playbooks", "q3").parent
+
+    sent = _pinned_file_turn(tmp_path, monkeypatch, mount / "q3" / "playbook.md", "summarise it")
+
+    assert f"at {mounted_dataset_link(str(mount))}/q3/playbook.md" in sent["text"]
+    assert str(mount) not in sent["text"]
+
+
+def test_an_at_named_file_from_a_mounted_dataset_is_attached_by_its_linked_path(
+        tmp_path: Path, monkeypatch):
+    mount = _mount(tmp_path, "data", "sales-playbooks", "q3").parent
+
+    sent = _pinned_file_turn(tmp_path, monkeypatch, mount / "q3" / "playbook.md",
+                             "what does @playbook.md say?")
+
+    assert [a["path"] for a in sent["attachments"] or []] == [
+        f"{mounted_dataset_link(str(mount))}/q3/playbook.md"]
+
+
+def test_a_file_outside_every_mounted_dataset_keeps_its_path(tmp_path: Path, monkeypatch):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "notes.md").write_text("# notes\n")
+
+    sent = _pinned_file_turn(tmp_path, monkeypatch, elsewhere / "notes.md",
+                             "what do the @notes.md say?")
+
+    assert f"at {elsewhere / 'notes.md'}" in sent["text"]
+    assert [a["path"] for a in sent["attachments"] or []] == [str(elsewhere / "notes.md")]

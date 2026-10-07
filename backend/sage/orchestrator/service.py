@@ -50,6 +50,7 @@ from ..assets.provider import (
     DatasetFile,
     FakeAssetProvider,
     FileListing,
+    resolve_mount_roots,
 )
 from ..build_intent import BuildIntent
 from ..build_policy import BuildPolicy, load_build_policy
@@ -2239,25 +2240,50 @@ def _describe_context_file(workspace: Path, item: dict) -> str:
     return str(d.get("shape") or d.get("summary") or "").strip()
 
 
+def _mounted_dataset_of(item: dict) -> str | None:
+    """The mounted Dataset folder a chip's absolute path names or sits in, or None.
+
+    A Dataset chip's path is the folder. A file chip's is a file inside one, and Domino mounts each
+    Dataset at `<mount root>/<name>` (`DominoAssetProvider._mount_path_for`), so its folder is the
+    first segment under the first root holding it, in the order that lookup tries them.
+    """
+    path = str(item.get("path") or "")
+    if not Path(path).is_absolute() or _dataset_pseudo_path(item):
+        return None
+    kind = str(item.get("kind") or "")
+    if kind == "dataset":
+        return path
+    if kind not in ("file", "artifact"):
+        return None
+    for root in resolve_mount_roots():
+        inside = Path(path).relative_to(root).parts if Path(path).is_relative_to(root) else ()
+        if len(inside) > 1:
+            return str(Path(root) / inside[0])
+    return None
+
+
 def _mounted_dataset_paths(items: list[dict]) -> list[str]:
-    """The absolute folders of the mounted Dataset chips among `items`, for the Chat workdir."""
-    return [str(it["path"]) for it in items
-            if str(it.get("kind") or "") == "dataset" and not _dataset_pseudo_path(it)
-            and Path(str(it.get("path") or "")).is_absolute()]
+    """The absolute folders of the mounted Datasets the chips among `items` name or sit in, for the
+    Chat workdir."""
+    return [m for it in items if (m := _mounted_dataset_of(it))]
 
 
 def _linked_dataset_chip(workspace: Path, item: dict) -> dict:
-    """`item` naming its mounted folder by the Chat-workdir link, when that link is there.
+    """`item` naming its mounted folder, or its file in one, by the Chat-workdir link, when that
+    link is there.
 
     `external_directory: deny` refuses the file tools on `/mnt/data/...`, and the agent follows the
     path the chip line gives it (#675). The link resolves to the same folder, so the folder note
     still lists the real files.
     """
-    path = str(item.get("path") or "")
-    if not path or not Path(path).is_absolute() or _dataset_pseudo_path(item):
+    mount = _mounted_dataset_of(item)
+    if not mount:
         return item
-    link = mounted_dataset_link(path)
-    return {**item, "path": link} if (workspace / link).is_symlink() else item
+    link = mounted_dataset_link(mount)
+    if not (workspace / link).is_symlink():
+        return item
+    inside = Path(str(item["path"])).relative_to(mount).as_posix()
+    return {**item, "path": link if inside == "." else f"{link}/{inside}"}
 
 
 def _context_folder_state(workspace: Path, item: dict) -> str:
@@ -13462,14 +13488,15 @@ class Orchestrator:
                 continue
             if path in seen:
                 continue
+            given = str(_linked_dataset_chip(workspace, it).get("path") or "")
             try:
-                real = Path(path) if Path(path).is_absolute() else _safe_join(workspace, path)
+                real = Path(given) if Path(given).is_absolute() else _safe_join(workspace, given)
                 d = describe(str(real))
             except (ValueError, OSError, TypeError):
                 continue
             seen.add(path)
             out.append({
-                "path": path,
+                "path": given,
                 "name": name,
                 "summary": str(d.get("summary") or ""),
                 "detail": _mention_block(d),
@@ -15988,6 +16015,7 @@ class Orchestrator:
                 if it in same[1:]:
                     continue
                 if workspace is not None and kind in ("file", "artifact"):
+                    it = _linked_dataset_chip(workspace, it)
                     note = _describe_context_file(workspace, it)
                 elif workspace is not None and kind == "dataset":
                     it = _linked_dataset_chip(workspace, it)
