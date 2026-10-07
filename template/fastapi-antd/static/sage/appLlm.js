@@ -164,12 +164,23 @@ window.sage = window.sage || {};
     }
   }
 
+  // `askModel({ messages, alias, maxTokens })`, the shape of an SDK call, is the same call as
+  // `askModel(messages, { alias, maxTokens })` (#681): taken as messages, it lost the options and
+  // the gateway refused the object with a 422.
+  function callForm(input, options) {
+    if (input && typeof input === "object" && !Array.isArray(input)) {
+      const { messages, ...rest } = input;
+      return [messages, { ...rest, ...options }];
+    }
+    return [input, options || {}];
+  }
+
   /**
    * Ask one of this app's models a question, and resolve with its whole answer.
    *
    * Rejects with a `sage.ModelError` whose `message` is written for the viewer — show it as-is.
    *
-   *     const answer = await sage.askModel([{ role: "user", content: question }]);
+   *     const text = await sage.askModel([{ role: "user", content: question }]);   // a string
    *
    * Pass `onToken` to render the answer as it arrives; `onOutcome` for one final outcome per
    * request; `alias` when this app uses more than one model (the names are in `models` in
@@ -177,7 +188,8 @@ window.sage = window.sage || {};
    *
    * Streaming is off unless `onToken` is given, because not every Alias offers it.
    */
-  sage.askModel = async function askModel(messages, opts = {}) {
+  sage.askModel = async function askModel(input, options) {
+    const [messages, opts] = callForm(input, options);
     if (!config.base || !models.length) throw new Error(NO_MODEL);
     const model = pick(opts.alias);
     if (!model) throw new Error(unknownModel(opts.alias));
@@ -227,6 +239,52 @@ window.sage = window.sage || {};
     }
     if (opts.onOutcome) opts.onOutcome({ status: "complete", evidence });
     return answer;
+  };
+
+  const JSON_ONLY = "Answer with one JSON value only: no prose before or after it, no markdown, no code fence.";
+
+  /**
+   * Ask for a structured answer, and resolve with a value either way (#681). Never throws.
+   *
+   *     const brief = await sage.askJson(messages, {
+   *       schemaHint: '{ "summary": string, "risks": string[] }',
+   *       fallback: { summary: "", risks: [] },
+   *     });
+   *     if (!brief.ok) showNotice(brief.error);   // brief.value is the fallback
+   *
+   * Resolves `{ ok: true, value, evidence }` or `{ ok: false, value: fallback, error, kind }`, where
+   * `error` is written for the viewer and `kind` is a `ModelError` kind, `invalid_json`, or
+   * `unavailable` (no model, or an Alias this app does not use). No streaming. `maxTokens` is at
+   * least 1200 (1500 when unset), because a JSON answer cut short has no closing brace.
+   */
+  sage.askJson = async function askJson(input, options) {
+    const [messages, opts] = callForm(input, options);
+    let evidence = null;
+    const rule = JSON_ONLY + (opts.schemaHint ? ` Its shape: ${opts.schemaHint}` : "");
+    let text;
+    try {
+      const first = messages[0];
+      const asked = first && first.role === "system"
+        ? [{ role: "system", content: `${first.content}\n\n${rule}` }, ...messages.slice(1)]
+        : [{ role: "system", content: rule }, ...messages];
+      text = await sage.askModel(asked, {
+        alias: opts.alias, signal: opts.signal, temperature: opts.temperature,
+        maxTokens: Math.max(opts.maxTokens === undefined ? 1500 : opts.maxTokens, 1200),
+        onOutcome: (outcome) => {
+          evidence = outcome.evidence;
+          if (opts.onOutcome) opts.onOutcome(outcome);
+        },
+      });
+    } catch (error) {
+      return { ok: false, value: opts.fallback, error: error.message, kind: error.kind || "unavailable" };
+    }
+    const fenced = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i.exec(text);
+    try {
+      return { ok: true, value: JSON.parse(fenced ? fenced[1] : text), evidence };
+    } catch {
+      return { ok: false, value: opts.fallback, kind: "invalid_json",
+               error: "The model's answer could not be read as data. Try again." };
+    }
   };
 
   async function readWhole(res, evidence) {

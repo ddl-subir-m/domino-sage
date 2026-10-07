@@ -265,12 +265,21 @@ function checkChoice(choice: Json, evidence: ModelEvidence, partial: string): vo
   }
 }
 
+/** `askModel({ messages, alias, maxTokens })`, the shape of an SDK call, is the same call as
+ * `askModel(messages, { alias, maxTokens })` (#681): taken as messages, it lost the options and the
+ * gateway refused the object with a 422. */
+function callForm<O>(input: ChatMessage[] | (O & { messages: ChatMessage[] }), options?: O): [ChatMessage[], O] {
+  if (Array.isArray(input) || !input) return [input as ChatMessage[], (options ?? {}) as O];
+  const { messages, ...rest } = input;
+  return [messages, { ...rest, ...options } as O];
+}
+
 /**
  * Ask one of this app's models a question, and resolve with its whole answer.
  *
  * Rejects with an `Error` whose `message` is written for the viewer — show it as-is.
  *
- *     const answer = await askModel([{ role: "user", content: question }]);
+ *     const text = await askModel([{ role: "user", content: question }]);   // a string
  *
  * Pass `onToken` to render the answer as it arrives:
  *
@@ -284,7 +293,11 @@ function checkChoice(choice: Json, evidence: ModelEvidence, partial: string): vo
  * Streaming is off unless `onToken` is given, because not every Alias offers it — the capability is
  * per-Alias in the gateway, and asking for a stream from one that has none fails the whole call.
  */
-export async function askModel(messages: ChatMessage[], opts: AskOptions = {}): Promise<string> {
+export async function askModel(
+  input: ChatMessage[] | (AskOptions & { messages: ChatMessage[] }),
+  options?: AskOptions,
+): Promise<string> {
+  const [messages, opts] = callForm(input, options);
   if (!config.base || !models.length) throw new Error(NO_MODEL);
   const model = pick(opts.alias);
   if (!model) throw new Error(unknownModel(opts.alias as string));
@@ -332,6 +345,68 @@ export async function askModel(messages: ChatMessage[], opts: AskOptions = {}): 
   }
   opts.onOutcome?.({ status: "complete", evidence });
   return answer;
+}
+
+export type JsonOptions<T> = Omit<AskOptions, "onToken"> & {
+  /** The shape you want, written for the model: `'{ "summary": string, "risks": string[] }'`. */
+  schemaHint?: string;
+  /** What `value` is when there is no usable answer. Draw the screen from it either way. */
+  fallback: T;
+};
+
+export type JsonAnswer<T> =
+  | { ok: true; value: T; evidence: ModelEvidence | null }
+  | { ok: false; value: T; error: string; kind: ModelFailure | "invalid_json" | "unavailable" };
+
+const JSON_ONLY = "Answer with one JSON value only: no prose before or after it, no markdown, no code fence.";
+
+/**
+ * Ask for a structured answer, and resolve with a value either way (#681). Never throws.
+ *
+ *     const brief = await askJson<Brief>(messages, {
+ *       schemaHint: '{ "summary": string, "risks": string[] }',
+ *       fallback: { summary: "", risks: [] },
+ *     });
+ *     if (!brief.ok) setNotice(brief.error);   // brief.value is the fallback
+ *
+ * `error` is written for the viewer. `kind` is a `ModelError` kind, `invalid_json`, or
+ * `unavailable` (no model, or an Alias this app does not use). No streaming. `maxTokens` is at
+ * least 1200 (1500 when unset), because a JSON answer cut short has no closing brace.
+ */
+export function askJson<T>(messages: ChatMessage[], opts: JsonOptions<T>): Promise<JsonAnswer<T>>;
+export function askJson<T>(request: JsonOptions<T> & { messages: ChatMessage[] }): Promise<JsonAnswer<T>>;
+export async function askJson<T>(
+  input: ChatMessage[] | (JsonOptions<T> & { messages: ChatMessage[] }),
+  options?: JsonOptions<T>,
+): Promise<JsonAnswer<T>> {
+  const [messages, opts] = callForm(input, options);
+  let evidence: ModelEvidence | null = null;
+  const rule = JSON_ONLY + (opts.schemaHint ? ` Its shape: ${opts.schemaHint}` : "");
+  let text: string;
+  try {
+    const first = messages[0];
+    const asked: ChatMessage[] = first?.role === "system"
+      ? [{ role: "system", content: `${first.content}\n\n${rule}` }, ...messages.slice(1)]
+      : [{ role: "system", content: rule }, ...messages];
+    text = await askModel(asked, {
+      alias: opts.alias, signal: opts.signal, temperature: opts.temperature,
+      maxTokens: Math.max(opts.maxTokens ?? 1500, 1200),
+      onOutcome: (outcome) => {
+        evidence = outcome.evidence;
+        opts.onOutcome?.(outcome);
+      },
+    });
+  } catch (error) {
+    return { ok: false, value: opts.fallback, error: (error as Error).message,
+             kind: (error as ModelError).kind ?? "unavailable" };
+  }
+  const fenced = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i.exec(text);
+  try {
+    return { ok: true, value: JSON.parse(fenced ? fenced[1] : text) as T, evidence };
+  } catch {
+    return { ok: false, value: opts.fallback, kind: "invalid_json",
+             error: "The model's answer could not be read as data. Try again." };
+  }
 }
 
 async function readWhole(res: Response, evidence: ModelEvidence): Promise<string> {
