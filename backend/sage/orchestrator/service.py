@@ -8878,6 +8878,20 @@ class Orchestrator:
                         "{platformName}, then delete this app."))
                 try:
                     self._control_plane.delete_app_deployment(deployed)
+                except NotFound as e:
+                    # Usually the App was deleted on its own settings page in Domino (#668), and
+                    # then there is nothing left to delete. But a deployment that does not route
+                    # DELETE 404s every call, the trap `rename_app` sets out above, so ASK before
+                    # trusting it; None is "could not check", which is not a yes.
+                    if self._target_is_gone(deployed) is not True:
+                        log.exception("delete_app: Domino App %s answered 404 but is still there",
+                                      deployed)
+                        raise RuntimeError(brand.text(
+                            "{assistantName} couldn't delete the {platformName} App "
+                            "({deployed}): {reason}. This {builtApp} is still here. Try again, or "
+                            "delete the App in {platformName} first.",
+                            deployed=deployed, reason=e)) from e
+                    log.info("delete_app: Domino App %s is already gone", deployed)
                 except Exception as e:
                     log.exception("delete_app: couldn't delete Domino App %s", deployed)
                     # `reason` is the platform's own words, so it rides in as a value and is left
