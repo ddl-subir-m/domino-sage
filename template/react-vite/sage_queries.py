@@ -388,7 +388,7 @@ def _one_query(entry: dict, name: str, sources: dict) -> Query:
     elif not binding:
         problem = f"The query {name} does not say which Data Source it reads."
     elif source is None:
-        problem = (f"The query {name} reads the Data Source {binding}, which this app is no longer "
+        problem = (f"The query {name} reads the Data Source {binding}, which this app is not "
                    f"recorded as using.")
     elif placeholders - declared:
         problem = (f"The query {name} uses {', '.join(sorted(placeholders - declared))}, which it "
