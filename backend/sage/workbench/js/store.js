@@ -3515,10 +3515,13 @@ window.SW = window.SW || {};
           // save, and drawing it in success styling would hide that the work isn't on the remote.
           // "Pull the latest" is the remedy only when the remote is ahead. A hook refusal is
           // not that, and there is no pull control on this line either way.
+          // A 5xx from the remote is an outage, not a refusal: the next save pushes what is unsent.
           const detail = ev.detail ? ` (${ev.detail})` : '';
           value = pushWasBehind(ev)
             ? `Saved locally — not pushed. Pull the latest, then save again.${detail}`
-            : `Saved locally — not pushed. The remote refused the push.${detail}`;
+            : /\berror:\s*5\d\d\b/i.test(ev.detail || '')
+              ? `Saved locally — not pushed. GitHub returned an error; Sage pushes again on the next save.${detail}`
+              : `Saved locally — not pushed. The remote refused the push.${detail}`;
           warn = true;
         } else if (ev.ok) {
           value = ev.pushed ? 'Saved and pushed' : `Saved${ev.detail ? ` — ${ev.detail}` : ''}`;
