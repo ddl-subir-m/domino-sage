@@ -5,14 +5,14 @@
 //
 // Preview-only: a published Domino App has no Sage backend to report to. `sage.preview` is stamped
 // into the page by the server Sage's builder runs, and never by a published one. The endpoint is the
-// builder's, derived from the preview's base (`<prefix>/preview`) by swapping the trailing `preview`
-// for `api/`; both are same-origin behind the one proxy.
+// builder's, derived from the preview's base (`<prefix>/preview/<appId>`) by swapping the trailing
+// `preview/<appId>` for `api/`; both are same-origin behind the one proxy.
 //
 // Sage owns this file. Do not edit it.
 window.sage = window.sage || {};
 
 (function () {
-  const API = sage.base.replace(/\/preview\/?$/, "").replace(/\/$/, "") + "/api/";
+  const API = sage.base.replace(/\/preview(?:\/[^/]+)?\/?$/, "").replace(/\/$/, "") + "/api/";
   const ENDPOINT = API + "preview/runtime-error";
   // Fixed when this document loads; a later app selection cannot retag its reports.
   const validationId = new URLSearchParams(window.location.search).get("sageValidation") || "";
