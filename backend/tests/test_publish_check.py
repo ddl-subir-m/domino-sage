@@ -3,7 +3,7 @@
 #15 already runs this check at the end of every build turn, and the sentences go into AGENTS.md so
 the agent meets them on its next turn. The gap this closes is the session that has no next turn: the
 creator reads the plan, likes it, and publishes. Several minutes of cold start later, someone opening
-the app gets a 503 carrying a sentence the creator could have read before any of it started.
+the app gets a 422 carrying a sentence the creator could have read before any of it started.
 
 So the thing worth pinning here is not that a check exists — `test_bound_schema.py` already covers
 `catalog_problems` — but the two properties that make it useful at publish time and easy to lose:
@@ -112,7 +112,7 @@ def test_the_creator_reads_the_same_sentence_the_viewer_would(tmp_path: Path):
 
     with _running(root) as base:
         r = httpx.post(f"{base}/api/queries/revenue", json={"params": {}})
-    assert r.status_code == 503
+    assert r.status_code == 422
     assert told == [r.json()["error"]]
 
 

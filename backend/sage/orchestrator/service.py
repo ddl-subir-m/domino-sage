@@ -120,7 +120,7 @@ from ..resources.bound_schema import (
     render_schema,
 )
 from ..resources.bound_schema import agents_block as data_agents_block
-from ..resources.builtapp import catalog_problems, serve_module, stranded_levels
+from ..resources.builtapp import catalog_problems, query_problems, serve_module, stranded_levels
 from ..resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
 from ..resources.model_api_credentials import (
     Credential,
@@ -213,7 +213,14 @@ from ..workspace.manager import (
     remove_ignore_line,
 )
 from ..workspace.snapshot import QUERIES, TurnSnapshot
-from ..workspace.stack import default_stack_name, preview_stack_of, resolve_stack, stack_of
+from ..workspace.stack import (
+    STACKS,
+    Stack,
+    default_stack_name,
+    preview_stack_of,
+    resolve_stack,
+    stack_of,
+)
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
     CHAT_WORK,
@@ -252,6 +259,7 @@ from .describe import describe, fit_image
 from .plan_steps import (
     FIX_SECTIONS,
     MIN_STEPS,
+    NON_SOURCE_FILES,
     PlanContractCheck,
     PlanStep,
     is_phasable,
@@ -6703,7 +6711,8 @@ def _execution_contract_problems(check: PlanContractCheck) -> tuple[str, ...]:
     return tuple(problems)
 
 
-def _execution_contract_recovery_prompt(check: PlanContractCheck, example: str) -> str:
+def _execution_contract_recovery_prompt(check: PlanContractCheck, example: str,
+                                        stack: Stack | None = None) -> str:
     """Tell a clean planner why it is retrying without copying the rejected answer.
 
     The categories alone were not enough to retry on (#540). A plan written in some OTHER numbered
@@ -6713,9 +6722,14 @@ def _execution_contract_recovery_prompt(check: PlanContractCheck, example: str) 
     `invalid execution plan`. So the retry says which layout, in full, and shows one worked plan.
 
     `_PLAN_STEP_SHAPE` is the same string the turn carried, not a second description of it, and
-    `example` comes from `_plan_example_for` so the stack matches the app being planned.
+    `example` comes from `_plan_example_for` so the stack matches the app being planned. A `stack`
+    names that stack's files when the plan named others (#676), by the stack's globs and never
+    by a path copied from the rejected plan.
     """
     problems = "; ".join(_execution_contract_problems(check))
+    if stack is not None and check.invalid_file_fields:
+        problems += (f". Every file the plan names must be one a {stack.name} app has, matching "
+                     f"{', '.join((*stack.source_globs, *NON_SOURCE_FILES))}")
     return (
         "The previous planning attempt did not satisfy the required execution-plan structure. "
         "Write a complete replacement plan from the original request and references above. Do not "
@@ -12694,11 +12708,13 @@ class Orchestrator:
         # Voiced for the same reason the gated turn voices its own copy: the shape's Data bullet
         # names the platform's nouns as tokens (#543).
         plan_shape = brand.apply_voice(_PLAN_SHAPE)
-        prompt = chat_handoff.plan_prompt(thread_id, digest, voice=_PLAN_VOICE, shape=plan_shape)
+        stack = _plan_stack_name(project)
+        prompt = chat_handoff.plan_prompt(thread_id, digest, voice=_PLAN_VOICE, shape=plan_shape,
+                                          stack=stack, example=_plan_example_for(project))
         # The same inputs, held for the one clean no-action retry (#561). This planner has no
         # attachments and no mentions: the digest IS the request, so it is labelled as one.
         plan_retry = PlanRetryInput(
-            request=digest, stack=_plan_stack_name(project), voice=_PLAN_VOICE, shape=plan_shape,
+            request=digest, stack=stack, voice=_PLAN_VOICE, shape=plan_shape,
             label=(f"The request: a Chat Thread in this project produced the digest below and the "
                    f"files under examples/{thread_id}/. No app exists yet. Write the plan for an "
                    "app colleagues can open from this work.\n"))
@@ -12893,12 +12909,13 @@ class Orchestrator:
         original_prompt = prompt
         current_prompt = original_prompt
         recovery = PlanRecoveryBudget(self._build_policy.plan_no_action_recovery_limit)
+        stack = STACKS.get(_plan_stack_name(project))
         while True:
             plan_md, sid = self._run_sage_plan(
                 project, current_prompt, sid, recovery=recovery, retry=retry)
             if not plan_md:
                 return plan_md, sid
-            contract = validate_execution_contract(plan_md)
+            contract = validate_execution_contract(plan_md, stack=stack)
             _record_execution_contract(contract, source_request_count)
             if contract.valid:
                 return self._repair_plan_heading(project, plan_md, where, request=request), sid
@@ -12931,7 +12948,7 @@ class Orchestrator:
             sid = client.create_session(directory=directory)
             current_prompt = (
                 original_prompt + "\n\n" +
-                _execution_contract_recovery_prompt(contract, _plan_example_for(project)))
+                _execution_contract_recovery_prompt(contract, _plan_example_for(project), stack))
 
     def _repair_plan_heading(self, project: Project, plan_md: str, where: str, *,
                              request: str) -> str:
@@ -30384,11 +30401,14 @@ class Orchestrator:
         """
         validation = project.page_validation
         if validation is not None:
-            return {read["path"].rsplit("/", 1)[-1]: validation.query_failures.get(
-                read["path"].rsplit("/", 1)[-1],
-                f"Read failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')}).")
-                for read in validation.data_reads
-                if read["kind"] == "query" and read["outcome"] == "failed"}
+            failed = {read["path"].rsplit("/", 1)[-1]: read for read in validation.data_reads
+                      if read["kind"] == "query" and read["outcome"] == "failed"}
+            # A query its own catalog refuses never reaches the executor, so it has no recorded
+            # reason; the catalog's sentence is that reason (#678).
+            unusable = query_problems(self._wm.template, project.workspace.path) if failed else {}
+            return {name: validation.query_failures.get(name) or unusable.get(name) or
+                    f"Read failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')})."
+                    for name, read in failed.items()}
         try:
             return project.queries.failures() or {}
         except Exception:

@@ -261,7 +261,7 @@ def test_a_schema_that_cannot_travel_stops_the_query_at_startup(app: Path):
     store = Store()
     with running(app, store) as base:
         r = ask(base, "revenue", {"region": "EMEA"})
-    assert r.status_code == 503
+    assert r.status_code == 422
     assert "MARTS" in r.json()["error"]
     assert store.opened == []       # nothing was asked of the store
 
