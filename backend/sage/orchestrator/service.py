@@ -6754,19 +6754,30 @@ def _record_execution_contract(check: PlanContractCheck, source_request_count: i
 # and nothing else" — and a weak model follows the system prompt over a user message asking for a
 # name, so it answered 1114 tokens of plan and `_repair_heading_name` refused it. Here the system
 # prompt IS the ask, the plan is the user message, and there is no agent prompt to outrank it.
+# The request rides in too, because a plan alone cannot say the person already named the app (#670).
 _PLAN_NAME_SYSTEM = (
-    "You name apps. The message below is a build plan whose app-name heading is missing.\n"
+    "You name apps. The message below is a request, then the build plan written for it, whose "
+    "app-name heading is missing.\n"
     "Answer with the name only: 2-4 words, the way a product is named.\n"
-    "No leading A, An or The, no trailing full stop, and no Markdown."
+    "No leading A, An or The, no trailing full stop, and no Markdown.\n"
+    "If the request names the app (for example 'an app called Signal Room'), that name is the "
+    "answer, word for word, even if it breaks the 2-4 word rule. Only invent a name when the "
+    "request gives none."
 )
 # How long the repair waits for the gateway. Bounded the way `_withhold_probe` is, because the
 # gateway client sets no read timeout on streams by design and a hung repair would hang the turn.
 _PLAN_NAME_TIMEOUT_S = 30.0
 
 
-def _repair_heading_name(answer: str) -> str:
-    """Return the planner's written app name, or "" when it did not write one."""
+def _repair_heading_name(answer: str, request: str) -> str:
+    """Return the planner's written app name, or "" when it did not write one.
+
+    A name the request gives word for word is the app's name whatever its shape (#670): "an app
+    called Sage" is one word, and no invented name may be.
+    """
     name = (answer or "").strip()
+    if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", request):
+        return name
     if not 2 <= len(name.split()) <= 4:
         return ""
     if name.split()[0].lower() in ("a", "an", "the"):
@@ -6776,8 +6787,8 @@ def _repair_heading_name(answer: str) -> str:
     return name
 
 
-def _prepend_repaired_heading(plan_md: str, answer: str) -> str:
-    name = _repair_heading_name(answer)
+def _prepend_repaired_heading(plan_md: str, answer: str, request: str) -> str:
+    name = _repair_heading_name(answer, request)
     if not name:
         return ""
     repaired = f"# {name}\n\n{plan_md}"
@@ -12701,7 +12712,8 @@ class Orchestrator:
             original_session_id = session_id
             plan_md, session_id = self._run_sage_execution_plan(
                 project, prompt, session_id, where="chat handoff",
-                source_request_count=len(source_request_messages), retry=plan_retry)
+                source_request_count=len(source_request_messages), request=digest,
+                retry=plan_retry)
             if session_id != original_session_id:
                 record = store.read_session(thread_id) or {}
                 store.write_session_id(
@@ -12859,6 +12871,7 @@ class Orchestrator:
         *,
         where: str,
         source_request_count: int,
+        request: str,
         retry: PlanRetryInput | None = None,
     ) -> tuple[str, str]:
         """Produce one validated plan with one budget across generation and title repair."""
@@ -12875,7 +12888,7 @@ class Orchestrator:
             contract = validate_execution_contract(plan_md)
             _record_execution_contract(contract, source_request_count)
             if contract.valid:
-                return self._repair_plan_heading(project, plan_md, where), sid
+                return self._repair_plan_heading(project, plan_md, where, request=request), sid
             attempt, action = recovery.choose()
             timing.planning_recovery(
                 "invalid_execution_plan", attempt, action,
@@ -12907,7 +12920,8 @@ class Orchestrator:
                 original_prompt + "\n\n" +
                 _execution_contract_recovery_prompt(contract, _plan_example_for(project)))
 
-    def _repair_plan_heading(self, project: Project, plan_md: str, where: str) -> str:
+    def _repair_plan_heading(self, project: Project, plan_md: str, where: str, *,
+                             request: str) -> str:
         """Ask for the missing app-name heading, once, with one direct gateway call (#555).
 
         Not a second `_run_sage_plan`. That was a second OpenCode turn in the same session, and it
@@ -12923,19 +12937,20 @@ class Orchestrator:
         if chat_handoff.plan_heading(plan_md):
             return plan_md
         try:
-            answer = self._ask_for_app_name(project, plan_md)
+            answer = self._ask_for_app_name(project, plan_md, request)
         except Exception as e:
             log.warning("%s: plan heading repair failed: %s: %s", where, type(e).__name__, e)
             return plan_md
-        repaired = _prepend_repaired_heading(plan_md, answer)
+        repaired = _prepend_repaired_heading(plan_md, answer, request)
         if not repaired:
             log.warning("%s: plan heading repair returned no valid app name: %r",
                         where, answer[:120])
             return plan_md
         return repaired
 
-    def _ask_for_app_name(self, project: Project, plan_md: str) -> str:
-        """The gateway half of the repair: the plan in, the model's text out. Raises on any fault.
+    def _ask_for_app_name(self, project: Project, plan_md: str, asked: str) -> str:
+        """The gateway half of the repair: the request and plan in, the model's text out. Raises on
+        any fault.
 
         The model is the one the plan turn runs on — `Phase.PLAN` through `llm_router.resolve`,
         the way `_tool_handle` reads it — so the plan model assignment and the sensitivity lock
@@ -12950,7 +12965,8 @@ class Orchestrator:
         request = {
             "model": model,
             "messages": [{"role": "system", "content": _PLAN_NAME_SYSTEM},
-                         {"role": "user", "content": plan_md}],
+                         {"role": "user",
+                          "content": f"The request:\n{asked}\n\nThe plan:\n{plan_md}"}],
             "max_tokens": 32,
             "temperature": 0,
             "stream": True,
@@ -12984,7 +13000,7 @@ class Orchestrator:
                 if not complete:
                     raise ValueError("name answer ended without a completion signal")
                 answer = scope._extract(raw)
-                if not _repair_heading_name(answer):
+                if not _repair_heading_name(answer, asked):
                     raise ValueError("name answer was not a valid app name")
             except BaseException as e:
                 call.done(ok=False, error=f"{type(e).__name__}: {e}")
@@ -23750,7 +23766,8 @@ class Orchestrator:
                         )})
                         yield plan_done(ok=False, decision="invalid execution plan")
                         return
-                    plan_md = self._repair_plan_heading(project, plan_md, "plan gate")
+                    plan_md = self._repair_plan_heading(project, plan_md, "plan gate",
+                                                        request=prompt)
                 restore_mode()
                 # An architecture is a reference document, not the one-shot plan→implement handoff, so
                 # it goes to its own file: .sage/plan.md is archived the moment a build consumes it
