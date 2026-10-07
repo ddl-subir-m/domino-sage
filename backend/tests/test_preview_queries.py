@@ -115,7 +115,7 @@ def test_a_broken_query_refuses_in_the_words_the_published_app_would_use(tmp_pat
     finally:
         pq.stop()
 
-    assert r.status_code == 503
+    assert r.status_code == 422
     assert "since" in r.json()["error"]
 
 
@@ -138,7 +138,7 @@ def test_a_rewritten_catalog_is_picked_up_without_a_restart(tmp_path: Path):
     root = _workspace(tmp_path, [BROKEN])
     pq = _started(root, _Recorder())
     try:
-        assert _ask(pq, "revenue").status_code == 503
+        assert _ask(pq, "revenue").status_code == 422
 
         (root / ".sage" / "queries.json").write_text(json.dumps([dict(BROKEN, params=[
             {"name": "since", "type": "date"}])]))
