@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
     from ..workspace.chat_tables import ChatTables
 
-from .. import build_diagnostics, degraded, extension_mcp, project_secrets, timing
+from .. import build_diagnostics, degraded, extension_mcp, project_secrets, skill_copies, timing
 from .. import extensions as project_extensions
 from ..assets.provider import (
     Asset,
@@ -10774,6 +10774,8 @@ class Orchestrator:
             # gets the short line the click deserves, the way an Approve click does, instead of
             # echoing the same sentence twice. Whether they reset first is already on the record
             # above it as an `app-reset` marker.
+            tree_before = project.snapshot.working_tree_hash()
+            rows_before = len(project.app_for_turn().read_history(project.build_conversation))
             yield from self._build_stream(
                 prompt, mentions, resources, mode=mode, how_sage_works=how_sage_works,
                 dataset_note=dataset_note,
@@ -10783,6 +10785,7 @@ class Orchestrator:
                 user_text=(picked or typed or ("Build it." if skip_reset_gate or skip_incoming_gate
                                       or skip_table_gate or skip_source_gate or skip_dataset_gate
                                       else None)))
+            yield from self._skill_copy_drift(project, tree_before, rows_before)
         except TurnWedged:
             # Swallowed, not re-reported: the turn already said what happened in its own stream, and
             # a traceback on top of it would only be a second, worse version of the same sentence.
@@ -24477,6 +24480,7 @@ class Orchestrator:
             if unbuilt is not None:
                 project.app_for_turn().append_history(unbuilt, project.build_conversation)
                 yield unbuilt
+            yield from self._skill_copy_drift(project, tree_before, rows_before)
             # Approving from Ask mode builds (that's deliberate — the user asked for this plan), but
             # the mode goes straight back to Ask below. The user has just watched Ask write an app, so
             # the next change they type reasonably looks like it will build too, and instead runs
@@ -24550,6 +24554,29 @@ class Orchestrator:
         return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": (
             f"Not built from the plan: {listed}. This build wrote none of the files "
             + ("those steps name." if len(named) > 1 else "that step names."))}
+
+    def _skill_copy_drift(self, project: Project, tree_before: str, rows_before: int):
+        """Yields and records the `skill-copy-drift` row for a build that finished (#682).
+
+        Not fed to the model, and nothing repairs it: the person may have asked for the edit, and a
+        repair would fight them. Same gate as `_plan_unbuilt_event`: only a turn that ended `done`.
+        """
+        if self._turn_gave_up:
+            return
+        app = project.app_for_turn()
+        rows = app.read_history(project.build_conversation)[rows_before:]
+        ended = next((r for r in reversed(rows) if r.get("type") in ("done", "stopped")), None)
+        if ended is None or ended["type"] != "done":
+            return
+        changed = project.snapshot.changed_paths(
+            tree_before, project.snapshot.working_tree_hash(), limit=100_000)
+        if not changed:
+            return
+        event = skill_copies.drift(project.record.path, project.workspace.path, changed,
+                                   project.workspace.helpers.owned)
+        if event is not None:
+            app.append_history(event, project.build_conversation)
+            yield event
 
     def _approved_plan_doc(self, project: Project, plan_id: str) -> dict | None:
         """The document the approved plan.md belongs to, or None.
