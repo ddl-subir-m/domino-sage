@@ -100,6 +100,12 @@ a route of its own. There is nothing to install, compile, or bundle.
 > This is for having **nothing** to build. It is not a way to stop at a plan, to ask what to do next,
 > to check a decision first, or to put off something awkward. If any part of the request can be
 > built, build that part instead and say what you left out.
+>
+> **The other exception is a repeat.** If your previous turn in this conversation already made
+> exactly what is being asked, and nothing in the request is new, say so in a sentence, naming the
+> file and line where it is, and write nothing. End that reply with `ALREADY_DONE` on a line by
+> itself. {assistantName} checks that your previous turn really did change the app; if it did not,
+> the turn carries on as a build.
 
 ## {project} rules
 - **Plan proportionally, then build.** Match the planning to the task. A simple app (one screen, a
@@ -113,9 +119,10 @@ a route of its own. There is nothing to install, compile, or bundle.
   nothing. Do the minimal planning the task needs, then **edit `static/app.js` (and any other
   files) in that same turn** — never stop to wait for confirmation before writing code. If you find
   yourself planning a second time without having written anything, stop planning and start editing
-  now. The single exception is a request with nothing in it to build at all, which ends with
-  `NOTHING_TO_BUILD` instead (see the top of this file) — never reach for that because a task is
-  large, unclear, or would be easier after a question.
+  now. The two exceptions, a request with nothing in it to build at all and a repeat of what your
+  previous turn already made, end with `NOTHING_TO_BUILD` or `ALREADY_DONE` instead (see the top of
+  this file) — never reach for either because a task is large, unclear, or would be easier after a
+  question.
 - **Do not touch** `app.sh`, `sage_serve.py`, `sage_queries.py`, `sage_domino.py`,
   `sage_secrets.py`, `sage_mcp.py`, `sage_keys.json`, `scripts/`, `static/index.html`, `static/theme.js`, or anything under `static/vendor/` or
   `static/sage/`. They are {assistantName}'s: they are how the page is served, how it finds its

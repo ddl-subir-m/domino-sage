@@ -1250,6 +1250,16 @@ class Workspace:
         return helpers_for(self.path, self.stack.helpers)
 
     @property
+    def sage_owned_paths(self) -> frozenset[str]:
+        """App-relative paths Sage writes into this app itself, between turns or at a turn's start:
+        the refreshed sources, the preview config, the helpers and their configs, the deploy files and
+        AGENTS.md. A change to one of these is not the agent's (#680)."""
+        stack, names = self.stack, self.helpers
+        return frozenset({names.localize(rel) for rel in stack.owned_sources}
+                         | set(names.owned) | set(stack.deploy_files) | {"AGENTS.md"}
+                         | ({stack.preview_config} if stack.preview_config else set()))
+
+    @property
     def plan_path(self) -> Path:
         """The plan→implement handoff artifact (auto mode). Lives in the workspace so the
         implement session and IDE mode can both see it."""

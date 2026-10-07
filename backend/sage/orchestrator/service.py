@@ -4737,7 +4737,8 @@ def _chat_live_event(ev) -> dict | None:
             # Marker out of the live copy too, not only out of what is kept: this event is what
             # repairs the streamed text, so leaving it in would paint NO_BUILD_MARKER under the
             # answer and hold it there until the transcript event replaces the block.
-            text, _ = _take_no_build_marker(str(ev.payload.get("text") or ""))
+            text = _take_already_done_marker(
+                _take_no_build_marker(str(ev.payload.get("text") or ""))[0])[0]
             return {"type": "delta", "text": text, "final": True}
         text = str(ev.payload.get("delta") or "")
         return {"type": "delta", "text": text} if text else None
@@ -5162,6 +5163,23 @@ def _take_no_build_marker(text: str) -> tuple[str, bool]:
     agent says — a bare NOTHING_TO_BUILD sitting under a friendly explanation reads as a leaked
     error code, which is a smaller version of the same defect this whole mechanism exists to fix."""
     stripped = _NO_BUILD_LINE.sub("", text)
+    return stripped, stripped != text
+
+
+# The same mechanism for a request the previous turn already did (#680). Without it the correct
+# answer "that is already in place" is a turn that wrote nothing, and recovery restarts it to look
+# for something to change until it ends "Sage stopped before changing the app". Unlike
+# NOTHING_TO_BUILD the claim is not taken from the model: Sage honours it only on evidence it reads
+# itself (`_previous_turn_did_it`), and otherwise the pre-edit guard runs as if it were never said.
+ALREADY_DONE_MARKER = "ALREADY_DONE"
+_ALREADY_DONE_LINE = re.compile(
+    rf"^[ \t]*[`*_]*{ALREADY_DONE_MARKER}[`*_]*[ \t]*$\n?", re.MULTILINE)
+
+
+def _take_already_done_marker(text: str) -> tuple[str, bool]:
+    """Split one assistant text part into the prose to show and whether it claimed already done.
+    Stripped for the reason `_take_no_build_marker` strips its own."""
+    stripped = _ALREADY_DONE_LINE.sub("", text)
     return stripped, stripped != text
 
 
@@ -16859,7 +16877,8 @@ class Orchestrator:
         asked_for_the_other_lane = False
 
         def has_chat_result(body: str, invalid: dict[str, str]) -> bool:
-            body = _take_needs_more_than_sql_marker(_take_no_build_marker(body)[0])[0]
+            body = _take_needs_more_than_sql_marker(
+                _take_already_done_marker(_take_no_build_marker(body)[0])[0])[0]
             if body.strip():
                 return True
             roles = live_data_use.artifact_roles(
@@ -16873,7 +16892,7 @@ class Orchestrator:
             if tables is None or artifacts_finished:
                 return {}
             body = primary_body if tables.repair_ran else last_text or streamed_body
-            body = _take_no_build_marker(body)[0]
+            body = _take_already_done_marker(_take_no_build_marker(body)[0])[0]
             # A model that failed to call the tool writes `<tool_call><function=…>` into the
             # answer. The stream already held it; the transcript is the copy a reload reads.
             body = strip_written_tool_call(body)
@@ -17960,7 +17979,8 @@ class Orchestrator:
                     # persisted and replayed, so a reload does not bring it back.
                     # A final stream message is an answer even if the transcript copy is late.
                     # Partial narration and words before a failed step do not meet that test.
-                    body = _take_no_build_marker(pending_text or completed_stream_body)[0]
+                    body = _take_already_done_marker(
+                        _take_no_build_marker(pending_text or completed_stream_body)[0])[0]
                     body = strip_written_tool_call(body)
                     if project.stop_requested or time.monotonic() - started >= _CHAT_TURN_MAX_S:
                         continue
@@ -20480,6 +20500,22 @@ class Orchestrator:
         running = self._turns.running()
         return {"turnId": running.id} if running is not None else {}
 
+    def _previous_turn_did_it(self, project: Project) -> bool:
+        """ALREADY_DONE's evidence (#680), read by Sage rather than taken from the model: this turn
+        changed no app file, the previous Build turn on this app in this Conversation did not fail,
+        and that turn changed the app's own files according to the pre-turn snapshots — not only
+        files Sage writes itself, which can change between the same two snapshots."""
+        if project.snapshot.changed_since_pre_turn():
+            return False
+        app = project.app_for_turn()
+        this_turn = self._turn_id_fields().get("turnId")
+        rows = app.read_history(project.build_conversation, tool_detail=False)
+        previous = next((row for row in reversed(rows)
+                         if row.get("type") == "done" and row.get("turnId") != this_turn), None)
+        return bool(previous is not None and previous.get("ok") is True
+                    and project.snapshot.turn_changed_app(str(previous.get("turnId") or ""),
+                                                          ignore=app.sage_owned_paths))
+
     def _mark_turn_wedged(self) -> None:
         """Keep ownership of the tree and release every queued caller with a refusal."""
         self._turn_wedged = True
@@ -21127,7 +21163,7 @@ class Orchestrator:
         # state, and remember how many history entries pre-date this turn so a stop can drop
         # everything appended since (the turn disappears from the transcript entirely).
         with timing.span("gate.commit_before_turn"):
-            project.snapshot.commit_before_turn()
+            project.snapshot.commit_before_turn(self._turn_id_fields().get("turnId", ""))
         history_baseline = project.app_for_turn().history_len()
         if not gate and not answer_only and not arch and project.pre_edit_guard is None:
             with project.pre_edit_tree_lock:
@@ -21792,6 +21828,9 @@ class Orchestrator:
         # before the nudge loop can run, and the two nudges that follow a WRITING turn (runtime,
         # leak) can't reach a turn that wrote nothing.
         nothing_to_build = False
+        # Set when the agent claims the previous turn already did this request (ALREADY_DONE_MARKER).
+        # Only a claim: the exit below honours it on Sage's own evidence or not at all.
+        already_done = False
         nudges = 0
         max_nudges = self._build_policy.no_edit_nudge_limit
         # When a turn routed to the cheap implement-tier coder writes nothing, pin the strong
@@ -23004,6 +23043,8 @@ class Orchestrator:
                             # persisted into plan.md and shown on the approval card.
                             body, claimed = _take_no_build_marker(part["text"])
                             nothing_to_build = nothing_to_build or claimed
+                            body, claimed = _take_already_done_marker(body)
+                            already_done = already_done or claimed
                             if not body.strip():
                                 continue  # the marker was the whole part; there is no prose to show
                             # Second line of defence behind _part_key: parts with no id still key on a
@@ -23948,7 +23989,14 @@ class Orchestrator:
             # other build's: the marker excuses a turn from editing, it can't unmake edits. The same
             # ordering also means a gated turn resolved its plan above before we got here, so a
             # marker on a plan turn is stripped from the card and otherwise ignored.
-            if nothing_to_build and not agent_wrote():
+            #
+            # ALREADY_DONE ends the same way, but only on evidence (#680). Not inside a phase: a
+            # phase is part of a turn, and the evidence is about the turn before this one.
+            clean_ending = (
+                "nothing to build" if nothing_to_build
+                else "already done" if already_done and owns_turn else "")
+            if (clean_ending and not agent_wrote()
+                    and (nothing_to_build or self._previous_turn_did_it(project))):
                 if (project.pre_edit_guard is not None
                         and not project.pre_edit_guard.claim_existing_terminal()):
                     winner = project.pre_edit_guard.consume_pending()
@@ -23961,7 +24009,7 @@ class Orchestrator:
                         yield handle_stop()
                     return
                 restore_mode()
-                yield persist({"type": "done", "ok": True, "decision": "nothing to build"})
+                yield persist({"type": "done", "ok": True, "decision": clean_ending})
                 return
 
             if project.pre_edit_guard is not None:
@@ -24745,7 +24793,7 @@ class Orchestrator:
         # ONE revert point for the whole build. _build_stream still checkpoints per phase (which is
         # what gives a gate violation its correct, narrow scope), so undoing everything needs a ref
         # that reaches back past all of them — hence discard_to rather than discard_changes.
-        base = project.snapshot.commit_before_turn()
+        base = project.snapshot.commit_before_turn(self._turn_id_fields().get("turnId", ""))
         history_baseline = project.app_for_turn().history_len()
         # What the app's code looked like before any phase ran, so a build that dies halfway can
         # still say whether it changed anything — see the failure path below (#56).

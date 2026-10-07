@@ -3418,6 +3418,8 @@ window.SW = window.SW || {};
                   ev.verification.reason ? ` — ${ev.verification.reason}` : ''}.`)
               : ev.decision === 'answered'
               ? 'Answered'
+              : ev.decision === 'already done'
+              ? 'Already done in the previous turn — nothing changed.'
               : ev.ok ? 'Done — build is clean'
               // A build that finished short of its plan did not stop (#684).
               : /^incomplete — /.test(ev.decision || '') ? `I${ev.decision.slice(1)}`
