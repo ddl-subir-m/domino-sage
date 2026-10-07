@@ -5,6 +5,7 @@ turn cannot append to the Build transcript (docs/workbench/chat.md).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1049,10 +1050,24 @@ CHAT_WORK = Path(".sage") / "chat-work"
 # the store's root and `ensure_chat_workdir` against the workspace it is handed, and the two
 # have to name the same directory or the turn writes somewhere `purge` will never sweep.
 SCRATCH = Path(".sage") / "scratch"
+# Where a mounted Dataset is linked in the Chat working folder. Not under `public/data`, which is
+# the app's tree and holds the app's own attachments.
+MOUNTED_DATASETS = "datasets"
+
+
+def mounted_dataset_link(mount: str) -> str:
+    """The Chat-workdir-relative path a mounted Dataset folder is linked at (#675).
+
+    The name alone can collide — a Dataset of this project and one imported from another can share
+    it, and sanitizing folds distinct names together — so the mount path's digest rides beside it.
+    """
+    name = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in Path(mount).name)
+    digest = hashlib.sha256(mount.encode()).hexdigest()[:8]
+    return f"{MOUNTED_DATASETS}/{name.strip('_.') or 'dataset'}-{digest}"
 
 
 def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None = None,
-                        thread_id: str | None = None) -> Path:
+                        thread_id: str | None = None, mounts: Iterable[str] = ()) -> Path:
     """OpenCode directory for sage-chat: Chat AGENTS.md plus links into examples/, scratch,
     this Project's Thread records and data.
 
@@ -1087,6 +1102,11 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     to nothing from this cwd, so a file the person can see in the rail cannot be read at all.
     Only `data` is linked, not the whole of `public/`: the rest of it belongs to the app, which
     Chat has no business reading. None means there is no app yet, so there is nothing to link.
+
+    `mounts` are the absolute folders of this Thread's mounted Dataset chips, each linked at
+    `mounted_dataset_link`. `external_directory: deny` refuses every file tool on a path outside
+    the project, and OpenCode checks the path it is given rather than where a link points, so the
+    link is the route in (#675). Links for chips no longer named are pruned like the Thread links.
     """
     root = Path(workspace) / CHAT_WORK
     root.mkdir(parents=True, exist_ok=True)
@@ -1129,6 +1149,17 @@ def ensure_chat_workdir(workspace: Path, agents_md: str, data_dir: Path | None =
     public.mkdir(exist_ok=True)
     if data_dir is not None:
         _ensure_dir_link(public / "data", data_dir)
+    wanted = {mounted_dataset_link(m): m for m in mounts}
+    datasets = root / MOUNTED_DATASETS
+    datasets.mkdir(exist_ok=True)
+    for stale in datasets.iterdir():
+        if stale.is_symlink() and f"{MOUNTED_DATASETS}/{stale.name}" not in wanted:
+            stale.unlink()
+    for rel, mount in wanted.items():
+        # Not `_ensure_dir_link`: that creates a missing target, and the target here is a mount.
+        # The name carries the mount's digest, so a link standing at it already points there.
+        if not (root / rel).is_symlink() and not (root / rel).exists():
+            (root / rel).symlink_to(mount, target_is_directory=True)
     return root
 
 
