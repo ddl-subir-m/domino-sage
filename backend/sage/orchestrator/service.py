@@ -198,6 +198,7 @@ from ..resources.sensitivity import (
     unnamed_conversation_refusal,
     unrecorded_lock_refusal,
 )
+from ..resources.store_bypass import direct_store_clients, direct_store_notice
 from ..resources.table_search import Candidate
 from ..router import llm_router
 from ..router.model_control import ModelControl
@@ -21874,6 +21875,9 @@ class Orchestrator:
         # A query naming a Data Source this app does not record (#704). Once, like the platform
         # read above: the app's own sentence names the fix, and only a person can record a store.
         source_fixes = 0
+        # App code that reads a store itself, outside `.sage/queries.json` (#705). Once, for the
+        # reason the line above gives.
+        store_fixes = 0
         # An approved plan's step this build wrote none of the files for (#684). Once: the step is
         # named, and a second copy of the same sentence would not name it better. A reply that
         # writes nothing is still this build's reply, so it ends incomplete rather than as a
@@ -24260,6 +24264,20 @@ class Orchestrator:
                             problems=" ".join(unrecorded.values()),
                             recorded=recorded or "it records none")
                         continue
+                if report.ok and wrote_code and not store_fixes and not project.stop_requested:
+                    store_clients = self._detect_store_clients(project)
+                    if store_clients:
+                        store_fixes += 1
+                        iterate_reason = "app code reads a store directly — moving it to a query"
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = brand.text(
+                            "{files} reads a {dataSource} with `domino_data` directly. Remove that "
+                            "code: read stores only through `.sage/queries.json` and `useQuery` "
+                            "(`sage.useQuery` in a plain-script app). If this app records no "
+                            "{dataSource}, do not invent one: say it needs a {dataSource} chosen "
+                            "for it, and stop.",
+                            files=", ".join(store_clients))
+                        continue
                 # The footnote under an approved build (#662), read while the model can still act
                 # on it.
                 unbuilt = (unbuilt_steps() if unbuilt_steps is not None and report.ok and wrote_code
@@ -24308,20 +24326,27 @@ class Orchestrator:
                 if failed:
                     yield persist({"type": "data-source-failed",
                                    "message": self._failed_notice(failed)})
+                store_clients = (self._detect_store_clients(project)
+                                 if report.ok and (owns_turn or validate_page) else [])
+                if store_clients:
+                    yield persist({"type": "data-source-failed",
+                                   "message": direct_store_notice(store_clients)})
                 # A build that cannot read its data has not finished cleanly, so it does not say it
                 # has. What does NOT change is anything below this line: the code was written and it
                 # typechecks, and a store that was down for ten seconds must not cost the creator
                 # the turn's work — which is also what keeps this a report rather than the gate
                 # ADR-0010 rules out.
                 refused = self._fresh_platform_read_failure(project, since=send_ts) if report.ok else None
-                if verification is not None and (failed or refused):
+                if verification is not None and (failed or store_clients or refused):
                     verification["stages"]["data"] = "failed"
                     verification["overall"] = "failed"
                 if verification is not None:
                     project.evidence_recorder.verification(verification)
-                yield persist({"type": "done", "ok": (report.ok and not failed and rt is None
+                yield persist({"type": "done", "ok": (report.ok and not failed
+                                                      and not store_clients and rt is None
                                                       and refused is None and not unbuilt),
-                               "decision": ("queries failed" if failed else "runtime failed" if rt
+                               "decision": ("queries failed" if failed or store_clients
+                                            else "runtime failed" if rt
                                             else "platform read failed" if refused
                                             else f"incomplete — plan {_listed_steps(unbuilt)} not built"
                                             if unbuilt else decision.reason),
@@ -30759,6 +30784,13 @@ class Orchestrator:
         declared = [b.name for b in bound_aliases(parse_bindings(app.read_bindings()))]
         return raw_gateway_calls(self._scan_app_sources(app), declared,
                                  self._browser_gateway_base, app.helpers.owned)
+
+    def _detect_store_clients(self, project: Project) -> list[str]:
+        """The files of the app a turn is BUILDING that read a Data Source with `domino_data`
+        directly (#705), Sage's own files excepted. The app being built, for
+        `_detect_raw_gateway_calls`'s reason."""
+        app = project.app_for_turn()
+        return direct_store_clients(self._scan_app_sources(app), app.sage_owned_paths)
 
     def _attached_per_app(self, project: Project) -> list[tuple[Workspace, list[dict]]]:
         """Every Built App on the volume, paired with the attachment list to judge it by.

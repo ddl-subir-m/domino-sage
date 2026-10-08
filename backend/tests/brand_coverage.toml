@@ -281,6 +281,11 @@ shows_pack = false
 
 [[surface]]
 kind = "python-prose"
+module = "sage/resources/store_bypass.py"
+shows_pack = true
+
+[[surface]]
+kind = "python-prose"
 module = "sage/resources/health.py"
 shows_pack = true
 

@@ -183,6 +183,23 @@ _STORE_WORDS = frozenset(_fold(w) for w in [
     "presto", "sqlserver", "mongodb", "clickhouse", "vertica", "netezza",
 ])
 
+# A table named in full, `DB.SCHEMA.TABLE`, says "a store" as plainly as a word above does (#705):
+# without it, "events in DWH.MARTS.MIXPANEL__EVENT" got no card while "the Snowflake table DWH..."
+# did. Exactly three identifier parts, none starting with a digit (`1.2.3`), not inside a path or
+# a longer dotted name, and a last part that is not a file extension (`app.config.json`).
+_QUALIFIED_TABLE = re.compile(
+    r"(?<![\w$./\\])[A-Za-z_][\w$]*\.[A-Za-z_][\w$]*\.([A-Za-z_][\w$]*)(?![\w$/\\]|\.[\w$])")
+_FILE_SUFFIXES = frozenset({
+    "json", "js", "jsx", "mjs", "cjs", "ts", "tsx", "py", "css", "scss", "html", "htm", "md", "txt",
+    "csv", "tsv", "yaml", "yml", "toml", "ini", "cfg", "conf", "sh", "lock", "env", "sql", "xml",
+    "svg", "png", "jpg", "jpeg", "gif", "ipynb", "parquet", "vue", "svelte", "log", "com", "org",
+    "net", "io",
+})
+
+
+def _names_qualified_table(prompt: str) -> bool:
+    return any(m.group(1).lower() not in _FILE_SUFFIXES for m in _QUALIFIED_TABLE.finditer(prompt))
+
 
 @dataclass(frozen=True)
 class Offer:
@@ -230,7 +247,7 @@ def offer_sources(prompt: str, mentioned: Iterable[str], sources: list[dict]) ->
         return bool(str(source.get("id") or "") in ids or (handles and handles <= said))
 
     named = [s for s in sources if names(s)]
-    if not named and not (said & _STORE_WORDS):
+    if not named and not (said & _STORE_WORDS) and not _names_qualified_table(prompt):
         return None
     return Offer(tuple(named + [s for s in sources if not names(s)]), len(named))
 

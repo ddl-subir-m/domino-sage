@@ -32,9 +32,10 @@ from .fake_opencode import FakeOpenCode, Turn
 TABLE = "DWH.MARTS.FCT_USAGE_DAILY"
 # Names the store, so the gate is asked "which Data Source" of B.
 STORE_PROMPT = f"build me a dashboard of daily usage from Snowflake, using {TABLE}"
-# Names the table and no store, which is a request the source gate does not read as one about a
-# store (#185). It reaches the agent, and what the agent may read is then the grant's question.
-TABLE_PROMPT = f"build me a dashboard of daily usage over {TABLE}"
+# Names the bare table and no store, which is a request the source gate does not read as one about
+# a store (#185); the full `DB.SCHEMA.TABLE` name would be (#705). It reaches the agent, and what
+# the agent may read is then the grant's question.
+TABLE_PROMPT = "build me a dashboard of daily usage over FCT_USAGE_DAILY"
 
 
 class Warehouse(FakeResourceProvider):
