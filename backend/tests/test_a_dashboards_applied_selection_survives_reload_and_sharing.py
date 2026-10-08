@@ -178,10 +178,12 @@ def test_free_text_cannot_be_declared_shareable(template: str):
 
 
 @TEMPLATES
-def test_a_reserved_route_loads_defaults_without_rewriting_it(template: str):
-    got = _drive(template, ["mount"], hash="#/sage/keys")
+@pytest.mark.parametrize("hash", ["#/sage/keys", "#/sage/keys&v=1&region=EMEA"],
+                         ids=["keys", "keys-that-looks-like-a-view"])
+def test_a_reserved_route_loads_defaults_without_rewriting_it(template: str, hash: str):
+    got = _drive(template, ["mount"], hash=hash)
     assert got["snapshots"][0]["state"] == DEFAULTS
-    assert got["snapshots"][0]["url"].endswith("#/sage/keys")
+    assert got["snapshots"][0]["url"].endswith(hash)
     assert got["writes"] == []
 
 
