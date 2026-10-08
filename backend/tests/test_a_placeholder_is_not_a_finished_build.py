@@ -11,16 +11,21 @@ from .test_a_dead_alias_stops_the_turn_before_it_starts import (
     _orch,
 )
 
-STARTER = (Path(__file__).resolve().parents[2] / "template/react-vite/src/App.tsx").read_text()
+TEMPLATE = Path(__file__).resolve().parents[2] / "template/react-vite/src"
+# The starter is the shell and the first screen it renders, which holds the placeholder (#697).
+STARTER = {"src/App.tsx": (TEMPLATE / "App.tsx").read_text(),
+           "src/screens/MainScreen.tsx": (TEMPLATE / "screens/MainScreen.tsx").read_text()}
 COMPONENT = 'export default function Dashboard() { return <h1>Earnings Dashboard</h1> }\n'
 CONNECTED = 'import Dashboard from "./components/Dashboard";\nexport default Dashboard;\n'
 
 
 def test_a_clean_typecheck_does_not_accept_the_starter_screen(tmp_path, monkeypatch):
     (tmp_path / "src/components").mkdir(parents=True)
+    (tmp_path / "src/screens").mkdir(parents=True)
     (tmp_path / ".sage").mkdir()
     (tmp_path / ".sage/settings.json").write_text('{"stack": "react-vite"}')  # a bare dir is nobody's app (#503)
-    (tmp_path / "src/App.tsx").write_text(STARTER)
+    for rel, source in STARTER.items():
+        (tmp_path / rel).write_text(source)
     (tmp_path / "src/components/Dashboard.tsx").write_text(COMPONENT)
     monkeypatch.setattr("sage.feedback.runner.subprocess.run",
                         lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
@@ -28,7 +33,8 @@ def test_a_clean_typecheck_does_not_accept_the_starter_screen(tmp_path, monkeypa
     report = FeedbackRunner().check(tmp_path)
 
     assert report.ok is False, "Unused components left the user looking at the starter screen"
-    assert any(e.file == "src/App.tsx" and "placeholder" in e.message for e in report.errors)
+    assert any(e.file == "src/screens/MainScreen.tsx" and "placeholder" in e.message
+               for e in report.errors)
     (tmp_path / "src/App.tsx").write_text(CONNECTED)
     assert FeedbackRunner().check(tmp_path).ok is True
 
@@ -37,7 +43,7 @@ def test_build_repairs_the_entry_before_reporting_success(tmp_path, monkeypatch)
     orch, oc = _orch(tmp_path, turns=[
         PLAN,
         Turn(text="Implemented the dashboard", writes={
-            "src/App.tsx": STARTER, "src/components/Dashboard.tsx": COMPONENT}),
+            **STARTER, "src/components/Dashboard.tsx": COMPONENT}),
         Turn(text="Connected the dashboard", writes={"src/App.tsx": CONNECTED}),
     ])
     list(orch.build_stream("build me a dashboard"))

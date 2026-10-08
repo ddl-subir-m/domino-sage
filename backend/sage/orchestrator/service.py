@@ -6940,7 +6940,8 @@ _PLAN_STEP_SHAPE = (
     "  - Files — the workspace-relative files this step creates or edits, comma-separated. "
     "This is the step's allowlist, so it MUST include any earlier file the step has to edit "
     "to connect its work up — the table that needs a row-click handler, the parent that "
-    "renders the new component. A step that cannot reach the file it needs cannot finish. "
+    "renders the new component, and for a new screen file the shell that shows it and the "
+    "page that loads it. A step that cannot reach the file it needs cannot finish. "
     "But list the FEWEST files that does it: a step licensed to edit the main screen will "
     "rebuild the main screen, and a later step then throws that work away. A data or types "
     "step should not name the app's main component at all. "
@@ -7040,10 +7041,10 @@ actually arrived).
 _PLAN_EXAMPLES = {
     "fastapi-antd": _plan_example(
         ("app.py", "Add a route that reads the arrivals file and returns each sample."),
-        "static/app.js, static/app.css"),
+        "static/components/MainScreen.js, static/app.css"),
     "react-vite": _plan_example(
         ("src/arrivals.ts", "Read the arrivals file and return each sample."),
-        "src/App.tsx, src/App.css"),
+        "src/screens/MainScreen.tsx, src/App.css"),
 }
 
 
@@ -21892,13 +21893,13 @@ class Orchestrator:
         )
         IMPLEMENT_NUDGE = (
             "You've explored and planned but haven't written any code yet. Now IMPLEMENT the "
-            f"request: edit the project files (start with {project.app_for_turn().stack.entry_file}) "
-            "so the app actually builds "
+            "request: edit the project files (start with the screen, query or route the change "
+            "belongs in) so the app actually builds "
             "what was asked. Make the code changes now."
         )
         IMPLEMENT_ACT_NUDGE = (
             "Do the next concrete step now. Stop reasoning about the approach. "
-            f"The next tool call must edit {project.app_for_turn().stack.entry_file}. "
+            "The next tool call must edit the app file the change belongs in. "
             "Do not read another file first, and do not explain the change before the edit."
         )
         RUNTIME_FIX_NUDGE = (

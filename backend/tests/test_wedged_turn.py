@@ -955,6 +955,8 @@ def test_a_quiet_reasoning_stream_is_retried_once_then_stalls(tmp_path: Path):
     assert len(oc.prompts) == 2
     assert "Do the next concrete step now" in oc.prompts[1]["text"]
     assert "The next tool call must edit" in oc.prompts[1]["text"]
+    # A follow-up may belong in a screen, a query or a route, so the nudge names no entry file (#697).
+    assert "src/App.tsx" not in oc.prompts[1]["text"]
     assert _of(events, "done")[0]["decision"] == "stalled"
 
 
