@@ -183,6 +183,18 @@ Build the user's app by editing its screens under `static/components/`, the file
     change, not for length. A figure two views show comes from one function.
   - An app whose whole UI is in `static/app.js` is fine as it is. Give a screen its own file only
     when the request changes that screen.
+- **A shareable view uses `sage.useViewState`, and only when the plan says the view is shareable**
+  — a dashboard or list whose applied selection reopens from a reload or a copied link. Never a
+  form, never unasked. Define the schema once at the top of `static/app.js`, call the hook once in
+  the shell, and pass the state and its patch function to the screens, so each screen keeps its
+  selection when another one shows. Mark `shareable` only the screen and applied filters; draft
+  search text, row values and form input stay out. A filter change is `patchView({...})`; switching
+  screens or an Apply button adds `{ history: "push" }`. Read the state the hook returns, never
+  `location`, and never use `#/sage/` or `window.top`. The comment at the top of
+  `static/sage/viewState.js` shows the schema. If the app already keeps something else in its `#`
+  hash, keep that and say so instead of replacing it. With no `static/sage/viewState.js`, keep the
+  view in state and do not write one; when the file is there but `static/index.html` does not load
+  it, add `<script src="static/sage/viewState.js"></script>` after the other `static/sage/` lines.
 - **Write a component before the file that uses it.** The page runs its scripts in order, so a
   component file has to be on disk and listed in `index.html` before the script that calls it.
   Write the leaves first and wire them together last.

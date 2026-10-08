@@ -71,6 +71,9 @@ class Stack:
     # Path prefixes under `source_globs` that are not the app's own source: third-party bundles the
     # template ships, which the agent is neither shown nor expected to read.
     vendored: tuple[str, ...] = ()
+    # The shareable-view helper (#701), one of `owned_sources`. New apps get it from the starter;
+    # an older app gets it only from `WorkspaceManager.install_view_state`, never from a refresh.
+    view_state: str = ""
 
 
 REACT_VITE = Stack(
@@ -95,6 +98,7 @@ REACT_VITE = Stack(
         TEMPLATE.query_path,
         "src/reportRuntimeError.ts",
         "src/ErrorBoundary.tsx",
+        "src/appViewState.ts",
     ),
     helpers=TEMPLATE,
     preview_config="vite.config.ts",
@@ -105,6 +109,7 @@ REACT_VITE = Stack(
     source_globs=("src/**/*",),
     query_globs=("src/**/*.ts", "src/**/*.tsx"),
     vendored=("src/vendor/",),
+    view_state="src/appViewState.ts",
 )
 
 # FastAPI serving a page that loads React, Ant Design, Day.js and Highcharts as plain scripts — the
@@ -138,6 +143,7 @@ FASTAPI_ANTD = Stack(
         "sage_secrets.py",
         "sage_mcp.py",
         "static/sage/keys.js",
+        "static/sage/viewState.js",
     ),
     helpers=FASTAPI,
     preview_config=None,
@@ -149,6 +155,7 @@ FASTAPI_ANTD = Stack(
     source_globs=("*.py", "static/**/*"),
     query_globs=("static/**/*.js",),
     vendored=("static/vendor/",),
+    view_state="static/sage/viewState.js",
 )
 
 #: Every stack Sage can seed, by the name the record holds.

@@ -219,6 +219,7 @@ from ..workspace.manager import (
     Workspace,
     WorkspaceManager,
     ensure_ignore_line,
+    plan_wants_shareable_view,
     remove_ignore_line,
 )
 from ..workspace.snapshot import QUERIES, TurnSnapshot
@@ -6893,7 +6894,10 @@ _PLAN_DOC_SECTIONS = (
     "- Then a '## Problem & outcome' heading and one or two sentences: what is wrong today, "
     "and what is true once the app exists.\n"
     "- Then a '## Who uses this' heading and one sentence naming the person who opens it.\n"
-    "- Then a '## What it does' heading and short bullets, one capability each.\n"
+    "- Then a '## What it does' heading and short bullets, one capability each. When the request "
+    "wants a screen to reopen its applied filters from a reload or a copied link, "
+    "one bullet begins 'Shareable view —' and names the screen and the selections it keeps. "
+    "Never for a form, and never unasked.\n"
     "- Then a '## Screens' heading and one bullet per screen: a bolded name, then ' — ', "
     "then one sentence on what it shows.\n"
     "- Then, ONLY if the app reads data, a '## Data' heading and short bullets: one per "
@@ -9231,11 +9235,17 @@ class Orchestrator:
 
         A `?app=` tab builds through a request view and never selects its app, so the refreshes at
         attach and select never reach it (#690). Called after `_pin_turn_app`, under the turn lock.
+        A live plan that names a shareable view also installs that helper, into this app only (#701).
         """
-        app_id = getattr(project.app_for_turn(), "app_id", None)
+        app = project.app_for_turn()
+        app_id = getattr(app, "app_id", None)
         if not app_id:
             return
-        if self._prepare_app_files(self._wm.for_app(app_id)):
+        wm = self._wm.for_app(app_id)
+        config_changed = self._prepare_app_files(wm)
+        if resolve_stack(wm.app_path).ready and plan_wants_shareable_view(app.read_plan() or ""):
+            wm.install_view_state()
+        if config_changed:
             self._restart_preview_for_config_change(project, self._view_for(project, app_id))
 
     def _restart_preview_for_config_change(self, project: Project,
@@ -24416,6 +24426,8 @@ class Orchestrator:
             # "" for a caller that has no document behind it — the CLI, the tests — and that records
             # none, exactly as it always did.
             project.app_for_turn().write_plan(plan_edits, plan_id)
+            # An edit can be what names the shareable view (#701).
+            self._prepare_turn_app(project)
         # Fall back to the architecture when no plan is live: an architecture turn writes only
         # .sage/architecture.md (it isn't a one-shot handoff and must survive the build), so its card's
         # Build button would otherwise approve an empty plan and build nothing.

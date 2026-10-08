@@ -258,6 +258,13 @@ _MANAGED_AGENTS_BLOCK = re.compile(
     r"(?ms)^<!-- sage:(?P<id>[a-z][a-z0-9-]*):begin -->[ \t]*\n"
     r".*?^<!-- sage:(?P=id):end -->[ \t]*$"
 )
+# What a plan says when it proposes a view that reopens from a link or a reload (#701). The plan
+# shape asks for these words, so they are an app's opt-in to `install_view_state`.
+_SHAREABLE_VIEW = re.compile(r"(?i)(?<!\w)shareable view(?!\w)")
+
+
+def plan_wants_shareable_view(plan: str) -> bool:
+    return _SHAREABLE_VIEW.search(plan) is not None
 
 
 def _seed_file(src: Path, dest: Path) -> None:
@@ -2682,6 +2689,18 @@ class WorkspaceManager:
     def ensure_query_helper(self) -> bool:
         """The same, for the query helper (#15)."""
         return self._ensure_helper(self.stack.helpers.query_path, refresh=True)
+
+    def install_view_state(self) -> bool:
+        """Write the shareable-view helper into an app that lacks it (#701). True if written.
+
+        The one path that ADDS a previously absent helper, which `refresh_owned_sources` must never
+        do. Called on a Build turn whose plan names a shareable view, before the builder imports it.
+        A copy already there is left alone: bringing it in line is the refresh's job.
+        """
+        rel = self.stack.view_state
+        if rel not in self.stack.owned_sources:
+            return False
+        return self._ensure_helper(rel)
 
     def refresh_owned_sources(self) -> bool:
         """Bring Sage-owned sources and legacy agent instructions in line with the template.

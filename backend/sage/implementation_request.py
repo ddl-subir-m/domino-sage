@@ -64,6 +64,10 @@ GUIDANCE_SUPPLEMENTS = {
           "`window.app.<Name>`, with a `<script>` line in `static/index.html` above "
           "`static/app.js`, which loads last. `static/app.js` is the shell: it keeps its wrappers "
           "and decides which screen shows.\n"
+        + "- A view the plan calls shareable keeps its applied selection with `sage.useViewState` "
+          "(the comment atop `static/sage/viewState.js` shows how) once that file is there, and "
+          "`static/index.html` gets its `<script>` line after the other `static/sage/` lines if it "
+          "lacks one. Without the file, keep the view in state.\n"
         + _GUIDANCE_OUTRO.format(entry="static/app.js")
     ),
     "react-vite": (
@@ -71,6 +75,9 @@ GUIDANCE_SUPPLEMENTS = {
                                    '"edit `src/App.tsx`"')
         + "- A new screen is its own file, `src/screens/<Name>.tsx`, imported by `src/App.tsx`, the "
           "shell that decides which screen shows. Shared components go in `src/components/`.\n"
+        + "- A view the plan calls shareable keeps its applied selection with `useViewState` from "
+          "`src/appViewState.ts` (the comment atop it shows how) once that file is there. Without "
+          "the file, keep the view in state.\n"
         + _GUIDANCE_OUTRO.format(entry="src/App.tsx")
     ),
 }

@@ -172,6 +172,18 @@ Build the user's app by editing `src/`. There is no install or build step to run
     change, not for length. A figure two views show comes from one function.
   - An app whose whole UI is in `src/App.tsx` is fine as it is. Give a screen its own file only
     when the request changes that screen.
+- **A shareable view uses `useViewState` from `src/appViewState.ts`, and only when the plan says
+  the view is shareable** — a dashboard or list whose applied selection reopens from a reload or a
+  copied link. Never a form, never unasked. Define the schema at module level with
+  `satisfies ViewSchema`, call the hook once in `src/App.tsx`, and pass the state and its patch
+  function to the screens, so each screen keeps its selection when another one shows. Mark
+  `shareable` only the screen and applied filters; draft search text, row values and form input
+  stay out. A filter change is `patchView({...})`; switching screens or an Apply button adds
+  `{ history: "push" }`. Read the state the hook returns, never `window.location`, and never use
+  `#/sage/` or `window.top`. The comment at the top of the file shows the schema. If the app
+  already keeps something else in its `#` hash, keep that and say so instead of replacing it. With
+  no `src/appViewState.ts`, keep the view in state and do not write one. `src/appViewState.ts` is
+  {assistantName}'s: import from it, never edit it.
 - **Write a component before the file that imports it.** The preview is a live dev server watching
   the disk, so it re-reads `src/App.tsx` the moment you save it. An `App.tsx` importing
   `./components/RowDetail` that you have not written yet is a broken app until you write it —
