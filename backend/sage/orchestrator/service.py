@@ -266,6 +266,7 @@ from . import (
     chat_compact,
     chat_intent,
     chat_task,
+    plan_resources,
     recall,
     scope,
     table_rank,
@@ -21342,6 +21343,9 @@ class Orchestrator:
             # states once (#561). The example is a second statement of this shape.
             plan_contract = shape
             shape += "\n\n" + _plan_example_for(project)
+            resource_list = plan_resources.planner_note(self._plan_resources(project))
+            if resource_list:
+                shape += "\n\n" + resource_list
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
@@ -24292,6 +24296,7 @@ class Orchestrator:
                     iterate_reason = "a plan step wrote none of its files — building it"
                     yield {"type": "iterate", "reason": iterate_reason}
                     current = " ".join(
+                        f"Plan step {s.why}" if isinstance(s, plan_resources.UnreachedStep) else
                         f"Plan step {s.n} ({s.label}) names {', '.join(s.files)}; none were written."
                         for s in unbuilt) + (" Do those steps now." if len(unbuilt) > 1
                                              else " Do that step now.")
@@ -24663,6 +24668,7 @@ class Orchestrator:
         tree_before = project.snapshot.working_tree_hash()
         queries_before = project.snapshot.queries_digest()
         rows_before = len(project.app_for_turn().read_history(project.build_conversation))
+        plan_res = self._plan_resources(project)
         try:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
@@ -24692,9 +24698,9 @@ class Orchestrator:
                     continuation_note=(_BUILD_CONTROL_PROMPT + "\n\n" + retry_evidence
                                        if retry_evidence else ""),
                     unbuilt_steps=lambda: self._unbuilt_plan_steps(
-                        project, plan_md, tree_before, queries_before))
+                        project, plan_md, tree_before, queries_before, plan_res))
             unbuilt = self._plan_unbuilt_event(
-                project, plan_md, tree_before, queries_before, rows_before)
+                project, plan_md, tree_before, queries_before, rows_before, plan_res)
             if unbuilt is not None:
                 project.app_for_turn().append_history(unbuilt, project.build_conversation)
                 yield unbuilt
@@ -24739,7 +24745,8 @@ class Orchestrator:
                 app.archive_plan()
 
     def _plan_unbuilt_event(self, project: Project, plan_md: str, tree_before: str,
-                            queries_before: str, rows_before: int) -> dict | None:
+                            queries_before: str, rows_before: int,
+                            resources: plan_resources.Resources) -> dict | None:
         """The approved plan's steps this build wrote none of the named files for, or None (#662).
 
         Only for a build that finished: a turn that gave up, was stopped, or wrote nothing already
@@ -24753,18 +24760,22 @@ class Orchestrator:
         ended = next((r for r in reversed(rows) if r.get("type") in ("done", "stopped")), None)
         if ended is None or ended["type"] != "done":
             return None
-        unbuilt = self._unbuilt_plan_steps(project, plan_md, tree_before, queries_before)
+        unbuilt = self._unbuilt_plan_steps(project, plan_md, tree_before, queries_before, resources)
         if not unbuilt:
             return None
-        return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": (
-            f"Not built from the plan: {_listed_steps(unbuilt)}. This build wrote none of the files "
-            + ("those steps name." if len(unbuilt) > 1 else "that step names."))}
+        unwritten = [s for s in unbuilt if not isinstance(s, plan_resources.UnreachedStep)]
+        return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": " ".join(
+            ([f"Not built from the plan: {_listed_steps(unwritten)}. This build wrote none of the "
+              "files " + ("those steps name." if len(unwritten) > 1 else "that step names.")]
+             if unwritten else [])
+            + [f"Step {s.why}" for s in unbuilt if isinstance(s, plan_resources.UnreachedStep)])}
 
-    @staticmethod
-    def _unbuilt_plan_steps(project: Project, plan_md: str, tree_before: str,
-                            queries_before: str) -> list[PlanStep]:
-        """The plan's steps that name files, none of which changed since `tree_before`. Empty for a
-        build that changed nothing: that turn already says so in its own words."""
+    def _unbuilt_plan_steps(self, project: Project, plan_md: str, tree_before: str,
+                            queries_before: str,
+                            resources: plan_resources.Resources) -> list[PlanStep]:
+        """The plan's steps that name files, none of which changed since `tree_before`, then the
+        ones whose `Uses` names a resource nothing in the app reaches (#712). Empty for a build that
+        changed nothing: that turn already says so in its own words."""
         changed = project.snapshot.changed_paths(
             tree_before, project.snapshot.working_tree_hash(), limit=100_000)
         if project.snapshot.queries_digest() != queries_before:
@@ -24776,7 +24787,36 @@ class Orchestrator:
             path = str(PurePosix(name))
             return any(c == path or c.startswith(path + "/") for c in changed)
 
-        return [s for s in parse_steps(plan_md) if s.files and not any(map(written, s.files))]
+        steps = parse_steps(plan_md)
+        unwritten = {s.n for s in steps if s.files and not any(map(written, s.files))}
+        named = [s for s in steps if s.uses and s.n not in unwritten]
+        unreached: dict[int, PlanStep] = {}
+        if named:
+            app = project.app_for_turn()
+            owned = app.sage_owned_paths
+            sources = [(rel, text) for rel, text in self._scan_app_sources(app) if rel not in owned]
+            unreached = {s.n: s for s in plan_resources.unreached(
+                named, resources, sources, plan_resources.query_names(app.path / QUERIES))}
+        return [unreached.get(s.n, s) for s in steps if s.n in unwritten or s.n in unreached]
+
+    def _plan_resources(self, project: Project) -> plan_resources.Resources:
+        """What this Project offers a plan step (#712): its MCP servers that are on and answered,
+        its secret names (never a value), and the LLM Aliases this conversation's app may call."""
+        try:
+            servers = tuple(row for row in extension_mcp.list_servers(project.record.path)
+                            if row["enabled"] and not row.get("warning"))
+        except ValueError:  # ExtensionError: a config Sage will not read
+            log.warning("plan resources: could not read the project's MCP servers")
+            servers = ()
+        secrets = tuple(sorted(name for name in project_secrets.known_values()
+                               if not project_secrets.is_hidden(name)))
+        try:
+            aliases = tuple(name for name, _label in self._delegated_aliases(
+                project, project.build_conversation, cached_labels_only=True)[0])
+        except Exception:
+            log.exception("plan resources: could not read which models this app may call")
+            aliases = ()
+        return plan_resources.Resources(servers=servers, secrets=secrets, aliases=aliases)
 
     def _skill_copy_drift(self, project: Project, tree_before: str, rows_before: int):
         """Yields and records the `skill-copy-drift` row for a build that finished (#682).

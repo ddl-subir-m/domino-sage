@@ -23,7 +23,7 @@ which would be worse than not phasing at all.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
@@ -46,7 +46,8 @@ _CANDIDATE_BOLD_HEADING = re.compile(
 # The separator set covers what renderers and models substitute for the em-dash we ask for.
 _FIELD = re.compile(
     r"^[ \t]*[-*][ \t]*"
-    r"(done when|done|do not touch|don'?t touch|leave alone|files|touch|verify|change|work|do)"
+    r"(done when|done|do not touch|don'?t touch|leave alone|depends on|files|touch|verify|change|"
+    r"work|uses|use|resources|do)"
     r"[ \t]*[—–:-][ \t]*(.+?)[ \t]*$",
     re.IGNORECASE,
 )
@@ -56,6 +57,7 @@ _CANON = {
     "done when": "done_when", "done": "done_when", "verify": "done_when",
     "don't touch": "dont_touch", "dont touch": "dont_touch",
     "do not touch": "dont_touch", "leave alone": "dont_touch",
+    "uses": "uses", "use": "uses", "resources": "uses", "depends on": "uses",
 }
 # Below this a phased build doesn't repay its own overhead: every phase pays a fresh session's
 # bootstrap (OpenCode re-reads AGENTS.md and project context), so two phases can cost more than one
@@ -81,6 +83,9 @@ class PlanStep:
     # decisions (is this phasable, what do we show); `raw` makes sure anything the parser didn't
     # model still reaches the model that has to act on it.
     raw: str
+    # The Project resources the step depends on, by their exact Project names (#712): an MCP server,
+    # a secret, an LLM Alias or a query. Optional: most steps need none.
+    uses: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -124,6 +129,7 @@ def _build(n: int, label: str, body: list[str]) -> PlanStep | None:
         done_when=done_when,
         dont_touch=dont_touch,
         raw="\n".join([f"### {n}. {label}", *body]).strip(),
+        uses=_split_list(fields.get("uses", "")),
     )
 
 
