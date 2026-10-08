@@ -72,6 +72,7 @@ identifiers into a plan. Describe the product structure and behavior instead.
 <!-- sage:build-profile:v1:common:end -->
 
 <!-- sage:build-profile:v1:implement:begin -->
+<!-- sage:app-guidance:v1 -->
 ## What the final check rejects
 
 When your turn ends, one check runs. Any failure sends you back for a repair turn:

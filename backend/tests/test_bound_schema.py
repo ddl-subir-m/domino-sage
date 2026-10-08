@@ -770,8 +770,10 @@ def test_the_required_parameter_collision_is_given_one_resolution_not_a_choice()
 def test_a_control_that_requeries_is_told_to_pass_the_abort_signal():
     # `runQuery` has taken an AbortSignal since it was written. Nothing told the agent to use it,
     # and a Control is the first thing that fires the same query twice in a second.
+    # #699: and to ignore a superseded answer, because one can arrive after its abort.
     block = block_for()
-    assert "**A Control that re-queries passes an `AbortSignal`.**" in block
+    assert ("**A Control that re-queries without `useQuery` passes an `AbortSignal` and ignores a "
+            "superseded answer.**") in block
     assert "{ signal: controller.signal }" in block
     assert "the slowest response wins" in block
 

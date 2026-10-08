@@ -1,0 +1,21 @@
+[
+  {
+    "name": "example_order_regions",
+    "sql": "SELECT DISTINCT region FROM orders ORDER BY region",
+    "params": []
+  },
+  {
+    "name": "example_orders_summary",
+    "sql": "SELECT COUNT(*) AS order_count, COALESCE(SUM(amount), 0) AS total_amount FROM orders WHERE (:region = '__all__' OR region = :region) AND LOWER(customer) LIKE '%' || LOWER(:search) || '%'",
+    "params": [{ "name": "region", "type": "string" }, { "name": "search", "type": "string" }]
+  },
+  {
+    "name": "example_orders_page",
+    "sql": "SELECT order_id, placed_on, customer, region, amount FROM orders WHERE (:region = '__all__' OR region = :region) AND LOWER(customer) LIKE '%' || LOWER(:search) || '%' ORDER BY placed_on DESC, order_id LIMIT 50 OFFSET :offset",
+    "params": [
+      { "name": "region", "type": "string" },
+      { "name": "search", "type": "string" },
+      { "name": "offset", "type": "int" }
+    ]
+  }
+]

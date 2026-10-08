@@ -37,6 +37,44 @@ _BLOCK_ORDER = _REQUIRED_BLOCKS + _OPTIONAL_BLOCKS
 #: it asks `choose_instruction_sections` what this turn needs.
 IMPLEMENT_SECTIONS = frozenset(_OPTIONAL_BLOCKS)
 
+# An app keeps the `AGENTS.md` it was seeded with, so one seeded before the screen-first layout
+# (#697) still says to put the UI in the entry file. A template that carries this marker already has
+# the current layout and query rules; an implement turn on any other marked file gets the stack's
+# supplement after its implement section, once (#699). The supplement opens with the marker itself,
+# so instructions that already carry it are never given a second copy.
+GUIDANCE_MARKER = "<!-- sage:app-guidance:v1 -->"
+_GUIDANCE_INTRO = (
+    GUIDANCE_MARKER + "\n"
+    "## Current screen layout and query rules\n\n"
+    "These replace any earlier line in this file about where the UI lives — {old}. Everything else "
+    "in this file still applies.\n\n"
+)
+_GUIDANCE_OUTRO = (
+    "- A follow-up edits only the files its request is about. A UI already in `{entry}` is fine as "
+    "it is: move a screen into its own file only when the request changes that screen, and leave "
+    "unrelated code alone.\n"
+    "- Queries: when this file has a section headed \"The app's data\", it is current; follow it "
+    "where older lines here differ.\n"
+)
+GUIDANCE_SUPPLEMENTS = {
+    "fastapi-antd": (
+        _GUIDANCE_INTRO.format(old='"put the app UI in `static/app.js`", "split it as it grows", '
+                                   '"edit `static/app.js`"')
+        + "- A new screen is its own plain script, `static/components/<Name>.js`, registered as "
+          "`window.app.<Name>`, with a `<script>` line in `static/index.html` above "
+          "`static/app.js`, which loads last. `static/app.js` is the shell: it keeps its wrappers "
+          "and decides which screen shows.\n"
+        + _GUIDANCE_OUTRO.format(entry="static/app.js")
+    ),
+    "react-vite": (
+        _GUIDANCE_INTRO.format(old='"put the app UI in `src/App.tsx`", "split it as it grows", '
+                                   '"edit `src/App.tsx`"')
+        + "- A new screen is its own file, `src/screens/<Name>.tsx`, imported by `src/App.tsx`, the "
+          "shell that decides which screen shows. Shared components go in `src/components/`.\n"
+        + _GUIDANCE_OUTRO.format(entry="src/App.tsx")
+    ),
+}
+
 # A FastAPI turn drops the design system only when the ask is a server change and says nothing
 # about the page. Anything else, including an empty ask, keeps it.
 _SERVER_CHANGE = re.compile(r"(?i)(?<!\w)(?:app\.py|routes?|endpoints?|server)(?!\w)")
@@ -202,8 +240,8 @@ def carries_profile_markers(text: str) -> bool:
     return True
 
 
-def _profile_text(text: str, profile: str,
-                  sections: frozenset[str]) -> tuple[str, dict[str, int]] | None:
+def _profile_text(text: str, profile: str, sections: frozenset[str],
+                  stack: str = "") -> tuple[str, dict[str, int]] | None:
     """Apply one complete marked profile, or leave unrelated instruction text alone."""
     if _PROFILE_PREFIX not in text:
         return None
@@ -211,6 +249,7 @@ def _profile_text(text: str, profile: str,
     bodies = dict(blocks)
     if not bodies["common"].strip():
         raise BuildInstructionProfileError("The Build common instruction profile is empty")
+    supplement = "" if GUIDANCE_MARKER in text else GUIDANCE_SUPPLEMENTS.get(stack, "")
 
     kept_ids = {"common"}
     if profile == "implement":
@@ -232,7 +271,7 @@ def _profile_text(text: str, profile: str,
     for index, (block_id, body) in enumerate(blocks):
         parts.append(text[cursor:matches[2 * index].start()])
         if block_id in kept_ids:
-            parts.append(body)
+            parts.append(body + "\n" + supplement if block_id == "implement" and supplement else body)
         else:
             removed[block_id] = _wire_bytes(body)
         cursor = matches[2 * index + 1].end()
@@ -242,8 +281,11 @@ def _profile_text(text: str, profile: str,
 
 def apply_instruction_profile(request: dict, profile: str, *,
                               removed_tools: dict[str, int] | None = None,
-                              sections: frozenset[str] = frozenset()) -> tuple[dict, dict]:
-    """Select the marked Build instructions without retaining any instruction content."""
+                              sections: frozenset[str] = frozenset(),
+                              stack: str = "") -> tuple[dict, dict]:
+    """Select the marked Build instructions without retaining any instruction content.
+
+    `stack` picks the older-app supplement for an implement or direct turn; empty adds none."""
     before_bytes = after_bytes = 0
     profiled_blocks = 0
     removed_by_id: dict[str, dict[str, int]] = {}
@@ -265,7 +307,7 @@ def apply_instruction_profile(request: dict, profile: str, *,
                     updated_blocks.append(block)
                     continue
                 before_bytes += _wire_bytes(text)
-                selected = _profile_text(text, profile, sections)
+                selected = _profile_text(text, profile, sections, stack)
                 if selected is None:
                     updated_blocks.append(block)
                     after_bytes += _wire_bytes(text)

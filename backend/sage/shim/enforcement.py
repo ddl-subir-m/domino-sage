@@ -1174,7 +1174,8 @@ class EnforcementShim:
             # Empty facts keep both sections, which is what a caller that never set them gets.
             # Direct ignores `choose_instruction_sections`: common and implement only.
             if state.direct:
-                request, build_profile = apply_instruction_profile(request, "direct")
+                request, build_profile = apply_instruction_profile(
+                    request, "direct", stack=self._instruction_facts.stack)
             else:
                 replaced = frozenset(
                     name for name, ext_id in (extensions.replaced if extensions else {}).items()
@@ -1182,7 +1183,8 @@ class EnforcementShim:
                 request, build_profile = apply_instruction_profile(
                     request, "implement",
                     sections=choose_instruction_sections(
-                        replace(self._instruction_facts, replaced=replaced)))
+                        replace(self._instruction_facts, replaced=replaced)),
+                    stack=self._instruction_facts.stack)
         if build_profile and rewrite_counts is not None:
             rewrite_counts["buildInstructionProfile"] = build_profile
         request, assembly = assemble_for_route(

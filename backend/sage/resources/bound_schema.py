@@ -537,7 +537,33 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
          + ". `q.status` is `\"loading\"`, `\"error\"`, `\"empty\"` (the query answered with zero "
          "records — never a failure) or `\"ready\"`; `q.data` is what `runQuery` answers; `q.error` "
          "is the viewer's sentence; `q.refresh()` asks again. A changed param aborts the request in "
-         "flight, and answers are kept for the page's life, so a screen shown again draws at once."),
+         "flight, only the newest request's answer reaches the screen or the cache, and an aborted "
+         "request is not an error. Answers are kept for the page's life, so a screen shown again "
+         "draws at once."),
+        # #699: one query per keystroke, and a slow older answer landing over a newer selection.
+        (f"- **Delay a remote text search; apply other Controls at once.** Keep the typed text in its "
+         f"own state and query with the settled value: `const search = "
+         f"{'sage.' if names.ext == 'js' else ''}useDebouncedValue(text.trim());` (300 ms by "
+         "default, from the same helper), so typing sends one query when it pauses, not one per "
+         "key. Selects and toggles apply immediately. For a costly or multi-field search, offer an "
+         "explicit Search button instead, and let Enter apply the current text at once. Text still "
+         "in IME composition is unfinished: apply it after composition ends. A filter over rows "
+         "already complete in the browser needs no delay."),
+        ("- **Shape each query for what it feeds.** A detail table names its columns, filters "
+         "through parameters, ends its `ORDER BY` with a unique column as a tie-breaker "
+         "(`ORDER BY placed_on DESC, order_id`) and returns one bounded page: `LIMIT 50 OFFSET "
+         ":offset`, and a page size the viewer picks is an `int` parameter with an `\"enum\"` no "
+         "larger than 200. Go back to the first page when a filter changes. A chart or KPI must "
+         "aggregate over every matching row in SQL (`COUNT(*)`, `SUM(...)`) and return the summary "
+         "— never total a page or a truncated answer. A filter's choices come from `SELECT "
+         "DISTINCT` on that column, never from a page of detail rows. A sort the viewer picks is a "
+         "`string` parameter with an `\"enum\"` of fixed variants, never a column name from the "
+         "browser. Show a total only when a query counted it; otherwise label the count as rows "
+         "shown. A limit bounds the rows returned; it does not make the scan cheap."),
+        (f"- If `{'static/examples/OrdersScreen.js' if names.ext == 'js' else 'src/examples/OrdersScreen.tsx'}` "
+         "exists, it is a working screen with a delayed search, a select and a paged table over "
+         "the fixture queries declared beside it in `orders.queries.json`. Copy its shape, not its "
+         "query names."),
         # Measured 2026-10-06 (#662): a dashboard read `row.OPEN_PIPELINE` off the positional rows,
         # got undefined on every read, and drew $0 and "No data" over queries that had answered.
         ("- **Read a row by column name through `records`, never through `rows`.** `rows` holds one "
@@ -594,11 +620,14 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
          "one way — keep the parameter, give \"All\" a sentinel value, and have the statement test "
          "for it: `WHERE (:region = '__all__' OR region = :region)`. Do not leave the parameter out "
          "of the call and do not send an empty string in place of a value."),
-        ("- **A Control that re-queries passes an `AbortSignal`.** `runQuery` takes one in its third "
-         "argument — `runQuery(\"usage_by_account\", params, { signal: controller.signal })` — and "
-         "aborting the previous request when the selection changes again is what keeps a fast "
-         "second change from racing the first. Without it the slowest response wins and the screen "
-         "settles on a selection the Control no longer shows."),
+        ("- **A Control that re-queries without `useQuery` passes an `AbortSignal` and ignores a "
+         "superseded answer.** `runQuery` takes a signal in its third argument — "
+         "`runQuery(\"usage_by_account\", params, { signal: controller.signal })`. In the effect "
+         "that asks, set a local `current = true`, and in its cleanup set it `false` before "
+         "aborting; set state only while it is still `true`. An answer can arrive after its abort, "
+         "so the abort alone is not enough: without the check the slowest response wins and the "
+         "screen settles on a selection the Control no longer shows. An abort is never shown as an "
+         "error."),
         brand.text(
             "- **Do not read the {dataSource} yourself.** No scripts, no SQL anywhere except "
             "`.sage/queries.json`, and never fetch rows to see what a table holds. What is written "

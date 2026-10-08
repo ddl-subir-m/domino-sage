@@ -83,8 +83,9 @@ window.sage = window.sage || {};
    *     // with q.refreshing true meanwhile.
    *
    * `"empty"` means the query answered with zero records, never that it failed. A changed param or
-   * an unmount aborts the request in flight. `{ enabled: false }` sends nothing (status stays
-   * `"loading"`) until a value the query needs exists. Answers are kept for the page's life.
+   * an unmount aborts the request in flight, and only the newest request's answer reaches the
+   * screen or the cache. `{ enabled: false }` sends nothing (status stays `"loading"`) until a value
+   * the query needs exists. Answers are kept for the page's life.
    */
   sage.useQuery = function useQuery(name, params = {}, opts = {}) {
     const key = keyOf(name, params);
@@ -104,19 +105,27 @@ window.sage = window.sage || {};
         setState({ key, data: kept, error: null, pending: false });
         return undefined;
       }
+      // An answer can arrive after its abort, so aborting is not enough (#699): a late answer for
+      // A, after B and then A again, would replace the newer A. Cleanup marks this request stale
+      // before aborting it, and a stale request changes neither the screen nor the cache.
+      let current = true;
       const controller = new AbortController();
       setState((s) => ({ key, data: s.key === key ? s.data : kept || null, error: null, pending: true }));
       sage.runQuery(name, latest.current, { signal: controller.signal }).then(
         (data) => {
+          if (!current) return;
           answers.set(key, data);
           setState({ key, data, error: null, pending: false });
         },
         (error) => {
-          if (error && error.name === "AbortError") return;
+          if (!current || (error && error.name === "AbortError")) return;
           setState((s) => ({ key, data: s.key === key ? s.data : null,
                              error: (error && error.message) || String(error), pending: false }));
         });
-      return () => controller.abort();
+      return () => {
+        current = false;
+        controller.abort();
+      };
     }, [key, name, enabled, run]);
 
     const refresh = React.useCallback(() => setRun((n) => n + 1), []);
@@ -125,6 +134,25 @@ window.sage = window.sage || {};
     const status = view.error ? "error"
       : view.data ? (view.data.records.length ? "ready" : "empty") : "loading";
     return { status, data: view.data, error: view.error, refreshing: view.pending && !!view.data, refresh };
+  };
+
+  /**
+   * `value` once it has stopped changing for `delayMs` (#699), for a remote text search:
+   *
+   *     const [text, setText] = React.useState("");          // the box shows every key at once
+   *     const search = sage.useDebouncedValue(text.trim());   // the query waits for a pause
+   *     const q = sage.useQuery("orders_page", { search, region, offset });
+   *
+   * The first value is returned at once, so a restored value queries without waiting. Pass a
+   * string or a number: a new object on every render never settles.
+   */
+  sage.useDebouncedValue = function useDebouncedValue(value, delayMs = 300) {
+    const [settled, setSettled] = React.useState(value);
+    React.useEffect(() => {
+      const timer = setTimeout(() => setSettled(value), delayMs);
+      return () => clearTimeout(timer);
+    }, [value, delayMs]);
+    return settled;
   };
 
   // A read of a name the query does not return is `undefined`, which a page draws as 0 or an empty
