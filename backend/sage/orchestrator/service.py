@@ -90,6 +90,7 @@ from ..pre_edit_guard import (
     PreEditState,
     PreEditTrigger,
 )
+from ..preview import page_check
 from ..preview.prefix import domino_base_prefix, publish_available
 from ..preview.queries import PreviewQueries
 from ..preview.read_outcomes import read_request, read_result
@@ -7479,10 +7480,13 @@ class Orchestrator:
         opencode_client: OpenCodeClient | None = None,
         gateway_mode: str = "fake",
         build_policy: BuildPolicy | None = None,
+        page_check: Callable[[str, float], page_check.PageCheck] | None = None,
     ) -> None:
         # Loaded once per service. Build turns read this immutable dependency and never read their
         # limit environment variables directly.
         self._build_policy = build_policy or load_build_policy()
+        # Opens the changed page in headless Chromium (#707). None leaves the check to a Workbench tab.
+        self._page_check = page_check
         self._wm = WorkspaceManager(workspace_dir, template)
         self._project_id = project_id
         self._gateway = gateway
@@ -25175,6 +25179,7 @@ class Orchestrator:
                 return "another app was opened"
             return "the preview was restarted by something else"
 
+        check = None
         try:
             if timeout <= 0:
                 validation.reason = "page checks are turned off"
@@ -25203,6 +25208,14 @@ class Orchestrator:
                                      else f"the preview didn't start within {timeout:g}s")
                 return validation
             yield validation.event()
+            unavailable = ""
+            if self._page_check is not None:
+                budget = max(timeout, self._build_policy.page_check_wait_seconds)
+                try:
+                    check = self._page_check(page_check.local_url(app.app_id, validation.id), budget)
+                    timeout = budget
+                except page_check.Unavailable as error:
+                    unavailable = f"; {error}"
             deadline = time.monotonic() + timeout
             while current() and not validation.acknowledged and time.monotonic() < deadline:
                 if validation.error is not None:
@@ -25210,8 +25223,9 @@ class Orchestrator:
                     return validation
                 time.sleep(0.1)
             if not validation.acknowledged or not current():
-                validation.reason = (interrupted() if not current()
-                                     else f"the preview didn't load the changed page within {timeout:g}s")
+                validation.reason = (interrupted() if not current() else
+                                     f"the preview didn't load the changed page within {timeout:g}s"
+                                     f"{unavailable}")
                 return validation
             validation.stages["page"] = "passed"
             with timing.span("after.runtime_wait"):
@@ -25229,6 +25243,8 @@ class Orchestrator:
                                      else "the code changed while the page was being checked")
             return validation
         finally:
+            if check is not None:
+                check.close()
             status = supervisor.status()
             if (validation.generation and status["generation"] == validation.generation
                     and status["state"] == "failed"):

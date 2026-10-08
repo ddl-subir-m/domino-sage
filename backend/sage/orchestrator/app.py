@@ -67,6 +67,7 @@ from ..gateway.client import (
 )
 from ..gateway.factory import build_gateway
 from ..gateway.open_models import OPEN_WEIGHT_MODELS
+from ..preview import page_check
 from ..preview.prefix import domino_base_prefix, domino_project_label, proxy_is_app, publish_available
 from ..preview.proxy import make_preview_app
 from ..resources import health
@@ -471,6 +472,7 @@ orchestrator = Orchestrator(
     # Which authority a slot resolves against, so the turn-time slot check (#125) runs only where a
     # gateway actually holds the Alias list — the same gate `_run_slot_preflight` applies below.
     gateway_mode=GATEWAY_MODE,
+    page_check=page_check.start,
 )
 
 # Preflight of Sage's own model slots (#17). Loud but not fatal: a slot resolves against the LLM

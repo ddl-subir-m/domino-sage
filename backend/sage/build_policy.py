@@ -11,6 +11,7 @@ open_tool_quiet_timeout_seconds  SAGE_BUILD_OPEN_TOOL_QUIET_TIMEOUT_SECONDS     
 stop_grace_seconds               SAGE_BUILD_STOP_GRACE_SECONDS                     30
 runtime_error_wait_seconds       SAGE_BUILD_RUNTIME_ERROR_WAIT_SECONDS             4
 page_ack_wait_seconds            SAGE_BUILD_PAGE_ACK_WAIT_SECONDS                  10
+page_check_wait_seconds          SAGE_BUILD_PAGE_CHECK_WAIT_SECONDS                30 [4]
 poll_message_limit               SAGE_BUILD_POLL_MESSAGE_LIMIT                     40
 live_read_limit                  SAGE_BUILD_LIVE_READ_LIMIT                        25
 exact_repeat_limit               SAGE_BUILD_EXACT_REPEAT_LIMIT                     3
@@ -62,6 +63,10 @@ implement_reasoning_budget_seconds
     ``quiet_timeout_seconds``, because a turn that is visibly working deserves more rope than one
     that has gone silent, and far shorter than ``open_tool_quiet_timeout_seconds``, which is what a
     single legitimately long command is already allowed to take.
+
+[4] The ack wait while Sage's own headless Chromium is loading the page (#707). It replaces
+    ``page_ack_wait_seconds`` only when it is longer, and only when that check started: launching
+    Chromium and loading a cold preview can take longer than a Workbench tab that is already open.
 """
 
 from __future__ import annotations
@@ -90,6 +95,7 @@ class BuildPolicy:
     stop_grace_seconds: float = 30.0
     runtime_error_wait_seconds: float = 4.0
     page_ack_wait_seconds: float = 10.0
+    page_check_wait_seconds: float = 30.0
     poll_message_limit: int = 40
     live_read_limit: int = 25
     exact_repeat_limit: int = 3
@@ -162,6 +168,7 @@ _SETTINGS = (
              "SAGE_BUILD_OPEN_TOOL_QUIET_TIMEOUT_SECONDS", "duration"),
     _Setting("stop_grace_seconds", "SAGE_BUILD_STOP_GRACE_SECONDS", "duration"),
     _Setting("page_ack_wait_seconds", "SAGE_BUILD_PAGE_ACK_WAIT_SECONDS", "duration"),
+    _Setting("page_check_wait_seconds", "SAGE_BUILD_PAGE_CHECK_WAIT_SECONDS", "duration"),
     _Setting("runtime_error_wait_seconds", "SAGE_BUILD_RUNTIME_ERROR_WAIT_SECONDS", "duration"),
     _Setting("poll_message_limit", "SAGE_BUILD_POLL_MESSAGE_LIMIT"),
     _Setting("live_read_limit", "SAGE_BUILD_LIVE_READ_LIMIT"),

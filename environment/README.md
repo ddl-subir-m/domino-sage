@@ -88,6 +88,13 @@ their cookie) entered that venv's lockfile with #644. On an image built before t
 still returns the builder's keys and the Your keys page says viewer keys are unavailable. Rebuild
 the Environment, then republish (ADR-0072).
 
+**Sage's own page check needs an Environment built after #707.** Sage loads each changed page in
+headless Chromium so a build nobody is watching still gets its page and runtime checks. The image
+installs `playwright-core` (root `package.json`) and its headless Chromium into
+`/opt/ms-playwright`. On an older image the check is the Workbench tab's alone, and an unwatched
+build's ending says "no headless browser in this environment". `SAGE_PAGE_CHECK_CHROMIUM` points it
+at another Chromium binary; `SAGE_BUILD_PAGE_CHECK_WAIT_SECONDS` (default 30) is how long it waits.
+
 ## Fast inner dev loop
 
 Don't rebuild the image per code change: set `SAGE_APP_HOME=/mnt/code` (in a git-based project that

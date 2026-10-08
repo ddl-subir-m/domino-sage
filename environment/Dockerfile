@@ -169,6 +169,19 @@ RUN cd /opt/sage \
     && npm ci --omit=dev --ignore-scripts --no-fund --no-audit \
     && node --input-type=module -e "import('./backend/sage/driver/provider.mjs')"
 
+# Sage's own page check (#707): headless Chromium loads the changed page, so a build nobody is
+# watching still gets its page and runtime checks. Fetched here, where there is egress — from
+# Playwright's browser CDN, beside apt/npm/git — and never at runtime; without it a build falls back
+# to the Workbench-only check and says so. The build is the one the pinned playwright-core in
+# package.json drives, and `--with-deps` adds Chromium's OS libraries through apt. `--version`
+# proves those libraries load, so a missing one fails the build here rather than every page check.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN cd /opt/sage \
+    && node node_modules/playwright-core/cli.js install --with-deps chromium-headless-shell \
+    && rm -rf /var/lib/apt/lists/* \
+    && "$(find /opt/ms-playwright -name chrome-headless-shell -type f | head -n 1)" --version \
+    && echo "[sage] headless Chromium OK"
+
 # Warm template deps baked (agent-added deps install on top, into the app fs, at runtime).
 # Even with a compatible Node, `npm ci` can still skip rolldown's platform-native optional binary
 # (@rolldown/binding-linux-x64-gnu) — then vite dies at startup with "Cannot find module
