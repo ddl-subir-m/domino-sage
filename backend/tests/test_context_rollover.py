@@ -1136,12 +1136,15 @@ class _App:
         (root / ".sage").mkdir(exist_ok=True)
         (root / ".sage" / "settings.json").write_text('{"stack": "react-vite"}')
         self.path = root
+        self.app_id = "app"
 
 
 class _Project:
     def __init__(self, root: Path):
         self.snapshot = _Snapshot()
         self._app = _App(root)
+        self.build_conversation = "conv"
+        self.active_plan_record_id = ""
 
     def app_for_turn(self):
         return self._app

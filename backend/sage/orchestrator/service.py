@@ -42,7 +42,15 @@ if TYPE_CHECKING:
     from ..provision.domino import ControlPlane
     from ..workspace.chat_tables import ChatTables
 
-from .. import build_diagnostics, degraded, extension_mcp, project_secrets, skill_copies, timing
+from .. import (
+    build_diagnostics,
+    build_evidence,
+    degraded,
+    extension_mcp,
+    project_secrets,
+    skill_copies,
+    timing,
+)
 from .. import extensions as project_extensions
 from ..assets.provider import (
     Asset,
@@ -6303,6 +6311,9 @@ class Project:
     # One bounded process-local Continue capability. Restart makes historical cards display-only.
     context_continuations: ContextContinuationRegistry = field(
         default_factory=ContextContinuationRegistry, repr=False)
+    # The running Build's durable evidence (#698). Inactive outside a top-level implementation turn.
+    evidence_recorder: build_evidence.Recorder = field(
+        default_factory=build_evidence.Recorder, repr=False)
     # Serializes user-side app writes and rebaseline with every authoritative pre-edit tree check.
     # The lock order is always this lock, then PreEditGuard's private lock.
     pre_edit_tree_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -11095,10 +11106,10 @@ class Orchestrator:
                 continuation.file_references())
             resources = continuation.resource_references()
             mentions = [record["source"] for record in explicit_references]
+            project.active_plan_record_id = continuation.approved_plan_record_id
             continuation_note = self._context_rollover_packet(
                 project, continuation.intent, continuation.baseline_digest,
                 continuation.repair_objective)
-            project.active_plan_record_id = continuation.approved_plan_record_id
             if continuation.intent.kind == "phase":
                 approved = project.record.read_plan_doc(
                     continuation.approved_plan_record_id)
@@ -18631,6 +18642,7 @@ class Orchestrator:
             self._project.active_session_id = None
             self._project.active_build_intent = None
             self._project.active_plan_record_id = ""
+            self._project.evidence_recorder = build_evidence.Recorder()
             self._project.pre_edit_guard = None
             if self._project.context_rollover is not None:
                 self._project.context_rollover.finish()
@@ -20709,6 +20721,19 @@ class Orchestrator:
             return "typecheck_repair"
         return "implementation"
 
+    @staticmethod
+    def _evidence_plan(project: Project) -> dict | None:
+        return (build_evidence.plan_ref(project.record.read_plan_doc(project.active_plan_record_id))
+                if project.active_plan_record_id else None)
+
+    @classmethod
+    def _restored_build_evidence(cls, project: Project, intent_id: str = "") -> str:
+        """This app's saved evidence for the active Build, or "" when it is not this Build's (#698)."""
+        return build_evidence.restore(
+            project.app_for_turn(), project.snapshot,
+            conversation=str(project.build_conversation or ""), intent_id=intent_id,
+            plan=cls._evidence_plan(project)).supplement
+
     @classmethod
     def _context_rollover_packet(
         cls, project: Project, intent: BuildIntent, baseline: str, repair_objective: str,
@@ -20727,6 +20752,7 @@ class Orchestrator:
                 "App-relative paths changed since this Build started (JSON array):\n"
                 + json.dumps(changed)
             )
+        parts.append(cls._restored_build_evidence(project, intent.intent_id))
         parts.append(
             "Current implementation objective:\n"
             + (objective or "Continue the canonical Build intent from the current app state."))
@@ -21061,6 +21087,7 @@ class Orchestrator:
             # sets it once for the whole build.
             if owns_turn and ev["type"] == "done" and not answer_only and not arch:
                 project.app_for_turn().set_last_turn_failed(not ev.get("ok"))
+                project.evidence_recorder.finish("complete" if ev.get("ok") else "failed")
             # Why a plan card still waiting for approval survives this ending (#178). A read-only
             # turn was never offered edit tools, so it cannot be the thing that changed the app, and
             # the plan under it is still the plan the server would build. The UI closes the card on
@@ -21582,6 +21609,7 @@ class Orchestrator:
             if owns_turn:
                 project.snapshot.discard_changes()
                 project.app_for_turn().truncate_history(history_baseline)
+                project.evidence_recorder.finish("stopped")
             restore_mode()
             return {"type": "stopped"}
 
@@ -22110,6 +22138,16 @@ class Orchestrator:
             project.active_build_intent = build_intent or BuildIntent.for_direct(prompt)
             project.shim.set_instruction_facts(
                 _instruction_facts(project, project.active_build_intent))
+            if owns_turn:
+                project.evidence_recorder = build_evidence.Recorder(
+                    project.app_for_turn(), project.snapshot,
+                    conversation=str(project.build_conversation or ""),
+                    attempt_id=self._turn_id_fields().get("turnId", ""),
+                    intent_id=project.active_build_intent.intent_id,
+                    plan=self._evidence_plan(project),
+                    baseline=(project.context_rollover.baseline
+                              if project.context_rollover is not None else ""))
+                project.evidence_recorder.begin()
             if continuation_note:
                 current = continuation_note
             elif project.active_build_intent.kind != "phase":
@@ -22478,6 +22516,7 @@ class Orchestrator:
                              and initial_repair_objective != "implementation")):
                 active_repair_objective = self._context_repair_objective(
                     iterate_reason, broken_retry_note)
+            project.evidence_recorder.repair(active_repair_objective)
             timing.close_span(turn_span)
             diagnostic_reason = ("runtime repair" if iterate_reason.startswith("app crashed at runtime")
                                  else iterate_reason[:160])
@@ -24045,6 +24084,7 @@ class Orchestrator:
                     check_span.fields.update(errors=len(report.errors),
                                              error_codes=sorted({e.code for e in report.errors}))
             yield persist({"type": "typecheck", "ok": report.ok, "errors": len(report.errors), "kind": report.kind, "message": report.as_agent_message()})
+            project.evidence_recorder.check(report.kind, "passed" if report.ok else "failed")
             if project.stop_requested:
                 yield handle_stop()
                 return
@@ -24267,6 +24307,8 @@ class Orchestrator:
                 if verification is not None and (failed or refused):
                     verification["stages"]["data"] = "failed"
                     verification["overall"] = "failed"
+                if verification is not None:
+                    project.evidence_recorder.verification(verification)
                 yield persist({"type": "done", "ok": (report.ok and not failed and rt is None
                                                       and refused is None and not unbuilt),
                                "decision": ("queries failed" if failed else "runtime failed" if rt
@@ -24573,6 +24615,10 @@ class Orchestrator:
                     if has_reference_metadata else
                     ([e["path"] for e in project.attachments_for_turn()] or None))
         project.active_plan_record_id = str((approved_doc or {}).get("id") or "")
+        # A retry of a plan an earlier attempt gave up on, possibly before a restart: what that
+        # attempt changed and checked rides beside the control prompt, never in place of the intent.
+        retry_evidence = (self._restored_build_evidence(project)
+                          if resume_from and not phased else "")
         tree_before = project.snapshot.working_tree_hash()
         queries_before = project.snapshot.queries_digest()
         rows_before = len(project.app_for_turn().read_history(project.build_conversation))
@@ -24602,6 +24648,8 @@ class Orchestrator:
                     # reads the plan turn already did (ADR-0070). Phased builds and the
                     # continuation path keep a session per phase.
                     fresh_session=False,
+                    continuation_note=(_BUILD_CONTROL_PROMPT + "\n\n" + retry_evidence
+                                       if retry_evidence else ""),
                     unbuilt_steps=lambda: self._unbuilt_plan_steps(
                         project, plan_md, tree_before, queries_before))
             unbuilt = self._plan_unbuilt_event(
