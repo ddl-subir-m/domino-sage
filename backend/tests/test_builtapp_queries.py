@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -256,6 +257,76 @@ def test_a_missing_parameter_is_named(app: Path):
         r = _ask(base, "revenue_by_region", {})
     assert r.status_code == 400
     assert "region" in r.json()["error"]
+
+
+def _stack_queries(stack: str):
+    """One stack's own `sage_queries.py`, loaded by path: each app ships its copy."""
+    path = _SERVE_PY.parents[1] / stack / "sage_queries.py"
+    spec = importlib.util.spec_from_file_location(f"sage_queries_{stack.replace('-', '_')}", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+PAGE_SQL = ("SELECT order_id, region FROM orders WHERE region = :region "
+            "ORDER BY CASE :sort WHEN 'largest' THEN -amount ELSE 0 END, order_id "
+            "LIMIT 50 OFFSET :offset")
+GOOD = {"region": "East", "sort": "newest", "offset": 0}
+
+
+@pytest.mark.parametrize("stack", ["fastapi-antd", "react-vite"])
+def test_a_bad_value_or_sort_cannot_widen_what_a_named_query_returns(stack):
+    """#699: a bad value or an unknown sort is refused before any SQL runs, and a hostile string is
+    one quoted literal, so it never reaches a row outside the declared query or another table."""
+    mod = _stack_queries(stack)
+    query = mod.Query("orders_page", "ds-dwh", PAGE_SQL, params=(
+        mod.Param("region", "string"),
+        mod.Param("sort", "string", ("newest", "largest")),
+        mod.Param("offset", "int")))
+    ran = []
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.execute("CREATE TABLE orders (order_id INTEGER, region TEXT, amount REAL)")
+        db.executemany("INSERT INTO orders VALUES (?, ?, ?)",
+                       [(i, ("East", "West")[i % 2], i * 1.5) for i in range(1, 41)])
+        db.execute("CREATE TABLE salaries (name TEXT, pay INTEGER)")
+        db.execute("INSERT INTO salaries VALUES ('ceo', 999)")
+
+        def executor(q, params):
+            sql = mod.render(q.sql, params)
+            ran.append(sql)
+            cur = db.execute(sql)
+            return {"columns": [d[0] for d in cur.description], "rows": cur.fetchall()}
+
+        def ask(**changes):
+            return mod.answer({"orders_page": query}, executor, "orders_page",
+                              {"params": {**GOOD, **changes}})
+
+        status, honest = ask()
+        assert status == 200 and len(honest["rows"]) == 20
+        east = {tuple(r) for r in honest["rows"]}
+
+        for changes in ({"sort": "amount DESC; DROP TABLE orders"},     # not a declared variant
+                        {"sort": "pay"},                                 # a column, unknown
+                        {"sort": 1},
+                        {"offset": "0 UNION SELECT name, pay FROM salaries"},
+                        {"offset": True},
+                        {"region": ["East", "West"]},
+                        {"region": "East\\' OR 1=1 --"},
+                        {"order_by": "pay"}):                            # an undeclared parameter
+            before = len(ran)
+            status, body = ask(**changes)
+            assert status == 400, (changes, body)
+            assert len(ran) == before, changes                           # no SQL ran at all
+
+        for hostile in ("East' OR '1'='1", "x' UNION SELECT name, pay FROM salaries --"):
+            status, body = ask(region=hostile)
+            assert status == 200, body
+            assert {tuple(r) for r in body["rows"]} <= east, hostile
+            assert body["rows"] == []
+
+        assert db.execute("SELECT COUNT(*) FROM orders").fetchone() == (40,)
 
 
 def test_a_body_that_is_not_json_is_rejected(app: Path):
