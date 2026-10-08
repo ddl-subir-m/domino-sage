@@ -146,3 +146,22 @@ def query_problems(template_dir: Path, workspace_dir: Path) -> dict[str, str]:
     except Exception:
         return {}
     return {name: q.problem for name, q in queries.items() if q.problem}
+
+
+def unrecorded_source_problems(template_dir: Path, workspace_dir: Path) -> dict[str, str]:
+    """The queries naming a Data Source this app records no Binding for, with the app's own
+    sentence, by query name; `{}` when Sage could not check (#704).
+
+    Apart from `query_problems` because the app refuses these whatever the preview does, so they are
+    a failed check even on a turn whose page never ran them.
+    """
+    module = serve_module(template_dir)
+    if module is None:
+        return {}
+    try:
+        queries = module.load_queries(workspace_dir)
+        sources = module.load_sources(workspace_dir)
+    except Exception:
+        return {}
+    return {name: q.problem for name, q in queries.items()
+            if q.binding and q.binding not in sources and q.problem}

@@ -129,7 +129,13 @@ from ..resources.bound_schema import (
     render_schema,
 )
 from ..resources.bound_schema import agents_block as data_agents_block
-from ..resources.builtapp import catalog_problems, query_problems, serve_module, stranded_levels
+from ..resources.builtapp import (
+    catalog_problems,
+    query_problems,
+    serve_module,
+    stranded_levels,
+    unrecorded_source_problems,
+)
 from ..resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
 from ..resources.model_api_credentials import (
     Credential,
@@ -7486,6 +7492,9 @@ class Orchestrator:
         self._resources = resources or FakeResourceProvider()
         # Live read tokens, one per Conversation (ADR-0041). See `_mint_live_read_token`.
         self._live_read: dict[str, tuple[str, float, bool]] = {}
+        # The Built App each token's turn pinned (#704). A read arrives on `/mcp/live-read`, which
+        # names no app, so `workspace` there is the SELECTED app and not the one the turn builds.
+        self._live_read_app: dict[str, Workspace] = {}
         # The token each Conversation's turn before this one held, so a refusal can say the model
         # sent it (#606). Compared, never logged.
         self._live_read_earlier: dict[str, str] = {}
@@ -14478,6 +14487,7 @@ class Orchestrator:
             if thread_id in self._live_read:
                 self._live_read_earlier[thread_id] = self._live_read[thread_id][0]
             self._live_read[thread_id] = (token, time.monotonic(), include_app_bindings)
+            self._live_read_app[thread_id] = project.app_for_turn()
             self._live_reads.pop(thread_id, None)
             self._live_read_refused.pop(thread_id, None)
         # The same token names this turn for a Delegated model call, so this is the moment that
@@ -14503,6 +14513,7 @@ class Orchestrator:
             for thread_id, (tok, at, _) in list(self._live_read.items()):
                 if now - at > _LIVE_READ_TTL_S:
                     self._live_read.pop(thread_id, None)
+                    self._live_read_app.pop(thread_id, None)
                     self._live_read_earlier.pop(thread_id, None)
                     self._live_reads.pop(thread_id, None)
                     self._live_read_refused.pop(thread_id, None)
@@ -14560,9 +14571,11 @@ class Orchestrator:
             if current is None or current[0] != token:
                 return None
             include_app_bindings = current[2]
-        return self._live_read_turn_for(thread_id, include_app_bindings=include_app_bindings)
+            app = self._live_read_app.get(thread_id)
+        return self._live_read_turn_for(thread_id, include_app_bindings=include_app_bindings, app=app)
 
-    def _live_read_turn_for(self, thread_id: str, *, include_app_bindings: bool = True) -> live_read.Turn:
+    def _live_read_turn_for(self, thread_id: str, *, include_app_bindings: bool = True,
+                            app: Workspace | None = None) -> live_read.Turn:
         """The same thing for a Conversation named directly rather than by a turn's token.
 
         **Read again** has no turn and no token — it is a person pressing a button on a card (#256).
@@ -14597,11 +14610,12 @@ class Orchestrator:
             if name:
                 chips[key] = chips.get(key, ()) + (name,)
 
-        # What the current Built App holds a Binding for. `workspace` IS that app (ADR-0008), so
-        # this is per app and not per Project, which is what "what this app reads" has to mean.
+        # What the current Built App holds a Binding for: the app the token's turn pinned, else
+        # `workspace` (ADR-0008), so this is per app and not per Project, which is what "what this
+        # app reads" has to mean.
         bound: dict[str, tuple[str, ...]] = {}
         binding_for: dict[tuple[str, str], str] = {}
-        for row in project.workspace.read_bindings() if include_app_bindings else []:
+        for row in (app or project.workspace).read_bindings() if include_app_bindings else []:
             name = str(row.get("name") or "")
             kind = "dataset" if str(row.get("kind") or "") == "dataset" else "datasource"
             if not name:
@@ -21857,6 +21871,9 @@ class Orchestrator:
         # beside it, and for the same reason: a defect we can describe but cannot make the agent fix.
         gateway_fixes = 0
         max_gateway_fixes = self._build_policy.gateway_repair_limit
+        # A query naming a Data Source this app does not record (#704). Once, like the platform
+        # read above: the app's own sentence names the fix, and only a person can record a store.
+        source_fixes = 0
         # An approved plan's step this build wrote none of the files for (#684). Once: the step is
         # named, and a second copy of the same sentence would not name it better. A reply that
         # writes nothing is still this build's reply, so it ends incomplete rather than as a
@@ -24225,6 +24242,24 @@ class Orchestrator:
                             files=", ".join(n for n, _ in raw_calls),
                             helper=project.app_for_turn().helpers.llm_path)
                         continue
+                if report.ok and wrote_code and not source_fixes and not project.stop_requested:
+                    unrecorded = unrecorded_source_problems(self._wm.template,
+                                                            project.app_for_turn().path)
+                    if unrecorded:
+                        source_fixes += 1
+                        recorded = ", ".join(
+                            f"{b.id} ({b.display_name})"
+                            for b in self._data_source_bindings(project.app_for_turn()))
+                        iterate_reason = "a query names a store this app does not record — fixing"
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = brand.text(
+                            "{problems} In `.sage/queries.json`, `binding` must be the id of a "
+                            "{dataSource} this app records: {recorded}. Fix each query to name "
+                            "one. If none is recorded, do not invent one: say this app needs a "
+                            "{dataSource} chosen for it, and stop.",
+                            problems=" ".join(unrecorded.values()),
+                            recorded=recorded or "it records none")
+                        continue
                 # The footnote under an approved build (#662), read while the model can still act
                 # on it.
                 unbuilt = (unbuilt_steps() if unbuilt_steps is not None and report.ok and wrote_code
@@ -24265,6 +24300,11 @@ class Orchestrator:
                 # of the fault. Query outcomes now come from this validation's issued reads, so a
                 # late response from another app cannot change the result (#557 P10).
                 failed = self._query_failures(project) if report.ok and (owns_turn or validate_page) else {}
+                # And the ones the app refuses before any read (#704): judged against its own
+                # Bindings alone, the data check would call an app with none `not_applicable`.
+                if report.ok and (owns_turn or validate_page):
+                    failed = {**unrecorded_source_problems(self._wm.template,
+                                                           project.app_for_turn().path), **failed}
                 if failed:
                     yield persist({"type": "data-source-failed",
                                    "message": self._failed_notice(failed)})
