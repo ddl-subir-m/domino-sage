@@ -46,6 +46,7 @@ _SCRIPT_GLOBAL_RE = re.compile(
     r"^(?:(?:async\s+)?function\s*\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)"
     r"|\bwindow\.([A-Za-z_$][\w$]*)\s*=(?!=)", re.MULTILINE)
 _NO_UNDEF_RE = re.compile(r"^'([^']+)' is not defined\.$")
+_RELATIVE_IMPORT_RE = re.compile(r"""^\s*import\s[^;'"]*?from\s+["'](\./[^"']+)["']""", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -195,6 +196,18 @@ def _script_globals(workspace: Path) -> set[str]:
     return names
 
 
+def _relative_imports(entry: Path) -> list[Path]:
+    """The `.ts`/`.tsx` files `entry` imports from beside or below it, e.g. `./screens/MainScreen`."""
+    found = []
+    for spec in _RELATIVE_IMPORT_RE.findall(entry.read_text()):
+        if ".." in Path(spec).parts:
+            continue
+        base = entry.parent / spec
+        found += [p for p in (base, base.with_name(base.name + ".tsx"), base.with_name(base.name + ".ts"))
+                  if p.suffix in (".ts", ".tsx") and p.is_file()][:1]
+    return found
+
+
 def _relative(path: str, workspace: Path | None) -> str:
     if workspace is None:
         return path
@@ -247,15 +260,79 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
         return FeedbackReport(ok=False, raw=f"syntax check timed out after {timeout_s}s: {e}",
                               kind="Syntax check")
     errors += _unloaded_definitions(workspace, js_files)
-    entry = workspace / "static" / "app.js"
-    if not errors and entry.is_file() and re.search(r"""className:\s*["']sage-placeholder["']""",
-                                                    entry.read_text(errors="ignore")):
-        errors.append(FeedbackError(
-            file="static/app.js", line=1, col=1, code="SAGE001",
-            message="The starter placeholder is still the app's screen. Replace it with "
-                    "the requested app and connect the components you wrote.",
-        ))
+    errors += _loaded_after_entry(workspace)
+    if not errors:
+        errors += [_placeholder_error(rel) for rel in _shown_scripts(workspace)
+                   if re.search(r"""className:\s*["']sage-placeholder["']""",
+                                (workspace / rel).read_text(errors="ignore"))]
     return FeedbackReport(ok=not errors, errors=errors, raw="\n".join(raw_parts), kind="Syntax check")
+
+
+def _shown_scripts(workspace: Path) -> list[str]:
+    """The entry, and each app script the page loads whose `window.<ns>.<Name>` another loaded
+    script names: a new app's placeholder is in its first screen (#697). A screen the page no
+    longer loads, or that nothing mounts any more, is not what a viewer sees."""
+    loaded = [rel for rel, _ in _loaded_scripts(workspace)
+              if not rel.startswith(_JS_SKIP) and (workspace / rel).is_file()]
+    sources = {rel: (workspace / rel).read_text(errors="ignore") for rel in loaded}
+    if (workspace / "static/app.js").is_file():
+        sources.setdefault("static/app.js", (workspace / "static/app.js").read_text(errors="ignore"))
+    # A comment naming a screen does not mount it; the starter shell's own header names MainScreen.
+    code = {rel: re.sub(r"/\*.*?\*/|^[ \t]*//[^\n]*", "", source, flags=re.DOTALL | re.MULTILINE)
+            for rel, source in sources.items()}
+    shown = ["static/app.js"] if "static/app.js" in sources else []
+    for rel in loaded:
+        if rel == "static/app.js":
+            continue
+        names = {m[2] for m in _WINDOW_MEMBER_RE.finditer(sources[rel]) if m[3]}
+        if not names or any(re.search(rf"\b{re.escape(name)}\b", source)
+                            for other, source in code.items() if other != rel for name in names):
+            shown.append(rel)
+    return shown
+
+
+def _placeholder_error(rel: str) -> FeedbackError:
+    return FeedbackError(
+        file=rel, line=1, col=1, code="SAGE001",
+        message="The starter placeholder is still the app's screen. Replace it with "
+                "the requested app and connect the components you wrote.",
+    )
+
+
+def _loaded_scripts(workspace: Path) -> list[tuple[str, int]]:
+    """Each `<script src>` in `static/index.html`, in page order, with its line."""
+    index = workspace / "static" / "index.html"
+    if not index.is_file():
+        return []
+    html = index.read_text(errors="ignore")
+    return [(re.sub(r"^(\./|/)+", "", m[1].strip()), html.count("\n", 0, m.start()) + 1)
+            for m in _SCRIPT_SRC_RE.finditer(html)]
+
+
+def _loaded_after_entry(workspace: Path) -> list[FeedbackError]:
+    """An app script the page loads after `static/app.js` that puts a name on the page (#697).
+    `app.js` mounts the app as it runs, so a screen registered after it is not there yet, and
+    `SAGE002` passes because the tag exists. A script that defines nothing is left alone."""
+    scripts = _loaded_scripts(workspace)
+    entry = next((i for i, (rel, _) in enumerate(scripts) if rel == "static/app.js"), None)
+    if entry is None:
+        return []
+    errors = []
+    for rel, line in scripts[entry + 1:]:
+        path = workspace / rel
+        if rel.startswith(_JS_SKIP) or not path.is_file():
+            continue
+        source = path.read_text(errors="ignore")
+        defined = ([f"window.{m[1]}.{m[2]}" for m in _WINDOW_MEMBER_RE.finditer(source) if m[3]]
+                   or [m[1] or f"window.{m[2]}" for m in _SCRIPT_GLOBAL_RE.finditer(source)])
+        if defined:
+            errors.append(FeedbackError(
+                file="static/index.html", line=line, col=1, code="SAGE003",
+                message=(f"static/index.html loads {rel} after static/app.js, so {defined[0]} is "
+                         f"not defined yet when static/app.js mounts the app. Move its <script> "
+                         f"line above static/app.js."),
+            ))
+    return errors
 
 
 def _unloaded_definitions(workspace: Path, js_files: list[Path]) -> list[FeedbackError]:
@@ -406,14 +483,11 @@ class FeedbackRunner:
 
         # The shipped starter typechecks even when every generated component is unused. Feed
         # that exact unfinished screen into the existing repair loop before accepting the build.
+        # A new app's placeholder is in the first screen the entry imports (#697).
         entry = workspace / "src" / "App.tsx"
         if proc.returncode == 0 and entry.is_file():
-            source = entry.read_text()
-            if re.search(r'<main\s+className=[\"\']sage-placeholder[\"\']\s*>', source):
-                errors.append(FeedbackError(
-                    file="src/App.tsx", line=1, col=1, code="SAGE001",
-                    message="The starter placeholder is still the app's screen. Replace it with "
-                            "the requested app and connect the components you wrote.",
-                ))
+            for path in [entry, *_relative_imports(entry)]:
+                if re.search(r'<main\s+className=[\"\']sage-placeholder[\"\']\s*>', path.read_text()):
+                    errors.append(_placeholder_error(path.relative_to(workspace).as_posix()))
         # tsc exits non-zero on errors; treat clean only when exit 0 AND no parsed errors.
         return FeedbackReport(ok=(proc.returncode == 0 and not errors), errors=errors, raw=out)

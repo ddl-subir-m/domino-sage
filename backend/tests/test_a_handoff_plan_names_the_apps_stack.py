@@ -54,8 +54,8 @@ def _plan_prompts(oc: CountingOpenCode) -> list[str]:
 
 
 @pytest.mark.parametrize("stack, own, other", [
-    ("fastapi-antd", "static/app.js", "src/App.tsx"),
-    ("react-vite", "src/App.tsx", "static/app.js"),
+    ("fastapi-antd", "static/components/MainScreen.js", "src/screens/MainScreen.tsx"),
+    ("react-vite", "src/screens/MainScreen.tsx", "static/components/MainScreen.js"),
 ])
 def test_the_handoff_prompt_names_the_apps_stack_and_carries_its_example(
         tmp_path: Path, stack: str, own: str, other: str):
@@ -80,7 +80,7 @@ def test_a_handoff_plan_naming_another_stacks_files_is_planned_again(tmp_path: P
     prompts = _plan_prompts(oc)
     assert len(prompts) == 2
     assert "static/**/*" in prompts[1]
-    assert "static/app.js" in payload["plan"]
+    assert "static/components/MainScreen.js" in payload["plan"]
 
 
 # ---- the contract -------------------------------------------------------------------------------
@@ -88,7 +88,7 @@ def test_a_handoff_plan_naming_another_stacks_files_is_planned_again(tmp_path: P
 
 def _with_files(files: str, dont_touch: str = "") -> str:
     plan = _plan("fastapi-antd")
-    plan = plan.replace("- Files — static/app.js, static/app.css", f"- Files — {files}")
+    plan = plan.replace("- Files — static/components/MainScreen.js, static/app.css", f"- Files — {files}")
     if dont_touch:
         plan = plan.replace("- Don't touch — app.py", f"- Don't touch — {dont_touch}")
     return plan

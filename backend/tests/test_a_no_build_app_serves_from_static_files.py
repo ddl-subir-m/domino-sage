@@ -123,7 +123,7 @@ def test_the_page_is_served_with_the_mount_prefix_shim(served):
 
 def test_the_static_tree_and_the_attachments_are_served_and_revalidated(served):
     ws, _serve, client = served
-    r = client.get("/static/app.js")
+    r = client.get("/static/components/MainScreen.js")
     assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
     assert "sage-placeholder" in r.text
     assert client.get("/static/vendor/antd.min.js").status_code == 200
