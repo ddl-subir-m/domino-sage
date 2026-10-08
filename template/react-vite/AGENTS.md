@@ -180,7 +180,9 @@ Build the user's app by editing `src/`. There is no install or build step to run
   `shareable` only the screen and applied filters; draft search text, row values and form input
   stay out. A filter change is `patchView({...})`; switching screens or an Apply button adds
   `{ history: "push" }`. Read the state the hook returns, never `window.location`, and never use
-  `#/sage/` or `window.top`. The comment at the top of the file shows the schema. If the app
+  `#/sage/` or `window.top`. Every field is an object naming its type:
+  `{ screen: { type: "enum", values: ["orders", "customers"], default: "orders", shareable: true }, region: { type: "string", default: "" } }`.
+  The comment at the top of the file shows the rest of the schema. If the app
   already keeps something else in its `#` hash, keep that and say so instead of replacing it. With
   no `src/appViewState.ts`, keep the view in state and do not write one. `src/appViewState.ts` is
   {assistantName}'s: import from it, never edit it.

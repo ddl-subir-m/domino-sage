@@ -261,6 +261,7 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
                               kind="Syntax check")
     errors += _unloaded_definitions(workspace, js_files)
     errors += _loaded_after_entry(workspace)
+    errors += [e for js in js_files for e in _untyped_view_fields(workspace, js)]
     if not errors:
         errors += [_placeholder_error(rel) for rel in _shown_scripts(workspace)
                    if re.search(r"""className:\s*["']sage-placeholder["']""",
@@ -367,6 +368,112 @@ def _unloaded_definitions(workspace: Path, js_files: list[Path]) -> list[Feedbac
         message=(f"{file} defines window.{ns}.{name}, which {reader} uses, but static/index.html "
                  f'has no <script src="{file}"> for it. Add one above the script that uses it.'),
     ) for file, (ns, name, reader) in sorted(unloaded.items())]
+
+
+_VIEW_STATE_CALL_RE = re.compile(r"\buseViewState\s*\(\s*")
+_VIEW_FIELD_KEY_RE = re.compile(r"""\s*(?:(["'])\s*\1|[A-Za-z_$][\w$]*)\s*:\s*""")
+# How a value that is not an object starts, once `_blank_text` has emptied its strings.
+_NOT_AN_OBJECT_RE = re.compile(r"""["'`/\[\d.\-]|(?:true|false|null|undefined)\b""")
+_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _blank_text(source: str) -> str:
+    """`source` with its comments, and the insides of its strings and regex literals, blanked to
+    spaces: the same length and lines, so a brace or a comma left in it is code. A `/` opens a regex
+    after an operator or an opening bracket, which is all a schema holds; this is no JS parser."""
+    out, i, n, prev = list(source), 0, len(source), "("
+
+    def blank(start: int, end: int) -> None:
+        out[start:end] = [ch if ch == "\n" else " " for ch in source[start:end]]
+
+    while i < n:
+        c = source[i]
+        if source.startswith("//", i):
+            end = source.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+        elif source.startswith("/*", i):
+            end = source.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            blank(i, end)
+            i = end
+        elif c in "'\"`" or (c == "/" and prev in "(,=:[!&|?{};"):
+            end, in_class = i + 1, False
+            while end < n and (in_class or source[end] != c) and (c == "`" or source[end] != "\n"):
+                if c == "/" and source[end] in "[]":
+                    in_class = source[end] == "["
+                end += 2 if source[end] == "\\" else 1
+            blank(i + 1, end)
+            prev, i = c, end + 1
+        else:
+            if not c.isspace():
+                prev = c
+            i += 1
+    return "".join(out)
+
+
+def _bound_value(code: str, name: str) -> int | None:
+    """Where `const|let|var <name> =`'s value starts in blanked `code`, when this file binds it."""
+    m = re.search(rf"\b(?:const|let|var)\s+{re.escape(name)}\s*=\s*", code)
+    return m.end() if m else None
+
+
+def _not_an_object(code: str, value: str) -> bool:
+    """`value` is plainly not an object: a literal, or a name this file binds to one."""
+    if _IDENT_RE.fullmatch(value) and not _NOT_AN_OBJECT_RE.match(value):
+        bound = _bound_value(code, value)
+        return bound is not None and bool(_NOT_AN_OBJECT_RE.match(code, bound))
+    return bool(_NOT_AN_OBJECT_RE.match(value))
+
+
+def _untyped_view_fields(workspace: Path, js: Path) -> list[FeedbackError]:
+    """A `useViewState` field whose value is not an object (#706). `static/sage/viewState.js` wants
+    each field to name its type and throws on the first render at a bare default, and every file
+    still parses. Only a schema this file shows is read — written in the call, or a `const` object
+    here passed by name. One from anywhere else is another file's, and is not guessed at."""
+    source = js.read_text(errors="ignore")
+    if "useViewState" not in source:
+        return []
+    code = _blank_text(source)
+    errors = []
+    for call in _VIEW_STATE_CALL_RE.finditer(code):
+        start: int | None = call.end()
+        name = _IDENT_RE.match(code, start)
+        if name and code[name.end():].lstrip()[:1] in (")", ","):
+            start = _bound_value(code, name[0])
+        if start is None or code[start:start + 1] != "{":
+            continue
+        entries, depth, begin = [], 0, start + 1
+        for k in range(start + 1, len(code)):
+            if code[k] in "{[(":
+                depth += 1
+            elif code[k] in "}])" and depth:
+                depth -= 1
+            elif code[k] in ",}" and not depth:
+                entries.append((begin, k))
+                begin = k + 1
+                if code[k] == "}":
+                    break
+        for begin, stop in entries:
+            key = _VIEW_FIELD_KEY_RE.match(code, begin, stop)
+            value = code[key.end():stop].rstrip() if key else ""
+            if not value or not _not_an_object(code, value):
+                continue
+            lead = begin + len(code[begin:stop]) - len(code[begin:stop].lstrip())
+            field = re.sub(r"\s*:\s*$", "", source[lead:key.end()]).strip("'\"")
+            shown = source[key.end():key.end() + len(value)]
+            errors.append(FeedbackError(
+                file=js.relative_to(workspace).as_posix(), line=source.count("\n", 0, lead) + 1,
+                col=1, code="SAGE004",
+                message=(f"useViewState field '{field}' is {shown[:40]}, but static/sage/viewState.js "
+                         f"needs each field to be an object naming its type, and the app crashes on "
+                         f"its first render without one. Write it as {field}: {{ type: \"enum\", "
+                         f"values: [...], default: ..., shareable: true }} or {field}: {{ type: "
+                         f"\"string\", default: \"\" }}. Types are string, integer, boolean and "
+                         f"enum; a shareable string also needs a pattern."),
+            ))
+    return errors
 
 
 def _python() -> str:
