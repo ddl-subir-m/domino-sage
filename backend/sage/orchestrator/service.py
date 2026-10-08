@@ -4793,6 +4793,11 @@ _CHAT_AT = re.compile(r"@([^\s@]+)")
 # How much of a Project MCP call's input its Thread row keeps (#666). The row names the call; the
 # input is the model's own words and can be long.
 _EXTERNAL_DETAIL_MAX = 80
+# How many of one Project MCP server's tools the Chat turn prompt names (#711). A server can list
+# dozens, and the prompt pays for every name on every turn.
+_PROJECT_TOOLS_SHOWN = 6
+# What OpenCode 1.18.4 replaces with `_` in a server's tool name when it offers it to the model.
+_OPENCODE_TOOL_UNSAFE = re.compile(r"[^a-zA-Z0-9_-]")
 
 
 def _project_mcp_server(tool: str, servers: set[str]) -> str:
@@ -15700,6 +15705,33 @@ class Orchestrator:
                 "model for the one you were asked for, and never say a model was used when it "
                 "refused.")
 
+    def _project_tools_note(self) -> tuple[str, ...]:
+        """The Project MCP servers this turn is offered, by the tool names the model sees (#711).
+
+        `template/chat/AGENTS.md` says to use what this turn's context lists and otherwise stop, so a
+        tool named nowhere in the context is one a weaker model will not reach for: Haiku refused a
+        news question with the Tavily tools in its list. Only switched-on servers with listed tools,
+        so the line never names a tool the model cannot call; nothing at all when there are none.
+        """
+        try:
+            rows = extension_mcp.list_servers(self._chat_project().record.path)
+        except extension_mcp.ExtensionError:
+            log.exception("chat prompt: could not read this project's MCP servers")
+            return ()
+        named = []
+        for row in rows:
+            tools = [t for t in row["tools"] if isinstance(t, str)]
+            if not row["enabled"] or not tools:
+                continue
+            shown = ", ".join(f"{row['name']}_{_OPENCODE_TOOL_UNSAFE.sub('_', t)}"
+                              for t in tools[:_PROJECT_TOOLS_SHOWN])
+            more = len(tools) - _PROJECT_TOOLS_SHOWN
+            named.append(f"`{row['name']}` ({shown}{f', and {more} more' if more > 0 else ''})")
+        if not named:
+            return ()
+        return ((f"This project's connected tools, called by these exact names: {'; '.join(named)}. "
+                 "They are part of this turn's context."),)
+
     def _findings_note(self, thread_id: str, *, continuing: bool = False) -> str:
         """Where this Thread's findings are, and — only if there are any — how old and how big.
 
@@ -16081,6 +16113,7 @@ class Orchestrator:
             # browser and unusable from here — and an agent that found it told the person it could
             # not reach the model at all (#370).
             self._delegated_models_note(thread_id),
+            *self._project_tools_note(),
             self._data_use_note(catalogued=bool(catalogue)),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
