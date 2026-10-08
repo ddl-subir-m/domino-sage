@@ -33,10 +33,16 @@ recovery in latency and repair measurements. This does not add a new model-call 
 ### Proposed data model
 
 Add a small module, `backend/sage/build_evidence.py`, with a per-app store. Keep an atomic,
-versioned record at the generated app's `.sage/build-evidence.json`, outside app source commits
-and outside model write access. Register that path with the existing ignore/ownership mechanisms.
-It must survive process restart on the project's durable filesystem. It is neither a grant nor
-permission to resume an old task automatically.
+versioned record at `<volume>/.sage/build-evidence/<appId>.json`, outside the generated app's
+working tree, its snapshot and its deploy. `_PROJECT_IGNORE` keeps `.sage/build-evidence/` out of
+the Project's commits. It must survive process restart on the project's durable filesystem. It is
+neither a grant nor permission to resume an old task automatically.
+
+No location is out of the Build agent's reach: its shell is not path-gated, and the volume root
+is its OpenCode worktree. So Sage guards the directory the way `revert_denied_writes` guards Chat.
+Each Build turn (and each phased build) hashes `.sage/build-evidence/` first. At its `done` or
+Stop, every file whose bytes Sage did not write in that turn is restored or removed, with a
+warning. A recovery inside a turn reads what Sage wrote this turn, not the disk.
 
 The store holds one record: the latest attempt for this app. A new build replaces it; long-term
 history remains in existing build history/diagnostics. v1 carries only what recovery after a
@@ -57,7 +63,11 @@ the approved plan, which recovery reads directly.
   "runtimeDigest": "digest-of-check-relevant-sage-owned-runtime-and-config",
   "state": "running",
   "changedFiles": [{"path": "static/components/MainScreen.js", "digest": "sha256"}],
-  "checks": [{"kind": "syntax", "status": "passed", "codeDigest": "same-digest", "runtimeDigest": "same"}],
+  "checks": [
+    {"kind": "syntax", "status": "passed", "codeDigest": "same-digest", "runtimeDigest": "same"},
+    {"kind": "page", "status": "passed", "codeDigest": "same-digest", "runtimeDigest": "same",
+     "previewGeneration": "supervisor-instance:generation"}
+  ],
   "activeRepair": "implementation",
   "updatedAt": "UTC timestamp"
 }
@@ -66,6 +76,14 @@ the approved plan, which recovery reads directly.
 Optional/missing fields are explicit. A normal build without a stored plan has `plan: null`.
 Statuses use fixed enums: build `running|failed|stopped|complete`; checks reuse the current
 `passed|failed|unverified|not_applicable` vocabulary. Reuse existing repair-objective values.
+
+Preview checks (`startup`, `page`, `runtime`, `data`) must carry `previewGeneration`, the
+generation of #692's validation that produced them. It is the preview supervisor's
+`instance:generation`. A preview check counts only while the turn app's live preview has that same
+generation. A later validation restarts the preview, and a restarted Sage has a new supervisor
+instance. So an old validation, an old preview generation, or a record read after a restart cannot
+supply a passed preview check. A recorded empty generation never matches. Code checks carry no
+`previewGeneration`.
 
 Recover decision text from the approved plan and accepted answers, which are already
 authoritative; the record does not copy them. Do not use a new model call to generate a summary.

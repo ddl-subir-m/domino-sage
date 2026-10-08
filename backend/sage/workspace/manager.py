@@ -288,8 +288,8 @@ _PROJECT_IGNORE = (".sage/build-diagnostics.json", ".sage/.build-diagnostics-*",
                    # about the deployment, not the app, so a fork elsewhere must not inherit it.
                    ".sage/reasoning-evidence.json",
                    # Each app's latest Build attempt (#698): builder-local recovery state, never
-                   # app source. Unanchored so it reaches every `apps/<appId>/.sage/`.
-                   "**/.sage/build-evidence.json",
+                   # app source.
+                   ".sage/build-evidence/",
                    # The upload ledger's half-written twin, for the same reason (#274). Its name
                    # carries a pid and a random suffix so two Workspaces on one volume cannot write
                    # into each other's, which also means a killed writer leaves a NEW file each

@@ -20726,13 +20726,24 @@ class Orchestrator:
         return (build_evidence.plan_ref(project.record.read_plan_doc(project.active_plan_record_id))
                 if project.active_plan_record_id else None)
 
+    @staticmethod
+    def _live_preview_generation(project: Project) -> str:
+        """The turn's app's preview generation in THIS process, or "" when it has no view here."""
+        app_id = project.app_for_turn().app_id
+        view = project._selected_view
+        if getattr(view.workspace, "app_id", None) != app_id:
+            view = project._views.get(app_id)
+        return view.supervisor.status()["generation"] if view is not None else ""
+
     @classmethod
     def _restored_build_evidence(cls, project: Project, intent_id: str = "") -> str:
         """This app's saved evidence for the active Build, or "" when it is not this Build's (#698)."""
         return build_evidence.restore(
-            project.app_for_turn(), project.snapshot,
+            project.record.path, project.app_for_turn(), project.snapshot,
             conversation=str(project.build_conversation or ""), intent_id=intent_id,
-            plan=cls._evidence_plan(project)).supplement
+            plan=cls._evidence_plan(project),
+            preview_generation=cls._live_preview_generation(project),
+            written=project.evidence_recorder.written).supplement
 
     @classmethod
     def _context_rollover_packet(
@@ -20859,6 +20870,8 @@ class Orchestrator:
         # for one turn's worth of files.
         live_read_before = (snapshot_files(project.record.path)
                             if owns_turn and project.build_conversation else None)
+        # Build evidence (#698) as this turn found it; persist() and handle_stop revert the rest.
+        evidence_before = build_evidence.snapshot(project.record.path) if owns_turn else None
         # Built after history-derived withholding is armed below. Besides ordering the token's
         # Data-use identity correctly, this keeps the note beside the grant it names.
         live_read_note = ""
@@ -21088,6 +21101,9 @@ class Orchestrator:
             if owns_turn and ev["type"] == "done" and not answer_only and not arch:
                 project.app_for_turn().set_last_turn_failed(not ev.get("ok"))
                 project.evidence_recorder.finish("complete" if ev.get("ok") else "failed")
+            if owns_turn and ev["type"] == "done" and evidence_before is not None:
+                build_evidence.revert_foreign_writes(project.record.path, evidence_before,
+                                                     project.evidence_recorder.written)
             # Why a plan card still waiting for approval survives this ending (#178). A read-only
             # turn was never offered edit tools, so it cannot be the thing that changed the app, and
             # the plan under it is still the plan the server would build. The UI closes the card on
@@ -21610,6 +21626,8 @@ class Orchestrator:
                 project.snapshot.discard_changes()
                 project.app_for_turn().truncate_history(history_baseline)
                 project.evidence_recorder.finish("stopped")
+                build_evidence.revert_foreign_writes(project.record.path, evidence_before,
+                                                     project.evidence_recorder.written)
             restore_mode()
             return {"type": "stopped"}
 
@@ -22140,7 +22158,7 @@ class Orchestrator:
                 _instruction_facts(project, project.active_build_intent))
             if owns_turn:
                 project.evidence_recorder = build_evidence.Recorder(
-                    project.app_for_turn(), project.snapshot,
+                    project.record.path, project.app_for_turn(), project.snapshot,
                     conversation=str(project.build_conversation or ""),
                     attempt_id=self._turn_id_fields().get("turnId", ""),
                     intent_id=project.active_build_intent.intent_id,
@@ -24834,7 +24852,9 @@ class Orchestrator:
             if ev["type"] == "done" and table_before is not None:
                 withhold_table_rows(project.record.path, project.build_conversation,
                                     table_before, kept_rows=project.record.kept_rows())
+            # A phased build records no evidence, so every change there is a phase agent's (#698).
             if ev["type"] == "done":
+                build_evidence.revert_foreign_writes(project.record.path, evidence_before, {})
                 ev.update(self._turn_id_fields())  # ADR-0069, as _build_stream's persist() does
             if ev["type"] in _PERSISTED_EVENTS:
                 project.app_for_turn().append_history(ev, project.build_conversation)
@@ -24870,6 +24890,7 @@ class Orchestrator:
         # a table phase 1 wrote, which is the same re-deciding the Chat pass refuses.
         table_before = (snapshot_files(project.record.path)
                         if project.build_conversation else None)
+        evidence_before = build_evidence.snapshot(project.record.path)
         # Per-phase circuit breakers bound each phase, not the build: 6 × (15 iterations, 600s) is an
         # hour of wall clock that nobody asked for.
         deadline = time.monotonic() + self._build_policy.phased_max_seconds
@@ -24925,6 +24946,7 @@ class Orchestrator:
                                         table_before, kept_rows=project.record.kept_rows())
                 project.snapshot.discard_to(base)
                 project.app_for_turn().truncate_history(history_baseline)
+                build_evidence.revert_foreign_writes(project.record.path, evidence_before, {})
                 # Stop retires the plan, exactly as it does on an unphased build: the person said
                 # they don't want this, so nothing is owed a retry and _approve_locked archives it.
                 project.app_for_turn().set_plan_retry_step(0)
