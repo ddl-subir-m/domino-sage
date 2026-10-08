@@ -39,10 +39,13 @@ IMPLEMENT_SECTIONS = frozenset(_OPTIONAL_BLOCKS)
 
 # An app keeps the `AGENTS.md` it was seeded with, so one seeded before the screen-first layout
 # (#697) still says to put the UI in the entry file. A template that carries this marker already has
-# the current layout and query rules; an implement turn on any other marked file gets the stack's
-# supplement after its implement section, once (#699). The supplement opens with the marker itself,
-# so instructions that already carry it are never given a second copy.
-GUIDANCE_MARKER = "<!-- sage:app-guidance:v1 -->"
+# the current layout, query and shareable-view rules; an implement turn on any other marked file gets
+# the stack's supplement after its implement section, once (#699). A file with the v1 marker has the
+# layout and query rules but predates `useViewState` (#701), so it gets only the shareable-view
+# pointer. Both open with the current marker, so instructions that already carry it are never given
+# a second copy.
+GUIDANCE_MARKER = "<!-- sage:app-guidance:v2 -->"
+_GUIDANCE_V1 = "<!-- sage:app-guidance:v1 -->"
 _GUIDANCE_INTRO = (
     GUIDANCE_MARKER + "\n"
     "## Current screen layout and query rules\n\n"
@@ -56,6 +59,19 @@ _GUIDANCE_OUTRO = (
     "- Queries: when this file has a section headed \"The app's data\", it is current; follow it "
     "where older lines here differ.\n"
 )
+_SHAREABLE_VIEW_LINES = {
+    "fastapi-antd": (
+        "- A view the plan calls shareable keeps its applied selection with `sage.useViewState` "
+        "(the comment atop `static/sage/viewState.js` shows how) once that file is there, and "
+        "`static/index.html` gets its `<script>` line after the other `static/sage/` lines if it "
+        "lacks one. Without the file, keep the view in state.\n"
+    ),
+    "react-vite": (
+        "- A view the plan calls shareable keeps its applied selection with `useViewState` from "
+        "`src/appViewState.ts` (the comment atop it shows how) once that file is there. Without "
+        "the file, keep the view in state.\n"
+    ),
+}
 GUIDANCE_SUPPLEMENTS = {
     "fastapi-antd": (
         _GUIDANCE_INTRO.format(old='"put the app UI in `static/app.js`", "split it as it grows", '
@@ -64,10 +80,7 @@ GUIDANCE_SUPPLEMENTS = {
           "`window.app.<Name>`, with a `<script>` line in `static/index.html` above "
           "`static/app.js`, which loads last. `static/app.js` is the shell: it keeps its wrappers "
           "and decides which screen shows.\n"
-        + "- A view the plan calls shareable keeps its applied selection with `sage.useViewState` "
-          "(the comment atop `static/sage/viewState.js` shows how) once that file is there, and "
-          "`static/index.html` gets its `<script>` line after the other `static/sage/` lines if it "
-          "lacks one. Without the file, keep the view in state.\n"
+        + _SHAREABLE_VIEW_LINES["fastapi-antd"]
         + _GUIDANCE_OUTRO.format(entry="static/app.js")
     ),
     "react-vite": (
@@ -75,12 +88,24 @@ GUIDANCE_SUPPLEMENTS = {
                                    '"edit `src/App.tsx`"')
         + "- A new screen is its own file, `src/screens/<Name>.tsx`, imported by `src/App.tsx`, the "
           "shell that decides which screen shows. Shared components go in `src/components/`.\n"
-        + "- A view the plan calls shareable keeps its applied selection with `useViewState` from "
-          "`src/appViewState.ts` (the comment atop it shows how) once that file is there. Without "
-          "the file, keep the view in state.\n"
+        + _SHAREABLE_VIEW_LINES["react-vite"]
         + _GUIDANCE_OUTRO.format(entry="src/App.tsx")
     ),
 }
+#: What a file carrying the v1 marker lacks: the shareable-view pointer alone.
+GUIDANCE_POINTERS = {
+    stack: GUIDANCE_MARKER + "\n## Shareable views\n\n" + line
+    for stack, line in _SHAREABLE_VIEW_LINES.items()
+}
+
+
+def _guidance_supplement(text: str, stack: str) -> str:
+    if GUIDANCE_MARKER in text:
+        return ""
+    if _GUIDANCE_V1 in text:
+        return GUIDANCE_POINTERS.get(stack, "")
+    return GUIDANCE_SUPPLEMENTS.get(stack, "")
+
 
 # A FastAPI turn drops the design system only when the ask is a server change and says nothing
 # about the page. Anything else, including an empty ask, keeps it.
@@ -256,7 +281,7 @@ def _profile_text(text: str, profile: str, sections: frozenset[str],
     bodies = dict(blocks)
     if not bodies["common"].strip():
         raise BuildInstructionProfileError("The Build common instruction profile is empty")
-    supplement = "" if GUIDANCE_MARKER in text else GUIDANCE_SUPPLEMENTS.get(stack, "")
+    supplement = _guidance_supplement(text, stack)
 
     kept_ids = {"common"}
     if profile == "implement":

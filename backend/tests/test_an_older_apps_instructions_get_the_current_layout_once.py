@@ -19,6 +19,7 @@ import pytest
 from sage.gateway.protocol import Protocol
 from sage.implementation_request import (
     GUIDANCE_MARKER,
+    GUIDANCE_POINTERS,
     GUIDANCE_SUPPLEMENTS,
     IMPLEMENT_SECTIONS,
     InstructionFacts,
@@ -150,3 +151,55 @@ def test_without_a_known_stack_the_request_is_what_it_was(stack: str):
 def test_the_supplement_is_bounded(stack: str):
     assert len(GUIDANCE_SUPPLEMENTS[stack].encode()) <= 1800
     assert GUIDANCE_SUPPLEMENTS[stack].startswith(GUIDANCE_MARKER + "\n")
+
+
+# ---- v1 → v2 (#701) ------------------------------------------------------------------------------
+# An app seeded between #697 and #701 carries the v1 marker: it has the layout and query rules but no
+# word about `useViewState`. It gets the shareable-view pointer alone, once; a v2 file gets nothing.
+
+POINTER = "## Shareable views"
+VIEW_STATE = {"fastapi-antd": "`static/sage/viewState.js`", "react-vite": "`src/appViewState.ts`"}
+
+
+def _v1(stack: str) -> str:
+    text = _current(stack)
+    assert text.count(GUIDANCE_MARKER) == 1
+    lines = [line for line in text.splitlines(keepends=True) if VIEW_STATE[stack] not in line
+             and "shareable" not in line.lower()]
+    return "".join(lines).replace(GUIDANCE_MARKER, "<!-- sage:app-guidance:v1 -->")
+
+
+@PROTOCOLS
+@pytest.mark.parametrize("stack", STACKS)
+def test_a_v1_apps_request_carries_the_pointer_once_and_no_second_layout(stack: str, protocol):
+    (encoded,) = _payload(stack, _v1(stack), protocol)
+    assert encoded.count(POINTER) == 1
+    assert encoded.count(VIEW_STATE[stack]) == 1
+    assert HEADING not in encoded
+
+
+@pytest.mark.parametrize("stack", STACKS)
+def test_a_v1_app_never_gets_the_pointer_twice(stack: str):
+    for encoded in _payload(stack, _v1(stack), Protocol.MESSAGES, requests=3):
+        assert encoded.count(POINTER) == 1
+    request = {"messages": [{"role": "system", "content": _v1(stack)}]}
+    once, _ = apply_instruction_profile(request, "implement", sections=IMPLEMENT_SECTIONS, stack=stack)
+    twice, _ = apply_instruction_profile(once, "implement", sections=IMPLEMENT_SECTIONS, stack=stack)
+    assert json.dumps(twice).count(POINTER) == 1
+    (carried,) = _payload(stack, _v1(stack) + GUIDANCE_POINTERS[stack], Protocol.MESSAGES)
+    assert carried.count(POINTER) == 1
+
+
+@PROTOCOLS
+@pytest.mark.parametrize("stack", STACKS)
+def test_a_v2_apps_request_gets_nothing_extra(stack: str, protocol):
+    (encoded,) = _payload(stack, _current(stack), protocol)
+    assert POINTER not in encoded and HEADING not in encoded
+    assert encoded.count(GUIDANCE_MARKER) == 1
+
+
+def test_the_templates_carry_the_current_marker():
+    for stack in STACKS:
+        assert GUIDANCE_MARKER == "<!-- sage:app-guidance:v2 -->"
+        assert _current(stack).count(GUIDANCE_MARKER) == 1
+        assert "<!-- sage:app-guidance:v1 -->" not in _current(stack)
