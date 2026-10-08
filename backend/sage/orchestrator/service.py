@@ -14969,17 +14969,38 @@ class Orchestrator:
         content = body.get("content")
         if not isinstance(path, str) or not isinstance(content, str):
             raise TypeError("Artifact path and content must be strings.")
+        # The model sees this sentence, so it names the exact form a retry needs (#710).
+        outside = (f"Artifact writes must stay under examples/{thread_id}/. Pass path as "
+                   f"examples/{thread_id}/<name>.png or examples/{thread_id}/<name>.table.json.")
+        sent = path
+
+        def refuse(reason: str, message: str = outside) -> ValueError:
+            # The path as sent, never the content: the spelling is what the next failure needs.
+            log.warning("chat artifact: refused path %r for thread %s (%s)", sent[:300], thread_id, reason)
+            return ValueError(message)
+
         rel = PurePosix(path)
-        if (rel.is_absolute() or ".." in rel.parts or "\\" in path
-                or not path.startswith(f"examples/{thread_id}/")):
-            raise ValueError(f"Artifact writes must stay under examples/{thread_id}/.")
-        path = rel.as_posix()
+        if "\\" in path:
+            raise refuse("backslash")
+        if ".." in rel.parts:
+            raise refuse("..")
         folder = project.record.path.resolve() / "examples" / thread_id
-        dest = (project.record.path / path).resolve()
-        if folder.resolve() != folder or dest == folder or not dest.is_relative_to(folder):
-            raise ValueError("Artifact path escapes its thread folder.")
+        # Contain the resolved file, not the spelling (#710). The Chat cwd is `.sage/chat-work`,
+        # whose `examples` links into the Project, so a script's absolute path there is this
+        # folder spelled another way. A bare filename has only one folder it can mean.
+        if rel.is_absolute():
+            dest = Path(path).resolve()
+        elif len(rel.parts) == 1:
+            dest = (folder / path).resolve()
+        else:
+            dest = (project.record.path / path).resolve()
+        if dest == folder:
+            raise refuse("the folder itself")
+        if folder.resolve() != folder or not dest.is_relative_to(folder):
+            raise refuse("outside the folder")
+        path = f"examples/{thread_id}/{dest.relative_to(folder).as_posix()}"
         if not path.endswith((".png", ".table.json")):
-            raise ValueError("Artifact writes must use .png or .table.json so row protection applies.")
+            raise refuse("extension", "Artifact writes must use .png or .table.json so row protection applies.")
         # Keep a rejected attempt even when it leaves no file for the final scan to find.
         # Clear only after replacement succeeds, including an unchanged valid replacement.
         if path.endswith(".table.json") and tables is not None:

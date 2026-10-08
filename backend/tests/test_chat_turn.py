@@ -542,30 +542,127 @@ if (!(await tool.execute(args)).includes('HTTP 500')) throw Error('missing HTTP 
     subprocess.run(["node", "--input-type=module", "-e", script, str(tool)], check=True, capture_output=True)
 
 
-@pytest.mark.parametrize("path", [
-    "src/App.tsx", "examples/thr_other/chart.png", ".sage/threads/{tid}/history.jsonl",
-    "examples/{tid}/../outside.txt", "examples/{tid}/nested/../../outside.txt",
-    "/examples/{tid}/chart.png", "examples/{tid}/link/outside.txt",
-    "examples/{tid}/data.csv", "examples/{tid}/table.json", "examples/{tid}/rows.md",
+_OUTSIDE = "must stay under"
+_EXTENSION = "must use .png or .table.json"
+
+
+@pytest.mark.parametrize("path,refusal", [
+    *[(p, _OUTSIDE) for p in [
+        "src/App.tsx", "examples/thr_other/chart.png", ".sage/threads/{tid}/history.jsonl",
+        "examples/{tid}/../outside.txt", "examples/{tid}/nested/../../outside.txt",
+        "/examples/{tid}/chart.png", "examples/{tid}/link/outside.txt",
+        "examples/{tid}", "examples/{tid}/", "./examples/{tid}", "examples\\{tid}\\chart.png",
+        "examples/{tid}\\chart.png", "./examples/thr_other/chart.png",
+        "{root}/examples/thr_other/chart.png", "{root}/examples/{tid}",
+        "{root}/examples/{tid}/../thr_other/chart.png", "{root}/examples/{tid}/link/chart.png",
+        "examples/{tid}/link/chart.png", "{outside}/chart.png", ".sage/scratch/{tid}/chart.png",
+        "{tid}/chart.png", "charts/chart.png", "..", ".", "",
+    ]],
+    *[(p, _EXTENSION) for p in [
+        "examples/{tid}/data.csv", "examples/{tid}/table.json", "examples/{tid}/rows.md", "chart.svg",
+    ]],
 ])
-def test_artifact_writer_rejects_paths_outside_the_thread_before_io(tmp_path, path):
+def test_artifact_writer_rejects_paths_outside_the_thread_before_io(tmp_path, path, refusal):
     orch, _ = _orch(tmp_path)
     tid = orch.create_thread()["id"]
     project = orch.project(start_preview=False)
     folder = project.record.path / "examples" / tid
     folder.mkdir(parents=True, exist_ok=True)
+    (project.record.path / "examples" / "thr_other").mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
     (folder / "link").symlink_to(outside, target_is_directory=True)
+    before = sorted(p for p in project.record.path.rglob("*") if ".git" not in p.parts)
     chat = project.control.arm_chat(tid)
     artifact = project.control.arm_chat_artifact()
     try:
-        with pytest.raises(ValueError):
-            orch.write_chat_artifact({"thread_id": tid, "path": path.format(tid=tid), "content": "bad"})
+        with pytest.raises(ValueError, match=refusal):
+            orch.write_chat_artifact({
+                "thread_id": tid, "encoding": "svg", "content": _PLAIN_SVG,
+                "path": path.format(tid=tid, root=project.record.path, outside=outside)})
         assert list(outside.iterdir()) == []
+        assert sorted(p for p in project.record.path.rglob("*") if ".git" not in p.parts) == before
     finally:
         project.control.disarm_chat_artifact(artifact)
         project.control.disarm_chat(chat)
+
+
+_PLAIN_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30">'
+              '<rect width="40" height="30" fill="white"/></svg>')
+
+
+@pytest.mark.parametrize("spelling", [
+    "./examples/{tid}/chart.png",
+    "{root}/examples/{tid}/chart.png",
+    "{root}/.sage/chat-work/examples/{tid}/chart.png",
+    "{root}/.sage/chat-work/./examples/{tid}/chart.png",
+    "chart.png",
+])
+def test_a_chart_written_with_another_spelling_of_the_thread_folder_lands_at_its_canonical_path(
+        tmp_path, spelling):
+    """#710: Haiku's charts were refused while its tables in the same turns landed. The Chat cwd is
+    `.sage/chat-work`, where `examples` is a link into the Project, so the absolute path a script
+    builds there is a safe path in another spelling."""
+    from sage.workspace.threads import ensure_chat_workdir
+
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    project = orch.project(start_preview=False)
+    ensure_chat_workdir(project.record.path, "", thread_id=tid)
+    chat = project.control.arm_chat(tid)
+    artifact = project.control.arm_chat_artifact()
+    try:
+        result = orch.write_chat_artifact({
+            "thread_id": tid, "encoding": "svg", "content": _PLAIN_SVG,
+            "path": spelling.format(tid=tid, root=project.record.path)})
+    finally:
+        project.control.disarm_chat_artifact(artifact)
+        project.control.disarm_chat(chat)
+    assert result["path"] == f"examples/{tid}/chart.png"
+    assert [p.name for p in (project.record.path / "examples" / tid).iterdir()] == ["chart.png"]
+
+
+def test_a_refused_artifact_path_tells_the_model_the_exact_form_to_retry_with(tmp_path):
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    control = orch.project(start_preview=False).control
+    chat = control.arm_chat(tid)
+    artifact = control.arm_chat_artifact()
+    try:
+        with pytest.raises(ValueError) as refused:
+            orch.write_chat_artifact({"thread_id": tid, "path": "charts/chart.png",
+                                      "encoding": "svg", "content": _PLAIN_SVG})
+    finally:
+        control.disarm_chat_artifact(artifact)
+        control.disarm_chat(chat)
+    assert f"examples/{tid}/<name>.png" in str(refused.value)
+
+
+@pytest.mark.parametrize("path,reason", [
+    ("charts/chart.png", "outside the folder"), ("./examples/{tid}/", "the folder itself"),
+    ("examples\\{tid}\\chart.png", "backslash"), ("examples/{tid}/../chart.png", ".."),
+    ("examples/{tid}/chart.svg", "extension"),
+])
+def test_a_refused_artifact_path_is_logged_as_sent_with_the_refusal_it_hit(tmp_path, caplog, path, reason):
+    """#710: the spelling Haiku sent was recorded nowhere, so the failure could not be read back."""
+    import logging
+
+    orch, _ = _orch(tmp_path)
+    tid = orch.create_thread()["id"]
+    control = orch.project(start_preview=False).control
+    chat = control.arm_chat(tid)
+    artifact = control.arm_chat_artifact()
+    sent = path.format(tid=tid)
+    try:
+        with caplog.at_level(logging.WARNING, logger="sage.orchestrator"), pytest.raises(ValueError):
+            orch.write_chat_artifact({"thread_id": tid, "path": sent,
+                                      "encoding": "svg", "content": _PLAIN_SVG})
+    finally:
+        control.disarm_chat_artifact(artifact)
+        control.disarm_chat(chat)
+    [line] = [r.getMessage() for r in caplog.records if "chat artifact: refused" in r.getMessage()]
+    assert repr(sent) in line and tid in line and f"({reason})" in line
+    assert "<svg" not in line
 
 
 def test_a_long_prompt_falls_back_without_hiding_its_final_instruction():
