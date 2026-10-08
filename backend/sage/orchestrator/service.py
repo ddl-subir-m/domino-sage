@@ -25312,6 +25312,10 @@ class Orchestrator:
                 return validation
             validation.stages["page"] = "passed"
             with timing.span("after.runtime_wait"):
+                # The headless check is still opening tabs (#709); a crash behind one lands meanwhile.
+                while (check is not None and validation.error is None and current()
+                       and time.monotonic() < deadline and not check.walked()):
+                    time.sleep(0.1)
                 error = self._await_runtime_error(
                     project, since=time.monotonic(),
                     timeout=self._build_policy.runtime_error_wait_seconds)

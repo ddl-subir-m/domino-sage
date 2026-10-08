@@ -85,8 +85,15 @@ def _command(url: str, timeout: float) -> list[str]:
 
 
 class PageCheck:
-    def __init__(self, process: subprocess.Popen, stderr):
-        self.process, self._stderr = process, stderr
+    def __init__(self, process: subprocess.Popen, stderr, stdout):
+        self.process, self._stderr, self._stdout = process, stderr, stdout
+
+    def walked(self) -> bool:
+        """Whether the script has opened every tab it will (#709), or has exited."""
+        if self._stdout.closed or self.process.poll() is not None:
+            return True
+        self._stdout.seek(0)
+        return b"done" in self._stdout.read()
 
     def close(self) -> None:
         """Stop the script and everything it started, and reap it. Safe to call twice."""
@@ -101,6 +108,7 @@ class PageCheck:
                     break
                 except subprocess.TimeoutExpired:
                     continue
+        self._stdout.close()
         if not self._stderr.closed:
             self._stderr.seek(0)
             said = self._stderr.read().decode(errors="replace").strip()
@@ -115,10 +123,12 @@ def start(url: str, timeout: float) -> PageCheck:
     if why is not None:
         raise Unavailable(why)
     stderr = tempfile.TemporaryFile()  # noqa: SIM115 - PageCheck.close() owns it
+    stdout = tempfile.TemporaryFile()  # noqa: SIM115 - PageCheck.close() owns it
     try:
         process = subprocess.Popen(_command(url, timeout), stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
+                                   stdout=stdout, stderr=stderr, start_new_session=True)
     except BaseException:
         stderr.close()
+        stdout.close()
         raise
-    return PageCheck(process, stderr)
+    return PageCheck(process, stderr, stdout)
