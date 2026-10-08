@@ -338,6 +338,9 @@ class SessionState:
     extensions: ExtensionCatalog | None = None
     # The extension ids this turn's Thread or App switched off. Per turn, like `withheld`.
     extensions_off: frozenset[str] = frozenset()
+    # `sage_source_map` is offered on this Build turn (#700). Per turn, armed only where the
+    # Project switched it on; never on a Chat turn.
+    source_map_offered: bool = False
 
 
 @dataclass(frozen=True)

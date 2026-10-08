@@ -173,7 +173,7 @@ def test_the_map_carries_names_and_never_values(tmp_path):
 
 
 def test_one_generated_module_cannot_crowd_out_the_rest(tmp_path):
-    from sage.orchestrator import service as svc
+    from sage import source_map
 
     src = _react_app(tmp_path) / "src"
     src.mkdir()
@@ -183,7 +183,7 @@ def test_one_generated_module_cannot_crowd_out_the_rest(tmp_path):
 
     got = _names(_note(tmp_path))
 
-    assert len(got["src/generated.ts"]) == svc._NAMES_PER_FILE
+    assert len(got["src/generated.ts"]) == source_map._NAMES_PER_FILE
     assert got["src/App.tsx"] == ["App"], "the file the request is about is still named"
 
 

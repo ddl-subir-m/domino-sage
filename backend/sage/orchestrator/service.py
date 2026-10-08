@@ -49,6 +49,7 @@ from .. import (
     extension_mcp,
     project_secrets,
     skill_copies,
+    source_map,
     timing,
 )
 from .. import extensions as project_extensions
@@ -227,7 +228,6 @@ from ..workspace.stack import (
     default_stack_name,
     preview_stack_of,
     resolve_stack,
-    stack_of,
 )
 from ..workspace.threads import (
     ARTIFACT_COMMIT_MAX,
@@ -5618,22 +5618,6 @@ _SUBJECT_KEYS = ("pattern", "path", "filePath", "url", "name", "query", "descrip
 # A context line still carrying the read tool's line-number prefix (`00012| …`), with or without a
 # patch marker in front of it. Its own constant so `_patch_detail` compiles it once per process.
 _NUMBERED_LINE = re.compile(r"^[ +-]?\d{4,6}\|")
-# How many source paths the Build prompt lists, and how many names it gives per listed file. The
-# path cap is long-standing (a listing that can't dominate the request); the name cap is what stops
-# one generated module of 500 exports from crowding out the file the request is actually about.
-_SOURCE_PATHS_MAX = 60
-_NAMES_PER_FILE = 8
-_NAMES_MAX_FILE_BYTES = 200_000
-# What a file DEFINES, matched on line starts only. Deliberately not a parser: this runs on every
-# Build turn over up to 60 files, the answer is a hint for choosing which file to open, and a miss
-# costs the model nothing it did not already have. `name` is the one group every pattern carries.
-_NAME_PATTERNS = {
-    ".py": re.compile(r"^(?:async\s+def|def|class)\s+(?P<name>\w+)"),
-    **{suffix: re.compile(
-        r"^(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:function|class|const|let|var)\s+"
-        r"(?P<name>\w+)")
-       for suffix in (".js", ".jsx", ".ts", ".tsx", ".mjs")},
-}
 
 
 def _timed_batch(stream, call):
@@ -15190,6 +15174,33 @@ class Orchestrator:
 
         return delegated_mcp.handle(message, run=run)
 
+    # ---- Source map (#700) ----------------------------------------------------------------------
+
+    def source_map_call(self, message: dict) -> dict | None:
+        """One call from the `sage_source_map` custom tool: the turn's own app, mapped, or nothing.
+
+        Answers only the Build turn that armed it. The shim's strip is gateway-side and this route
+        answers any socket in the workspace, so the same rule is held here too — one door is not
+        two. Never the arguments in the log: a path or a symbol can name the person's data.
+        """
+        def run(args: dict) -> str:
+            thread_id = self._live_read_thread(str(args.get("token") or ""))
+            if thread_id is None:
+                log.info("source map: the token is not this turn's (%s)",
+                         self._refused_token_shape(str(args.get("token") or "")))
+                return ("That turn token is not current — it is from an earlier turn. Use the "
+                        "token written in this turn's prompt, exactly as it appears there. Do "
+                        "not repeat the call with the same token.")
+            project = self._chat_project()
+            if (thread_id != project.build_conversation
+                    or not project.control.snapshot().source_map_offered):
+                log.info("source map: refused — not a Build turn that switched it on")
+                return ("The source map is not offered on this turn. "
+                        "Read and search the app's files instead.")
+            return source_map.lookup(project.app_for_turn().path, args)
+
+        return source_map.handle(message, run=run)
+
     def _delegated_turn_for(self, thread_id: str) -> delegated.Turn:
         """What one Delegated model call may see, read from the records as they stand now.
 
@@ -20584,91 +20595,12 @@ class Orchestrator:
             kind="built" if _crossing_minted_app(project.app_for_turn(), thread_id) else "changed",
         )
 
-    @staticmethod
-    def _source_paths(root: Path) -> list[str]:
-        """The app's own source files, relative and sorted. Which paths those are is its stack's to
-        say (#490); a vendored bundle is not one of them.
-
-        Its own function because two callers need the same answer for different reasons — the
-        listing sent to the model, and the rule that decides whether a prompt NAMED one of these
-        files. A rule keyed on a second, slightly different glob would disagree with the listing
-        the model was given, which is the one thing that must not happen here.
-        """
-        # `ValueError` is an app with no stack to say which files are its own (#503) — unborn, or
-        # one whose files argue — and its map is empty, which is what `scope.py` answers for the
-        # same glob.
-        try:
-            kind = stack_of(root)
-            return sorted({p.relative_to(root).as_posix() for glob in kind.source_globs
-                           for p in root.glob(glob)
-                           if p.is_file() and not any(part.startswith(".")
-                                                      for part in p.relative_to(root).parts)
-                           and not p.relative_to(root).as_posix().startswith(kind.vendored)})
-        except (OSError, ValueError):
-            return []
-
-    @staticmethod
-    def _top_level_names(root: Path, paths: list[str]) -> dict[str, list[str]]:
-        """What each source file DEFINES, by name, read off the line starts.
-
-        Paths alone did not stop the re-orientation they were added for. Measured 2026-09-11 and
-        again in #496: a one-line change to a built app spent two whole round trips on `read`,
-        `glob`, `read` x5 before its single edit, with this listing already in the prompt — because
-        a list of paths cannot say which file holds the chart. A name can.
-
-        Names only, never a value: the point is to let the model pick the file, and a `const` on
-        the right-hand side is the person's data. Bounded the same way the listing is, and by a
-        per-file cap, so a generated 500-export module cannot crowd out the rest.
-        """
-        out: dict[str, list[str]] = {}
-        for rel in paths:
-            pattern = _NAME_PATTERNS.get(Path(rel).suffix)
-            if pattern is None:
-                continue
-            try:
-                p = root / rel
-                if p.stat().st_size > _NAMES_MAX_FILE_BYTES:
-                    continue
-                text = p.read_text(errors="replace")
-            except OSError:
-                continue
-            names: list[str] = []
-            for line in text.splitlines():
-                m = pattern.match(line)
-                if m and (name := m.group("name")) not in names:
-                    names.append(name)
-                    if len(names) == _NAMES_PER_FILE:
-                        break
-            if names:
-                out[rel] = names
-        return out
-
-    @classmethod
-    def _build_source_note(cls, root: Path) -> str:
-        """Supply exact source paths and what each file defines, without sending any source.
-
-        Built from disk at every call, and the call sites are what keep it true: the first send of a
-        turn (so it carries whatever the last turn wrote, and anything edited in the workspace by
-        hand), and the broken-call retry, which mints a NEW session that heard nothing else — and
-        which used to restore the string built before the failed attempt, so a retry after a
-        partial write was told a map that was already wrong. It deliberately does NOT ride a nudge:
-        a nudge talks to the session that made the edits, and re-sending the map there would put a
-        user-role message in the transcript, which is a turn boundary to the rescue scorer.
-        """
-        paths = cls._source_paths(root)
-        if not paths:
-            return ""
-        shown = paths[:_SOURCE_PATHS_MAX]
-        note = ("Existing source paths (JSON array, relative to the app directory):\n"
-                + json.dumps(shown)
-                + (f"\nListing limited to the first {_SOURCE_PATHS_MAX} paths."
-                   if len(paths) > _SOURCE_PATHS_MAX else ""))
-        if names := cls._top_level_names(root, shown):
-            note += ("\nTop-level names in each of those files (JSON object, path -> names):\n"
-                     + json.dumps(names))
-        return note + ("\nOpen the relevant files together before editing — the ones whose names "
-                       "the request touches, in ONE message. "
-                       "Search only if the needed path is not listed.")
+    # The app's source listing and the Build prompt's source note live in `source_map` (#700), so
+    # the note and the `sage_source_map` tool start from one listing. Kept as names here for the
+    # callers that classify a NAMED file on the same implementation the listing uses.
+    _source_paths = staticmethod(source_map.source_paths)
+    _top_level_names = staticmethod(source_map.top_level_names)
+    _build_source_note = staticmethod(source_map.build_source_note)
 
     @classmethod
     def _pre_edit_recovery_packet(
@@ -21527,6 +21459,10 @@ class Orchestrator:
         # Internet access is default-denied; arm it for THIS turn only when the prompt asked for the
         # web (a URL or an intent verb). Token-scoped like read-only, disarmed on every exit.
         web_token = project.control.arm_web() if _wants_web(prompt) else None
+        # The code map is offered only where the Project switched it on, until #702's evaluation
+        # says whether it earns the default offer. Token-scoped and disarmed with the rest.
+        source_map_token = (project.control.arm_source_map()
+                            if settings.get("source_map") else None)
 
         def agent_wrote() -> bool:
             """Did the AGENT write this turn? A completed edit/write tool is a direct witness, and
@@ -21564,6 +21500,8 @@ class Orchestrator:
                 project.control.disarm_direct(direct_token)
             if web_token is not None:
                 project.control.disarm_web(web_token)
+            if source_map_token is not None:
+                project.control.disarm_source_map(source_map_token)
             if sens_token is not None:
                 project.control.disarm_sensitivity(sens_token)
 

@@ -773,6 +773,9 @@ class EnforcementShim:
             # hypothetical one; if Build should have the capability it needs those two bounds first,
             # not this line removed.
             outside = {"artifact_write"} if chat_id else {"artifact_write", "delegated_model_call"}
+            # `sage_source_map` (#700) is a Build turn's, and only one whose Project switched it on.
+            if chat_id or not state.source_map_offered:
+                outside = outside | {"sage_source_map"}
             request = {**request, "tools": [tool for tool in request["tools"]
                 if (tool.get("function") or {}).get("name", "").lower() not in outside]}
         if chat_id and isinstance(request.get("tools"), list):

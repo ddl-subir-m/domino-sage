@@ -67,6 +67,9 @@ class ModelControl:
         self._extensions = None
         self._extensions_off: frozenset[str] = frozenset()
         self._extensions_off_token: object | None = None
+        # The code map tool (#700), offered per Build turn where the Project switched it on. Same
+        # token discipline as Direct.
+        self._source_map_token: object | None = None
 
     def set_extensions(self, catalog) -> None:
         self._extensions = catalog or None
@@ -155,6 +158,18 @@ class ModelControl:
         """Clear Direct only if `token` is still the live one."""
         if self._direct_token is token:
             self._direct_token = None
+
+    def arm_source_map(self) -> object:
+        """Offer `sage_source_map` on this turn and return its token. The shim reads
+        `snapshot().source_map_offered`, and so does the route that answers the tool."""
+        token = object()
+        self._source_map_token = token
+        return token
+
+    def disarm_source_map(self, token: object) -> None:
+        """Withdraw the offer only if `token` is still the live one."""
+        if self._source_map_token is token:
+            self._source_map_token = None
 
     def disarm_read_only(self, token: object) -> None:
         """Clear the read-only guarantee, but only if `token` is still the live one. A disarm from a
@@ -326,4 +341,5 @@ class ModelControl:
             extensions=self._extensions,
             extensions_off=(self._extensions_off if self._extensions_off_token is not None
                             else frozenset()),
+            source_map_offered=self._source_map_token is not None,
         )
