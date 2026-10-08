@@ -266,6 +266,6 @@ def test_the_implement_rules_open_on_what_the_check_rejects(stack):
     assert first < block.index("## Implementation turn")
     section = block[first:block.index("## Implementation turn")]
     assert len(section.encode()) <= 600
-    placeholder = "static/app.js" if stack == "fastapi-antd" else "src/App.tsx"
-    assert f'file="{placeholder}", line=1, col=1, code="SAGE001"' in runner
-    assert f"SAGE001`: the starter placeholder is still the screen in `{placeholder}`" in section
+    # Which file holds the placeholder is the check's to find (#697): the entry, or a screen.
+    assert 'code="SAGE001"' in runner
+    assert "SAGE001`: the starter placeholder is still a screen the" in section

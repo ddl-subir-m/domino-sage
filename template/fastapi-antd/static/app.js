@@ -1,4 +1,5 @@
-// The app. Replace this file — it is the placeholder the starter ships with.
+// The shell: it mounts the app and decides which screen shows. Each screen is its own file under
+// `static/components/` (the first is `MainScreen.js`), registered on `window.app`.
 //
 // Everything is on the page already: `React`, `ReactDOM`, `antd`, `icons`, `dayjs`, `Highcharts`,
 // and Sage's helpers under `sage` (see AGENTS.md). There is no build step and no JSX: build elements
@@ -12,9 +13,7 @@
   const { ConfigProvider } = antd;
 
   function App() {
-    return h(ConfigProvider, { theme: sage.theme },
-      h('main', { className: 'sage-placeholder' },
-        h('h1', null, 'Your app will appear here')));
+    return h(ConfigProvider, { theme: sage.theme }, h(window.app.MainScreen));
   }
 
   ReactDOM.createRoot(document.getElementById('root')).render(
