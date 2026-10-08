@@ -214,6 +214,21 @@ def test_the_turn_writes_one_artifact_not_two():
     assert "square matrix is **both**" not in md
 
 
+def test_the_turn_is_told_the_projects_tools_are_context_and_to_search_the_outside_world():
+    """#711. A turn told to use only what its context lists refused a news question while a search
+    tool was offered. Both copies, as above."""
+    root = Path(__file__).resolve().parents[2]
+    md = (root / "template" / "chat" / "AGENTS.md").read_text(encoding="utf-8")
+    prompt = json.loads((root / "opencode.json").read_text(encoding="utf-8"))[
+        "agent"]["sage-chat"]["prompt"]
+    md, prompt = " ".join(md.split()), " ".join(prompt.split())
+    for probe in ("The project's tools named in the turn prompt are part of this turn's context",
+                  "use a search tool when one is listed, and cite its sources",
+                  "Use the files, {dataSourcePlural}, and URLs listed in this turn's context"):
+        assert probe in md, probe
+        assert probe in prompt, probe
+
+
 def test_the_turn_is_told_to_do_the_work_in_one_script():
     """Looking in one step and computing in the next doubles the round trips for no extra answer.
 
