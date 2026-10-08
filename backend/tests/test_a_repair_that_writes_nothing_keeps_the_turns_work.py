@@ -54,6 +54,29 @@ def test_a_repair_answered_without_an_edit_ends_on_the_repair_not_the_no_edit_la
     assert "app_change" in [r["type"] for r in history]
 
 
+def test_a_repair_answered_nothing_to_build_does_not_end_a_writing_turn_as_nothing_to_build(
+        tmp_path: Path, monkeypatch):
+    """#695: the marker excuses a turn from editing; it cannot unsave what pass 1 already wrote."""
+    orch, oc = _implement(tmp_path, [
+        Turn(text="Built it.", writes={"src/App.tsx": "export default () => 'sales'\n"}),
+        Turn(text="Nothing more to do.\nNOTHING_TO_BUILD"),
+    ])
+    scans = iter([[("sales.csv", ["src/sales.csv"])]])
+    monkeypatch.setattr(orch, "_detect_leaks", lambda *_: next(scans, []))
+
+    events = list(orch.build_stream("show sales"))
+
+    reasons = [e["reason"] for e in events if e["type"] == "iterate"]
+    assert reasons == ["copied attached data into source — moving it back to data/"]
+    assert len(oc.prompts) == 2
+    done = _done(events)
+    assert done["decision"] != "nothing to build"
+    assert NO_EDIT not in done["decision"]
+    assert done["ok"] is True
+    history = orch.project(start_preview=False).app_for_turn().read_history()
+    assert "app_change" in [r["type"] for r in history]
+
+
 def test_a_phase_that_never_wrote_still_runs_the_no_edit_ladder_and_stops(tmp_path: Path):
     """A phase is its own unit: phase 1 writing does not excuse phase 2 writing nothing. (A plain
     build turn that never writes is ended by the pre-edit guard before this ladder.)"""

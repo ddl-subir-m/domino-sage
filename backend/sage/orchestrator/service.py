@@ -21829,9 +21829,8 @@ class Orchestrator:
         reasoning_budget_sent = False
         dead_stream_retried = False
         # Set when the agent claims this turn's request cannot be acted on at all (NO_BUILD_MARKER).
-        # Not reset between nudge iterations, and it doesn't need to be: a claimed turn returns
-        # before the nudge loop can run, and the two nudges that follow a WRITING turn (runtime,
-        # leak) can't reach a turn that wrote nothing.
+        # Not reset between nudge iterations: a repair that follows a WRITING iteration can claim it
+        # too, so the exit below honours it only while no iteration of this turn has written (#695).
         nothing_to_build = False
         # Set when the agent claims the previous turn already did this request (ALREADY_DONE_MARKER).
         # Only a claim: the exit below honours it on Sage's own evidence or not at all.
@@ -24005,7 +24004,8 @@ class Orchestrator:
                 "nothing to build" if nothing_to_build
                 else "already done" if already_done and owns_turn else "")
             if (clean_ending and not agent_wrote()
-                    and (nothing_to_build or self._previous_turn_did_it(project))):
+                    and ((nothing_to_build and not wrote_earlier)
+                         or self._previous_turn_did_it(project))):
                 if (project.pre_edit_guard is not None
                         and not project.pre_edit_guard.claim_existing_terminal()):
                     winner = project.pre_edit_guard.consume_pending()
