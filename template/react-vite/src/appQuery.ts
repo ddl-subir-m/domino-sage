@@ -223,18 +223,33 @@ export function useDebouncedValue<T>(value: T, delayMs = 300): T {
 // the build that wrote the read is told which names exist. Not reads: symbols, Object.prototype
 // names, `toJSON` (JSON.stringify), `then` (await), and `key` and `children`, which antd's Table
 // reads off every row.
+//
+// Snowflake upper-cases unquoted aliases, so a page reading `r.Account` off `ACCOUNT` gets the one
+// column that matches ignoring case (#713). Two such columns are reported, never picked between.
+// The record's own keys stay the store's names, so `in`, Object.keys and JSON are unchanged.
 const PROBES = new Set(["toJSON", "then", "key", "children"]);
 
 function recordsOf(name: string, columns: string[], rows: QueryValue[][]): Record<string, QueryValue>[] {
   const reported = new Set<string>();
+  const byLowerCase = new Map<string, string[]>();
+  for (const column of columns) {
+    const lower = column.toLowerCase();
+    byLowerCase.set(lower, [...(byLowerCase.get(lower) ?? []), column]);
+  }
   return rows.map((row) => new Proxy(Object.fromEntries(columns.map((c, i) => [c, row[i]])), {
     get(record, key, receiver) {
-      if (typeof key === "string" && !(key in record) && !PROBES.has(key) && !reported.has(key)) {
-        reported.add(key);
-        reportRuntimeError(`query ${name} has no column '${key}'; columns are ${columns.join(", ")}`,
-                           new Error().stack);
+      if (typeof key !== "string" || key in record || PROBES.has(key)) {
+        return Reflect.get(record, key, receiver);
       }
-      return Reflect.get(record, key, receiver);
+      const matches = byLowerCase.get(key.toLowerCase()) ?? [];
+      if (matches.length === 1) return record[matches[0]];
+      if (!reported.has(key)) {
+        reported.add(key);
+        reportRuntimeError(matches.length
+          ? `query ${name} has no column '${key}'; it matches ${matches.join(" and ")}, which differ only in case`
+          : `query ${name} has no column '${key}'; columns are ${columns.join(", ")}`, new Error().stack);
+      }
+      return undefined;
     },
   }));
 }

@@ -2,7 +2,9 @@
 //
 // Input on stdin: `{ "template": "fastapi-antd" | "react-vite", "body": <the server's JSON answer>,
 // "reads": [<keys read off every record>] }`. "Symbol.iterator" reads that symbol.
-// Output: `{ "result": <the value runQuery resolved to>, "reports": [<reportRuntimeError messages>] }`.
+// Output: `{ "result": <the value runQuery resolved to>, "reports": [<reportRuntimeError messages>],
+// "values": [<per record, each read key to the value it got; undefined and functions left out>],
+// "keys": [<per record, Object.keys>] }`.
 //
 // With `"steps"` instead of `"body"`, it drives `useQuery` through a minimal hooks runtime (#681):
 // `answers` are the server's replies in request order (`{ "body": ..., "status": 200 }`), each held
@@ -232,9 +234,16 @@ if (steps) {
   process.stdout.write(JSON.stringify({ snapshots, requests, timers: timers.size }));
 } else {
   const result = await helpers.runQuery('q');
+  const values = [];
   for (const record of result.records) {
-    for (const key of reads) record[key === 'Symbol.iterator' ? Symbol.iterator : key];
+    const read = {};
+    for (const key of reads) {
+      const value = record[key === 'Symbol.iterator' ? Symbol.iterator : key];
+      if (typeof value !== 'function' && value !== undefined) read[key] = value;
+    }
+    values.push(read);
   }
+  const keys = result.records.map((record) => Object.keys(record));
   const serialized = JSON.parse(JSON.stringify(result));
-  process.stdout.write(JSON.stringify({ result: serialized, reports }));
+  process.stdout.write(JSON.stringify({ result: serialized, reports, values, keys }));
 }
