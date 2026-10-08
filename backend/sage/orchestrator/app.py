@@ -4228,6 +4228,29 @@ async def delegated_model_mcp(request: Request) -> Response:
     return JSONResponse(out if batch else out[0])
 
 
+@control_app.post("/mcp/source-map")
+async def source_map_mcp(request: Request) -> Response:
+    """The `sage_source_map` tool's route (#700), framed like `/mcp/delegated-model` above.
+
+    Loopback only and gated by the per-turn token inside the call. Off the event loop: a lookup
+    reads and hashes every source file of the app.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+            status_code=400,
+        )
+    batch = isinstance(body, list)
+    served = await run_in_threadpool(
+        lambda: [orchestrator.source_map_call(m) for m in (body if batch else [body])])
+    out = [r for r in served if r is not None]
+    if not out:
+        return Response(status_code=202)
+    return JSONResponse(out if batch else out[0])
+
+
 @control_app.post("/api/chat/artifact")
 def write_chat_artifact(body: dict = Body(default={})) -> JSONResponse:
     try:
@@ -4577,7 +4600,7 @@ def get_settings() -> JSONResponse:
 
 @control_app.post("/api/project/settings")
 async def set_settings(request: Request) -> JSONResponse:
-    """Update per-project settings: skip_planning (SPEC P6 opt-out) and phased_build."""
+    """Update per-project settings: skip_planning (SPEC P6 opt-out), phased_build, source_map."""
     body = await request.json()
     record = orchestrator.project().record
     settings = record.read_settings()
@@ -4585,6 +4608,8 @@ async def set_settings(request: Request) -> JSONResponse:
         settings["skip_planning"] = bool(body["skip_planning"])
     if "phased_build" in body:
         settings["phased_build"] = bool(body["phased_build"])
+    if "source_map" in body:
+        settings["source_map"] = bool(body["source_map"])
     record.write_settings(settings)
     return JSONResponse(content=settings)
 
@@ -5578,6 +5603,7 @@ def _install_opencode_config(source_dir: Path, control_port: int) -> None:
 _OPENCODE_TOOL_DIRS = (
     ("backend", "sage", "liveread", "tools"),
     ("backend", "sage", "delegated", "tools"),
+    ("backend", "sage", "source_map_tools"),
 )
 
 

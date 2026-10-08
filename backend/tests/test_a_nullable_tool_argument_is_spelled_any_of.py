@@ -77,6 +77,8 @@ def test_no_tool_argument_declares_a_type_list():
     ("live_read.ts:files", "pages"),
     ("delegated_model_call.ts:default", "system"),
     ("delegated_model_call.ts:default", "max_tokens"),
+    ("sage_source_map.ts:default", "paths"),
+    ("sage_source_map.ts:default", "symbol"),
 ])
 def test_an_optional_argument_still_takes_null(tool, arg):
     """The spelling changed and the meaning did not: the model can still send null, and `call`

@@ -150,6 +150,16 @@ _TOOLS = [
         json.dumps({"path": "examples/thr_t/CONFIRMED.table.json"}),
         "Artifact written: examples/thr_t/CONFIRMED.table.json",
         id="artifact_write"),
+    # #700. A map lookup is a read of the app's own files, so either failure sends the model to the
+    # ordinary file reads it would have made without the tool.
+    pytest.param(
+        "sage/source_map_tools/sage_source_map.ts", "default",
+        "SAGE_SOURCE_MAP_TIMEOUT_MS",
+        {"token": "t", "symbol": "MainScreen"},
+        "Read and search the app's files instead.",
+        "Read and search the app's files instead.",
+        _MCP_REPLY, "ANSWERED",
+        id="sage_source_map"),
 ]
 
 
