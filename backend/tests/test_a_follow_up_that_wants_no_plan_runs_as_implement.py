@@ -68,7 +68,8 @@ class ScriptedGateway:
         self.calls = 0
 
     def route(self, request, labels):
-        self.calls += 1
+        # The plan review (#716) also routes here after an approved build; it is not a gate.
+        self.calls += labels.component != "plan-review"
         body = json.dumps({"choices": [{"delta": {"content": self.verdict}}]})
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 

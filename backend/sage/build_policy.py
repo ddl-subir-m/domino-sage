@@ -48,6 +48,8 @@ plan_reasoning_effort            SAGE_BUILD_PLAN_REASONING_EFFORT               
 implement_reasoning_effort       SAGE_BUILD_IMPLEMENT_REASONING_EFFORT               low
 implement_reasoning_budget_seconds
                                  SAGE_BUILD_IMPLEMENT_REASONING_BUDGET_SECONDS       180
+plan_review                      SAGE_BUILD_PLAN_REVIEW                            on [5]
+plan_review_timeout_seconds      SAGE_BUILD_PLAN_REVIEW_TIMEOUT_SECONDS            60 [5]
 ===============================  ================================================  =========
 
 [1] ``SAGE_MAX_NUDGES`` remains an alias.
@@ -67,6 +69,10 @@ implement_reasoning_budget_seconds
 [4] The ack wait while Sage's own headless Chromium is loading the page (#707). It replaces
     ``page_ack_wait_seconds`` only when it is longer, and only when that check started: launching
     Chromium and loading a cold preview can take longer than a Workbench tab that is already open.
+
+[5] The one plan-tier call that reads an approved build's code diff against its plan's Done-when
+    items (#716). ``on`` or ``off``. The cap bounds the call, not the turn's other checks; a call
+    past it ends the turn as it would have ended without the review.
 """
 
 from __future__ import annotations
@@ -129,10 +135,12 @@ class BuildPolicy:
     # and no tool. Not the silence between chunks: that is model_no_action_timeout_seconds, and
     # these chunks are still arriving. A plan call is not capped.
     implement_reasoning_budget_seconds: float = 180.0
+    plan_review: bool = True
+    plan_review_timeout_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         for name in ("model_no_action_notice_seconds", "model_no_action_timeout_seconds",
-                     "implement_reasoning_budget_seconds"):
+                     "implement_reasoning_budget_seconds", "plan_review_timeout_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) \
                     or not math.isfinite(value) or value <= 0:
@@ -210,6 +218,8 @@ _SETTINGS = (
     _Setting("implement_reasoning_effort", "SAGE_BUILD_IMPLEMENT_REASONING_EFFORT", "effort"),
     _Setting("implement_reasoning_budget_seconds",
              "SAGE_BUILD_IMPLEMENT_REASONING_BUDGET_SECONDS", "duration"),
+    _Setting("plan_review", "SAGE_BUILD_PLAN_REVIEW", "switch"),
+    _Setting("plan_review_timeout_seconds", "SAGE_BUILD_PLAN_REVIEW_TIMEOUT_SECONDS", "duration"),
 )
 
 _POSITIVE_INTEGER = re.compile(r"[0-9]+\Z")
@@ -218,10 +228,14 @@ _POSITIVE_NUMBER = re.compile(
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "max", "xhigh"})
 
 
-def _value(setting: _Setting, key: str, raw: str) -> int | float | str:
+def _value(setting: _Setting, key: str, raw: str) -> int | float | str | bool:
     try:
         if isinstance(raw, bool):
             raise TypeError
+        if setting.kind == "switch":
+            if raw not in ("on", "off"):
+                raise ValueError
+            return raw == "on"
         if setting.kind == "effort":
             if raw not in _REASONING_EFFORTS:
                 raise ValueError

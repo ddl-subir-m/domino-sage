@@ -6812,6 +6812,37 @@ _PLAN_NAME_SYSTEM = (
 # gateway client sets no read timeout on streams by design and a hung repair would hang the turn.
 _PLAN_NAME_TIMEOUT_S = 30.0
 
+# The review of an approved build against its plan's Done-when items (#716). Code only: an allowlist
+# of suffixes rather than a list of data formats, because a data file nobody thought of must not
+# reach a vendor model, and `.env` or a `.json` of rows is exactly that.
+_PLAN_REVIEW_SYSTEM = (
+    "You check a finished build against its approved plan. The message below lists the plan's "
+    "steps, each with what it does and when it is done, then the code change the build made.\n"
+    "Name only a Done-when item the code plainly fails: a value, branch or default that is "
+    "visibly missing or wrong. Never flag what the code cannot show, such as how the page looks, "
+    "data you cannot see, or code outside the change.\n"
+    'Answer with JSON only: {"unmet": [{"step": <number>, "done_when": "<the item>", '
+    '"file": "<path>", "why": "<one sentence>"}]}. If nothing is plainly unmet, answer '
+    '{"unmet": []}.'
+)
+_PLAN_REVIEW_CODE = frozenset({".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".html",
+                               ".css", ".vue", ".svelte"})
+_PLAN_REVIEW_SKIP = frozenset({".sage", "node_modules", "vendor", "data"})
+_PLAN_REVIEW_DIFF_MAX_BYTES = 48_000
+
+
+def _plan_review_unmet(answer: str) -> list[dict] | None:
+    """The unmet items in a review answer, or None when the answer is not the asked-for JSON."""
+    text = answer.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        items = json.loads(text)["unmet"]
+    except (ValueError, TypeError, KeyError):
+        return None
+    if not isinstance(items, list) or not all(
+            isinstance(i, dict) and str(i.get("done_when") or "").strip() for i in items):
+        return None
+    return items
+
 
 def _repair_heading_name(answer: str, request: str) -> str:
     """Return the planner's written app name, or "" when it did not write one.
@@ -20747,7 +20778,8 @@ class Orchestrator:
                       continuation_note: str = "",
                       initial_repair_objective: str = "implementation",
                       how_sage_works: str = "guided", dataset_note: str = "",
-                      unbuilt_steps: Callable[[], list[PlanStep]] | None = None):
+                      unbuilt_steps: Callable[[], list[PlanStep]] | None = None,
+                      plan_review: Callable[[], str] | None = None):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -24296,6 +24328,24 @@ class Orchestrator:
                         for s in unbuilt) + (" Do those steps now." if len(unbuilt) > 1
                                              else " Do that step now.")
                     continue
+                # A Done-when no structural check can see (#716): one plan-tier read of the code,
+                # only on a turn every other check passed, and on the same one-repair budget.
+                review_nudge = (plan_review() if plan_review is not None and report.ok
+                                and wrote_code and rt is None and not plan_fixes
+                                and not project.stop_requested
+                                and not self._query_failures(project)
+                                and not unrecorded_source_problems(
+                                    self._wm.template, project.app_for_turn().path)
+                                and not self._detect_store_clients(project)
+                                and self._fresh_platform_read_failure(project, since=send_ts) is None
+                                else "")
+                if review_nudge:
+                    plan_fixes += 1
+                    answering_plan_fix = True
+                    iterate_reason = "the build misses a Done-when in the plan — fixing it"
+                    yield {"type": "iterate", "reason": iterate_reason}
+                    current = review_nudge
+                    continue
                 restore_mode()
                 # The receipt for what this turn changed, before the line that closes the turn.
                 # `owns_turn` because a phase is not a turn: one approved plan changed one app, and
@@ -24692,7 +24742,8 @@ class Orchestrator:
                     continuation_note=(_BUILD_CONTROL_PROMPT + "\n\n" + retry_evidence
                                        if retry_evidence else ""),
                     unbuilt_steps=lambda: self._unbuilt_plan_steps(
-                        project, plan_md, tree_before, queries_before))
+                        project, plan_md, tree_before, queries_before),
+                    plan_review=lambda: self._plan_review_nudge(project, plan_md, tree_before))
             unbuilt = self._plan_unbuilt_event(
                 project, plan_md, tree_before, queries_before, rows_before)
             if unbuilt is not None:
@@ -24777,6 +24828,100 @@ class Orchestrator:
             return any(c == path or c.startswith(path + "/") for c in changed)
 
         return [s for s in parse_steps(plan_md) if s.files and not any(map(written, s.files))]
+
+    def _plan_review_nudge(self, project: Project, plan_md: str, tree_before: str) -> str:
+        """The repair for the Done-when items one plan-tier call reads as plainly unmet, or "" (#716).
+
+        Never blocks a build: off, nothing to read, a timeout, a failed call and an unreadable
+        answer all return "", and every one but the first two says why in the log. The input is
+        the plan's steps and this turn's diff of code files, cut at a byte cap the prompt states.
+        """
+        if not self._build_policy.plan_review:
+            return ""
+        steps = [s for s in parse_steps(plan_md) if s.done_when]
+        after = project.snapshot.working_tree_hash()
+        paths = [p for p in project.snapshot.changed_paths(tree_before, after, limit=100_000)
+                 if PurePosix(p).suffix in _PLAN_REVIEW_CODE
+                 and not _PLAN_REVIEW_SKIP & set(PurePosix(p).parts)]
+        diff = project.snapshot.diff(tree_before, after, paths[:500]).encode()
+        if not steps or not diff:
+            return ""
+        cut = (f" — truncated to the first {_PLAN_REVIEW_DIFF_MAX_BYTES} of {len(diff)} bytes; "
+               "do not flag what the cut hides" if len(diff) > _PLAN_REVIEW_DIFF_MAX_BYTES else "")
+        payload = ("Plan steps:\n" + "\n".join(
+            f"{s.n}. {s.label}\n   Do: {s.do}\n   Done when: {s.done_when}" for s in steps)
+            + f"\n\nThe change (code files only{cut}):\n"
+            + diff[:_PLAN_REVIEW_DIFF_MAX_BYTES].decode("utf-8", errors="ignore"))
+        # The Plan slot as Auto's plan phase reaches it, whatever mode built this turn, so its
+        # assigned effort and the sensitivity lock come with it.
+        decision = llm_router.resolve(
+            replace(project.control.snapshot(), mode=Mode.AUTO, phase=Phase.PLAN, direct=False),
+            project.shim.catalog)
+        model = decision.model
+        effort = decision.effort or self._build_policy.plan_reasoning_effort
+        request = {
+            "model": model,
+            "messages": [{"role": "system", "content": _PLAN_REVIEW_SYSTEM},
+                         {"role": "user", "content": payload}],
+            "max_tokens": 4096,
+            "temperature": 0,
+            "stream": True,
+        }
+        labels = CostLabels(phase="plan", mode="auto", component="plan-review",
+                            session=project.session_id, version=project.shim.version)
+        gateway = project.shim.gateway
+
+        def _call() -> str:
+            call = timing.model_call(model, "plan-review")
+            try:
+                route = self.route_capability(model)
+                if effort in route.efforts:
+                    request["reasoning_effort"] = effort
+                while True:
+                    try:
+                        chunks = []
+                        for chunk in scope._classifier_route(gateway, request, labels, route):
+                            call.first_byte()
+                            call.chunk()
+                            chunks.append(chunk)
+                        answer = _extract(b"".join(chunks))
+                        break
+                    except ValueError as e:
+                        if not scope._without_unechoed_effort(request, e):
+                            raise
+            except BaseException as e:
+                call.done(ok=False, error=f"{type(e).__name__}: {e}")
+                raise
+            call.done()
+            return answer
+
+        timeout_s = self._build_policy.plan_review_timeout_seconds
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="sage-plan-review")
+        try:
+            with timing.span("after.plan_review"):
+                answer = pool.submit(_call).result(timeout=timeout_s)
+        except concurrent.futures.TimeoutError:
+            log.warning("plan review: timed out after %.1fs model=%s — ending the turn as it was",
+                        timeout_s, model)
+            return ""
+        except Exception as e:
+            log.warning("plan review: call failed (%s: %s) model=%s — ending the turn as it was",
+                        type(e).__name__, e, model)
+            return ""
+        finally:
+            pool.shutdown(wait=False)
+        unmet = _plan_review_unmet(answer)
+        if unmet is None:
+            log.warning("plan review: malformed answer %r model=%s — ending the turn as it was",
+                        answer[:200], model)
+            return ""
+        if not unmet:
+            return ""
+        return " ".join(
+            f"Plan step {i.get('step', '?')}'s Done-when \"{str(i['done_when']).strip()}\" is not "
+            f"met in {i.get('file') or 'the code'}: {str(i.get('why') or '').strip()}"
+            for i in unmet) + (" Fix that now." if len(unmet) == 1 else " Fix those now.")
 
     def _skill_copy_drift(self, project: Project, tree_before: str, rows_before: int):
         """Yields and records the `skill-copy-drift` row for a build that finished (#682).

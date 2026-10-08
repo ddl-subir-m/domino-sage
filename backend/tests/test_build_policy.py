@@ -48,6 +48,8 @@ EXPECTED = {
     "plan_reasoning_effort": "high",
     "implement_reasoning_effort": "low",
     "implement_reasoning_budget_seconds": 180.0,
+    "plan_review": True,
+    "plan_review_timeout_seconds": 60.0,
 }
 
 ENVIRONMENT = {
@@ -91,6 +93,8 @@ ENVIRONMENT = {
     "plan_reasoning_effort": "SAGE_BUILD_PLAN_REASONING_EFFORT",
     "implement_reasoning_effort": "SAGE_BUILD_IMPLEMENT_REASONING_EFFORT",
     "implement_reasoning_budget_seconds": "SAGE_BUILD_IMPLEMENT_REASONING_BUDGET_SECONDS",
+    "plan_review": "SAGE_BUILD_PLAN_REVIEW",
+    "plan_review_timeout_seconds": "SAGE_BUILD_PLAN_REVIEW_TIMEOUT_SECONDS",
 }
 
 
@@ -106,7 +110,8 @@ def test_defaults_are_the_production_build_limits_and_the_policy_is_immutable():
 def test_each_new_environment_key_changes_exactly_one_field(field: str, key: str):
     before = load_build_policy({})
     raw = ("0.5" if field == "tool_result_head_fraction" else
-           "max" if field.endswith("reasoning_effort") else "7")
+           "max" if field.endswith("reasoning_effort") else
+           "off" if field == "plan_review" else "7")
     # The upper half of an ordered pair cannot take the probe value: 7 seconds is below the
     # notice default that must stay under it, so the load would rightly refuse it.
     if field in ("model_no_action_timeout_seconds", "progress_stop_seconds"):
@@ -203,6 +208,13 @@ def test_each_legal_reasoning_effort_is_accepted(key: str, raw: str):
 def test_invalid_reasoning_effort_names_only_the_environment_key(key: str, raw: str):
     with pytest.raises(ValueError, match=f"^Invalid setting {key}$"):
         load_build_policy({key: raw})
+
+
+@pytest.mark.parametrize("raw", ["", "On", "true", "1", "0", "no", " off"])
+def test_the_plan_review_switch_takes_on_or_off_only(raw: str):
+    assert load_build_policy({"SAGE_BUILD_PLAN_REVIEW": "on"}).plan_review is True
+    with pytest.raises(ValueError, match="^Invalid setting SAGE_BUILD_PLAN_REVIEW$"):
+        load_build_policy({"SAGE_BUILD_PLAN_REVIEW": raw})
 
 
 def test_each_service_keeps_its_injected_policy_without_global_leakage(tmp_path: Path):
