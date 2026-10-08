@@ -285,6 +285,7 @@ from .plan_steps import (
     step_index,
     validate_execution_contract,
 )
+from .query_faults import is_compile_fault
 
 # The one reader of a gateway answer, shared rather than written again here. `chat_intent`,
 # `handoff` and `table_rank` all import it from `scope` for the same reason: a second copy is a
@@ -21882,6 +21883,11 @@ class Orchestrator:
         # App code that reads a store itself, outside `.sage/queries.json` (#705). Once, for the
         # reason the line above gives.
         store_fixes = 0
+        # A query the store refused to compile (#708). Bounded by the runtime limit rather than a
+        # setting of its own: both feed an observed failure's own words back, and a fix can surface
+        # the next one (a second bad column), so once is too few for either. Its own counter, so a
+        # crash repaired to the limit does not spend the SQL's turns.
+        query_fixes = 0
         # An approved plan's step this build wrote none of the files for (#684). Once: the step is
         # named, and a second copy of the same sentence would not name it better. A reply that
         # writes nothing is still this build's reply, so it ends incomplete rather than as a
@@ -24296,6 +24302,29 @@ class Orchestrator:
                         for s in unbuilt) + (" Do those steps now." if len(unbuilt) > 1
                                              else " Do that step now.")
                     continue
+                # A query the store refused to compile (#708). Last, because every repair above can
+                # change which queries exist or whether the page reads them at all — a crash fetches
+                # nothing — and this one must judge what the NEXT validation re-reads. Only on a pass
+                # that validated (`verification`), so the outcomes are this pass's reads (#557 P10).
+                # A store that is down or refuses the person never gets here: `is_compile_fault`
+                # leaves those to the notice below.
+                if (report.ok and wrote_code and verification is not None
+                        and query_fixes < self._build_policy.runtime_repair_limit
+                        and not project.stop_requested):
+                    uncompiled = self._uncompiled_queries(project)
+                    if uncompiled:
+                        query_fixes += 1
+                        iterate_reason = ("a query failed to compile — fixing "
+                                          f"({', '.join(uncompiled)[:140]})")
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = brand.text(
+                            "The {dataSource} refused to compile these queries from "
+                            "`.sage/queries.json` when the preview ran them, so every screen "
+                            "reading one shows an error. Fix each statement to name only columns "
+                            "and tables that exist; do not replace a query with rows you write "
+                            "yourself.\n\n{faults}",
+                            faults="\n\n".join(uncompiled.values()))
+                        continue
                 restore_mode()
                 # The receipt for what this turn changed, before the line that closes the turn.
                 # `owns_turn` because a phase is not a turn: one approved plan changed one app, and
@@ -30696,6 +30725,41 @@ class Orchestrator:
         except Exception:
             log.exception("preview queries: could not read what failed; saying nothing")
             return {}
+
+    def _uncompiled_queries(self, project: Project) -> dict[str, str]:
+        """The failed queries that are a fault in the app's own SQL, each as a paragraph the repair
+        sends back: its name, the store's words, and the columns it should have named (#708).
+
+        The columns are the app's own `.sage/schema.json`, read when the Scope was chosen, so this
+        asks the store nothing more. The tables listed are the ones the statement names; a statement
+        naming none of them (an invented table) gets the Binding's table names instead.
+        """
+        failed = self._query_failures(project)
+        if not failed:
+            return {}
+        app = project.app_for_turn()
+        catalog = self._read_json(app.path / ".sage" / "queries.json")
+        queries = {q["name"]: q for q in catalog if isinstance(q, dict) and isinstance(q.get("name"), str)
+                   } if isinstance(catalog, list) else {}
+        schema = parse_schema(self._read_json(app.path / SCHEMA_PATH))
+        out: dict[str, str] = {}
+        for name, message in failed.items():
+            query = queries.get(name) or {}
+            tables: dict[str, list[str]] = {}
+            for column in schema.get(str(query.get("binding") or ""), []):
+                tables.setdefault(column.table, []).append(column.name)
+            if not is_compile_fault(message, tables):
+                continue
+            sql = str(query.get("sql") or "")
+            read = [t for t in tables if re.search(rf"\b{re.escape(t)}\b", sql, re.IGNORECASE)]
+            if read:
+                known = " ".join(f"`{t}` has these columns: {', '.join(tables[t])}." for t in read)
+            elif tables:
+                known = f"The tables recorded for its binding are: {', '.join(list(tables)[:60])}."
+            else:
+                known = f"No columns are recorded for its binding; check `{SCHEMA_PATH}`."
+            out[name] = f"`{name}` failed: {message}\n{known}"
+        return out
 
     @staticmethod
     def _failed_notice(failed: dict[str, str]) -> str:
