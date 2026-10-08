@@ -190,8 +190,10 @@ Build the user's app by editing its screens under `static/components/`, the file
   selection when another one shows. Mark `shareable` only the screen and applied filters; draft
   search text, row values and form input stay out. A filter change is `patchView({...})`; switching
   screens or an Apply button adds `{ history: "push" }`. Read the state the hook returns, never
-  `location`, and never use `#/sage/` or `window.top`. The comment at the top of
-  `static/sage/viewState.js` shows the schema. If the app already keeps something else in its `#`
+  `location`, and never use `#/sage/` or `window.top`. Every field is an object naming its type:
+  `{ screen: { type: "enum", values: ["orders", "customers"], default: "orders", shareable: true }, region: { type: "string", default: "" } }`.
+  The comment at the top of `static/sage/viewState.js` shows the rest of the schema. If the app
+  already keeps something else in its `#`
   hash, keep that and say so instead of replacing it. With no `static/sage/viewState.js`, keep the
   view in state and do not write one; when the file is there but `static/index.html` does not load
   it, add `<script src="static/sage/viewState.js"></script>` after the other `static/sage/` lines.
