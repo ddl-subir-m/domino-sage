@@ -121,6 +121,20 @@ class TurnSnapshot:
         except OSError:
             return ""
 
+    def tree_files(self, tree: str) -> dict[str, str]:
+        """Path -> blob id for every file in a tree identity working_tree_hash() returned, or {}."""
+        if not tree:
+            return {}
+        result = self._run("ls-tree", "-r", "-z", tree)
+        if result.returncode != 0:
+            return {}
+        files: dict[str, str] = {}
+        for entry in result.stdout.split("\0"):
+            meta, _, path = entry.partition("\t")
+            if path:
+                files[path] = meta.split()[-1]
+        return files
+
     def changed_paths(self, before: str, after: str, *, limit: int = 60) -> list[str]:
         """Return bounded app-relative paths changed between two tree identities."""
         if not before or not after or before == after:

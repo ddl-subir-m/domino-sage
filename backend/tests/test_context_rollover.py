@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from sage import build_diagnostics, build_intent, timing
+from sage import build_diagnostics, build_evidence, build_intent, timing
 from sage.build_intent import BuildIntent
 from sage.build_policy import BuildPolicy
 from sage.context_rollover import (
@@ -1136,12 +1136,19 @@ class _App:
         (root / ".sage").mkdir(exist_ok=True)
         (root / ".sage" / "settings.json").write_text('{"stack": "react-vite"}')
         self.path = root
+        self.app_id = "app"
 
 
 class _Project:
     def __init__(self, root: Path):
         self.snapshot = _Snapshot()
         self._app = _App(root)
+        self.build_conversation = "conv"
+        self.active_plan_record_id = ""
+        self.record = SimpleNamespace(path=root)
+        self.evidence_recorder = build_evidence.Recorder()
+        self._selected_view = SimpleNamespace(workspace=SimpleNamespace(app_id="another"))
+        self._views = {}
 
     def app_for_turn(self):
         return self._app
