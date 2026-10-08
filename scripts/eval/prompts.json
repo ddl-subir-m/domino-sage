@@ -1,0 +1,17 @@
+{
+  "note": "Sent byte-for-byte to every condition. The driver records each prompt's sha256 beside the run.",
+  "task1": {
+    "title": "Single-screen table app, then change one column's presentation",
+    "build": "Build me a single-screen app that shows the attached orders data (orders.csv) as a sortable table with the columns order date, region, product, units and revenue.",
+    "followup": "Change only the revenue column: show it as US dollars with a thousands separator and two decimals, right-aligned. Leave every other column as it is."
+  },
+  "task2": {
+    "title": "Two-screen app, then change only the second screen",
+    "build": "Build me a two-screen app over the attached orders data (orders.csv). Screen one, Summary: total revenue and revenue by region. Screen two, Orders: a table of every order with order date, region, product, units and revenue.",
+    "followup": "Change only the Orders screen: add a region filter above the table so I can show one region's orders at a time. Leave the Summary screen as it is."
+  },
+  "task8": {
+    "title": "Cross-file follow-up to a larger app, with and without the source map",
+    "followup": "Add a product category filter that applies to both screens: the Summary totals and the Orders table should both show only the chosen category, and choosing All shows everything again."
+  }
+}

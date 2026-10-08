@@ -1,0 +1,34 @@
+{
+  "fixture": "orders.csv",
+  "sha256": "a1b3c304d74afe5a5f80bea09a14897bdfab8dada0501be29c5506f38fc99a92",
+  "rows": 1500,
+  "columns": [
+    "order_id",
+    "order_date",
+    "region",
+    "product",
+    "category",
+    "units",
+    "unit_price",
+    "revenue"
+  ],
+  "total_revenue": 1074841.13,
+  "total_units": 15895,
+  "revenue_by_region": {
+    "North": 272082.67,
+    "South": 277348.65,
+    "East": 250224.32,
+    "West": 275185.49
+  },
+  "revenue_by_category": {
+    "Apparel": 393107.83,
+    "Footwear": 392350.0,
+    "Gear": 289383.3
+  },
+  "rows_by_region": {
+    "North": 386,
+    "South": 395,
+    "East": 335,
+    "West": 384
+  }
+}

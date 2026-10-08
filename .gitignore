@@ -57,3 +57,4 @@ spikes/domino-probes/dogfood-swagger.json
 # localhost proxy port, so it is one machine's setting and not the repo's. Written
 # alongside AGENTS.md by the same tool, into every worktree.
 /.codex/
+scripts/eval/runs/
