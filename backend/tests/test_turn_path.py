@@ -523,6 +523,24 @@ def test_the_same_request_twice_ends_cleanly_on_the_second_turn(tmp_path: Path):
     assert "ALREADY_DONE" not in said
 
 
+def test_the_same_request_three_times_is_already_done_every_time(tmp_path: Path):
+    """An accepted already-done turn changed nothing, so it is not the evidence for the next repeat:
+    the turn that did the work still is (#703)."""
+    orch, _oc, _gw = _build(tmp_path, [
+        Turn(text=TABLE_PLAN),
+        Turn(text="Building it.", writes={"src/App.tsx": "// v1\n"}),
+        Turn(text="Added the filter.", writes={"src/App.tsx": "// v2 severity filter\n"}),
+        Turn(text=ALREADY_DONE_REPLY),
+        Turn(text=ALREADY_DONE_REPLY),
+    ], verdict="BUILD")
+    _get_built(orch)
+    assert _done(_run(orch, "add a severity filter"))["ok"] is True
+    assert _done(_run(orch, "add a severity filter"))["decision"] == "already done"
+    events = _run(orch, "add a severity filter")
+    assert _done(events)["decision"] == "already done"
+    assert "build-recovery" not in [e["type"] for e in events]
+
+
 def test_a_claim_with_no_earlier_change_still_recovers(tmp_path: Path):
     """The fail-safe. The previous turn finished cleanly but changed nothing, so there is no earlier
     change for this turn to point at and the pre-edit guard runs exactly as it does without the
