@@ -325,7 +325,8 @@ Highcharts is on the page and already themed. Draw a chart into a `<div>` you ow
   when the container was already right.
 - **Series color:** `sage.accents[0]` … `sage.accents[7]`, in order — or leave `colors` unset, the
   theme sets the same list. Never `--ok` / `--warn` / `--danger` for a data series — those mean
-  status, so a green bar reads as "this is good" rather than "this is revenue".
+  status, so a green bar reads as "this is good" rather than "this is revenue". A series `color`
+  is one colour, never a list; to colour bars one by one, give `data` as `{ y, color }` objects.
 - **Every series needs an explicit `name`.** Without it the legend and tooltip say "Series 1".
 - **Label it:** axis titles with units, and a title unless the surrounding card already says it.
   Bar-chart y-axes start at zero. Tooltips show the exact value.
