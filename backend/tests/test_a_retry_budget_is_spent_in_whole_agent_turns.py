@@ -114,6 +114,9 @@ class _Preview:
         return {"appId": self.app_id, "generation": f"preview:{self.generation}",
                 "state": "ready", "error": None}
 
+    def query_reads(self) -> list[dict]:
+        return []
+
     def stop(self) -> None:
         pass
 

@@ -87,15 +87,18 @@ def test_a_usable_query_that_failed_without_a_reason_keeps_the_status_fallback(b
 def test_a_repair_turn_reports_the_query_fixed_only_after_the_preview_reads_it(build, tmp_path):
     orch, project, oc = build
     _app(tmp_path, project, "SELECT * FROM drift")
+    oc.turns.append(Turn(writes={"src/App.tsx": "// not the catalog\n"}))  # its repair (#740)
     _, first = run(orch, report=_page(orch, 422, json.dumps({"error": UNUSED}).encode()))
     assert first["ok"] is False
 
-    # The agent fixes the catalog; a turn whose page never re-ran the query cannot call it read.
+    # The agent fixes the catalog; a turn whose page never re-ran the query cannot call it read,
+    # and since #730 it is not a pass either.
     _app(tmp_path, project, "SELECT * FROM drift WHERE region = :region")
     oc.turns.append(Turn(writes={"src/App.tsx": "// repaired\n"}))
     events, unread = run(orch, report=lambda ev: orch.record_preview_ack(ev["validationId"]))
-    assert not [e for e in events if e["type"] == "data-source-failed"]
-    assert unread["verification"]["stages"]["data"] == "unverified"
+    assert unread["ok"] is False
+    assert unread["verification"]["stages"]["data"] == "failed"
+    assert UNUSED not in _failed(events) and "asked for none of them" in _failed(events)
 
     # Only a turn whose preview read the query again, and got rows, reports its data as passed.
     oc.turns.append(Turn(writes={"src/App.tsx": "// repaired again\n"}))

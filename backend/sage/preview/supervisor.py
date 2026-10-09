@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import collections
 import errno
+import json
 import logging
 import os
 import re
@@ -36,6 +37,8 @@ log = logging.getLogger("sage.preview.supervisor")
 _LOCAL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
 # uvicorn prints e.g.  "INFO:     Uvicorn running on http://127.0.0.1:5173 (Press CTRL+C to quit)"
 _UVICORN_RE = re.compile(r"Uvicorn running on (https?://[^\s/]+)")
+# `sage_queries.PREVIEW_READ`: the line the app's own `answer()` prints per call in the preview.
+_QUERY_READ = "[sage] query-read "
 
 # Vite's default dev server port (before auto-increment). A leftover process from a prior
 # session that was killed without going through stop() can squat here on one address family
@@ -153,6 +156,7 @@ class ViteSupervisor:
         self._stopped = False
         self._last_error: str | None = None
         self._runtime_fault: dict | None = None
+        self._query_reads: collections.deque[dict] = collections.deque(maxlen=20)
         self._tail: collections.deque[str] = collections.deque(maxlen=40)  # recent Vite output
         self._retry_lock = threading.RLock()
         self._retry_thread: threading.Thread | None = None
@@ -236,6 +240,13 @@ class ViteSupervisor:
         The server stays up through it; this is what page validation reads."""
         with self._state_lock:
             return dict(self._runtime_fault) if self._runtime_fault else None
+
+    def query_reads(self) -> list[dict]:
+        """The named queries the app's own `sage_queries.answer()` answered in this server, each with
+        the generation it was serving (#730). A route of the app's that calls `answer()` in-process
+        never passes the proxy, so this is the only place its reads, and its refusals, are seen."""
+        with self._state_lock:
+            return [dict(read) for read in self._query_reads]
 
     def recent_output(self, lines: int = 20) -> list[str]:
         """The server's own last words. The reason a start failed is almost always in here."""
@@ -449,6 +460,7 @@ class ViteSupervisor:
             if self._stopped or (previous is not None and previous is not self._proc):
                 return None
             self._generation += 1
+            self._query_reads.clear()
             self._ready.clear()
             self._upstream = None
             self._state = "starting"
@@ -495,6 +507,10 @@ class ViteSupervisor:
                 if proc is not self._proc:
                     break
                 self._tail.append(line.rstrip()[:1000])
+                if line.startswith(_QUERY_READ):
+                    # Before the fault match below: a refusal's sentence is the app's to word.
+                    self._record_query_read(line[len(_QUERY_READ):])
+                    continue
                 if self._READY_LINE and ("Reloading..." in line or "Shutting down" in line):
                     self._begin_generation()
                 # A failed reload child leaves the parent watching. Keep the final exception.
@@ -549,6 +565,22 @@ class ViteSupervisor:
                         self._state = "failed"
                         self._last_error = f"Could not restart {self._NAME}: {exc}"
                         self._settled.set()
+
+    def _record_query_read(self, payload: str) -> None:
+        """One `PREVIEW_READ` line, kept only in the shape `answer()` prints. Called holding the lock."""
+        try:
+            read = json.loads(payload)
+        except ValueError:
+            return
+        if (not isinstance(read, dict) or not isinstance(read.get("name"), str)
+                or not isinstance(read.get("status"), int)):
+            return
+        kept = {"name": read["name"][:200], "status": read["status"]}
+        if isinstance(read.get("error"), str):
+            kept["error"] = read["error"][:1000]
+        if read.get("empty") is True:
+            kept["empty"] = True
+        self._query_reads.append({**kept, "generation": f"{self._instance}:{self._generation}"})
 
     def _kill(self) -> None:
         with self._state_lock:
