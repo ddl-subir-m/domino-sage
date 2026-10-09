@@ -643,8 +643,8 @@ def test_a_bounded_turn_keeps_its_whole_ceiling(tmp_path: Path, monkeypatch):
     bounded turn cannot write `.sage/threads/<threadId>/findings.md` however long it is given.
     Opening the slice there cuts the work at 540s and buys nothing with the 60s.
 
-    `bounded_intent` is the predicate the turn already computed, rather than a second reading of
-    the same question that could drift from the arming it is about.
+    The predicate is the turn's own arming (#733), rather than a second reading of the same
+    question that could drift from it.
     """
     from sage.orchestrator import chat_intent
 
