@@ -38,7 +38,7 @@ def proc(tmp_path) -> Path:
     _proc(root, 1, 0, 2_000, "/sbin/tini", "--")
     _proc(root, ME, 1, 300_000, "/opt/venv/bin/python", "-m", "uvicorn", "sage.orchestrator.app")
     (root / str(ME) / "cgroup").write_text("0::/\n")
-    _proc(root, 200, ME, 400_000, "/opt/sage/node_modules/.bin/opencode", "serve")
+    _proc(root, 200, ME, 400_000, "/usr/local/bin/opencode", "serve")
     _proc(root, 201, 200, 4_000, "/bin/bash", "-c", "npx tsc --noEmit")
     _proc(root, 202, 201, 250_000, "node", "/w/apps/sales/node_modules/typescript/bin/tsc")
     _proc(root, 203, 200, 30_000, "/w/apps/sales/node_modules/@oxlint/linux-x64/oxlint", ".")
