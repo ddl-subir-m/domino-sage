@@ -598,6 +598,12 @@ _PREVIEW_CAP = 3
 # How often the reaper sweeps without a request to drive it. Bounds an idle preview's life at
 # `_PREVIEW_IDLE_S` plus this.
 _PREVIEW_SWEEP_S = 15.0
+# OpenCode keeps an instance for every directory Sage names to it — each Built App and the Chat work
+# dir — about 80 MB each on the pinned 1.18.4, until disposed (#742). Reloading one measured ~0.3 s,
+# so an instance idle for five minutes is cheaper to rebuild than to keep. Three live mirrors the
+# preview cap: the Chat work dir, the selected app, and one more.
+_OPENCODE_IDLE_S = 300
+_OPENCODE_CAP = 3
 
 
 def _supervisor_class(workspace: Path):
@@ -9514,8 +9520,45 @@ class Orchestrator:
             for view in spare[:max(0, len(live) - _PREVIEW_CAP)]:
                 idle_stop(view)
 
+    def _reap_opencode(self, now: float | None = None) -> list[str]:
+        """Dispose OpenCode's instance for each directory Sage has not used for `_OPENCODE_IDLE_S`,
+        then for the least recently used beyond `_OPENCODE_CAP` (#742). Returns those disposed.
+
+        Never under a turn: a dispose aborts a turn running in that directory (ADR-0071), so this
+        only takes the turn lock without waiting, and a sweep that finds a turn running skips —
+        including a wedged one, which holds the lock for good. The client then asks OpenCode
+        whether any session in the directory is still running, and keeps it if so. The next use
+        of a disposed directory reloads it.
+        """
+        client = self._oc_client
+        if client is None:
+            return []
+        now = time.monotonic() if now is None else now
+        used = sorted(client.instances().items(), key=lambda kv: kv[1], reverse=True)
+        doomed = [d for i, (d, last) in enumerate(used)
+                  if i >= _OPENCODE_CAP or now - last >= _OPENCODE_IDLE_S]
+        if not doomed or not self._turn_lock.acquire(blocking=False):
+            return []
+        released = []
+        try:
+            for directory in reversed(doomed):
+                try:
+                    if client.release_instance(directory):
+                        released.append(directory)
+                except Exception:
+                    log.exception("opencode: could not release the instance for %s", directory)
+        finally:
+            self._release_turn()
+        return released
+
+    def _note_opencode_use(self, directory: str | None) -> None:
+        """A probe that asks OpenCode about `directory` itself loads its instance too."""
+        if self._oc_client is not None:
+            self._oc_client.note_use(directory)
+
     def start_preview_reaper(self, interval_s: float = _PREVIEW_SWEEP_S) -> None:
         """Sweep the previews on a clock, so reaping never waits for preview traffic to arrive.
+        The same sweep releases idle OpenCode instances (`_reap_opencode`).
 
         Started by the app's lifespan and stopped by `shutdown`. One per Orchestrator; a second call
         or a call after shutdown starts nothing.
@@ -9527,12 +9570,15 @@ class Orchestrator:
         def sweep() -> None:
             while not self._preview_reaper_stop.wait(interval_s):
                 project = self._project
-                if project is None:
-                    continue
+                if project is not None:
+                    try:
+                        self._reap_previews(project)
+                    except Exception:
+                        log.exception("preview: the idle sweep failed")
                 try:
-                    self._reap_previews(project)
+                    self._reap_opencode()
                 except Exception:
-                    log.exception("preview: the idle sweep failed")
+                    log.exception("opencode: the idle sweep failed")
 
         self._preview_reaper = threading.Thread(target=sweep, name="sage-preview-reaper",
                                                 daemon=True)
@@ -14547,6 +14593,7 @@ class Orchestrator:
             return {"asked": False, "why": f"{type(e).__name__}: {e}"}
         try:
             with self.diagnostic_window():
+                self._note_opencode_use(directory)
                 r = httpx.get(url, timeout=3.0, headers={"Accept": "application/json"})
         except Exception as e:
             return {"asked": True, "ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
@@ -14593,6 +14640,7 @@ class Orchestrator:
             return {"asked": False, "why": f"{type(e).__name__}: {e}"}
         try:
             with self.diagnostic_window():
+                self._note_opencode_use(directory)
                 r = httpx.get(url, timeout=3.0, headers={"Accept": "application/json"})
         except Exception as e:
             return {"asked": True, "ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
@@ -14688,6 +14736,7 @@ class Orchestrator:
             return {"asked": False, "why": f"{type(e).__name__}: {e}"}
         try:
             with self.diagnostic_window():
+                self._note_opencode_use(directory)
                 r = httpx.get(url, timeout=15.0, headers={"Accept": "application/json"})
         except httpx.TimeoutException:
             return {"asked": True, "ok": False, "url": url, "error": "timed out",

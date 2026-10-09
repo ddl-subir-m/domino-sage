@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sage.driver.opencode import InstanceLedger
+
 # An interrupt as OpenCode reports it back, measured live on 2026-09-28 (#592).
 ABORTED = {"name": "MessageAbortedError", "data": {"message": "Aborted"}}
 
@@ -187,9 +189,26 @@ class FakeOpenCode:
         self.abort_on_interrupt = False
         # Directories whose cached instance was dropped, in order (ADR-0071).
         self.disposed: list[str] = []
+        # The real client's ledger, kept by the same calls that name a directory (#742).
+        self._instances = InstanceLedger()
 
     def dispose_instance(self, directory: str) -> None:
         self.disposed.append(directory)
+        self._instances.drop(directory)
+
+    def instances(self) -> dict[str, float]:
+        return self._instances.snapshot()
+
+    def note_use(self, directory: str | None) -> None:
+        self._instances.use(directory)
+
+    def release_instance(self, directory: str) -> bool:
+        with self._instances.releasing(directory) as mine:
+            if not mine or self.stay_running or any(
+                    self._running.get(sid) for sid, d in self._dirs.items() if d == directory):
+                return False
+            self.dispose_instance(directory)
+            return True
 
     # --- session ---------------------------------------------------------------------------------
 
@@ -200,6 +219,7 @@ class FakeOpenCode:
     def create_session(self, directory: str, model: dict | None = None) -> str:
         # The first session keeps the historic id so every pre-existing test is untouched; phases
         # get distinct ones.
+        self._instances.use(directory)
         sid = "fake-session" if not self.sessions else f"fake-session-{len(self.sessions) + 1}"
         self.sessions.append({"id": sid, "directory": directory})
         self._dirs[sid] = directory
@@ -231,6 +251,7 @@ class FakeOpenCode:
     def send_prompt(self, session_id: str, text: str, model: dict | None = None,
                     agent: str | None = None, attachments: list[dict] | None = None,
                     chat: bool = False, tail: str = "") -> None:
+        self._instances.use(self._dirs.get(session_id))
         # `session` recorded too: a phased build's assertions are mostly about WHICH session saw
         # which prompt.
         self.prompts.append({"text": text, "agent": agent, "attachments": attachments,
