@@ -266,6 +266,7 @@ from . import (
     chat_compact,
     chat_intent,
     chat_task,
+    plan_resources,
     recall,
     scope,
     table_rank,
@@ -285,6 +286,7 @@ from .plan_steps import (
     step_index,
     validate_execution_contract,
 )
+from .query_faults import is_compile_fault
 
 # The one reader of a gateway answer, shared rather than written again here. `chat_intent`,
 # `handoff` and `table_rank` all import it from `scope` for the same reason: a second copy is a
@@ -4793,6 +4795,11 @@ _CHAT_AT = re.compile(r"@([^\s@]+)")
 # How much of a Project MCP call's input its Thread row keeps (#666). The row names the call; the
 # input is the model's own words and can be long.
 _EXTERNAL_DETAIL_MAX = 80
+# How many of one Project MCP server's tools the Chat turn prompt names (#711). A server can list
+# dozens, and the prompt pays for every name on every turn.
+_PROJECT_TOOLS_SHOWN = 6
+# What OpenCode 1.18.4 replaces with `_` in a server's tool name when it offers it to the model.
+_OPENCODE_TOOL_UNSAFE = re.compile(r"[^a-zA-Z0-9_-]")
 
 
 def _project_mcp_server(tool: str, servers: set[str]) -> str:
@@ -15000,17 +15007,38 @@ class Orchestrator:
         content = body.get("content")
         if not isinstance(path, str) or not isinstance(content, str):
             raise TypeError("Artifact path and content must be strings.")
+        # The model sees this sentence, so it names the exact form a retry needs (#710).
+        outside = (f"Artifact writes must stay under examples/{thread_id}/. Pass path as "
+                   f"examples/{thread_id}/<name>.png or examples/{thread_id}/<name>.table.json.")
+        sent = path
+
+        def refuse(reason: str, message: str = outside) -> ValueError:
+            # The path as sent, never the content: the spelling is what the next failure needs.
+            log.warning("chat artifact: refused path %r for thread %s (%s)", sent[:300], thread_id, reason)
+            return ValueError(message)
+
         rel = PurePosix(path)
-        if (rel.is_absolute() or ".." in rel.parts or "\\" in path
-                or not path.startswith(f"examples/{thread_id}/")):
-            raise ValueError(f"Artifact writes must stay under examples/{thread_id}/.")
-        path = rel.as_posix()
+        if "\\" in path:
+            raise refuse("backslash")
+        if ".." in rel.parts:
+            raise refuse("..")
         folder = project.record.path.resolve() / "examples" / thread_id
-        dest = (project.record.path / path).resolve()
-        if folder.resolve() != folder or dest == folder or not dest.is_relative_to(folder):
-            raise ValueError("Artifact path escapes its thread folder.")
+        # Contain the resolved file, not the spelling (#710). The Chat cwd is `.sage/chat-work`,
+        # whose `examples` links into the Project, so a script's absolute path there is this
+        # folder spelled another way. A bare filename has only one folder it can mean.
+        if rel.is_absolute():
+            dest = Path(path).resolve()
+        elif len(rel.parts) == 1:
+            dest = (folder / path).resolve()
+        else:
+            dest = (project.record.path / path).resolve()
+        if dest == folder:
+            raise refuse("the folder itself")
+        if folder.resolve() != folder or not dest.is_relative_to(folder):
+            raise refuse("outside the folder")
+        path = f"examples/{thread_id}/{dest.relative_to(folder).as_posix()}"
         if not path.endswith((".png", ".table.json")):
-            raise ValueError("Artifact writes must use .png or .table.json so row protection applies.")
+            raise refuse("extension", "Artifact writes must use .png or .table.json so row protection applies.")
         # Keep a rejected attempt even when it leaves no file for the final scan to find.
         # Clear only after replacement succeeds, including an unchanged valid replacement.
         if path.endswith(".table.json") and tables is not None:
@@ -15731,6 +15759,33 @@ class Orchestrator:
                 "model for the one you were asked for, and never say a model was used when it "
                 "refused.")
 
+    def _project_tools_note(self) -> tuple[str, ...]:
+        """The Project MCP servers this turn is offered, by the tool names the model sees (#711).
+
+        `template/chat/AGENTS.md` says to use what this turn's context lists and otherwise stop, so a
+        tool named nowhere in the context is one a weaker model will not reach for: Haiku refused a
+        news question with the Tavily tools in its list. Only switched-on servers with listed tools,
+        so the line never names a tool the model cannot call; nothing at all when there are none.
+        """
+        try:
+            rows = extension_mcp.list_servers(self._chat_project().record.path)
+        except extension_mcp.ExtensionError:
+            log.exception("chat prompt: could not read this project's MCP servers")
+            return ()
+        named = []
+        for row in rows:
+            tools = [t for t in row["tools"] if isinstance(t, str)]
+            if not row["enabled"] or not tools:
+                continue
+            shown = ", ".join(f"{row['name']}_{_OPENCODE_TOOL_UNSAFE.sub('_', t)}"
+                              for t in tools[:_PROJECT_TOOLS_SHOWN])
+            more = len(tools) - _PROJECT_TOOLS_SHOWN
+            named.append(f"`{row['name']}` ({shown}{f', and {more} more' if more > 0 else ''})")
+        if not named:
+            return ()
+        return ((f"This project's connected tools, called by these exact names: {'; '.join(named)}. "
+                 "They are part of this turn's context."),)
+
     def _findings_note(self, thread_id: str, *, continuing: bool = False) -> str:
         """Where this Thread's findings are, and — only if there are any — how old and how big.
 
@@ -16112,6 +16167,7 @@ class Orchestrator:
             # browser and unusable from here — and an agent that found it told the person it could
             # not reach the model at all (#370).
             self._delegated_models_note(thread_id),
+            *self._project_tools_note(),
             self._data_use_note(catalogued=bool(catalogue)),
             self._declined_offer_note() if declined else self._plan_state_note(handoffs),
             "",
@@ -21374,6 +21430,9 @@ class Orchestrator:
             # states once (#561). The example is a second statement of this shape.
             plan_contract = shape
             shape += "\n\n" + _plan_example_for(project)
+            resource_list = plan_resources.planner_note(self._plan_resources(project))
+            if resource_list:
+                shape += "\n\n" + resource_list
             if has_built:
                 current = ("Plan a change to this existing app. Briefly read the files your change "
                            "would touch so the plan fits the current code, then write the plan. "
@@ -21914,6 +21973,11 @@ class Orchestrator:
         # App code that reads a store itself, outside `.sage/queries.json` (#705). Once, for the
         # reason the line above gives.
         store_fixes = 0
+        # A query the store refused to compile (#708). Bounded by the runtime limit rather than a
+        # setting of its own: both feed an observed failure's own words back, and a fix can surface
+        # the next one (a second bad column), so once is too few for either. Its own counter, so a
+        # crash repaired to the limit does not spend the SQL's turns.
+        query_fixes = 0
         # An approved plan's step this build wrote none of the files for (#684). Once: the step is
         # named, and a second copy of the same sentence would not name it better. A reply that
         # writes nothing is still this build's reply, so it ends incomplete rather than as a
@@ -24324,10 +24388,34 @@ class Orchestrator:
                     iterate_reason = "a plan step wrote none of its files — building it"
                     yield {"type": "iterate", "reason": iterate_reason}
                     current = " ".join(
+                        f"Plan step {s.why}" if isinstance(s, plan_resources.UnreachedStep) else
                         f"Plan step {s.n} ({s.label}) names {', '.join(s.files)}; none were written."
                         for s in unbuilt) + (" Do those steps now." if len(unbuilt) > 1
                                              else " Do that step now.")
                     continue
+                # A query the store refused to compile (#708). Last, because every repair above can
+                # change which queries exist or whether the page reads them at all — a crash fetches
+                # nothing — and this one must judge what the NEXT validation re-reads. Only on a pass
+                # that validated (`verification`), so the outcomes are this pass's reads (#557 P10).
+                # A store that is down or refuses the person never gets here: `is_compile_fault`
+                # leaves those to the notice below.
+                if (report.ok and wrote_code and verification is not None
+                        and query_fixes < self._build_policy.runtime_repair_limit
+                        and not project.stop_requested):
+                    uncompiled = self._uncompiled_queries(project)
+                    if uncompiled:
+                        query_fixes += 1
+                        iterate_reason = ("a query failed to compile — fixing "
+                                          f"({', '.join(uncompiled)[:140]})")
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = brand.text(
+                            "The {dataSource} refused to compile these queries from "
+                            "`.sage/queries.json` when the preview ran them, so every screen "
+                            "reading one shows an error. Fix each statement to name only columns "
+                            "and tables that exist; do not replace a query with rows you write "
+                            "yourself.\n\n{faults}",
+                            faults="\n\n".join(uncompiled.values()))
+                        continue
                 # A Done-when no structural check can see (#716): one plan-tier read of the code,
                 # only on a turn every other check passed, and on the same one-repair budget.
                 review_nudge = (plan_review() if plan_review is not None and report.ok
@@ -24713,6 +24801,7 @@ class Orchestrator:
         tree_before = project.snapshot.working_tree_hash()
         queries_before = project.snapshot.queries_digest()
         rows_before = len(project.app_for_turn().read_history(project.build_conversation))
+        plan_res = self._plan_resources(project)
         try:
             if phased:
                 yield from self._phased_approve(project, plan_md, answers, user_text,
@@ -24742,10 +24831,10 @@ class Orchestrator:
                     continuation_note=(_BUILD_CONTROL_PROMPT + "\n\n" + retry_evidence
                                        if retry_evidence else ""),
                     unbuilt_steps=lambda: self._unbuilt_plan_steps(
-                        project, plan_md, tree_before, queries_before),
+                        project, plan_md, tree_before, queries_before, plan_res),
                     plan_review=lambda: self._plan_review_nudge(project, plan_md, tree_before))
             unbuilt = self._plan_unbuilt_event(
-                project, plan_md, tree_before, queries_before, rows_before)
+                project, plan_md, tree_before, queries_before, rows_before, plan_res)
             if unbuilt is not None:
                 project.app_for_turn().append_history(unbuilt, project.build_conversation)
                 yield unbuilt
@@ -24790,7 +24879,8 @@ class Orchestrator:
                 app.archive_plan()
 
     def _plan_unbuilt_event(self, project: Project, plan_md: str, tree_before: str,
-                            queries_before: str, rows_before: int) -> dict | None:
+                            queries_before: str, rows_before: int,
+                            resources: plan_resources.Resources) -> dict | None:
         """The approved plan's steps this build wrote none of the named files for, or None (#662).
 
         Only for a build that finished: a turn that gave up, was stopped, or wrote nothing already
@@ -24804,18 +24894,22 @@ class Orchestrator:
         ended = next((r for r in reversed(rows) if r.get("type") in ("done", "stopped")), None)
         if ended is None or ended["type"] != "done":
             return None
-        unbuilt = self._unbuilt_plan_steps(project, plan_md, tree_before, queries_before)
+        unbuilt = self._unbuilt_plan_steps(project, plan_md, tree_before, queries_before, resources)
         if not unbuilt:
             return None
-        return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": (
-            f"Not built from the plan: {_listed_steps(unbuilt)}. This build wrote none of the files "
-            + ("those steps name." if len(unbuilt) > 1 else "that step names."))}
+        unwritten = [s for s in unbuilt if not isinstance(s, plan_resources.UnreachedStep)]
+        return {"type": "plan-unbuilt", "steps": [s.n for s in unbuilt], "message": " ".join(
+            ([f"Not built from the plan: {_listed_steps(unwritten)}. This build wrote none of the "
+              "files " + ("those steps name." if len(unwritten) > 1 else "that step names.")]
+             if unwritten else [])
+            + [f"Step {s.why}" for s in unbuilt if isinstance(s, plan_resources.UnreachedStep)])}
 
-    @staticmethod
-    def _unbuilt_plan_steps(project: Project, plan_md: str, tree_before: str,
-                            queries_before: str) -> list[PlanStep]:
-        """The plan's steps that name files, none of which changed since `tree_before`. Empty for a
-        build that changed nothing: that turn already says so in its own words."""
+    def _unbuilt_plan_steps(self, project: Project, plan_md: str, tree_before: str,
+                            queries_before: str,
+                            resources: plan_resources.Resources) -> list[PlanStep]:
+        """The plan's steps that name files, none of which changed since `tree_before`, then the
+        ones whose `Uses` names a resource nothing in the app reaches (#712). Empty for a build that
+        changed nothing: that turn already says so in its own words."""
         changed = project.snapshot.changed_paths(
             tree_before, project.snapshot.working_tree_hash(), limit=100_000)
         if project.snapshot.queries_digest() != queries_before:
@@ -24827,7 +24921,36 @@ class Orchestrator:
             path = str(PurePosix(name))
             return any(c == path or c.startswith(path + "/") for c in changed)
 
-        return [s for s in parse_steps(plan_md) if s.files and not any(map(written, s.files))]
+        steps = parse_steps(plan_md)
+        unwritten = {s.n for s in steps if s.files and not any(map(written, s.files))}
+        named = [s for s in steps if s.uses and s.n not in unwritten]
+        unreached: dict[int, PlanStep] = {}
+        if named:
+            app = project.app_for_turn()
+            owned = app.sage_owned_paths
+            sources = [(rel, text) for rel, text in self._scan_app_sources(app) if rel not in owned]
+            unreached = {s.n: s for s in plan_resources.unreached(
+                named, resources, sources, plan_resources.query_names(app.path / QUERIES))}
+        return [unreached.get(s.n, s) for s in steps if s.n in unwritten or s.n in unreached]
+
+    def _plan_resources(self, project: Project) -> plan_resources.Resources:
+        """What this Project offers a plan step (#712): its MCP servers that are on and answered,
+        its secret names (never a value), and the LLM Aliases this conversation's app may call."""
+        try:
+            servers = tuple(row for row in extension_mcp.list_servers(project.record.path)
+                            if row["enabled"] and not row.get("warning"))
+        except ValueError:  # ExtensionError: a config Sage will not read
+            log.warning("plan resources: could not read the project's MCP servers")
+            servers = ()
+        secrets = tuple(sorted(name for name in project_secrets.known_values()
+                               if not project_secrets.is_hidden(name)))
+        try:
+            aliases = tuple(name for name, _label in self._delegated_aliases(
+                project, project.build_conversation, cached_labels_only=True)[0])
+        except Exception:
+            log.exception("plan resources: could not read which models this app may call")
+            aliases = ()
+        return plan_resources.Resources(servers=servers, secrets=secrets, aliases=aliases)
 
     def _plan_review_nudge(self, project: Project, plan_md: str, tree_before: str) -> str:
         """The repair for the Done-when items one plan-tier call reads as plainly unmet, or "" (#716).
@@ -25374,6 +25497,10 @@ class Orchestrator:
                 return validation
             validation.stages["page"] = "passed"
             with timing.span("after.runtime_wait"):
+                # The headless check is still opening tabs (#709); a crash behind one lands meanwhile.
+                while (check is not None and validation.error is None and current()
+                       and time.monotonic() < deadline and not check.walked()):
+                    time.sleep(0.1)
                 error = self._await_runtime_error(
                     project, since=time.monotonic(),
                     timeout=self._build_policy.runtime_error_wait_seconds)
@@ -30841,6 +30968,41 @@ class Orchestrator:
         except Exception:
             log.exception("preview queries: could not read what failed; saying nothing")
             return {}
+
+    def _uncompiled_queries(self, project: Project) -> dict[str, str]:
+        """The failed queries that are a fault in the app's own SQL, each as a paragraph the repair
+        sends back: its name, the store's words, and the columns it should have named (#708).
+
+        The columns are the app's own `.sage/schema.json`, read when the Scope was chosen, so this
+        asks the store nothing more. The tables listed are the ones the statement names; a statement
+        naming none of them (an invented table) gets the Binding's table names instead.
+        """
+        failed = self._query_failures(project)
+        if not failed:
+            return {}
+        app = project.app_for_turn()
+        catalog = self._read_json(app.path / ".sage" / "queries.json")
+        queries = {q["name"]: q for q in catalog if isinstance(q, dict) and isinstance(q.get("name"), str)
+                   } if isinstance(catalog, list) else {}
+        schema = parse_schema(self._read_json(app.path / SCHEMA_PATH))
+        out: dict[str, str] = {}
+        for name, message in failed.items():
+            query = queries.get(name) or {}
+            tables: dict[str, list[str]] = {}
+            for column in schema.get(str(query.get("binding") or ""), []):
+                tables.setdefault(column.table, []).append(column.name)
+            if not is_compile_fault(message, tables):
+                continue
+            sql = str(query.get("sql") or "")
+            read = [t for t in tables if re.search(rf"\b{re.escape(t)}\b", sql, re.IGNORECASE)]
+            if read:
+                known = " ".join(f"`{t}` has these columns: {', '.join(tables[t])}." for t in read)
+            elif tables:
+                known = f"The tables recorded for its binding are: {', '.join(list(tables)[:60])}."
+            else:
+                known = f"No columns are recorded for its binding; check `{SCHEMA_PATH}`."
+            out[name] = f"`{name}` failed: {message}\n{known}"
+        return out
 
     @staticmethod
     def _failed_notice(failed: dict[str, str]) -> str:

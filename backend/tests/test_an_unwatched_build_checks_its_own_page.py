@@ -9,6 +9,7 @@ the page.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import time
@@ -29,24 +30,39 @@ from .test_changed_page_validation import Preview, build, run  # noqa: F401
 
 
 class FakeCheck:
-    def __init__(self):
-        self.closed = 0
+    def __init__(self, walk=()):
+        self.closed, self.polls, self._walk = 0, 0, iter(walk)
+
+    def walked(self):
+        """One poll while the script opens tabs: runs the next step of `walk`, done when it runs out."""
+        self.polls += 1
+        step = next(self._walk, None)
+        if step is None:
+            return True
+        step()
+        return False
 
     def close(self):
         self.closed += 1
 
 
 class FakeBrowser:
-    """Stands in for headless Chromium: `page(validation_id)` is what the loaded document does."""
+    """Stands in for headless Chromium: `page(validation_id)` is what the loaded document does, and
+    `walk(validation_id)` what each poll sees while its tabs are opened."""
 
-    def __init__(self, page=lambda validation_id: None):
-        self.page, self.urls, self.checks = page, [], []
+    def __init__(self, page=lambda validation_id: None, walk=lambda validation_id: ()):
+        self.page, self.walk, self.urls, self.checks = page, walk, [], []
 
     def __call__(self, url: str, timeout: float):
         self.urls.append(url)
-        self.checks.append(FakeCheck())
-        self.page(parse_qs(urlsplit(url).query)["sageValidation"][0])
+        validation_id = parse_qs(urlsplit(url).query)["sageValidation"][0]
+        self.checks.append(FakeCheck(self.walk(validation_id)))
+        self.page(validation_id)
         return self.checks[-1]
+
+
+def _settle(polls: int):
+    return [lambda: None] * polls
 
 
 def test_the_check_loads_the_changed_page_through_sages_local_address(build, monkeypatch):  # noqa: F811
@@ -101,13 +117,67 @@ def test_a_crash_at_the_repair_cap_ends_runtime_failed(build):  # noqa: F811
     assert done["verification"]["stages"]["runtime"] == "failed"
 
 
-@pytest.mark.parametrize("ending", ["acked", "stopped", "never_loaded"])
+def test_a_crash_behind_the_second_tab_is_sent_back_for_repair(build):  # noqa: F811
+    orch, project, oc = build
+    oc.turns.append(Turn(writes={"src/App.tsx": "// repaired\n"}))
+    walks = []
+
+    def tabs(validation_id):
+        walks.append(validation_id)
+        crash = lambda: orch.record_runtime_error(
+            "Cannot read properties of undefined (reading 'join')", validation_id=validation_id)
+        # Each poll is 0.1s, so the crash lands well after the 0.2s runtime wait would have ended.
+        return [*_settle(5), crash, *_settle(5)] if len(walks) == 1 else _settle(5)
+
+    orch._page_check = FakeBrowser(orch.record_preview_ack, walk=tabs)
+    _, done = run(orch)
+    assert len(walks) == 2
+    assert (project.workspace.path / "src/App.tsx").read_text() == "// repaired\n"
+    assert done["verification"]["overall"] == "passed"
+
+
+def test_a_crash_behind_a_tab_at_the_repair_cap_ends_runtime_failed(build):  # noqa: F811
+    orch, _, _ = build
+    orch._build_policy = replace(orch._build_policy, runtime_repair_limit=0)
+
+    def tabs(validation_id):
+        return [*_settle(5), lambda: orch.record_runtime_error(
+            "query sales has no column 'Account'", validation_id=validation_id)]
+
+    orch._page_check = FakeBrowser(orch.record_preview_ack, walk=tabs)
+    _, done = run(orch)
+    assert done["ok"] is False
+    assert done["verification"]["stages"]["runtime"] == "failed"
+
+
+def test_a_tab_walk_that_never_finishes_ends_at_the_check_budget(build):  # noqa: F811
+    orch, _, _ = build
+    orch._build_policy = replace(orch._build_policy, page_check_wait_seconds=3.0)
+
+    def forever(_validation_id):
+        yield from _settle(1000)
+        raise AssertionError("Sage kept waiting on the tab walk past the check's budget")
+
+    browser = FakeBrowser(orch.record_preview_ack, walk=forever)
+    orch._page_check = browser
+    _, done = run(orch)
+    assert done["verification"]["stages"]["runtime"] == "passed"
+    [check] = browser.checks
+    assert check.closed == 1
+    assert check.polls <= 31
+
+
+@pytest.mark.parametrize("ending", ["acked", "stopped", "never_loaded", "crashed_on_a_tab",
+                                    "stopped_on_a_tab", "walk_never_ends"])
 def test_the_check_is_closed_however_the_validation_ends(build, ending):  # noqa: F811
     orch, project, _ = build
-    page = {"acked": orch.record_preview_ack,
-            "stopped": lambda _id: setattr(project, "stop_requested", True),
-            "never_loaded": lambda _id: None}[ending]
-    browser = FakeBrowser(page)
+    orch._build_policy = replace(orch._build_policy, runtime_repair_limit=0)
+    page = {"stopped": lambda _id: setattr(project, "stop_requested", True),
+            "never_loaded": lambda _id: None}.get(ending, orch.record_preview_ack)
+    walk = {"crashed_on_a_tab": lambda vid: [lambda: orch.record_runtime_error("boom", validation_id=vid)],
+            "stopped_on_a_tab": lambda _id: [lambda: setattr(project, "stop_requested", True)],
+            "walk_never_ends": lambda _id: _settle(1000)}.get(ending, lambda _id: ())
+    browser = FakeBrowser(page, walk=walk)
     orch._page_check = browser
     run(orch)
     assert [check.closed for check in browser.checks] == [1]
@@ -148,11 +218,13 @@ def test_the_service_wires_the_real_check():
 
 # --- The process: killed and reaped on every path ------------------------------------------------
 
-def _sleeper(tmp_path: Path):
-    """A stand-in for node + Chromium: a parent that starts a child, both of which would outlive us."""
+def _sleeper(tmp_path: Path, says: str = ""):
+    """A stand-in for node + Chromium: a parent that starts a child, both of which would outlive us.
+    It prints `says` once its child is up, as the script prints `done` after its tab walk."""
     pid_file = tmp_path / "child.pid"
     code = ("import subprocess, sys, time; "
             "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)']); "
+            f"print({says!r}, flush=True); "
             f"open({str(pid_file)!r}, 'w').write(str(c.pid)); time.sleep(600)")
     return [sys.executable, "-c", code], pid_file
 
@@ -169,8 +241,8 @@ def _gone(pid: int) -> bool:
     return False
 
 
-def _started(monkeypatch, tmp_path, then=lambda: None):
-    argv, pid_file = _sleeper(tmp_path)
+def _started(monkeypatch, tmp_path, then=lambda: None, says=""):
+    argv, pid_file = _sleeper(tmp_path, says)
     monkeypatch.setattr(page_check, "_command", lambda url, timeout: argv)
     monkeypatch.setattr(page_check, "unavailable", lambda: None)
     checks = []
@@ -186,14 +258,16 @@ def _started(monkeypatch, tmp_path, then=lambda: None):
     return start, checks, pid_file
 
 
-@pytest.mark.parametrize("ending", ["timeout", "stopped"])
+@pytest.mark.parametrize("ending", ["timeout", "stopped", "walk_never_ends"])
 def test_the_browser_process_group_is_killed_and_reaped(build, monkeypatch, tmp_path, ending):  # noqa: F811
     orch, project, _ = build
-    stop = (lambda: setattr(project, "stop_requested", True)) if ending == "stopped" else (lambda: None)
-    start, checks, pid_file = _started(monkeypatch, tmp_path, then=stop)
+    then = {"stopped": lambda: setattr(project, "stop_requested", True),
+            "walk_never_ends": lambda: orch.record_preview_ack(project.page_validation.id)}
+    start, checks, pid_file = _started(monkeypatch, tmp_path, then=then.get(ending, lambda: None))
     orch._page_check = start
     _, done = run(orch)
-    assert done["verification"]["stages"]["page"] == "unverified"
+    assert done["verification"]["stages"]["page"] == ("passed" if ending == "walk_never_ends"
+                                                       else "unverified")
     [check] = checks
     assert check.process.returncode is not None
     assert _gone(int(pid_file.read_text()))
@@ -207,12 +281,59 @@ def test_closing_twice_is_harmless(monkeypatch, tmp_path):
     assert check.process.returncode is not None
 
 
+@pytest.mark.parametrize("says", ["done", ""])
+def test_the_check_says_when_its_tab_walk_is_done(monkeypatch, tmp_path, says):
+    start, _, _ = _started(monkeypatch, tmp_path, says=says)
+    check = start("http://127.0.0.1:1/", 5)
+    try:
+        assert check.walked() is (says == "done")
+    finally:
+        check.close()
+    assert check.process.returncode is not None
+
+
+def test_a_check_that_exits_early_is_not_waited_on(monkeypatch, tmp_path):
+    monkeypatch.setattr(page_check, "_command", lambda url, timeout: [sys.executable, "-c", "pass"])
+    monkeypatch.setattr(page_check, "unavailable", lambda: None)
+    check = page_check.start("http://127.0.0.1:1/", 5)
+    try:
+        check.process.wait(10)
+        assert check.walked() is True
+    finally:
+        check.close()
+
+
+def test_the_tab_walk_fits_inside_the_check_budget():
+    script = page_check.SCRIPT.read_text()
+    tabs, click, settle = (int(re.search(rf"const {name} = (\d+)", script).group(1))
+                           for name in ("MAX_TABS", "CLICK_MS", "SETTLE_MS"))
+    # The rest of the budget is for launching Chromium and loading a cold preview.
+    assert tabs * (click + settle) / 1000 <= BuildPolicy().page_check_wait_seconds - 10
+
+
 # --- Real Chromium ------------------------------------------------------------------------------
 
 _UNAVAILABLE = page_check.unavailable()
 
 HEALTHY = "document.getElementById('root').textContent = 'ok';"
 THROWS = "throw new Error('render crashed: useViewState is not defined');"
+
+
+def _tabbed(second_pane: str) -> str:
+    """Two tabs whose second pane renders only when it is opened, as antd mounts a lazy pane."""
+    return ("const root = document.getElementById('root');"
+            "root.innerHTML = \"<div role='tablist'><button role='tab' aria-selected='true'>Overview"
+            "</button><button role='tab' aria-selected='false'>Insights</button></div>"
+            "<div id='pane'>overview</div>\";"
+            "const [first, second] = root.querySelectorAll('[role=tab]');"
+            "second.addEventListener('click', () => {"
+            " first.setAttribute('aria-selected', 'false'); second.setAttribute('aria-selected', 'true');"
+            f" {second_pane} }});")
+
+
+HEALTHY_TABS = _tabbed("document.getElementById('pane').textContent = 'insights';")
+CRASHES_ON_SECOND_TAB = _tabbed(
+    "const state = {}; document.getElementById('pane').textContent = state.metrics.join(',');")
 REPORTER = (Path(__file__).resolve().parents[2] / "template" / "fastapi-antd" / "static" / "sage"
             / "reportRuntimeError.js")
 
@@ -291,6 +412,25 @@ def test_real_chromium_fails_a_page_that_throws_on_render_with_no_workbench(serv
     orch, handler = served
     handler.screen = THROWS
     _, done = run(orch)
+    assert done["verification"]["stages"]["runtime"] == "failed"
+    assert done["ok"] is False
+
+
+@pytest.mark.skipif(_UNAVAILABLE is not None, reason=f"real headless page check: {_UNAVAILABLE}")
+def test_real_chromium_passes_a_healthy_page_with_tabs(served):
+    orch, handler = served
+    handler.screen = HEALTHY_TABS
+    _, done = run(orch)
+    assert done["verification"]["stages"]["page"] == "passed"
+    assert done["verification"]["stages"]["runtime"] == "passed"
+
+
+@pytest.mark.skipif(_UNAVAILABLE is not None, reason=f"real headless page check: {_UNAVAILABLE}")
+def test_real_chromium_fails_a_page_whose_second_tab_crashes(served):
+    orch, handler = served
+    handler.screen = CRASHES_ON_SECOND_TAB
+    _, done = run(orch)
+    assert done["verification"]["stages"]["page"] == "passed"
     assert done["verification"]["stages"]["runtime"] == "failed"
     assert done["ok"] is False
 

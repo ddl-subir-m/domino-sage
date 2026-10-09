@@ -1,0 +1,87 @@
+{
+  "note": "The shooting script's prompts, sent byte-for-byte. Each prompt is the Markdown code span as it renders: its line breaks and list indentation are single spaces, which is what is typed on camera. `sha256` is of the prompt's UTF-8 bytes, and the driver refuses a prompt whose digest does not match. `expect` is what the run checks, never sent.",
+  "chat": [
+    {
+      "id": "1",
+      "prompt": "Chart open pipeline by stage and team for this quarter and next. Use @SFDC__OPPORTUNITY_ENHANCED and follow @revops-conventions.",
+      "sha256": "bf50804eabfc44b48941cf7853eb8a519d3acf01a5a3e632377194b3a06866c6",
+      "expect": {
+        "artifact": "chart"
+      }
+    },
+    {
+      "id": "2",
+      "prompt": "Chart which competitors came up most on Gong calls in the last 30 days, with our win rate against each. Use @GONG__CALL_TRANSCRIPTS_FLATTENED and the battlecards in @sales-playbooks.",
+      "sha256": "f30237244a8f82d3e486839b0e0706f9c78d6c94bdcac7987b6cdcd11bbc0163",
+      "expect": {
+        "artifact": "chart"
+      },
+      "datasetPick": "battlecards.md"
+    },
+    {
+      "id": "3",
+      "prompt": "Chart what customers raised on Gong calls this quarter. Use @GONG__CALL_TRANSCRIPTS_FLATTENED and follow @product-insights.",
+      "sha256": "25443b29ed8c922e1b082d4186950e03ab46c8e4856145c196a261356d5febdd",
+      "expect": {
+        "artifact": "chart"
+      }
+    },
+    {
+      "id": "4",
+      "prompt": "Chart which features are gaining adoption, and list which of our largest accounts have weekly usage dropping. Use @MIXPANEL__EVENT and follow @product-insights.",
+      "sha256": "8f55f7e2dc939ca1d8b5b2a2d24431430a95a54f487cf226403412da6a380a94",
+      "expect": {
+        "artifact": "chart"
+      }
+    },
+    {
+      "id": "5",
+      "prompt": "What's the latest news on the accounts with usage drops? One line each, with a source link.",
+      "sha256": "9ef0c87eda2ce95dfc641a40cc495c23b80a69277b42f839e287e2cfb693e81d",
+      "expect": {
+        "tool": {
+          "label": "search",
+          "pattern": "search|tavily"
+        }
+      }
+    },
+    {
+      "id": "6",
+      "prompt": "The biggest of those deals is asking for 28% off on a one-year term with net-60 payment. Check with the deal desk: who has to approve it?",
+      "sha256": "d2bbfea173f3c3b44e8f422fa25dd806ea6e12cba501d94c8ea1fc606e72fdb6",
+      "expect": {
+        "tool": {
+          "label": "deal desk",
+          "pattern": "discount_approval|deal.?desk"
+        }
+      }
+    }
+  ],
+  "handoff": {
+    "id": "7",
+    "prompt": "Turn this into an app called Signal Room. Three pages: a pipeline overview with stalled deals and the top deals; a page per deal with its Salesforce details, live news, a @meddpicc score, approvals from the deal desk, and a \"Write deal brief\" button that follows @deal-brief; and a Product insights page for a period I pick, with feature adoption, the topics customers raise on calls, competitor mentions, and a \"Write product brief\" button that follows @product-insights. Follow @revops-conventions.",
+    "sha256": "7bc34b19881fca0737742aebb8c12157b65c6fff72a2ee6431cbea4825f6e860",
+    "plan": {
+      "notDoing": "No editing of Salesforce records.",
+      "answers": "Which deals count as open? Every stage before Closed."
+    }
+  },
+  "build": [
+    {
+      "id": "8",
+      "prompt": "Add a Usage drift tab for the data science team. Using @MIXPANEL__EVENT, compare per-user activity between a reference period and a current period, defaulting to the last 7 complete days against the 28 days before. Let people choose both periods (presets and custom dates), the measure (events per active day or share of days active), which drift metrics to show (KL divergence, Jensen-Shannon, PSI, KS, Wasserstein), the number of bins, and the trend range. Show metric cards with their bands, overlaid histograms and ECDFs for the two periods, and the chosen metrics over time. Follow @drift-metrics.",
+      "sha256": "61eb83e05d888cc711f9a198852bdb60c3015f88a0189bf0df4d131361314529"
+    },
+    {
+      "id": "9",
+      "prompt": "Make Write deal brief use @haiku and Write product brief use @sonnet.",
+      "sha256": "2835e51fac0a190c5114064c5dfe213a50d6e3ee37ce2ac973c9c2a6cf46d4a7",
+      "addThem": true
+    },
+    {
+      "id": "9b",
+      "prompt": "On Product insights, add the \"What customers ask about\" section with @haiku and its sample size control, exactly as @product-insights describes. Put the review in a new static/components/AskReview.js, its query in sage_queries.py, and wire it into static/app.js.",
+      "sha256": "c2c8b0f42aaf0ba5ad800833742c08bfc83d66076b0525eab42a738854849cc4"
+    }
+  ]
+}

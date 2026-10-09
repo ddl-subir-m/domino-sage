@@ -187,6 +187,22 @@ def test_a_turn_without_an_approved_plan_is_not_reviewed(tmp_path: Path):
     assert _done(events)["ok"] is True
 
 
+def test_a_follow_up_after_an_approved_build_is_not_reviewed(tmp_path: Path):
+    gateway = ReviewGateway(json.dumps({"unmet": []}))
+    orch, oc = _orch(tmp_path, gateway, [PLAN, BUILT, Turn(writes={
+        "static/UsageDrift.js": "const presets = periodsEndingToday();\n"})])
+    list(orch.build_stream("build me a usage drift tab", conversation="c1"))
+    list(orch.approve_stream(conversation="c1"))
+    assert len(gateway.reviews) == 1
+    _skip_planning(orch)
+
+    events = list(orch.build_stream("end the presets today", conversation="c1"))
+
+    assert len(oc.prompts) == 3
+    assert len(gateway.reviews) == 1
+    assert _done(events)["ok"] is True
+
+
 def test_a_turn_whose_queries_failed_is_not_reviewed(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(Orchestrator, "_query_failures",
                         lambda self, project: {"usage": "Object 'USAGE' does not exist."})

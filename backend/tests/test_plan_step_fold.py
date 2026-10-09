@@ -36,7 +36,7 @@ SEPARATORS = sorted(
     ch for ch in _CANDIDATE_SEPARATORS if plan_steps._FIELD.match(f"- Files {ch} a.ts")
 )
 FOLDED_FIELDS = sorted(k for k, v in plan_steps._CANON.items() if v in {"files", "dont_touch"})
-KEPT_FIELDS = sorted(k for k, v in plan_steps._CANON.items() if v in {"do", "done_when"})
+KEPT_FIELDS = sorted(k for k, v in plan_steps._CANON.items() if v in {"do", "done_when", "uses"})
 
 # A derivation that came back empty would parametrize into nothing and report green over no
 # cases, and a canon field that fell into neither half would be a spelling nobody asked about.

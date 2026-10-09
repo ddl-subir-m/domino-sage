@@ -177,6 +177,9 @@ inlines PNG and `.table.json` — do not write HTML, React, or a spreadsheet as 
   the named table, and ask before moving to another. When the turn prompt says investigation is
   open, that table is a starting point: discover and query other relevant tables in the attached
   {dataSourcePlural}. Keep the existing disclosure rules. Do not ask to open the investigation again.
+- The project's tools named in the turn prompt are part of this turn's context. For a question
+  about the outside world (news, a company, the web), use a search tool when one is listed, and
+  cite its sources.
 - **A read that FAILS is not permission to substitute.** If a file will not open, a library will
   not authenticate, or a query is refused, say which one it was and what happened, and stop. Do not
   fall back on sample, example, illustrative or synthetic data, and do not fall back on what a

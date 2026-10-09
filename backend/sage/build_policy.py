@@ -69,6 +69,8 @@ plan_review_timeout_seconds      SAGE_BUILD_PLAN_REVIEW_TIMEOUT_SECONDS         
 [4] The ack wait while Sage's own headless Chromium is loading the page (#707). It replaces
     ``page_ack_wait_seconds`` only when it is longer, and only when that check started: launching
     Chromium and loading a cold preview can take longer than a Workbench tab that is already open.
+    It also bounds the check's walk through the page's tabs (#709), which Sage waits out before
+    ``runtime_error_wait_seconds`` starts.
 
 [5] The one plan-tier call that reads an approved build's code diff against its plan's Done-when
     items (#716). ``on`` or ``off``. The cap bounds the call, not the turn's other checks; a call

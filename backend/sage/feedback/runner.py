@@ -22,7 +22,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..workspace.stack import REACT_VITE, stack_of
+from ..workspace.stack import FASTAPI_ANTD, REACT_VITE, stack_of
 
 # tsc line: "src/App.tsx(12,5): error TS2304: Cannot find name 'foo'."
 _TSC_RE = re.compile(r"^(?P<file>[^(]+)\((?P<line>\d+),(?P<col>\d+)\):\s+error\s+(?P<code>TS\d+):\s+(?P<msg>.*)$")
@@ -262,6 +262,8 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
     errors += _unloaded_definitions(workspace, js_files)
     errors += _loaded_after_entry(workspace)
     errors += [e for js in js_files for e in _untyped_view_fields(workspace, js)]
+    errors += _hand_written_url_state(workspace, js_files, FASTAPI_ANTD.view_state, "sage.useViewState")
+    errors += [e for js in js_files for e in _list_series_colours(workspace, js)]
     if not errors:
         errors += [_placeholder_error(rel) for rel in _shown_scripts(workspace)
                    if re.search(r"""className:\s*["']sage-placeholder["']""",
@@ -476,6 +478,83 @@ def _untyped_view_fields(workspace: Path, js: Path) -> list[FeedbackError]:
     return errors
 
 
+# Writing the URL or reading its query string: `history.replaceState(` / `.pushState(`, `location.search`.
+_URL_STATE_RE = re.compile(r"\bhistory\s*\.\s*(?:replaceState|pushState)\s*\(|\blocation\s*\.\s*search\b")
+
+
+def _hand_written_url_state(workspace: Path, files: list[Path], helper: str, hook: str) -> list[FeedbackError]:
+    """App code that keeps view state in the URL itself rather than through `hook` (#717). It gets
+    none of the helper's types, defaults, shareable flag or working Back, and it parses. Only where
+    the app has `helper` to steer to; `files` are the app's own, never Sage's, which do this on
+    purpose. Comments and strings are blanked first, so naming the calls is not making them."""
+    if not (workspace / helper).is_file():
+        return []
+    errors = []
+    for path in files:
+        source = path.read_text(errors="ignore")
+        if "history" not in source and "location" not in source:
+            continue
+        code, shown = _blank_text(source), source.splitlines()
+        for line in sorted({code.count("\n", 0, m.start()) + 1 for m in _URL_STATE_RE.finditer(code)}):
+            errors.append(FeedbackError(
+                file=path.relative_to(workspace).as_posix(), line=line, col=1, code="SAGE005",
+                message=(f"`{shown[line - 1].strip()[:60]}` keeps view state in the URL by hand. Keep it "
+                         f"in {hook} from {helper} instead: it puts the shareable fields in the URL, "
+                         f"types and defaults each one, and makes Back work. Read the state it returns, "
+                         f"never location: const [view, patchView] = {hook}({{ metric: "
+                         f"{{ type: \"enum\", values: [\"dau\", \"wau\"], default: \"dau\", shareable: "
+                         f"true }} }}); then patchView({{ metric }}) when it changes."),
+            ))
+    return errors
+
+
+# A `series:` key, whose value (to the comma or bracket that closes it) holds the series config.
+_SERIES_KEY_RE = re.compile(r"\bseries\s*:\s*")
+# A `color:` whose value is a list: an array literal, or a `.map(` straight off a name. Not
+# `colors:`, which takes a list, and not a ternary or a member read, which give one colour.
+_LIST_COLOUR_RE = re.compile(r"\bcolor\s*:\s*(?=\[|[A-Za-z_$][\w$.]*\s*\.\s*map\s*\()")
+
+
+def _value_end(code: str, start: int) -> int:
+    """Where the value starting at `start` in blanked `code` ends: the first `,` or closing
+    bracket at its own depth."""
+    depth = 0
+    for k in range(start, len(code)):
+        if code[k] in "{[(":
+            depth += 1
+        elif code[k] in "}])":
+            if not depth:
+                return k
+            depth -= 1
+        elif code[k] == "," and not depth:
+            return k
+    return len(code)
+
+
+def _list_series_colours(workspace: Path, js: Path) -> list[FeedbackError]:
+    """A Highcharts series `color:` given a list (#717). A series takes one colour; a list draws
+    every bar with no fill, so the chart looks empty, and the file parses. Only what sits inside a
+    `series:` value is read — a series the file builds elsewhere and passes by name is not."""
+    source = js.read_text(errors="ignore")
+    if "series" not in source:
+        return []
+    code = _blank_text(source)
+    errors = []
+    for series in _SERIES_KEY_RE.finditer(code):
+        for m in _LIST_COLOUR_RE.finditer(code, series.end(), _value_end(code, series.end())):
+            value = " ".join(source[m.end():_value_end(code, m.end())].split())
+            errors.append(FeedbackError(
+                file=js.relative_to(workspace).as_posix(), line=code.count("\n", 0, m.start()) + 1,
+                col=1, code="SAGE006",
+                message=(f"Highcharts series color is {value[:40]}, a list, but a series takes one "
+                         f"colour, so every bar draws with no fill and the chart looks empty. Give "
+                         f"the series one colour (color: sage.accents[0]), or colour points one by one "
+                         f"with objects in data: data: rows.map(r => ({{ y: r.value, color: r.value > 0 "
+                         f"? sage.accents[0] : sage.accents[1] }}))."),
+            ))
+    return errors
+
+
 def _python() -> str:
     import sys
     return sys.executable
@@ -585,6 +664,11 @@ class FeedbackRunner:
             if (lint := _lint(Path(workspace), sources, self._timeout_s)) is not None:
                 out += lint[0]
                 errors += lint[1]
+            errors += _hand_written_url_state(
+                Path(workspace), [Path(workspace) / p for p in sources
+                                  if p.as_posix() not in REACT_VITE.owned_sources
+                                  and not p.as_posix().startswith(REACT_VITE.vendored)],
+                REACT_VITE.view_state, "useViewState")
         except subprocess.TimeoutExpired as e:
             return FeedbackReport(ok=False, raw=f"typecheck timed out after {self._timeout_s}s: {e}")
 

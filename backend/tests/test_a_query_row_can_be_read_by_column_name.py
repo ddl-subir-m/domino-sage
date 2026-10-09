@@ -193,3 +193,58 @@ def test_the_instructions_an_agent_reads_offer_use_query(names):
     block = _block(names)
     assert "useQuery(" in block
     assert "refresh" in block and '"empty"' in block
+
+
+# ---- #713: Snowflake upper-cases unquoted aliases, and a page reads `r.Account` ---------------------
+
+SNOWFLAKE = {"columns": ["ACCOUNT", "PRIORUSERS"], "rows": [["Acme", 12], ["Bolt", 0]],
+             "truncated": False}
+TWINS = {"columns": ["Account", "ACCOUNT"], "rows": [["Acme", "ACME"]], "truncated": False}
+
+
+def _read(template: str, body: dict, reads: list[str]) -> dict:
+    out = subprocess.run(
+        ["node", str(HARNESS)],
+        input=json.dumps({"template": template, "body": body, "reads": reads}),
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    return json.loads(out.stdout)
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_page_reading_account_gets_the_uppercase_account_column(template: str):
+    """Live (2026-10-08, #713): Product Insights read `r.Account` and `r.PriorUsers` off columns
+    `ACCOUNT` and `PRIORUSERS`, and drew blank names and zeros."""
+    got = _read(template, SNOWFLAKE, ["Account", "PriorUsers"])
+    assert got["values"] == [{"Account": "Acme", "PriorUsers": 12}, {"Account": "Bolt", "PriorUsers": 0}]
+    assert got["reports"] == []
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_misspelt_column_is_still_reported_when_case_is_ignored(template: str):
+    got = _read(template, SNOWFLAKE, ["Acount"])
+    assert got["values"] == [{}, {}]
+    assert got["reports"] == ["query q has no column 'Acount'; columns are ACCOUNT, PRIORUSERS"]
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_two_columns_differing_only_in_case_are_reported_rather_than_one_picked(template: str):
+    got = _read(template, TWINS, ["account"])
+    assert got["values"] == [{}]
+    assert got["reports"] == [
+        "query q has no column 'account'; it matches Account and ACCOUNT, which differ only in case"]
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_an_exact_read_of_either_twin_gets_that_column(template: str):
+    got = _read(template, TWINS, ["Account", "ACCOUNT"])
+    assert got["values"] == [{"Account": "Acme", "ACCOUNT": "ACME"}]
+    assert got["reports"] == []
+
+
+@pytest.mark.parametrize("template", TEMPLATES)
+def test_a_records_keys_stay_the_stores_own_column_names(template: str):
+    got = _read(template, SNOWFLAKE, ["Account"])
+    assert got["keys"] == [["ACCOUNT", "PRIORUSERS"], ["ACCOUNT", "PRIORUSERS"]]
+    assert got["result"]["records"] == [{"ACCOUNT": "Acme", "PRIORUSERS": 12},
+                                        {"ACCOUNT": "Bolt", "PRIORUSERS": 0}]
