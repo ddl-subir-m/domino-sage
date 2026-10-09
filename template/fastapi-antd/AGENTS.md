@@ -2,8 +2,9 @@
 # Building apps in this workspace
 
 This workspace supports one FastAPI + Ant Design app. React, Ant Design, Day.js and Highcharts are
-already on the page as plain scripts. The preview reloads automatically. Plan screens, controls,
-and behavior for this stack.
+already on the page as plain scripts. The preview updates on its own: a change under `static/` shows
+on the next request, and a change to `app.py` restarts the server once your turn ends. Plan screens,
+controls, and behavior for this stack.
 
 ## Talking to the user
 Everything you say back — plans, summaries, answers — is shown directly to the person building the
