@@ -37,6 +37,22 @@ class PreEditTrigger(str, Enum):
     SESSION_ABORT_UNCONFIRMED = "session_abort_unconfirmed"
 
 
+# The recovery nudges the same session only when that session can carry one more request and
+# holds work worth keeping (#723). The two budget trips refuse a request before it reaches the
+# gateway, so the history is whole and holds what the attempt read. Every other trigger keeps the
+# clean session: REQUEST_BYTES because the history is already too large to send again; the output
+# limit, no-action timeout and repeated call because each cuts a response mid-stream and leaves it
+# partial in the history; and a no-edit completion because the model concluded without editing,
+# and nudging that conclusion in place is the spiral #527 measured. A budget trip on a session
+# that holds a malformed call is not whole either; the caller owns that check.
+_CONTEXT_KEEPING_TRIGGERS = frozenset({PreEditTrigger.MODEL_CALLS, PreEditTrigger.TOOL_RESULT_BYTES})
+
+
+def keeps_context(trigger: PreEditTrigger) -> bool:
+    """Whether a recovery for `trigger` nudges the same session rather than opening a clean one."""
+    return trigger in _CONTEXT_KEEPING_TRIGGERS
+
+
 class PreEditAction(str, Enum):
     ROUTE = "route"
     RECOVER = "recover"
@@ -334,18 +350,23 @@ class PreEditGuard:
             decision, self._pending = self._pending, None
             return decision
 
-    def start_recovery(self) -> bool:
-        """Reset per-attempt counters after the fresh recovery session is ready."""
+    def start_recovery(self, *, kept_context: bool = False) -> bool:
+        """Reset per-attempt counters once the recovery's session is ready.
+
+        A kept session resends every result it already holds, so those stay seen and only new
+        reads count against the recovery's budget.
+        """
         with self._lock:
             if self._state is not PreEditState.RECOVERY_STARTING:
                 return False
             self._recoveries += 1
-            self._session_generation += 1
+            if not kept_context:
+                self._session_generation += 1
+                self._seen_results.clear()
             self._attempt = "recovery"
             self._model_calls = 0
             self._tool_result_bytes = 0
             self._max_request_bytes = 0
-            self._seen_results.clear()
             self._trigger = PreEditTrigger.NONE
             self._transition(
                 PreEditState.RECOVERY_ARMED,
