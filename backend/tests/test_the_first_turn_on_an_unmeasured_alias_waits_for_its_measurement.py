@@ -21,6 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sage.gateway.capabilities import RouteCapability, RouteStatus, evidence
+from sage.gateway.client import FakeGatewayClient
 from sage.gateway.protocol import Protocol
 from sage.orchestrator import app as appmod
 from sage.orchestrator.service import Orchestrator
@@ -29,7 +30,6 @@ from sage.router.model_control import ModelControl
 from sage.router.models import Mode, Phase
 from sage.shim import enforcement
 from sage.shim.enforcement import EnforcementShim
-from sage.gateway.client import FakeGatewayClient
 
 from .test_a_build_pick_carries_its_own_effort import CATALOG as BUILD_CATALOG
 from .test_a_build_pick_carries_its_own_effort import _template
