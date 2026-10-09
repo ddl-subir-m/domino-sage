@@ -23,7 +23,6 @@ import time
 from pathlib import Path
 
 import httpx
-import pytest
 
 from sage.preview import reload_gate
 from sage.preview.supervisor import UvicornSupervisor
