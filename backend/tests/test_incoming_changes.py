@@ -57,6 +57,12 @@ class FakeVite:
         self.running = True
         return "http://127.0.0.1:5173"
 
+    def hold_reloads(self) -> None:
+        pass
+
+    def release_reloads(self) -> None:
+        pass
+
     def upstream(self) -> str:
         if not self.running:
             raise RuntimeError("Vite not ready")
