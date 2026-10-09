@@ -199,6 +199,9 @@ class FakeOpenCode:
     def instances(self) -> dict[str, float]:
         return self._instances.snapshot()
 
+    def note_use(self, directory: str | None) -> None:
+        self._instances.use(directory)
+
     def release_instance(self, directory: str) -> bool:
         with self._instances.releasing(directory) as mine:
             if not mine or self.stay_running or any(

@@ -442,6 +442,10 @@ class OpenCodeClient:
         """Each directory this client has an OpenCode instance live for, with its last use."""
         return self._instances.snapshot()
 
+    def note_use(self, directory: str | None) -> None:
+        """Record a request that names `directory` but reaches OpenCode some other way."""
+        self._instances.use(directory)
+
     def release_instance(self, directory: str) -> bool:
         """Dispose `directory`'s instance unless OpenCode says a session there is not idle (#742).
 

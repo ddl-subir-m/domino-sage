@@ -597,6 +597,7 @@ def _resolved_agent_permissions() -> list[dict]:
     # Once, into a local: the helper stats the filesystem, so asking twice is two syscalls that can
     # disagree with each other.
     work = _chat_work_dir()
+    orchestrator._note_opencode_use(work)
     r = httpx.get(f"{client.base_url}/agent",
                   params={"directory": work} if work else {}, timeout=30)
     r.raise_for_status()
@@ -2056,11 +2057,12 @@ def diag_resources() -> JSONResponse:
         body = {"detail": body}
     from ..driver.opencode import OpenCodeClient
 
+    oc_client = orchestrator._oc_client
     body["counts"] = {
         "previews": previews,
         "opencode_sessions_created": _guard(OpenCodeClient.sessions_created),
-        "opencode_instances": None if orchestrator._oc_client is None
-        else _guard(lambda: _opencode_instances_diag(orchestrator._oc_client)),
+        "opencode_instances": None if oc_client is None
+        else _guard(lambda: _opencode_instances_diag(oc_client)),
         "data_use_operations": None if project is None
         else _guard(lambda: len(project.shim.data_use.operations)),
     }

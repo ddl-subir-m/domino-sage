@@ -9551,6 +9551,11 @@ class Orchestrator:
             self._release_turn()
         return released
 
+    def _note_opencode_use(self, directory: str | None) -> None:
+        """A probe that asks OpenCode about `directory` itself loads its instance too."""
+        if self._oc_client is not None:
+            self._oc_client.note_use(directory)
+
     def start_preview_reaper(self, interval_s: float = _PREVIEW_SWEEP_S) -> None:
         """Sweep the previews on a clock, so reaping never waits for preview traffic to arrive.
         The same sweep releases idle OpenCode instances (`_reap_opencode`).
@@ -14588,6 +14593,7 @@ class Orchestrator:
             return {"asked": False, "why": f"{type(e).__name__}: {e}"}
         try:
             with self.diagnostic_window():
+                self._note_opencode_use(directory)
                 r = httpx.get(url, timeout=3.0, headers={"Accept": "application/json"})
         except Exception as e:
             return {"asked": True, "ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
@@ -14634,6 +14640,7 @@ class Orchestrator:
             return {"asked": False, "why": f"{type(e).__name__}: {e}"}
         try:
             with self.diagnostic_window():
+                self._note_opencode_use(directory)
                 r = httpx.get(url, timeout=3.0, headers={"Accept": "application/json"})
         except Exception as e:
             return {"asked": True, "ok": False, "url": url, "error": f"{type(e).__name__}: {e}"}
@@ -14729,6 +14736,7 @@ class Orchestrator:
             return {"asked": False, "why": f"{type(e).__name__}: {e}"}
         try:
             with self.diagnostic_window():
+                self._note_opencode_use(directory)
                 r = httpx.get(url, timeout=15.0, headers={"Accept": "application/json"})
         except httpx.TimeoutException:
             return {"asked": True, "ok": False, "url": url, "error": "timed out",

@@ -196,3 +196,22 @@ def test_a_request_to_a_directory_being_released_waits_for_the_dispose(wire):
     assert results["r"] is True and "s" in results
     assert calls[-2:] == [("dispose", "/w/a"), ("create", "/w/a")]
     assert "/w/a" in client.instances()
+
+
+@pytest.mark.parametrize("probe", ["opencode_mcp_status", "opencode_skill_status"])
+def test_a_diagnostic_probe_that_names_a_directory_records_it(tmp_path, monkeypatch, probe):
+    """The probes ask OpenCode over their own HTTP call, and that loads the instance just the same."""
+    orch, oc = _build(tmp_path, [])
+    class _Server:
+        def url(self):
+            return "http://oc"
+
+    class _Ok(_Resp):
+        status_code = 200
+
+    orch._oc_server = _Server()
+    monkeypatch.setattr(svc.httpx, "get", lambda *a, **k: _Ok({}))
+
+    getattr(orch, probe)(str(tmp_path / "chat-work"))
+
+    assert str(tmp_path / "chat-work") in oc.instances()
