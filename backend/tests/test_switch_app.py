@@ -66,6 +66,12 @@ class FakeVite:
         self.starts += 1
         return "http://127.0.0.1:5173"
 
+    def hold_reloads(self) -> None:
+        pass
+
+    def release_reloads(self) -> None:
+        pass
+
     def retry_start(self) -> None:
         """What the request path calls since #554, where it used to call `start()` directly.
 

@@ -7850,6 +7850,8 @@ class Orchestrator:
         # approve_stream go through it — see _TurnQueue for why the lock stays a plain Lock.
         self._turn_epoch = new_id("boot")
         self._turns = _TurnQueue(self._turn_lock, self._turn_epoch)
+        # The preview a running turn holds still (`_pin_turn_app`, #752). None between turns.
+        self._held_preview: ViteSupervisor | None = None
         # Set when a turn was given up on and its OpenCode session would not confirm it stopped
         # (#39). The lock above is then deliberately never released, so every later turn is refused
         # rather than run over a session that may still be writing. Nothing clears this: restarting
@@ -19088,8 +19090,7 @@ class Orchestrator:
             except OSError:
                 pass
 
-    @staticmethod
-    def _pin_turn_app(project: Project, workspace: Workspace | None = None) -> None:
+    def _pin_turn_app(self, project: Project, workspace: Workspace | None = None) -> None:
         """Name the Built App this turn writes into, for as long as it runs (#77).
 
         Taken at the top of every turn, under the turn lock. The person may point the rail at
@@ -19099,12 +19100,17 @@ class Orchestrator:
 
         `workspace` is the one the request stashed before it waited for the lock. A caller that
         has no ticket (a test that pins by hand) falls through to the app on screen.
+
+        That app's preview restarts on none of the turn's writes until `_clear_turn_baseline` lets
+        go (#752): once then, unless the end-of-turn check has already restarted it on the final code.
         """
         project.turn_app = workspace if workspace is not None else project.workspace
         project.page_validation = None
         project.phase_verification = None
         project.turn_attached = project.attached
         project.turn_attachment_failures.clear()
+        self._held_preview = self._view_for(project, project.turn_app.app_id).supervisor
+        self._held_preview.hold_reloads()
 
     def _clear_turn_baseline(self) -> None:
         """Mark "no turn running" so _rebaseline_turn stops touching the baseline once the turn that
@@ -19115,6 +19121,9 @@ class Orchestrator:
         exits — a phased build reassigns the session per phase, and the turn lock means no other
         turn can observe either mid-flight anyway."""
         try:
+            held, self._held_preview = self._held_preview, None
+            if held is not None:
+                held.release_reloads()
             if self._project is None:
                 return
             self._project.turn_tree_baseline = ""
@@ -25988,6 +25997,9 @@ class Orchestrator:
                         return validation
                     if status["state"] == "ready":
                         validation.stages["startup"] = "passed"
+                        # The restart writes into the app (`sage_keys.json`, #752): pin the tree
+                        # it started from, not the one before it.
+                        validation.code_generation = project.snapshot.working_tree_hash()
                         break
                 time.sleep(0.1)
             if validation.stages["startup"] != "passed" or not current():

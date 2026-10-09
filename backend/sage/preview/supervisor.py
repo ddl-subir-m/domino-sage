@@ -20,6 +20,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -30,8 +31,11 @@ import httpx
 from .. import project_secrets
 from ..workspace.stack import preview_stack_of, resolve_stack
 from ..workspace.viewer_keys import write_names as write_viewer_key_names
+from . import reload_gate
 
 log = logging.getLogger("sage.preview.supervisor")
+
+_RELOAD_GATE = Path(reload_gate.__file__).read_text(encoding="utf-8")
 
 # Vite prints e.g.  "  ➜  Local:   http://localhost:5173/"
 _LOCAL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
@@ -346,6 +350,13 @@ class ViteSupervisor:
             return preview_port()
         return _free_port()
 
+    def hold_reloads(self) -> None:
+        """Restart on none of the app's writes until `release_reloads` (#752). Vite restarts on
+        none of them anyway: HMR updates the page in place."""
+
+    def release_reloads(self) -> None:
+        """End `hold_reloads`."""
+
     def stop(self) -> None:
         with self._state_lock:
             self._stopped = True
@@ -653,7 +664,8 @@ class UvicornSupervisor(ViteSupervisor):
     The app is served by the interpreter running Sage — the one interpreter here that is known to
     carry fastapi and uvicorn — with `SAGE_PREVIEW=1`, which `sage_serve.py` stamps into the page
     so the helpers know to reach the builder. `--reload` restarts the server when a `.py` file
-    changes; static files are read per request and need no restart at all.
+    changes, except while a Build turn holds it (`reload_gate`); static files are read per request
+    and need no restart at all.
 
     It serves at the root, so the proxy prepends nothing: `mount_base` is "".
     """
@@ -664,8 +676,22 @@ class UvicornSupervisor(ViteSupervisor):
     _READY_LINE = "Application startup complete"
     _parse_url = staticmethod(parse_uvicorn_url)
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._hold = Path(tempfile.gettempdir()) / f"sage-preview-hold-{self._instance}"
+
     def mount_base(self) -> str:
         return ""
+
+    def hold_reloads(self) -> None:
+        """A change seen while held is kept back, and restarts the server once on release."""
+        try:
+            self._hold.touch()
+        except OSError:
+            log.exception("preview: could not hold reloads; the preview restarts on each write")
+
+    def release_reloads(self) -> None:
+        self._hold.unlink(missing_ok=True)
 
     def _spawn(self, *, previous: subprocess.Popen | None = None) -> None:
         generation = self._spawn_generation(previous)
@@ -677,7 +703,8 @@ class UvicornSupervisor(ViteSupervisor):
             log.exception("preview: could not write sage_keys.json")
         port = self._listen_port()
         self._launch(
-            [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port),
+            [sys.executable, "-c", _RELOAD_GATE, "app:app", "--host", "127.0.0.1", "--port", str(port),
              "--reload", "--reload-dir", ".", "--log-level", "info"],
-            {**project_secrets.preview_env(), "SAGE_PREVIEW": "1"}, port, generation,
+            {**project_secrets.preview_env(), "SAGE_PREVIEW": "1", reload_gate.HOLD_ENV: str(self._hold)},
+            port, generation,
         )
