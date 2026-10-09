@@ -25774,9 +25774,6 @@ class Orchestrator:
                 validation.data_reads.append(read)
                 if read["outcome"] == "failed" and answered.get("error"):
                     validation.query_failures[read["path"].rsplit("/", 1)[-1]] = answered["error"]
-=======
-                validation.error = validation.error or _startup_failure(status)
->>>>>>> origin/main
             validation.closed = True
 
     def _active_validation(self, validation_id: str) -> PageValidation | None:
