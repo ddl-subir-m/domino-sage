@@ -83,6 +83,7 @@ from ..liveread import mcp as live_mcp
 from ..liveread import reference as live_reference
 from ..liveread import result as live_result
 from ..liveread import run as live_read
+from ..liveread.held import HeldRead, unsupported_numbers
 from ..pre_edit_guard import (
     PreEditAction,
     PreEditDecision,
@@ -998,17 +999,6 @@ class FolderActUnavailable(Exception):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
-
-
-class ChartFontsMissing(RuntimeError):
-    """This image cannot draw text into a chart, so no PNG should be written at all (#444).
-
-    Its own class rather than a bare `RuntimeError` so `/api/chat/artifact` can answer it without
-    also swallowing one raised by a bug, which belongs in a traceback and not in a sentence handed
-    to the model. Not a `ValueError` either: that route turns those into the 400 the model reads as
-    "your markup was wrong", and the markup is fine — the fonts are absent. A model told to redraw
-    a good SVG redraws it until the turn's quiet window closes.
-    """
 
 
 class PlanArchiveRefused(Exception):
@@ -4835,6 +4825,15 @@ _CHAT_INVALID_CALL_NOTE = (
     "was saved."
 )
 
+# The one correction for an answer that states numbers no disclosed read carries (#729). The
+# numbers are the model's own, quoted back; the values it was not given are never in this text.
+_CHAT_NUMBERS_NOTE = (
+    "Your answer states numbers that no result you were given carries: {numbers}. A result whose "
+    "values you were not given went to the person's table, and you cannot see it, so no number may "
+    "come from it. Rewrite the answer without those numbers: say what was read, its columns and how "
+    "many rows it has, and point the person at the table. This is the only recovery attempt."
+)
+
 
 def _at_token_hits(token: str, name: str, path: str) -> bool:
     """True when an @token from the user message names this context file."""
@@ -7625,6 +7624,10 @@ class Orchestrator:
         # The digest of each result a composed statement put on a card this turn, and that card's
         # path (#726). Reset and swept with the count above.
         self._live_results: dict[str, dict[str, str]] = {}
+        # What each read this turn returned, in memory only (#729, `liveread.held`). A chart is
+        # drawn from these rows and the answer's numbers are checked against what was disclosed.
+        # Reset and swept with the count above.
+        self._held_reads: dict[str, list[HeldRead]] = {}
         # The last `not-in-range` refusal a Live read handed the model this turn, per Conversation
         # (#488). Kept beside the count, reset and swept with it, so a turn the repeat brake stops
         # can say what the model was told and went past. One sentence, not a list: the brake fires
@@ -14691,6 +14694,7 @@ class Orchestrator:
             self._live_read_app[thread_id] = project.app_for_turn()
             self._live_reads.pop(thread_id, None)
             self._live_results.pop(thread_id, None)
+            self._held_reads.pop(thread_id, None)
             self._live_read_refused.pop(thread_id, None)
         # The same token names this turn for a Delegated model call, so this is the moment that
         # turn's call count starts over (ADR-0057). Reset here rather than at the end of the last
@@ -14719,6 +14723,7 @@ class Orchestrator:
                     self._live_read_earlier.pop(thread_id, None)
                     self._live_reads.pop(thread_id, None)
                     self._live_results.pop(thread_id, None)
+                    self._held_reads.pop(thread_id, None)
                     self._live_read_refused.pop(thread_id, None)
                     expired.append(thread_id)
                 elif tok == token:
@@ -15073,7 +15078,21 @@ class Orchestrator:
             remember_statement=remember_statement,
             record_refusal=record_refusal,
             same_result=same_result,
+            hold=lambda read: self._hold_read(thread_id, read),
         )
+
+    def _hold_read(self, thread_id: str, read: HeldRead) -> None:
+        with self._live_read_lock:
+            # A card rewritten under its own name replaces what it held. The same result asked
+            # for under a second title points at the first card (#726), and both titles name it.
+            held = [r for r in self._held_reads.get(thread_id, [])
+                    if not (read.slug and r.slug == read.slug
+                            and (r.title == read.title or r.rows != read.rows))]
+            self._held_reads[thread_id] = [*held, read]
+
+    def _held(self, thread_id: str) -> list[HeldRead]:
+        with self._live_read_lock:
+            return list(self._held_reads.get(thread_id, []))
 
     def live_read_again(self, thread_id: str, source: dict) -> dict:
         """Read one card's table again, now, as whoever is looking at it (#256, ADR-0045).
@@ -15170,7 +15189,7 @@ class Orchestrator:
         tables = self._chat_tables.get(thread_id)
         path = body.get("path")
         content = body.get("content")
-        if not isinstance(path, str) or not isinstance(content, str):
+        if not isinstance(path, str) or not isinstance(content, str | None):
             raise TypeError("Artifact path and content must be strings.")
         # The model sees this sentence, so it names the exact form a retry needs (#710).
         outside = (f"Artifact writes must stay under examples/{thread_id}/. Pass path as "
@@ -15209,62 +15228,9 @@ class Orchestrator:
         if path.endswith(".table.json") and tables is not None:
             tables.write_failures[path] = "table write did not complete"
         encoding = body.get("encoding", "utf8")
-        if encoding == "svg" and path.endswith(".png"):
-            import xml.etree.ElementTree as ET
-
-            import resvg_py
-
-            # SVG is an existing image format, not executable code. Reject external resources
-            # before rendering; the model cannot make a read or web call through its markup.
-            if "<!DOCTYPE" in content.upper():
-                raise ValueError("Chart SVG cannot declare entities.")
-            try:
-                svg = ET.fromstring(content)
-            except ET.ParseError as e:
-                raise ValueError("Chart SVG is not valid XML.") from e
-            shapes = {"svg", "g", "rect", "path", "line", "polyline", "polygon", "text", "tspan",
-                      "circle", "ellipse", "title", "desc"}
-            if svg.tag.rsplit("}", 1)[-1] != "svg":
-                raise ValueError("Chart SVG requires an svg root.")
-            for node in svg.iter():
-                if node.tag.rsplit("}", 1)[-1] not in shapes or any(
-                    key.rsplit("}", 1)[-1] == "href" or "url(" in value.lower()
-                    for key, value in node.attrib.items()
-                ):
-                    raise ValueError("Chart SVG must use inline shapes and text without external resources.")
-            # The image apt-installs `git` and nothing else, so its system font database is
-            # EMPTY and resvg drew every `<text>` as nothing, silently (#444). Point it at the
-            # DejaVu faces `matplotlib` already ships inside its own package directory, and
-            # name all four generics: `font_dirs` alone resolves only an SVG that asks for
-            # "DejaVu Sans" by hand, and one generic alone makes that face the last-resort
-            # fallback for every family — sans-serif labels then render in serif.
-            # `skip_system_fonts` is load-bearing off the image too: without it a developer
-            # laptop renders from ITS fonts, so this line's regression test would pass there
-            # whatever we passed here. It costs the coverage those fonts would have added —
-            # DejaVu has no CJK, so a chart labelled in Japanese draws .notdef on a host that
-            # could have drawn it. Production loses nothing, having had no fonts at all, and
-            # matplotlib ships no CJK face to add here; non-Latin labels need their own issue.
-            import matplotlib
-
-            fonts = Path(matplotlib.get_data_path()) / "fonts" / "ttf"
-            if not any(fonts.glob("DejaVu*.ttf")):
-                # Silence is what made #444 cost a live thread: resvg returns a clean PNG for a
-                # chart with no glyphs on it, and nothing downstream can tell that from a good
-                # one. Refuse before the write so no textless PNG reaches the thread.
-                log.error("chart render: no DejaVu faces under %s", fonts)
-                raise ChartFontsMissing(f"Chart fonts are missing from this image: {fonts}")
-            data = resvg_py.svg_to_bytes(
-                svg_string=content, width=1200, height=700,
-                font_dirs=[str(fonts)], skip_system_fonts=True,
-                font_family="DejaVu Sans", sans_serif_family="DejaVu Sans",
-                serif_family="DejaVu Serif", monospace_family="DejaVu Sans Mono",
-            )
-        elif encoding == "base64" and path.endswith(".png"):
-            try:
-                data = base64.b64decode(content, validate=True)
-            except ValueError as e:
-                raise ValueError("Artifact content is not valid base64.") from e
-        elif encoding == "utf8" and path.endswith(".table.json"):
+        if path.endswith(".png"):
+            data = self._chat_chart(thread_id, body)
+        elif encoding == "utf8" and path.endswith(".table.json") and content is not None:
             from ..workspace.chat_tables import validate_table_bytes
 
             data = content.encode("utf-8")
@@ -15273,7 +15239,7 @@ class Orchestrator:
                     tables.write_failures[path] = reason
                 raise ValueError(f"Invalid table JSON: {reason}.")
         else:
-            raise ValueError("Use utf8 for table JSON, or svg/base64 for PNG charts.")
+            raise ValueError("Send table JSON as utf8 content.")
         dest.parent.mkdir(parents=True, exist_ok=True)
         if path.endswith(".table.json"):
             with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", delete=False) as candidate:
@@ -15289,6 +15255,51 @@ class Orchestrator:
         else:
             dest.write_bytes(data)
         return {"path": path, "bytes": len(data)}
+
+    def _unbacked_numbers(self, thread_id: str, body: str, prompt: str) -> list[str]:
+        """The answer's numbers no disclosed read carries, on a turn that had values withheld (#729).
+
+        Keyed on a structure-only read because that is where every invented figure sat: a turn that
+        read nothing, or was handed every value it read, has nothing it could not see to invent.
+        """
+        reads = self._held(thread_id)
+        if not any(r.withheld for r in reads):
+            return []
+        return unsupported_numbers(body, reads, prompt)
+
+    def _numbers_refused(self, thread_id: str) -> str:
+        """What ships instead of an answer that kept stating numbers it was never given (#729):
+        what was read, its shape and its row count, which is all a structure-only read may say."""
+        lines = ["I wasn't given the values from what I read, so I can't quote numbers from it."]
+        for r in self._held(thread_id):
+            if r.withheld:
+                lines.append(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
+                             f"columns {', '.join(r.columns)}.")
+        return "\n".join(lines)
+
+    def _chat_chart(self, thread_id: str, body: dict) -> bytes:
+        """A PNG drawn from a result this turn read, never from values the model sent (#729)."""
+        from ..workspace import chat_chart
+
+        table, x, ys = body.get("table"), body.get("x"), body.get("y")
+        if isinstance(ys, str):
+            ys = [ys]
+        if (not isinstance(table, str) or not table or not isinstance(x, str)
+                or not isinstance(ys, list) or not all(isinstance(y, str) for y in ys)):
+            raise ValueError(
+                "A chart is drawn from a result this turn read: pass table as that result's "
+                "title, x as the column for the labels and y as the column or columns of numbers.")
+        reads = self._held(thread_id)
+        wanted = live_read._slug(PurePosix(table).name.removesuffix(".table.json"))
+        read = next((r for r in reversed(reads) if r.rows
+                     and (r.title == table or (r.slug and r.slug == wanted))), None)
+        if read is None:
+            named = ", ".join(sorted({r.title for r in reads if r.rows}))
+            raise ValueError(f"There is no result called {table} from this turn's reads. " + (
+                f"Results this turn: {named}." if named
+                else "Run the statement first, with a title, then chart that result."))
+        chat_chart.check_labels(read, x, reads)
+        return chat_chart.draw(read, x, ys)
 
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
         """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`.
@@ -17219,6 +17230,13 @@ class Orchestrator:
             # signal either way, and leaving it painted on a stopped turn would show the person a
             # bare token under a half-finished answer.
             body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
+            # The refuse half of #729, on every exit: a number no disclosed read carries does not
+            # ship. Bounded lanes only — a shell lane computes numbers its reads never handed it.
+            if (answer_only or artifact_token is not None) and (
+                    unbacked := self._unbacked_numbers(thread_id, body, prompt)):
+                log.warning("chat: %d stated number(s) carried by no disclosed read; the answer "
+                            "was replaced by what was read", len(unbacked))
+                body = self._numbers_refused(thread_id)
             with timing.span("after.artifacts"):
                 # The end-of-turn scan is the only thing skipped here, and only when no tool ran at
                 # all (#418) — a turn that ran nothing wrote nothing, so this read finds nothing.
@@ -17444,14 +17462,18 @@ class Orchestrator:
                     # turn", a "system-level restriction" and tools being "unavailable" to somebody
                     # who had asked for a chart. The adjectives and the list of what is missing
                     # were the whole supply. The call arguments are not: artifact_write, thread_id
-                    # and encoding=svg have to stay, because dropping them breaks the turn rather
-                    # than the leak.
+                    # and the chart's table/x/y have to stay, because dropping them breaks the turn
+                    # rather than the leak. A chart is drawn from a result's rows, never from values
+                    # the model sends (#729), so the statement has to carry the labels it shows.
                     turn_prompt += (
                         "\nThis turn answers with data and files. Write any table or chart the person "
                         f"asked for with artifact_write under examples/{thread_id}/. "
-                        "Pass thread_id exactly as given. Send table JSON as utf8. For a chart, send standard "
-                        "SVG markup with inline shapes and text as encoding=svg; artifact_write renders it "
-                        "to the requested .png path. Include axes, labels and the requested data series. "
+                        "Pass thread_id exactly as given. Send table JSON as utf8. A chart is drawn "
+                        "from the rows of a result read this turn: run the statement with a title, "
+                        f"then call artifact_write with path examples/{thread_id}/<name>.png, table "
+                        "set to that title, x set to the column of labels and y set to the column or "
+                        "columns of numbers. When the labels should be names that another table holds, "
+                        "join that table in the same statement so the result carries the names. "
                         "If you can't produce something, say so in one plain sentence and don't describe "
                         "how you work."
                     )
@@ -18309,6 +18331,11 @@ class Orchestrator:
                                 and not turn_failed and not unanswered_stream_error
                                 and project.last_gateway_error is None)
                     repairable = {p: reason for p, reason in invalid.items() if p not in tables.prior_paths}
+                    # The repair half of #729: numbers the answer states that no disclosed read
+                    # carries. Last in line for the one allowance; `publish_chat_artifacts` refuses
+                    # whatever a correction did not fix.
+                    unbacked = (self._unbacked_numbers(thread_id, body, prompt)
+                                if answer_only or artifact_token is not None else [])
                     # A dropped connection leaves no answer. The gateway client already retried the
                     # bytes that never left; this is the one re-send of the question itself. A
                     # paragraph that arrived, or a guardrail, is not this — `lost_on_a_short_drop`
@@ -18353,7 +18380,7 @@ class Orchestrator:
                         yield done
                         return
                     if ((repairable or broken_call is not None
-                            or (not invalid and not answered) or drop_retry)
+                            or (not invalid and not answered) or drop_retry or unbacked)
                             and not recovery_used
                             and (drop_retry or (
                                 not turn_failed and not step_error
@@ -18383,6 +18410,8 @@ class Orchestrator:
                         # is being corrected, so its fault is retired here, and a wrapper in the
                         # NEXT response is a new one that the spent allowance cannot answer.
                         call_repair = broken_call is not None and not table_repair and not drop_retry
+                        number_repair = (bool(unbacked) and not table_repair and not call_repair
+                                         and not drop_retry)
                         if table_repair:
                             primary_body = body
                             tables.repair_ran = True
@@ -18392,6 +18421,8 @@ class Orchestrator:
                                           tool=broken_call,
                                           fault=_INVALID_CALL_SAID[broken_category])
                                       if call_repair else
+                                      _CHAT_NUMBERS_NOTE.format(numbers=", ".join(unbacked))
+                                      if number_repair else
                                       "Your turn ended without an answer or an answer artifact. "
                                       "Answer the user's question using the work already done. "
                                       "This is the only recovery attempt. Keep the current source "
@@ -18408,6 +18439,7 @@ class Orchestrator:
                             with timing.span("chat.drop_retry" if drop_retry
                                              else "chat.table_repair" if table_repair
                                              else "chat.call_repair" if call_repair
+                                             else "chat.number_repair" if number_repair
                                              else "chat.answer_repair"):
                                 client.send_prompt(sid,
                                                    correction
@@ -18422,13 +18454,14 @@ class Orchestrator:
                             except Exception:
                                 log.warning("chat: interrupt after repair request failed")
                             yield from publish_chat_artifacts("repair request failed")
-                            if not table_repair:
+                            if not table_repair and not number_repair:
                                 err = {"type": "error", "reason": "empty answer",
                                        "message": "No answer was produced, and the recovery attempt failed."}
                                 store.append_history(thread_id, err)
                                 yield err
                             yield finish({"type": "done", "ok": False,
                                           "decision": ("table repair failed" if table_repair
+                                                       else "number repair failed" if number_repair
                                                        else "empty answer"), "artifacts": artifacts})
                             return
                         appeared = False

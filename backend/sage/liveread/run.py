@@ -25,6 +25,7 @@ from uuid import uuid4
 from ..orchestrator import brand
 from ..resources.provider import ResourceUnavailable, ScopeIncomplete
 from . import disclosure, grant, reference, result, sql_hints
+from .held import HeldRead
 
 log = logging.getLogger("sage.liveread")
 
@@ -73,6 +74,9 @@ class Turn:
     upload_for: Callable[[str], Path | None] | None = None
     reference_for: Callable[[str], reference.Authorized | None] | None = None
     record_data_use: Callable[..., None] | None = None
+    # Every read that puts a card up hands its rows here, for this turn only (#729): a chart is
+    # drawn from them, and the answer's numbers are checked against what was disclosed.
+    hold: Callable[[HeldRead], None] | None = None
     analyze_text_batch: Callable[[dict[str, Any]], Any] | None = None
     # The model an `analyze_text` alias names: (model, "") to send its batches to, ("", "") for the
     # turn's own model, or ("", sentence) refusing it. Asked once, before any row is read (#607).
@@ -102,6 +106,14 @@ def _slug(*parts: str) -> str:
     while "--" in out:
         out = out.replace("--", "-")
     return out[:60] or "live-read"
+
+
+def hold(turn: Turn, receipt: result.Receipt, title: str, rows: list, disclosed: list) -> None:
+    if turn.hold:
+        slug = Path(receipt.path).name.removesuffix(".table.json") if receipt.path else ""
+        turn.hold(HeldRead(title=title, slug=slug, columns=list(receipt.columns),
+                           rows=[result.json_safe(list(r)) for r in rows[:result.CAP_ROWS]],
+                           disclosed=list(disclosed)))
 
 
 def _refused(turn: Turn, refusal: grant.Refusal | None) -> grant.Refusal | None:
@@ -200,12 +212,13 @@ def _receipt_text(receipt: result.Receipt, what: str) -> str:
         # is not seeing. The reason travels with it for the same cause ADR-0041 opens with — an
         # assistant left to invent why it cannot answer names a mechanism that does not exist.
         lines.append(
-            "You have NOT been shown the values — the person can see them on the card. Answer about "
-            "what the table holds and never quote a value."
-            if receipt.kept else
-            "NOBODY has been shown the values — not you, and not the card, which carries the shape "
-            "of this table because this Project does not keep data rows in its files. Answer about "
-            "what the table holds, never quote a value, and say that is why if asked."
+            ("You have NOT been shown the values — the person can see them on the card. Answer about "
+             "what the table holds and never quote a value."
+             if receipt.kept else
+             "NOBODY has been shown the values — not you, and not the card, which carries the shape "
+             "of this table because this Project does not keep data rows in its files. Answer about "
+             "what the table holds, never quote a value, and say that is why if asked.")
+            + " Do not state, estimate or work out any number from them."
         )
     else:
         shown = len(receipt.values)
@@ -394,6 +407,7 @@ def _table(args: dict, turn: Turn) -> str:
         keep_rows=turn.keep_rows,
         source=_source("table", binding, limit, table=table, database=database, schema=schema),
     )
+    hold(turn, receipt, str(args.get("title") or table or name), read.rows, receipt.values or [])
     return _receipt_text(receipt, f"{table or name}")
 
 
@@ -442,6 +456,7 @@ def _files(args: dict, turn: Turn) -> str:
         source=_source("file", turn.binding_for.get(("dataset", name), ""), result.CAP_ROWS,
                        path=rel),
     )
+    hold(turn, receipt, Path(rel).name, read.rows, receipt.values or [])
     return _receipt_text(receipt, rel)
 
 
@@ -791,6 +806,14 @@ def _catalogue_statement(node, exp) -> bool:
                for t in tables)
 
 
+# Said where a result's values went to the person and not to the model (#729). Every figure the
+# demo rerun invented sat on a read like this, under a sentence that only asked it not to quote.
+_NO_NUMBERS = ("You were not given this result's values: they went to the person's table, and you "
+               "cannot see them, so never quote a value you were not given, and do not state, "
+               "estimate or work out any number from them. Say what was read, its columns and how "
+               "many rows it has, and point the person at the table.")
+
+
 def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dict,
                    turn: Turn, *, again: bool = False) -> str:
     """What the assistant is told, and what gets written down about it.
@@ -844,8 +867,8 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
         lines.append(f"Result: {values}")
     else:
         lines.append(verdict.reason)
-        lines.append("Answer about the shape of the result and never quote a value you were not "
-                     "given.")
+        lines.append(_NO_NUMBERS)
+    hold(turn, receipt, str(args.get("title") or "Query result"), answer.rows, values)
 
     log.info("live query: %s — %s, %d columns, discloses=%s -> %s",
              receipt.columns and receipt.columns[0] or "(none)", shape, len(receipt.columns),
