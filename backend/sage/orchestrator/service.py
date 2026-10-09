@@ -31038,8 +31038,8 @@ class Orchestrator:
         authorized` is the difference between a name to fix and a permission to ask for, and a
         creator reading "a query failed" cannot tell which they are looking at.
 
-        A name `declared` (the catalog's names; None for a catalog that cannot be read) lacks was
-        never sent to the store, so it gets the catalog's sentence and no access advice (#721).
+        A name missing from `declared` (the catalog's names; None for a catalog that cannot be read)
+        was never sent to the store, so it gets the catalog's sentence and no access advice (#721).
 
         Composed here rather than in the browser for the reason `_unasked_notice`'s is: the remedy
         names an act, and which act it is depends on what Sage knows and the page does not.
