@@ -79,7 +79,8 @@ def _prompt(client: OpenCodeClient, capture: _Capture, sid: str) -> str:
 
 
 def _rss_mb(port: int) -> int:
-    out = subprocess.run(["ps", "-A", "-o", "rss=,args="], capture_output=True, text=True).stdout
+    out = subprocess.run(["ps", "-A", "-o", "rss=,args="], capture_output=True, text=True,
+                         check=True).stdout
     return sum(int(line.split(None, 1)[0]) for line in out.splitlines()
                if f"--port {port}" in line and "serve" in line) // 1024
 

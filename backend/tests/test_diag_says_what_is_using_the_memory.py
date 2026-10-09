@@ -254,7 +254,8 @@ def test_the_route_lists_each_live_opencode_instance_and_its_last_use(bound, mon
 
     assert got["live"] == 2 and got["cap"] == 3 and got["idle_window_s"] == 300
     assert [i["directory"] for i in got["instances"]] == ["/w/chat", "/w/a"]
-    assert 2 <= got["instances"][0]["idle_s"] < 60 <= 400 <= got["instances"][1]["idle_s"]
+    assert 2 <= got["instances"][0]["idle_s"] < 60
+    assert got["instances"][1]["idle_s"] >= 400
 
 
 def test_the_route_with_no_opencode_reports_no_instances(bound, monkeypatch):
