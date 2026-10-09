@@ -75,7 +75,7 @@ from ..delegated import mcp as delegated_mcp
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
-from ..feedback.runner import FeedbackRunner, check_file
+from ..feedback.runner import FeedbackRunner, catalog_names, check_file, restore_removed_queries
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..gateway.protocol import Protocol
 from ..liveread import data_use as live_data_use
@@ -546,7 +546,7 @@ _PERSISTED_EVENTS = frozenset({
     "app_change", "build-stalled", "build-rollover", "build-context-limit",
     "gateway-call", "gateway-alias-unbound",
     "data-source-unasked", "data-source-failed", "build-recovery", "build-pre-edit-limit",
-    "keep-going",
+    "keep-going", "queries-restored",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -6145,6 +6145,18 @@ def _listed_steps(steps: list[PlanStep]) -> str:
     """`step 2 (Charts) and step 3 (Deal desk)`: plan steps as one phrase."""
     named = [f"step {s.n} ({s.label})" for s in steps]
     return ", ".join(named[:-1]) + f" and {named[-1]}" if len(named) > 1 else named[0]
+
+
+def _restored_notice(names: list[str]) -> str:
+    """One sentence for the person about the queries this turn removed and Sage put back (#721)."""
+    named = ", ".join(f"`{n}`" for n in names)
+    if len(names) == 1:
+        return brand.text("This turn removed {named} from {catalog}, but the app still calls it. "
+                          "{assistantName} put it back as it was when the turn began.",
+                          named=named, catalog=QUERIES)
+    return brand.text("This turn removed {named} from {catalog}, but the app still calls them. "
+                      "{assistantName} put them back as they were when the turn began.",
+                      named=named, catalog=QUERIES)
 
 
 def _crossing_minted_app(workspace: Workspace, conversation: str) -> bool:
@@ -21268,6 +21280,11 @@ class Orchestrator:
         # everything appended since (the turn disappears from the transcript entirely).
         with timing.span("gate.commit_before_turn"):
             project.snapshot.commit_before_turn(self._turn_id_fields().get("turnId", ""))
+        # The snapshot leaves `.sage/` out, so the catalog this turn may not lose is kept here (#721).
+        try:
+            queries_at_start = (project.app_for_turn().path / QUERIES).read_text(errors="ignore")
+        except OSError:
+            queries_at_start = None
         history_baseline = project.app_for_turn().history_len()
         if not gate and not answer_only and not arch and project.pre_edit_guard is None:
             with project.pre_edit_tree_lock:
@@ -24169,6 +24186,10 @@ class Orchestrator:
                     else:
                         return
 
+            restored = restore_removed_queries(project.app_for_turn().path, queries_at_start)
+            if restored:
+                yield persist({"type": "queries-restored", "names": restored,
+                               "message": _restored_notice(restored)})
             yield {"type": "typecheck-start", "kind": ("Syntax check" if project.app_for_turn().stack.name == "fastapi-antd" else "Typecheck")}
             with timing.span("typecheck") as check_span:
                 report = self._feedback.check(project.app_for_turn().path)
@@ -24470,7 +24491,8 @@ class Orchestrator:
                                                            project.app_for_turn().path), **failed}
                 if failed:
                     yield persist({"type": "data-source-failed",
-                                   "message": self._failed_notice(failed)})
+                                   "message": self._failed_notice(
+                                       failed, catalog_names(project.app_for_turn().path))})
                 store_clients = (self._detect_store_clients(project)
                                  if report.ok and (owns_turn or validate_page) else [])
                 if store_clients:
@@ -31010,28 +31032,47 @@ class Orchestrator:
         return out
 
     @staticmethod
-    def _failed_notice(failed: dict[str, str]) -> str:
+    def _failed_notice(failed: dict[str, str], declared: set[str] | None) -> str:
         """One sentence for the person about the queries that did not answer.
 
         Carries what the store said, not a paraphrase of it. `Object 'GONG' does not exist or not
         authorized` is the difference between a name to fix and a permission to ask for, and a
         creator reading "a query failed" cannot tell which they are looking at.
 
+        A name missing from `declared` (the catalog's names; None for a catalog that cannot be read)
+        was never sent to the store, so it gets the catalog's sentence and no access advice (#721).
+
         Composed here rather than in the browser for the reason `_unasked_notice`'s is: the remedy
         names an act, and which act it is depends on what Sage knows and the page does not.
         """
-        named = ", ".join(f"`{name}` ({reason})" for name, reason in failed.items())
-        if len(failed) == 1:
-            return brand.text(
+        missing = [name for name in failed if name not in (declared or set())]
+        refused = {name: reason for name, reason in failed.items() if name not in missing}
+        parts = []
+        absent = ", ".join(f"`{name}`" for name in missing)
+        if len(missing) == 1:
+            parts.append(brand.text(
+                "This {builtApp} has no query called {named} in {catalog}, so the screens that call "
+                "it will error. Ask {assistantName} to add it.",
+                named=absent, catalog=QUERIES))
+        elif missing:
+            parts.append(brand.text(
+                "This {builtApp} has no query called {named} in {catalog}, so the screens that call "
+                "them will error. Ask {assistantName} to add them.",
+                named=absent, catalog=QUERIES))
+        named = ", ".join(f"`{name}` ({reason})" for name, reason in refused.items())
+        if len(refused) == 1:
+            parts.append(brand.text(
                 "A query failed while building: {named}. Screens that need that data will error. "
                 "Ask {assistantName} to fix it, or check access to the {dataSource}.",
                 named=named,
-            )
-        return brand.text(
-            "{count} queries failed while building: {named}. Screens that need that data will "
-            "error. Ask {assistantName} to fix them, or check access to the {dataSourcePlural}.",
-            count=len(failed), named=named,
-        )
+            ))
+        elif refused:
+            parts.append(brand.text(
+                "{count} queries failed while building: {named}. Screens that need that data will "
+                "error. Ask {assistantName} to fix them, or check access to the {dataSourcePlural}.",
+                count=len(refused), named=named,
+            ))
+        return " ".join(parts)
 
     def _data_sources_never_asked(self, workspace: Workspace) -> list[Binding]:
         """Data Source Bindings this app writes no query against, in Binding order.
