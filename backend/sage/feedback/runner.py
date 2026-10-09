@@ -22,6 +22,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..liveread.data_use import carries_withheld_mark
 from ..workspace.snapshot import QUERIES
 from ..workspace.stack import FASTAPI_ANTD, REACT_VITE, stack_of
 
@@ -265,6 +266,7 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
     errors += [e for js in js_files for e in _untyped_view_fields(workspace, js)]
     errors += _hand_written_url_state(workspace, js_files, FASTAPI_ANTD.view_state, "sage.useViewState")
     errors += [e for js in js_files for e in _list_series_colours(workspace, js)]
+    errors += _withheld_placeholders(workspace)
     errors += _missing_queries(workspace)
     if not errors:
         errors += [_placeholder_error(rel) for rel in _shown_scripts(workspace)
@@ -625,6 +627,34 @@ def _list_series_colours(workspace: Path, js: Path) -> list[FeedbackError]:
     return errors
 
 
+def _withheld_placeholders(workspace: Path) -> list[FeedbackError]:
+    """An app source file carrying a placeholder Sage put in the model's view in place of data
+    (#718). The model copies it back as its own work and the app breaks — live, the page crashed on
+    a component the file no longer defined. Read over the stack's `source_globs`, minus vendored bundles and Sage's own files,
+    which the model does not write. The message names the line and never quotes it: the repair turn
+    must not hand the placeholder back."""
+    stack = stack_of(workspace)
+    skip = (*stack.vendored, *_JS_SKIP)
+    errors, seen = [], set()
+    for pattern in stack.source_globs:
+        for path in sorted(workspace.glob(pattern)):
+            rel = path.relative_to(workspace).as_posix()
+            if rel in seen or rel.startswith(skip) or rel in stack.owned_sources or not path.is_file():
+                continue
+            seen.add(rel)
+            lines = path.read_text(errors="ignore").splitlines()
+            line = next((n for n, text in enumerate(lines, 1) if carries_withheld_mark(text)), None)
+            if line is not None:
+                errors.append(FeedbackError(
+                    file=rel, line=line, col=1, code="SAGE008",
+                    message=(f"Line {line} of {rel} is a placeholder that stands in your conversation "
+                             f"for data or a step Sage did not send back to you. It is not code or "
+                             f"content, and the app breaks with it in a file. Read the file, then "
+                             f"write the code that belongs there in its place."),
+                ))
+    return errors
+
+
 # `runQuery(` / `useQuery(`, `sage.` or imported, a TypeScript type argument allowed, opening a
 # quoted first argument. Read off blanked code, so the quotes are still there and the name is not.
 _QUERY_CALL_RE = re.compile(r"\b(?:runQuery|useQuery)\s*(?:<[^()]*?>)?\s*\(\s*([\"'`])")
@@ -859,6 +889,7 @@ class FeedbackRunner:
                                   if p.as_posix() not in REACT_VITE.owned_sources
                                   and not p.as_posix().startswith(REACT_VITE.vendored)],
                 REACT_VITE.view_state, "useViewState")
+            errors += _withheld_placeholders(Path(workspace))
             errors += _missing_queries(Path(workspace))
         except subprocess.TimeoutExpired as e:
             return FeedbackReport(ok=False, raw=f"typecheck timed out after {self._timeout_s}s: {e}")
