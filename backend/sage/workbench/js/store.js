@@ -3580,6 +3580,10 @@ window.SW = window.SW || {};
         // Amber like an unverified build: the turn finished, and what it left out of the plan is
         // a gap to read, not a failure of the turn.
         ensureAssistant().blocks.push({ type: 'status', ok: null, warn: true, value: ev.message });
+      } else if (ev.type === 'plan-no-edit' && ev.message) {
+        // A plain line: the step was already met, which is not a gap. Shown so the person can
+        // weigh the reason the build gave for writing nothing there (#725).
+        ensureAssistant().blocks.push({ type: 'status', value: ev.message });
       } else if (ev.type === 'data-source-failed' && ev.message) {
         // Red, unlike the grey line above it, and that is the whole difference between the two: an
         // app nobody queried may be exactly what was wanted, and an app whose queries the store
