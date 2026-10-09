@@ -12780,8 +12780,10 @@ class Orchestrator:
         # names the platform's nouns as tokens (#543).
         plan_shape = brand.apply_voice(_PLAN_SHAPE)
         stack = _plan_stack_name(project)
-        prompt = chat_handoff.plan_prompt(thread_id, digest, voice=_PLAN_VOICE, shape=plan_shape,
-                                          stack=stack, example=_plan_example_for(project))
+        resource_list = plan_resources.planner_note(self._plan_resources(project, thread_id))
+        prompt = chat_handoff.plan_prompt(
+            thread_id, digest, voice=_PLAN_VOICE, shape=plan_shape, stack=stack,
+            example=_plan_example_for(project) + ("\n\n" + resource_list if resource_list else ""))
         # The same inputs, held for the one clean no-action retry (#561). This planner has no
         # attachments and no mentions: the digest IS the request, so it is labelled as one.
         plan_retry = PlanRetryInput(
@@ -24799,9 +24801,11 @@ class Orchestrator:
                 named, resources, sources, plan_resources.query_names(app.path / QUERIES))}
         return [unreached.get(s.n, s) for s in steps if s.n in unwritten or s.n in unreached]
 
-    def _plan_resources(self, project: Project) -> plan_resources.Resources:
+    def _plan_resources(self, project: Project,
+                        conversation: str | None = None) -> plan_resources.Resources:
         """What this Project offers a plan step (#712): its MCP servers that are on and answered,
-        its secret names (never a value), and the LLM Aliases this conversation's app may call."""
+        its secret names (never a value), and the LLM Aliases this conversation's app may call.
+        `conversation` is the Build conversation unless a Chat Thread is planning the handoff."""
         try:
             servers = tuple(row for row in extension_mcp.list_servers(project.record.path)
                             if row["enabled"] and not row.get("warning"))
@@ -24812,7 +24816,7 @@ class Orchestrator:
                                if not project_secrets.is_hidden(name)))
         try:
             aliases = tuple(name for name, _label in self._delegated_aliases(
-                project, project.build_conversation, cached_labels_only=True)[0])
+                project, conversation or project.build_conversation, cached_labels_only=True)[0])
         except Exception:
             log.exception("plan resources: could not read which models this app may call")
             aliases = ()
