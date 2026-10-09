@@ -50,6 +50,9 @@ log = logging.getLogger("sage.preview.queries")
 # Long enough to collapse an HMR reload storm, short enough that a creator who changes a row in the
 # warehouse and reloads to look at it sees the change rather than wondering why it did not take.
 CACHE_TTL_S = 30.0
+# Rows held across every cached result (#739). The key carries the bound parameters, so each control
+# value a creator tries is its own entry of up to 5,000 rows; this is four of those.
+CACHE_MAX_ROWS = 20_000
 
 
 class CachingExecutor:
@@ -62,11 +65,16 @@ class CachingExecutor:
 
     Only successes are kept. An error is a thing the creator is about to go and fix, and replaying it
     from a cache after they have fixed it would be its own bug.
+
+    Bounded (#739): every write drops the entries past their TTL, then the oldest until the rows held
+    fit `max_rows`. A result larger than that on its own is answered and not kept.
     """
 
-    def __init__(self, inner: Any, ttl_s: float = CACHE_TTL_S, redact: Any = None) -> None:
+    def __init__(self, inner: Any, ttl_s: float = CACHE_TTL_S, redact: Any = None,
+                 max_rows: int = CACHE_MAX_ROWS) -> None:
         self._inner = inner
         self._ttl = ttl_s
+        self._max_rows = max_rows
         self._entries: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
         self.hits = 0
@@ -118,10 +126,29 @@ class CachingExecutor:
                 self.failures[getattr(query, "name", "?")] = reason
             raise
         with self._lock:
-            self._entries[key] = (now, result)
+            self._store(key, now, result)
             self.misses += 1
             self.failures.pop(getattr(query, "name", "?"), None)
         return result
+
+    def _store(self, key: str, now: float, result: dict) -> None:
+        """Under `_lock`. Insertion order is age order, so the first entry is always the oldest."""
+        self._entries.pop(key, None)
+        for stale in [k for k, (at, _) in self._entries.items() if now - at >= self._ttl]:
+            del self._entries[stale]
+        size = self._rows(result)
+        if size > self._max_rows:
+            return
+        held = sum(self._rows(r) for _, r in self._entries.values())
+        while self._entries and held + size > self._max_rows:
+            held -= self._rows(self._entries.pop(next(iter(self._entries)))[1])
+        self._entries[key] = (now, result)
+
+    @staticmethod
+    def _rows(result: Any) -> int:
+        # At least one, so an empty result still costs a slot and an unbounded run of them is not free.
+        rows = result.get("rows") if isinstance(result, dict) else None
+        return max(1, len(rows) if isinstance(rows, list) else 0)
 
     @staticmethod
     def _key(query: Any, params: dict) -> str:

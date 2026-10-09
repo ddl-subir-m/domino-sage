@@ -590,6 +590,13 @@ def _supervisor_for(workspace: Path, base_prefix: str, *, pinned_port: bool = Fa
 
 
 _PREVIEW_IDLE_S = 180
+# Previews running at once. Each is a process tree (Vite + esbuild, or uvicorn's reloader + worker),
+# and every Build's page check starts one. Three holds the selected app's, the one a running build
+# is checking, and one more being looked at in another tab.
+_PREVIEW_CAP = 3
+# How often the reaper sweeps without a request to drive it. Bounds an idle preview's life at
+# `_PREVIEW_IDLE_S` plus this.
+_PREVIEW_SWEEP_S = 15.0
 
 
 def _supervisor_class(workspace: Path):
@@ -7747,6 +7754,11 @@ class Orchestrator:
         # hosts control_app, and run()'s `finally` stays as the backstop for a process that dies
         # before the lifespan gets a turn. The teardown is idempotent; the git save is not.
         self._shutdown_done = False
+        # The idle-preview sweep (#739). Started by the app's lifespan, stopped by `shutdown`, so an
+        # Orchestrator built in a test runs no thread unless it asks for one.
+        self._preview_reaper: threading.Thread | None = None
+        self._preview_reaper_stop = threading.Event()
+        self._preview_reap_lock = threading.Lock()
         # Pre-supplied client (tests): _ensure_opencode already returns a non-None client untouched,
         # so injecting here means no server is ever started and the seam costs the production path
         # nothing. Same shape as the gateway/feedback/assets fakes above it.
@@ -9386,26 +9398,96 @@ class Orchestrator:
         return project._selected_view
 
     def _account_preview_traffic(self, project: Project, view: AppView | None = None) -> None:
-        """Mark `view` as just used, and stop any preview nobody has asked for in 180 seconds.
+        """Mark `view` as just used, then sweep the rest (`_reap_previews`).
 
-        Called from the proxy and from preview status/retry. The open tab polls status every
-        1.5 seconds, which keeps its supervisor alive. No thread waits on the clock.
+        Called from the proxy, from preview status/retry and from a Build's page check. The open
+        tab polls status every 1.5 seconds, which keeps its supervisor alive.
         """
         now = time.monotonic()
-        for other in list(project._views.values()):
-            sup = other.supervisor
-            last = getattr(sup, "last_traffic", None)
-            if last is None or now - last < _PREVIEW_IDLE_S:
-                continue
+        target = view if view is not None else project._active_view()
+        note = getattr(target.supervisor, "note_traffic", None)
+        if note is not None:
+            note(now)
+        self._reap_previews(project, now, using=target)
+
+    def _reap_previews(self, project: Project, now: float | None = None,
+                       using: AppView | None = None) -> None:
+        """Stop each running preview nobody has viewed for `_PREVIEW_IDLE_S`, then the least
+        recently viewed beyond `_PREVIEW_CAP` (#739).
+
+        A running preview with no traffic yet — a page check started it and nobody has opened it —
+        has its idle clock started here, the first time a sweep sees it, so None never exempts it.
+        `using` is the view a request is about to serve: it counts toward the cap whether or not it
+        is up yet. The cap never stops it, the selected app's preview, or the preview a running
+        turn's page check reads; the idle window never stops the last.
+        """
+        now = time.monotonic() if now is None else now
+        turn_app = getattr(project.turn_app, "app_id", None)
+
+        def needed_by_turn(view: AppView) -> bool:
+            return turn_app is not None and getattr(view.workspace, "app_id", None) == turn_app
+
+        def idle_stop(view: AppView) -> None:
+            sup = view.supervisor
             idle = getattr(sup, "idle_stop", None)
             if idle is not None:
                 idle()
             else:
                 sup.stop()
-        target = view if view is not None else project._active_view()
-        note = getattr(target.supervisor, "note_traffic", None)
-        if note is not None:
-            note(now)
+
+        with self._preview_reap_lock:
+            views = {id(v): v for v in [*project._views.values(), project._selected_view]}
+            live: list[AppView] = []
+            for view in views.values():
+                sup = view.supervisor
+                if view is not using and not getattr(sup, "running", True):
+                    continue
+                last = getattr(sup, "last_traffic", None)
+                if last is None:
+                    note = getattr(sup, "note_traffic", None)
+                    if note is not None:
+                        note(now)
+                    last = now
+                if view is not using and not needed_by_turn(view) and now - last >= _PREVIEW_IDLE_S:
+                    idle_stop(view)
+                    continue
+                live.append(view)
+            spare = [v for v in live if v is not using and v is not project._selected_view
+                     and not needed_by_turn(v)]
+            spare.sort(key=lambda v: getattr(v.supervisor, "last_traffic", None) or now)
+            for view in spare[:max(0, len(live) - _PREVIEW_CAP)]:
+                idle_stop(view)
+
+    def start_preview_reaper(self, interval_s: float = _PREVIEW_SWEEP_S) -> None:
+        """Sweep the previews on a clock, so reaping never waits for preview traffic to arrive.
+
+        Started by the app's lifespan and stopped by `shutdown`. One per Orchestrator; a second call
+        or a call after shutdown starts nothing.
+        """
+        if self._shutdown_done or self._preview_reaper is not None:
+            return
+        self._preview_reaper_stop.clear()
+
+        def sweep() -> None:
+            while not self._preview_reaper_stop.wait(interval_s):
+                project = self._project
+                if project is None:
+                    continue
+                try:
+                    self._reap_previews(project)
+                except Exception:
+                    log.exception("preview: the idle sweep failed")
+
+        self._preview_reaper = threading.Thread(target=sweep, name="sage-preview-reaper",
+                                                daemon=True)
+        self._preview_reaper.start()
+
+    def stop_preview_reaper(self) -> None:
+        reaper, self._preview_reaper = self._preview_reaper, None
+        if reaper is None:
+            return
+        self._preview_reaper_stop.set()
+        reaper.join()
 
     def _ensure_preview_running(self, project: Project, view: AppView | None = None) -> None:
         """Nudge a dead preview back up, WITHOUT making this request wait or fail.
@@ -25634,6 +25716,8 @@ class Orchestrator:
             if not current():
                 validation.reason = interrupted()
                 return validation
+            # The check is a viewer: it starts this preview's idle clock and makes room under the cap.
+            self._account_preview_traffic(project, view)
             deadline = time.monotonic() + timeout
             accepted = False
             while current() and time.monotonic() < deadline:
@@ -32309,16 +32393,21 @@ class Orchestrator:
             except Exception:
                 log.exception("shutdown: failed to save work to git")
         # Best-effort per resource: the preview failing to stop must not leave the shared
-        # opencode server running as an orphan.
+        # opencode server running as an orphan. Every app's, not only the selected one's: each
+        # runs in its own process group and outlives this process if nobody stops it.
+        self.stop_preview_reaper()
         if self._project is not None:
-            try:
-                self._project.supervisor.stop()
-            except Exception:
-                log.exception("shutdown: failed to stop preview")
-            try:
-                self._project.queries.stop()
-            except Exception:
-                log.exception("shutdown: failed to stop the preview query server")
+            project = self._project
+            views = {id(v): v for v in [*project._views.values(), project._selected_view]}
+            for view in views.values():
+                try:
+                    view.supervisor.stop()
+                except Exception:
+                    log.exception("shutdown: failed to stop preview")
+                try:
+                    view.queries.stop()
+                except Exception:
+                    log.exception("shutdown: failed to stop the preview query server")
         if self._oc_server:
             try:
                 self._oc_server.stop()

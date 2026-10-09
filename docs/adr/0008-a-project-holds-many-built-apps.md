@@ -113,7 +113,12 @@ fast-forward means the build's work never reaches the repo at all.
   The real cost is a published app, which is a running container on a hardware tier, so the rail
   shows which apps are live. If pressure is ever needed, it belongs on live apps, never on app
   count.
-- **One preview at a time.** Switching app in the rail stops the supervisor and restarts it in the
-  new directory. A build already running keeps running, and the rail marks that app busy.
+- **At most three previews at a time** (amended for #739; this said "one preview at a time", which
+  stopped being true when each open app kept its own preview). Switching app in the rail leaves the
+  old app's preview running; the new app's starts when its pane asks for it. A preview nobody has viewed for 180 s is
+  stopped by a background sweep, whether or not anyone ever visited it — a Build's page check
+  starts one that nobody may open. Beyond three running previews the least recently viewed is
+  stopped; never the selected app's, and never the one a running build's page check is reading. A
+  build already running keeps running, and the rail marks that app busy.
 - **The Default rename in `handoff.md` §4 is deleted.** It was specified, never built.
 - Language: [CONTEXT.md](../../CONTEXT.md).
