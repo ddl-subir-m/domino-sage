@@ -332,7 +332,8 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
 
     async def _http_proxy(request: Request, path: str) -> Response:
         kind = ("query" if path.startswith(_QUERY_PREFIX) else
-                "platform" if path.startswith(_PLATFORM_PREFIX) else "")
+                "platform" if path.startswith(_PLATFORM_PREFIX) else
+                "route" if path.startswith("api/") and not path.startswith(_LLM_PREFIX) else "")
         read_path = ("/" + path[len(_PLATFORM_PREFIX):] if kind == "platform" else "/" + path)
         context = (get_read_context(request.headers.get("X-Sage-Validation", ""),
                                     read_path, request.url.query, kind)

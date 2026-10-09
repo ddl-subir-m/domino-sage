@@ -83,7 +83,7 @@ from ..liveread import mcp as live_mcp
 from ..liveread import reference as live_reference
 from ..liveread import result as live_result
 from ..liveread import run as live_read
-from ..liveread.held import HeldRead, replaced, unsupported_numbers
+from ..liveread.held import HeldRead, replaced, unsupported_numbers, without_unsupported
 from ..pre_edit_guard import (
     PreEditAction,
     PreEditDecision,
@@ -4882,6 +4882,13 @@ _CHAT_NUMBERS_NOTE = (
     "values you were not given went to the person's table, and you cannot see it, so no number may "
     "come from it. Rewrite the answer without those numbers: say what was read, its columns and how "
     "many rows it has, and point the person at the table. This is the only recovery attempt."
+)
+# The same correction when every value WAS given (#747): the numbers disagree with rows it has.
+_CHAT_ROWS_NOTE = (
+    "Your answer states numbers that the rows you read do not carry: {numbers}. Take each number "
+    "from those rows, or from a total of a column or of one label's rows, and check it is the "
+    "figure for what the sentence names. If a number is not in them, leave it out. This is the "
+    "only recovery attempt."
 )
 
 
@@ -15361,25 +15368,40 @@ class Orchestrator:
         return {"path": path, "bytes": len(data)}
 
     def _unbacked_numbers(self, thread_id: str, body: str, prompt: str) -> list[str]:
-        """The answer's numbers no disclosed read carries, on a turn that had values withheld (#729).
+        """The answer's numbers no disclosed read this turn carries (#729, #747).
 
-        Keyed on a structure-only read because that is where every invented figure sat: a turn that
-        read nothing, or was handed every value it read, has nothing it could not see to invent.
+        Every turn that read, not only one with values withheld: a model handed all twenty rows
+        still wrote "$9.0M" for a team the rows put at $10.0M (#747). A turn that read nothing has
+        no rows to hold its words to.
         """
         reads = self._held(thread_id)
-        if not any(r.withheld for r in reads):
-            return []
-        return unsupported_numbers(body, reads, prompt)
+        return unsupported_numbers(body, reads, prompt) if reads else []
 
-    def _numbers_refused(self, thread_id: str) -> str:
-        """What ships instead of an answer that kept stating numbers it was never given (#729):
-        what was read, its shape and its row count, which is all a structure-only read may say."""
-        lines = ["I wasn't given the values from what I read, so I can't quote numbers from it."]
-        for r in self._held(thread_id):
-            if r.withheld:
-                lines.append(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
-                             f"columns {', '.join(r.columns)}.")
-        return "\n".join(lines)
+    def _numbers_note(self, thread_id: str, unbacked: list[str]) -> str:
+        """The one correction, said as what went wrong: values it never saw, or rows it misread."""
+        note = (_CHAT_NUMBERS_NOTE if any(r.withheld for r in self._held(thread_id))
+                else _CHAT_ROWS_NOTE)
+        return note.format(numbers=", ".join(unbacked))
+
+    def _numbers_left_out(self, thread_id: str, body: str, prompt: str) -> str:
+        """The answer without the sentences that kept stating numbers its reads do not carry, and
+        one note saying so (#729, #747). Never empty: the note stands alone if nothing else does.
+
+        On a withheld turn the note is #729's: what was read, its shape and its row count, which is
+        all a structure-only read may say. On a disclosed one it is a single line, because the model
+        was given the rows and the table beside the answer has the figures."""
+        reads = self._held(thread_id)
+        kept, _removed = without_unsupported(body, reads, prompt)
+        withheld = [r for r in reads if r.withheld]
+        if withheld:
+            note = "\n".join(
+                ["I wasn't given the values from what I read, so I can't quote numbers from it.",
+                 *(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
+                   f"columns {', '.join(r.columns)}." for r in withheld)])
+        else:
+            note = ("A figure was left out because it didn't match the rows I read. The table has "
+                    "the figures.")
+        return f"{kept}\n\n{note}" if kept else note
 
     def _chat_chart(self, thread_id: str, body: dict) -> tuple[bytes, str]:
         """A PNG drawn from a result this turn read, never from values the model sent (#729), and
@@ -17351,12 +17373,13 @@ class Orchestrator:
             # bare token under a half-finished answer.
             body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
             # The refuse half of #729, on every exit: a number no disclosed read carries does not
-            # ship. Bounded lanes only — a shell lane computes numbers its reads never handed it.
+            # ship, and only its sentence goes (#747). Bounded lanes only — a shell lane computes
+            # numbers its reads never handed it.
             if (answer_only or artifact_token is not None) and (
                     unbacked := self._unbacked_numbers(thread_id, body, prompt)):
-                log.warning("chat: %d stated number(s) carried by no disclosed read; the answer "
-                            "was replaced by what was read", len(unbacked))
-                body = self._numbers_refused(thread_id)
+                log.warning("chat: %d stated number(s) carried by no disclosed read; their "
+                            "sentences were left out", len(unbacked))
+                body = self._numbers_left_out(thread_id, body, prompt)
             # A tool's refusal, or any other word about Sage's plumbing, is not the answer (#733).
             # Dropping one still owes the final text event: it replaces the streamed prose.
             said = unnarrated(body, prompt)
@@ -18561,7 +18584,7 @@ class Orchestrator:
                                           tool=broken_call,
                                           fault=_INVALID_CALL_SAID[broken_category])
                                       if call_repair else
-                                      _CHAT_NUMBERS_NOTE.format(numbers=", ".join(unbacked))
+                                      self._numbers_note(thread_id, unbacked)
                                       if number_repair else
                                       "Your turn ended without an answer or an answer artifact. "
                                       "Answer the user's question using the work already done. "
@@ -24983,6 +25006,10 @@ class Orchestrator:
                 if store_clients:
                     yield persist({"type": "data-source-failed",
                                    "message": direct_store_notice(store_clients)})
+                routes_notice = (self._route_failures_notice(project)
+                                 if report.ok and (owns_turn or validate_page) else "")
+                if routes_notice:
+                    yield persist({"type": "data-source-failed", "message": routes_notice})
                 # A build that cannot read its data has not finished cleanly, so it does not say it
                 # has. What does NOT change is anything below this line: the code was written and it
                 # typechecks, and a store that was down for ten seconds must not cost the creator
@@ -24990,7 +25017,7 @@ class Orchestrator:
                 # ADR-0010 rules out.
                 refused = self._fresh_platform_read_failure(project, since=send_ts) if report.ok else None
                 queries_failed = bool(failed or catalog_faults or unread or store_clients)
-                if verification is not None and (queries_failed or refused):
+                if verification is not None and (queries_failed or refused or routes_notice):
                     verification["stages"]["data"] = "failed"
                     verification["overall"] = "failed"
                 if verification is not None and failed:
@@ -24999,11 +25026,12 @@ class Orchestrator:
                 if verification is not None:
                     project.evidence_recorder.verification(verification)
                 yield persist({"type": "done", "ok": (report.ok and not queries_failed
-                                                      and rt is None
+                                                      and rt is None and not routes_notice
                                                       and refused is None and not unbuilt),
                                "decision": ("queries failed" if queries_failed
                                             else "runtime failed" if rt
                                             else "platform read failed" if refused
+                                            else "app route failed" if routes_notice
                                             else f"incomplete — plan {_listed_steps(unbuilt)} not built"
                                             if unbuilt else decision.reason),
                                **({"verification": verification} if verification is not None else {})})
@@ -25956,7 +25984,8 @@ class Orchestrator:
                     return True
                 if outcome is not None:
                     reason = str(outcome.get("decision") or reason)
-                    if reason in {"pre_edit_limit", "context_limit", "platform read failed", "queries failed"}:
+                    if reason in {"pre_edit_limit", "context_limit", "platform read failed",
+                                  "queries failed", "app route failed"}:
                         # Data validation already used its allowed repair. A phase retry must not
                         # reset that budget or make another model call to probe an unavailable store.
                         return reason
@@ -26215,7 +26244,8 @@ class Orchestrator:
         if _APP_ID.fullmatch(segment):
             path = rest
         path = "/" + path.lstrip("/")
-        kind = "query" if path.startswith("/api/queries/") else "platform"
+        kind = ("query" if path.startswith("/api/queries/") else
+                "platform" if path.startswith("/api/domino/") else "route")
         if path.startswith("/api/domino/"):
             path = path[len("/api/domino"):]
         context = self.capture_preview_read(validation_id, path, kind=kind)
@@ -31557,6 +31587,26 @@ class Orchestrator:
         except Exception:
             log.exception("preview queries: could not read what failed; saying nothing")
             return {}
+
+    @staticmethod
+    def _route_failures_notice(project: Project) -> str:
+        """One sentence for the person about the app's own routes the page read and that did not
+        answer with live data (#743), or "" when none failed. A section fed by `app.py` is a data
+        read like a query: one that failed or served made-up records is not a clean build."""
+        validation = project.page_validation
+        failed = {read["path"]: read for read in (validation.data_reads if validation else [])
+                  if read["kind"] == "route" and read["outcome"] == "failed"}
+        if not failed:
+            return ""
+        named = "; ".join(
+            f"`{path}` answered with links to a host reserved for examples, such as example.com, "
+            "so what it shows is made up" if read.get("reason") == "placeholder_host" else
+            f"`{path}` failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')})"
+            for path, read in failed.items())
+        return brand.text(
+            "While {assistantName} checked the page, this {builtApp}'s own server did not answer "
+            "with live data: {named}. The sections that read it are not showing real data.",
+            named=named)
 
     def _refused_queries(self, project: Project) -> dict[str, str]:
         """The failed queries the app's own query server refused as the request's fault, each with
