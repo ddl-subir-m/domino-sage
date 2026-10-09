@@ -15383,8 +15383,8 @@ class Orchestrator:
         withheld = [r for r in reads if r.withheld]
         lines = (["I wasn't given the values from what I read, so I can't quote numbers from it."]
                  if withheld else
-                 ["Some numbers I wrote didn't match the rows I read, so I've left them out. The "
-                  "table has the figures."])
+                 [("Some numbers I wrote didn't match the rows I read, so I've left them out. The "
+                   "table has the figures.")])
         for r in withheld or reads:
             lines.append(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
                          f"columns {', '.join(r.columns)}.")
