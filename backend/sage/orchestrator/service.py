@@ -602,6 +602,14 @@ def _supervisor_class(workspace: Path):
     if stack is not None and stack.preview == "uvicorn":
         return UvicornSupervisor
     return ViteSupervisor
+
+
+def _startup_failure(status: dict) -> dict:
+    """A preview that never served the page, as the repair turn reads it (#728). The browser saw
+    nothing, so the only evidence is what the server printed: the traceback the preview's Server
+    output pane shows."""
+    return {"message": status.get("error") or "App startup failed",
+            "stack": "\n".join(status.get("output") or ()), "source": "startup"}
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
@@ -22140,6 +22148,12 @@ class Orchestrator:
             "it: read what the response actually holds rather than assuming its shape. Find and fix "
             "the root cause.\n\nError: {message}\n\nServer output:\n{stack}"
         )
+        STARTUP_FIX_NUDGE = (
+            "The app compiled, but its server failed to start: it raised while importing or "
+            "starting the app, so no page was ever served. This is not a browser error. Fix the "
+            "file and line the server output below names, and find and fix the root cause."
+            "\n\nError: {message}\n\nServer output:\n{stack}"
+        )
         PLATFORM_READ_NUDGE = (
             "The app's read of the platform API was refused while the preview ran it: {status} on "
             "`{path}`. Evidence: {reason}. Requested Dataset IDs: {resource_ids}. "
@@ -24418,7 +24432,8 @@ class Orchestrator:
                     first_line = (rt.get("message") or "runtime error").splitlines()[0][:140]
                     iterate_reason = f"app crashed at runtime — fixing ({first_line})"
                     yield {"type": "iterate", "reason": iterate_reason}
-                    nudge = SERVER_FIX_NUDGE if rt.get("source") == "server" else RUNTIME_FIX_NUDGE
+                    nudge = {"server": SERVER_FIX_NUDGE,
+                             "startup": STARTUP_FIX_NUDGE}.get(rt.get("source"), RUNTIME_FIX_NUDGE)
                     current = nudge.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
                     continue
                 # The relay refused a platform read while this turn's code ran (#556). No wait of
@@ -25688,7 +25703,7 @@ class Orchestrator:
                     validation.generation = status["generation"]
                     if status["state"] == "failed":
                         validation.stages["startup"] = "failed"
-                        validation.error = {"message": status.get("error") or "App startup failed"}
+                        validation.error = _startup_failure(status)
                         return validation
                     if status["state"] == "ready":
                         validation.stages["startup"] = "passed"
@@ -25744,7 +25759,7 @@ class Orchestrator:
             if (validation.generation and status["generation"] == validation.generation
                     and status["state"] == "failed"):
                 validation.stages["startup"] = "failed"
-                validation.error = validation.error or {"message": status.get("error") or "App startup failed"}
+                validation.error = validation.error or _startup_failure(status)
             # What the app's own `answer()` answered in this document's server, by whatever route
             # called it (#730): a read like any the proxy saw, and its refusal sentence the reason.
             for answered in (supervisor.query_reads() if validation.generation else []):
@@ -25759,6 +25774,9 @@ class Orchestrator:
                 validation.data_reads.append(read)
                 if read["outcome"] == "failed" and answered.get("error"):
                     validation.query_failures[read["path"].rsplit("/", 1)[-1]] = answered["error"]
+=======
+                validation.error = validation.error or _startup_failure(status)
+>>>>>>> origin/main
             validation.closed = True
 
     def _active_validation(self, validation_id: str) -> PageValidation | None:
