@@ -9,7 +9,7 @@ import pytest
 
 from sage.driver.opencode import with_attachment_listing
 from sage.liveread import mcp, run
-from sage.liveread.data_use import OPEN_CODE_DATA_CARRIERS, DataUse
+from sage.liveread.data_use import OPEN_CODE_DATA_CARRIERS, DataUse, fold_requests
 from sage.orchestrator import brand
 
 from .test_a_live_read_reaches_the_person_end_to_end import Warehouse, _call, _orch
@@ -431,7 +431,7 @@ def test_transport_failure_keeps_delivery_unknown(tmp_path):
 
     with pytest.raises(OSError):
         list(data.observe(fail(), request, used))
-    event = journal[-1]["dataUsed"][0]
+    event = fold_requests(journal)[-1]["dataUsed"][0]
     assert event["requests"][0]["state"] == "failed"
     assert event["requests"][0]["failure"] == "transport"
     assert event["requests"][0]["delivery"] == "unknown"
@@ -655,7 +655,7 @@ def test_selected_operation_values_reused_by_compaction_are_tracked(tmp_path):
 
     assert used == {oid}
     assert "780" in json.dumps(prepared["messages"])
-    event = journal[-1]["dataUsed"][0]
+    event = fold_requests(journal)[-1]["dataUsed"][0]
     assert event["requests"][0]["requested_alias"] == "alias"
     assert event["requests"][0]["state"] == "response_completed"
 
@@ -794,7 +794,7 @@ def test_mcp_text_result_parts_track_the_selected_data_operation(tmp_path):
 
     assert used == {json.loads(reply)["data_use"]}
     assert "780" in json.dumps(prepared["messages"])
-    event = journal[-1]["dataUsed"][0]
+    event = fold_requests(journal)[-1]["dataUsed"][0]
     assert event["requests"][0]["state"] == "response_completed"
     assert event["requests"][0]["requested_alias"] == "alias"
 
@@ -820,7 +820,7 @@ def test_mcp_json_rpc_result_parts_track_the_selected_data_operation(tmp_path):
                       prepared, used))
 
     assert used == {json.loads(framed["result"]["content"][0]["text"])["data_use"]}
-    assert journal[-1]["dataUsed"][0]["requests"][0]["state"] == "response_completed"
+    assert fold_requests(journal)[-1]["dataUsed"][0]["requests"][0]["state"] == "response_completed"
 
 
 def test_mcp_error_text_parts_preserve_the_error_without_inventing_lineage():
