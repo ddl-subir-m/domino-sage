@@ -89,6 +89,7 @@ from ..pre_edit_guard import (
     PreEditGuard,
     PreEditState,
     PreEditTrigger,
+    keeps_context,
 )
 from ..preview import page_check
 from ..preview.prefix import domino_base_prefix, publish_available
@@ -5198,6 +5199,10 @@ def _take_no_build_marker(text: str) -> tuple[str, bool]:
 ALREADY_DONE_MARKER = "ALREADY_DONE"
 _ALREADY_DONE_LINE = re.compile(
     rf"^[ \t]*[`*_]*{ALREADY_DONE_MARKER}[`*_]*[ \t]*$\n?", re.MULTILINE)
+_ALREADY_DONE_NOTE = (
+    "If your previous turn already made exactly what this request asks, say so in a sentence "
+    f"naming the file and line, write nothing, and end your reply with {ALREADY_DONE_MARKER} on a "
+    "line by itself.")
 
 
 def _take_already_done_marker(text: str) -> tuple[str, bool]:
@@ -20745,9 +20750,7 @@ class Orchestrator:
              "Implement the same Build intent now."),
             # Here and not only in AGENTS.md: an app keeps the AGENTS.md it was born with, so this
             # is the one place every app older than the marker can learn it (#680).
-            ("If your previous turn already made exactly what this request asks, say so in a "
-             "sentence naming the file and line, write nothing, and end your reply with "
-             f"{ALREADY_DONE_MARKER} on a line by itself."),
+            _ALREADY_DONE_NOTE,
             cls._build_source_note(project.app_for_turn().path),
         ]
         if changed:
@@ -20758,6 +20761,19 @@ class Orchestrator:
         if objective:
             parts.append("First unfinished implementation objective:\n" + objective)
         return "\n\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _pre_edit_nudge(read: list[str]) -> str:
+        """Ask the attempt that spent its work budget to edit now, in the session it built."""
+        parts = [
+            ("You have read enough. This is the only recovery: make the first app edit now with "
+             "what you already have. The next tool call must edit the app file the change belongs "
+             "in. Do not read another file first."),
+            _ALREADY_DONE_NOTE,
+        ]
+        if read:
+            parts.append("Files you already read (JSON array):\n" + json.dumps(read))
+        return "\n\n".join(parts)
 
     @staticmethod
     def _context_repair_objective(iterate_reason: str, broken_retry_note: str = "") -> str:
@@ -22294,6 +22310,8 @@ class Orchestrator:
         invalid_seen: set[tuple[str, str]] = set()
         seen: set[tuple[str, object]] = self._seen_baseline(
             client, sid, limit=self._build_policy.poll_message_limit)
+        # Files each session read, in order. A kept-context pre-edit recovery names them (#723).
+        read_paths: dict[str, list[str]] = {}
 
         def apply_pre_edit_decision(decision: PreEditDecision):
             """Apply the atomic guard winner and return its resulting action."""
@@ -22350,27 +22368,33 @@ class Orchestrator:
                 guard.claim_cancellation()
                 yield handle_stop()
                 return PreEditAction.STOP
+            kept_context = False
             try:
                 # User-side writes, the second authoritative witness, recovery ownership, and the
                 # fresh session form one tree decision. Stop is serialized inside the replacement.
                 with project.pre_edit_tree_lock:
                     granted = guard.begin_recovery()
                     if granted.action is PreEditAction.RECOVER:
-                        sid = self._replace_build_session(
-                            project,
-                            client,
-                            project.build_conversation,
-                            reason="pre_edit_recovery",
-                            persist=owns_turn,
-                        )
+                        kept_context = keeps_context(granted.trigger) and broken_call is None
+                        if not kept_context:
+                            sid = self._replace_build_session(
+                                project,
+                                client,
+                                project.build_conversation,
+                                reason="pre_edit_recovery",
+                                persist=owns_turn,
+                            )
                         # Session publication and guard activation are one decision with Stop.
                         # Stop may win after the network create returns but before this point.
                         with self._stop_control_lock:
-                            if project.stop_requested or not guard.start_recovery():
+                            if project.stop_requested or not guard.start_recovery(
+                                    kept_context=kept_context):
                                 raise BuildSessionCreationCancelled()
-                        current = self._pre_edit_recovery_packet(
-                            project, project.active_build_intent, guard.baseline,
-                            granted.trigger)
+                        current = (
+                            self._pre_edit_nudge(read_paths.get(sid, [])) if kept_context
+                            else self._pre_edit_recovery_packet(
+                                project, project.active_build_intent, guard.baseline,
+                                granted.trigger))
             except BuildSessionCreationCancelled:
                 guard.claim_cancellation()
                 yield handle_stop()
@@ -22406,6 +22430,15 @@ class Orchestrator:
             if granted.action is not PreEditAction.RECOVER:
                 yield handle_stop()
                 return PreEditAction.STOP
+            if kept_context:
+                # Same session: its first-send carriers and `seen` already stand.
+                yield persist({
+                    "type": "build-recovery",
+                    "reason": "pre_edit_limit",
+                    "attempt": 1,
+                    "message": "No changes yet. Asking for the first edit with what it has read.",
+                })
+                return PreEditAction.RECOVER
             implementation_session_reason = "pre_edit_recovery"
             implementation_session_created = True
             implementation_session_persisted = owns_turn
@@ -23058,6 +23091,11 @@ class Orchestrator:
                                 stop_for_invalid = False
                             last_active = None  # completed: let the next running tool re-announce
                             log.info("tool done: %s %s", tool, _tool_detail(tool, part))
+                            if tool == "read" and status == "completed":
+                                read_path = _tool_detail(tool, part)
+                                session_reads = read_paths.setdefault(sid, [])
+                                if read_path and read_path not in session_reads:
+                                    session_reads.append(read_path)
                             args = (part.get("state") or {}).get("input") \
                                 if isinstance(part.get("state"), dict) else None
                             if not looped and brake.saw(_repeat_fingerprint(tool, args),

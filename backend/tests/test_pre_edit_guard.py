@@ -20,6 +20,7 @@ from sage.pre_edit_guard import (
     PreEditGuard,
     PreEditState,
     PreEditTrigger,
+    keeps_context,
 )
 from sage.tool_result_window import (
     CompletedToolResult,
@@ -169,6 +170,41 @@ def test_model_output_limit_gets_one_clean_recovery_then_terminal_stop():
     assert second == guard.consume_pending()
     assert second.action is PreEditAction.STOP
     assert second.trigger is PreEditTrigger.MODEL_OUTPUT_LIMIT
+
+
+def test_only_the_work_budget_triggers_keep_the_session_context():
+    """#723: the clean session is kept for the triggers whose context cannot carry a nudge."""
+    assert {trigger for trigger in PreEditTrigger if keeps_context(trigger)} == {
+        PreEditTrigger.MODEL_CALLS, PreEditTrigger.TOOL_RESULT_BYTES,
+    }
+
+
+@pytest.mark.parametrize(
+    ("trigger", "kept"),
+    [
+        (PreEditTrigger.MODEL_CALLS, True),
+        (PreEditTrigger.TOOL_RESULT_BYTES, True),
+        (PreEditTrigger.REQUEST_BYTES, False),
+    ],
+)
+def test_a_kept_context_recovery_does_not_recount_what_the_session_already_read(trigger, kept):
+    calls = 1 if trigger is PreEditTrigger.MODEL_CALLS else 99
+    request = 50 if trigger is PreEditTrigger.REQUEST_BYTES else 999
+    guard, _ = _guard(calls=calls, request=request, results=100)
+    read = (CompletedToolResult("a", 60), CompletedToolResult("b", 30))
+    assert guard.decide_request(read[:1], 1).action is PreEditAction.ROUTE
+    size = 51 if trigger is PreEditTrigger.REQUEST_BYTES else 1
+    extra = (CompletedToolResult("c", 20),) if trigger is PreEditTrigger.TOOL_RESULT_BYTES else ()
+    tripped = guard.decide_request(read + extra, size)
+    assert tripped == PreEditDecision(PreEditAction.RECOVER, trigger)
+    assert guard.consume_pending() == tripped
+    assert guard.start_recovery(kept_context=keeps_context(trigger))
+
+    assert guard.diagnostic()["attempt"] == "recovery"
+    assert guard.diagnostic()["sessionGeneration"] == (0 if kept else 1)
+    # The kept session resends a, b and c. Recounting them would stop the nudge on its first call.
+    decision = guard.decide_request(read + (CompletedToolResult("c", 20),), 1)
+    assert decision.action is (PreEditAction.ROUTE if kept else PreEditAction.STOP)
 
 
 def test_model_output_limit_after_an_authoritative_edit_disarms_without_recovery():
