@@ -17,6 +17,7 @@ class Preview:
     def __init__(self, app, state='ready'):
         self.app, self.state, self.generation = app, state, 0
         self.restarts = 0
+        self.output = []
 
     def retry_start(self, *, explicit=False):
         assert explicit
@@ -26,7 +27,8 @@ class Preview:
 
     def status(self):
         return {'appId': self.app, 'generation': f'preview:{self.generation}',
-                'state': self.state, 'error': 'ImportError: missing_dependency' if self.state == 'failed' else None}
+                'state': self.state, 'error': 'ImportError: missing_dependency' if self.state == 'failed' else None,
+                'output': list(self.output)}
 
     def runtime_fault(self):
         return None
@@ -287,6 +289,68 @@ def test_server_exit_after_document_load_is_a_known_failure(build):
     _, done = run(orch, report=exit_after_ack)
     assert done['ok'] is False
     assert done['verification']['stages']['startup'] == 'failed'
+
+
+# What each server prints when the app will not start (#728): the line the repair has to fix.
+STARTUP_OUTPUT = {
+    'fastapi-antd': ([
+        'Traceback (most recent call last):',
+        '  File "/mnt/code/apps/app_1/app.py", line 28, in <module>',
+        '    queries = load_queries(project_root)',
+        '  File "/mnt/code/apps/app_1/sage_queries.py", line 305, in load_queries',
+        '    raw = _read_json(project_root / _QUERIES_REL)',
+        "TypeError: unsupported operand type(s) for /: 'str' and 'str'",
+    ], 'File "/mnt/code/apps/app_1/app.py", line 28'),
+    'react-vite': ([
+        'failed to load config from /mnt/code/apps/app_1/vite.config.ts',
+        'error when starting dev server:',
+        "Error: Cannot find module '@vitejs/plugin-react'",
+    ], 'failed to load config from /mnt/code/apps/app_1/vite.config.ts'),
+}
+
+
+def repair_prompt(orch, oc, *, report=None):
+    """The prompt of the one repair turn the first validation's failure earns."""
+    orch._build_policy = replace(orch._build_policy, runtime_repair_limit=1)
+    oc.turns.append(Turn(writes={'src/App.tsx': '// repaired\n'}))
+    run(orch, report=report)
+    return oc.prompts[1]['text']
+
+
+@pytest.mark.parametrize('stack', sorted(STARTUP_OUTPUT))
+def test_a_server_that_fails_to_start_is_repaired_from_its_own_output(build, stack):
+    orch, project, oc = build
+    output, named_line = STARTUP_OUTPUT[stack]
+    project.supervisor.state, project.supervisor.output = 'failed', output
+    prompt = repair_prompt(orch, oc)
+    assert named_line in prompt
+    assert 'rendered in the browser' not in prompt
+    assert 'failed to start' in prompt
+
+
+@pytest.mark.parametrize('stack', sorted(STARTUP_OUTPUT))
+def test_a_server_that_exits_after_the_page_loaded_is_repaired_from_its_own_output(build, stack):
+    orch, project, oc = build
+    output, named_line = STARTUP_OUTPUT[stack]
+    def exit_after_ack(event):
+        if len(oc.prompts) == 1:
+            orch.record_preview_ack(event['validationId'])
+            project.supervisor.state, project.supervisor.output = 'failed', output
+    prompt = repair_prompt(orch, oc, report=exit_after_ack)
+    assert named_line in prompt
+    assert 'rendered in the browser' not in prompt
+
+
+def test_a_browser_crash_is_still_repaired_as_a_browser_crash(build):
+    orch, _, oc = build
+    output, named_line = STARTUP_OUTPUT['fastapi-antd']
+    def crash(event):
+        if len(oc.prompts) == 1:
+            orch.record_preview_ack(event['validationId'])
+            orch.record_runtime_error(output[-1], '\n'.join(output), validation_id=event['validationId'])
+    prompt = repair_prompt(orch, oc, report=crash)
+    assert 'rendered in the browser' in prompt
+    assert named_line in prompt
 
 
 def test_failed_phase_retains_its_code_check_outcome(tmp_path, monkeypatch):
