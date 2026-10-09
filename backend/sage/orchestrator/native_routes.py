@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from .. import build_intent, timing, transient
 from ..context_rollover import ContextAction
@@ -188,8 +189,10 @@ def install(app, get_orchestrator):
             project, session = _scope(get_orchestrator(), request)
             body = await request.json()
             view = sdk_view(body.get("prompt", []), body.get("tools", []))
-            prepared, _, _, capability, _effort = project.shim.prepare(
-                view, project.id, session, native=True)
+            # In the threadpool, as every `prepare` below is: it can wait for a model's
+            # measurement (#724), and on the event loop that wait stalls every other request.
+            prepared, _, _, capability, _effort = await run_in_threadpool(
+                project.shim.prepare, view, project.id, session, native=True)
             return {"model": prepared["model"], "protocol": capability.protocol.value,
                     "effort": prepared.get("reasoning_effort"), "native": capability.native}
         except (ValueError, KeyError, TypeError) as error:
@@ -290,16 +293,16 @@ def install(app, get_orchestrator):
                 opaque = any(call.get("extra_content", {}).get("google", {}).get("thought_signature")
                              for message in body.get("messages", []) for call in message.get("tool_calls", []))
                 session_policy(project.record.path, session, project.control.snapshot(), opaque=bool(opaque))
-                outbound, labels, used, capability, effort_decision = project.shim.prepare(
-                    body, project.id, session, resolved, native=True,
+                outbound, labels, used, capability, effort_decision = await run_in_threadpool(
+                    project.shim.prepare, body, project.id, session, resolved, native=True,
                     rewrite_counts=rewrite_counts)
                 if outbound["model"] != body.get("model") or capability.protocol is not protocol:
                     raise NativePolicyError("The resolved model route changed. Retry this turn.")
                 outbound = gemini_thoughts(outbound, capability)
                 view = outbound
             else:
-                native_preparation = prepare_native(
-                    project.shim, body, protocol, project.id, session, resolved,
+                native_preparation = await run_in_threadpool(
+                    prepare_native, project.shim, body, protocol, project.id, session, resolved,
                     policy_directory=project.record.path,
                     rewrite_counts=rewrite_counts)
                 outbound, labels, used, view, capability = native_preparation
