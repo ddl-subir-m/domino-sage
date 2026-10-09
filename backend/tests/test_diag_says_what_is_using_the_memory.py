@@ -240,3 +240,24 @@ def test_the_route_with_no_project_reports_the_process_side(bound, monkeypatch):
 
     assert got["counts"]["previews"] is None and got["counts"]["data_use_operations"] is None
     assert got["memory"]["cgroup"] == "v2"
+
+
+def test_the_route_lists_each_live_opencode_instance_and_its_last_use(bound, monkeypatch):
+    """#742: a live check sees a directory leave this list when its instance is disposed."""
+    import time
+
+    now = time.monotonic()
+    client = SimpleNamespace(instances=lambda: {"/w/a": now - 400, "/w/chat": now - 2})
+    monkeypatch.setattr(app_module.orchestrator, "_oc_client", client)
+
+    got = _get()["counts"]["opencode_instances"]
+
+    assert got["live"] == 2 and got["cap"] == 3 and got["idle_window_s"] == 300
+    assert [i["directory"] for i in got["instances"]] == ["/w/chat", "/w/a"]
+    assert 2 <= got["instances"][0]["idle_s"] < 60 <= 400 <= got["instances"][1]["idle_s"]
+
+
+def test_the_route_with_no_opencode_reports_no_instances(bound, monkeypatch):
+    monkeypatch.setattr(app_module.orchestrator, "_oc_client", None)
+
+    assert _get()["counts"]["opencode_instances"] is None

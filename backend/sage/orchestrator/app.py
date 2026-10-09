@@ -2012,14 +2012,25 @@ def _preview_diag(project) -> dict:
             "apps": apps}
 
 
+def _opencode_instances_diag(client) -> dict:
+    """Each directory Sage believes OpenCode holds an instance for, most recently used first (#742)."""
+    from .service import _OPENCODE_CAP, _OPENCODE_IDLE_S
+
+    now = time.monotonic()
+    used = sorted(client.instances().items(), key=lambda kv: kv[1], reverse=True)
+    return {"idle_window_s": _OPENCODE_IDLE_S, "cap": _OPENCODE_CAP, "live": len(used),
+            "instances": [{"directory": d, "idle_s": round(now - last, 1)} for d, last in used]}
+
+
 @control_app.get("/api/diag/resources")
 def diag_resources() -> JSONResponse:
     """What the workspace's memory is spent on (#738): the cgroup's usage, limit and OOM counts, and
     every process under the orchestrator with its RSS, grouped by role — the orchestrator,
     `opencode serve` and its children, each preview's tree labelled `preview:<app id>`, Chromium,
     tsc and oxlint. Then the counts of what this process holds: previews (and whether each is up
-    and was ever viewed), OpenCode sessions created this boot, each preview's query cache, and the
-    Data Use operations.
+    and was ever viewed), OpenCode sessions created this boot, the OpenCode instances Sage believes
+    are live and how long each has been idle, each preview's query cache, and the Data Use
+    operations.
 
     Reads only. Never raises and never starts anything: no project is attached and no server is
     started to answer it, so an unbound section reads null and a broken one reads its exception.
@@ -2048,6 +2059,8 @@ def diag_resources() -> JSONResponse:
     body["counts"] = {
         "previews": previews,
         "opencode_sessions_created": _guard(OpenCodeClient.sessions_created),
+        "opencode_instances": None if orchestrator._oc_client is None
+        else _guard(lambda: _opencode_instances_diag(orchestrator._oc_client)),
         "data_use_operations": None if project is None
         else _guard(lambda: len(project.shim.data_use.operations)),
     }

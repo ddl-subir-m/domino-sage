@@ -12,7 +12,9 @@ import json
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
@@ -349,6 +351,50 @@ def _flatten_message(m: dict) -> dict:
     }
 
 
+class InstanceLedger:
+    """The directories OpenCode holds an instance for on Sage's behalf, and when each was last used.
+
+    OpenCode builds an instance for every directory a request names and keeps it until disposed —
+    measured on the pinned 1.18.4, about 80 MB each, and nothing released them (#742). A release
+    holds back every new use of its directory until it is done, so no request reaches an instance
+    mid-dispose; the next use after it reaches a freshly loaded one.
+    """
+
+    def __init__(self) -> None:
+        self._used: dict[str, float] = {}
+        self._releasing: set[str] = set()
+        self._gate = threading.Condition()
+
+    def use(self, directory: str | None) -> None:
+        if not directory:
+            return
+        with self._gate:
+            self._gate.wait_for(lambda: directory not in self._releasing)
+            self._used[directory] = time.monotonic()
+
+    def snapshot(self) -> dict[str, float]:
+        with self._gate:
+            return dict(self._used)
+
+    def drop(self, directory: str) -> None:
+        with self._gate:
+            self._used.pop(directory, None)
+
+    @contextmanager
+    def releasing(self, directory: str) -> Iterator[bool]:
+        """Hold back new uses of `directory` for the block. False when a release is already on."""
+        with self._gate:
+            mine = directory not in self._releasing
+            self._releasing.add(directory)
+        try:
+            yield mine
+        finally:
+            if mine:
+                with self._gate:
+                    self._releasing.discard(directory)
+                    self._gate.notify_all()
+
+
 @dataclass
 class OpenCodeClient:
     """Sage's half of the OpenCode HTTP API — and it speaks v1 for everything a TURN does.
@@ -390,6 +436,29 @@ class OpenCodeClient:
     # before this process started is simply absent, and `is_running` degrades to what it already
     # did when it could not tell — see there.
     _dirs: dict[str, str] = dataclass_field(default_factory=dict)
+    _instances: InstanceLedger = dataclass_field(default_factory=InstanceLedger)
+
+    def instances(self) -> dict[str, float]:
+        """Each directory this client has an OpenCode instance live for, with its last use."""
+        return self._instances.snapshot()
+
+    def release_instance(self, directory: str) -> bool:
+        """Dispose `directory`'s instance unless OpenCode says a session there is not idle (#742).
+
+        Asked of OpenCode rather than of Sage's own turn state, so a session still running past
+        the turn that started it — a compaction, a subagent — keeps its directory too. True when
+        the instance was disposed.
+        """
+        with self._instances.releasing(directory) as mine:
+            if not mine:
+                return False
+            r = httpx.get(f"{self.base_url}/session/status", params={"directory": directory},
+                          timeout=30, verify=_TLS)
+            r.raise_for_status()
+            if any(str((s or {}).get("type") or "") != "idle" for s in r.json().values()):
+                return False
+            self.dispose_instance(directory)
+            return True
 
     @staticmethod
     def sessions_created() -> int:
@@ -403,6 +472,7 @@ class OpenCodeClient:
         Pinned 1.18.4's v1 /agent and tool-list routes do not initialize these services.
         The v2 location-aware agent read does, including the first-use watcher cost (#417).
         """
+        self._instances.use(directory)
         r = httpx.get(f"{self.base_url}/api/agent",
                       params={"location[directory]": directory}, timeout=self.timeout_s,
                       verify=_TLS)
@@ -418,6 +488,7 @@ class OpenCodeClient:
         r = httpx.post(f"{self.base_url}/instance/dispose", params={"directory": directory},
                        timeout=60, verify=_TLS)
         r.raise_for_status()
+        self._instances.drop(directory)
 
     def create_session(self, directory: str, model: dict | None = None) -> str:
         # A title, so OpenCode does not spend a model call inventing one (#496). `SessionPrompt.
@@ -440,6 +511,7 @@ class OpenCodeClient:
         # test below green against a rig whose project is `global`. It is sent because every other
         # v1 call here sends it, and because v1 has answered wrong without a workspace before — see
         # `is_running`. If it is ever proven pointless, the assertion in the driver test goes too.
+        self._instances.use(directory)
         body: dict = {"location": {"directory": directory}}
         if model:
             body["model"] = model
@@ -495,6 +567,7 @@ class OpenCodeClient:
         directory = self._dirs.get(active_id)
         if not directory:
             return False
+        self._instances.use(directory)
         seen = set()
         current = session_id
         for _ in range(16):
@@ -537,6 +610,7 @@ class OpenCodeClient:
         emitted on an earlier poll and is already in the caller's `seen` set, so nothing is lost by
         not looking at it again.
         """
+        self._instances.use(self._dirs.get(session_id))
         params: dict = {"limit": limit} if limit is not None else {}
         r = httpx.get(f"{self.base_url}/session/{session_id}/message",
                       params=params, timeout=30, verify=_TLS)
@@ -610,6 +684,7 @@ class OpenCodeClient:
             body["model"] = model
         if agent:
             body["agent"] = agent
+        self._instances.use(self._dirs.get(session_id))
         r = httpx.post(f"{self.base_url}/session/{session_id}/prompt_async",
                        json=body, timeout=self.timeout_s, verify=_TLS)
         r.raise_for_status()
@@ -623,6 +698,7 @@ class OpenCodeClient:
         wait_for_idle when the session is running, in case a later build returns before it idles.
         """
         body = {"providerID": provider_id, "modelID": model_id, "auto": auto}
+        self._instances.use(self._dirs.get(session_id))
         r = httpx.post(
             f"{self.base_url}/session/{session_id}/summarize",
             json=body, timeout=self.timeout_s, verify=_TLS)
@@ -660,6 +736,7 @@ class OpenCodeClient:
         # `directory` it returns {} for a session that is plainly running. v2's /session/active
         # sees only v2 turns, so it reported every v1 turn as finished the instant it started.
         work = directory or self._dirs.get(session_id)
+        self._instances.use(work)
         params = {"directory": work} if work else {}
         r = httpx.get(f"{self.base_url}/session/status", params=params, timeout=30, verify=_TLS)
         r.raise_for_status()
@@ -691,6 +768,7 @@ class OpenCodeClient:
     def interrupt(self, session_id: str) -> None:
         # v1's spelling of interrupt. v2's `/interrupt` only knows about v2 turns, and the turn
         # is a v1 one now, so stopping through it would report success and stop nothing.
+        self._instances.use(self._dirs.get(session_id))
         httpx.post(f"{self.base_url}/session/{session_id}/abort", timeout=30, verify=_TLS)
 
     def session_events(self, session_id: str, *, directory: str | None = None) -> SessionEvents:
@@ -698,6 +776,7 @@ class OpenCodeClient:
 
         `directory` is the workspace the session was created for. Omit it and the stream is silent.
         """
+        self._instances.use(directory)
         return SessionEvents(self.base_url, session_id, directory)
 
     def events(self, session_id: str) -> Iterator[AgentEvent]:
