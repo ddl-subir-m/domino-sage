@@ -107,13 +107,14 @@ def test_the_marker_clears_in_the_same_write_as_the_view():
     reads attachments — so a clear that happens at the end of the function instead leaves a window
     where the turns are on screen under a row still saying it is opening.
 
-    The window is what this measures: the conversation answers at once and its attachments do not,
-    and the snapshot is taken inside the gap. Settling past it would pass on either."""
+    The window is what this measures: the conversation answers at once and its attachments are
+    held, and the snapshot is taken once the attachments read has been made. Settling past it
+    would pass on either."""
     settled = _run([{"act": "click", "thread": "conv_b"},
                     {"act": "settle"},
                     {"act": "click", "thread": "conv_a",
-                     "latency": {"conv_a": 0, "conv_a:context": 120}},
-                    {"act": "settle", "ms": 25}])[-1]
+                     "latency": {"conv_a": 0, "conv_a:context": "hold"}},
+                    {"act": "until", "held": "conv_a:context"}])[-1]
     assert settled["thread"] == "conv_a"
     assert settled["openingThreadId"] is None
     assert settled["pane"] == "turns" and settled["drawnTurns"] == ["a turn"]
@@ -163,12 +164,12 @@ def test_a_cross_project_open_keeps_its_marker_through_the_scope_switch():
     the pane falls to the blank landing — the symptom this ticket was opened on, reintroduced by
     the fix for it, on the open that lasts longest.
 
-    The snapshot is taken INSIDE `setScope`'s own reload, which is what `threads:list` holds
-    open. Settling past it passes either way."""
+    The snapshot is taken INSIDE `setScope`'s own reload: `threads:list` is held, and the
+    snapshot waits for that read to be made. Settling past it passes either way."""
     inside = _run([{"act": "click", "thread": "conv_b"},
                    {"act": "settle"},
-                   {"act": "click", "thread": "conv_far", "latency": {"threads:list": 150}},
-                   {"act": "settle", "ms": 40}])[-1]
+                   {"act": "click", "thread": "conv_far", "latency": {"threads:list": "hold"}},
+                   {"act": "until", "held": "threads:list"}])[-1]
     # The scope switch has run: it is what nulls the open conversation.
     assert inside["thread"] is None
     assert inside["openingThreadId"] == "conv_far"
