@@ -144,6 +144,14 @@ class CachingExecutor:
             held -= self._rows(self._entries.pop(next(iter(self._entries)))[1])
         self._entries[key] = (now, result)
 
+    def footprint(self) -> dict:
+        """What the cache holds, for /api/diag/resources (#738). `bytes` is the JSON size of the
+        results, not their heap size, which is several times that."""
+        with self._lock:
+            held = [r for _, r in self._entries.values()]
+        return {"entries": len(held), "rows": sum(self._rows(r) for r in held),
+                "bytes": sum(len(json.dumps(r, default=str)) for r in held)}
+
     @staticmethod
     def _rows(result: Any) -> int:
         # At least one, so an empty result still costs a slot and an unbounded run of them is not free.

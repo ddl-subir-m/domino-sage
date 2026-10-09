@@ -51,7 +51,7 @@ _UI = _WB / "index.html"
 _DOOR_UI = _WB / "door.html"
 _FONT = Path(__file__).resolve().parents[1] / "ui" / "fonts" / "inter-latin-var.woff2"
 
-from .. import degraded, extension_mcp, project_secrets, timing
+from .. import degraded, extension_mcp, footprint, project_secrets, timing
 from .. import extensions as project_extensions
 from ..assets.provider import DominoAssetProvider, UnconfiguredAssetProvider
 from ..feedback.runner import FeedbackRunner
@@ -1989,6 +1989,70 @@ def diag_opencode(q: str = "", n: int = 400) -> PlainTextResponse:
     if not lines:
         return PlainTextResponse(f"(no lines match {q!r})" if q else "(no OpenCode log yet)")
     return PlainTextResponse("\n".join(lines))
+
+
+def _preview_diag(project) -> dict:
+    """Every preview this process holds, whether it is up, and what its query cache holds."""
+    from .service import _PREVIEW_CAP
+
+    now = time.monotonic()
+    apps = []
+    for view in {id(v): v for v in [*project._views.values(), project._selected_view]}.values():
+        sup = view.supervisor
+        executor = getattr(view.queries, "executor", None)
+        apps.append({
+            "app_id": getattr(view.workspace, "app_id", None),
+            "pid": getattr(getattr(sup, "_proc", None), "pid", None),
+            "alive": bool(getattr(sup, "running", False)),
+            "idle_s": None if sup.last_traffic is None else round(now - sup.last_traffic, 1),
+            "cache": None if executor is None else executor.footprint(),
+        })
+    return {"cap": _PREVIEW_CAP, "supervisors": len(apps),
+            "alive": sum(a["alive"] for a in apps),
+            "last_traffic_none": sum(a["idle_s"] is None for a in apps),
+            "apps": apps}
+
+
+@control_app.get("/api/diag/resources")
+def diag_resources() -> JSONResponse:
+    """What the workspace's memory is spent on (#738): the cgroup's usage, limit and OOM counts, and
+    every process under the orchestrator with its RSS, grouped by role — the orchestrator,
+    `opencode serve` and its children, each preview's tree labelled `preview:<app id>`, Chromium,
+    tsc and oxlint. Then the counts of what this process holds: previews (and whether each is up
+    and was ever viewed), OpenCode sessions created this boot, each preview's query cache, and the
+    Data Use operations.
+
+    Reads only. Never raises and never starts anything: no project is attached and no server is
+    started to answer it, so an unbound section reads null and a broken one reads its exception.
+    """
+    def _guard(read):
+        try:
+            return read()
+        except Exception as e:
+            return f"{type(e).__name__}: {e}"
+
+    project = orchestrator._project  # do NOT create one here
+    previews = None if project is None else _guard(lambda: _preview_diag(project))
+    roots = {}
+    server = getattr(getattr(orchestrator, "_oc_server", None), "_proc", None)
+    if server is not None:
+        roots[server.pid] = "opencode"
+    for app in previews["apps"] if isinstance(previews, dict) else []:
+        if app["pid"] is not None:
+            roots[app["pid"]] = f"preview:{app['app_id']}"
+    body = _guard(lambda: footprint.read(footprint.PROC_ROOT, footprint.CGROUP_ROOT,
+                                         orchestrator_pid=os.getpid(), roots=roots))
+    if isinstance(body, str):
+        body = {"detail": body}
+    from ..driver.opencode import OpenCodeClient
+
+    body["counts"] = {
+        "previews": previews,
+        "opencode_sessions_created": _guard(OpenCodeClient.sessions_created),
+        "data_use_operations": None if project is None
+        else _guard(lambda: len(project.shim.data_use.operations)),
+    }
+    return JSONResponse(content=body)
 
 
 @control_app.get("/api/project/build-diagnostics")
