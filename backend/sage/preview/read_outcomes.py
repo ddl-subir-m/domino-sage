@@ -12,6 +12,13 @@ _DATASETS = "/v4/datasetrw/datasets-v2"
 _PLATFORM_PATHS = ("/api/datasetrw/", "/api/governance/v1/", "/api/users/v1/self",
                    "/api/users/v1/users", "/api/users/v1/user/", _DATASETS,
                    "/v4/datasetrw/snapshots/", "/v4/datasetrw/snapshot/", "/sage/datasets")
+# The app's own `app.py` routes. Kept to `/api/<route>`: a segment after it can be a record's name.
+_ROUTE = re.compile(r"/api/(?!queries/|domino/|llm/)[A-Za-z0-9_-]+")
+# RFC 2606 / 6761 names reserved for examples. No live record links to one, so a route answering
+# with one is answering with content the app made up.
+_URL_HOST = re.compile(rb"https?:\\?/\\?/([A-Za-z0-9.-]+)", re.IGNORECASE)
+_RESERVED_DOMAINS = (b"example.com", b"example.net", b"example.org")
+_RESERVED_TLDS = (b"example", b"test", b"invalid")
 
 
 def read_request(path: str, query: str = "", *, kind: str = "platform") -> dict:
@@ -19,8 +26,12 @@ def read_request(path: str, query: str = "", *, kind: str = "platform") -> dict:
     path, _, embedded_query = path.partition("?")
     query = query or embedded_query
     path = "/" + path.lstrip("/")
-    kind = "query" if kind == "query" else "platform"
-    allowed = (path.startswith("/api/queries/") if kind == "query" else any(
+    kind = kind if kind in ("query", "route") else "platform"
+    if kind == "route":
+        route = _ROUTE.match(path)
+        path = route.group(0) if route else "/unrecognized"
+    allowed = (path.startswith("/api/queries/") if kind == "query" else
+               path != "/unrecognized" if kind == "route" else any(
         path.startswith(prefix) if prefix.endswith("/") else path == prefix
         for prefix in _PLATFORM_PATHS))
     if not allowed or len(path.encode()) > 200 or not _PATH.fullmatch(path):
@@ -67,6 +78,18 @@ def _empty(request: dict, body: bytes | None) -> bool:
     return set(request["resourceIds"]).issubset(returned_ids)
 
 
+def _reserved_host(body: bytes | None) -> bool:
+    # A bounded scan that keeps nothing: only whether a reserved host appears.
+    if body is None or len(body) > 1024 * 1024:
+        return False
+    for match in _URL_HOST.finditer(body):
+        host = match.group(1).lower().rstrip(b".")
+        if host.rsplit(b".", 1)[-1] in _RESERVED_TLDS or any(
+                host == domain or host.endswith(b"." + domain) for domain in _RESERVED_DOMAINS):
+            return True
+    return False
+
+
 def read_result(request: dict, status: int | None, body: bytes | None = None,
                 *, bound_ids=()) -> dict:
     """Classify HTTP/transport evidence, with emptiness only from a recognized response shape.
@@ -99,6 +122,8 @@ def read_result(request: dict, status: int | None, body: bytes | None = None,
         reason = "unavailable"
     elif not 200 <= status < 300:
         reason = "http_error"
+    elif safe["kind"] == "route" and _reserved_host(body):
+        reason = "placeholder_host"
     else:
         result["outcome"] = "empty" if status == 200 and _empty(safe, body) else "passed"
         return result
