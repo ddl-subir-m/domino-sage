@@ -660,12 +660,11 @@ window.SW = window.SW || {};
     const inChat = SW.router.get().mode === 'chat';
     const inBuild = SW.router.get().mode === 'build';
 
-    // A switch answers for the open Conversation or the selected app, so the list is read again
-    // whenever that changes.
+    // A switch answers for the open Conversation or the selected app. The store reads the list
+    // again whenever that changes; opening the panel reads it once more.
     const extensionTarget = SW.store.extensionTarget();
     const extensionWhere = extensionTarget.app ? 'app' : (SW.router.get().mode === 'build' ? '' : 'conversation');
-    const extensionKey = extensionTarget.app || extensionTarget.thread || '';
-    useEffect(() => { SW.store.loadExtensions(); }, [extensionKey]);
+    useEffect(() => { SW.store.loadExtensions(); }, []);
 
     const openResource = (resource) => SW.store.previewResource(resource.id);
 
