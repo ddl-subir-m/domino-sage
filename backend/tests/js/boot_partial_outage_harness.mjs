@@ -90,6 +90,8 @@ const sandbox = {
   },
   requestAnimationFrame: (fn) => fn(),
   document: { addEventListener() {}, querySelector: () => null, body: {}, documentElement: { style: { setProperty() {} } } },
+  location: { hash: '#/chat' },
+  addEventListener() {},
   React: { createElement: (t, p, ...c) => ({ t, p, c }), useState: () => [null, () => {}],
            useEffect: () => {}, useRef: () => ({ current: null }), Fragment: 'Fragment' },
   antd: {
@@ -140,7 +142,7 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
-for (const f of ['util.js', 'prefs.js', 'api.js', 'store.js']) {
+for (const f of ['util.js', 'prefs.js', 'api.js', 'store.js', 'router.js']) {
   vm.runInContext(fs.readFileSync(ROOT + f, 'utf8'), sandbox, { filename: f });
 }
 const SW = sandbox.SW;

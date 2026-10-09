@@ -221,7 +221,8 @@ window.SW = window.SW || {};
     // other (ADR-0008).
     apps: [],
     activeApp: null,
-    // The Project's own extensions (ADR-0071), `enabled` as read for `extensionScope`.
+    // The Project's own extensions (ADR-0071), `enabled` as read for `extensionScope`: the Project
+    // and the conversation or app a switch answers for.
     extensions: { items: [], builtinSkills: [], builtinSections: [] },
     extensionScope: '',
     // `GET /api/project/secrets` as answered: `{ available, reason, secrets: [{ name, note }] }`.
@@ -422,7 +423,22 @@ window.SW = window.SW || {};
 
   const listeners = new Set();
   function notify() {
+    followExtensions();
     listeners.forEach((fn) => fn(state));
+  }
+
+  // The Project's skill list is read by the @ menu and the resources panel alike, and neither may
+  // be the one that keeps it current: the panel is closed by default, and a list only its mount
+  // filled left the menu with no skills all session (#736). So the store reads it again whenever
+  // what it is read for moves — the Project, or the conversation or app a switch answers for.
+  function extensionsKey() {
+    const target = store.extensionTarget();
+    return JSON.stringify([state.scope && state.scope.id, target.thread || '', target.app || '']);
+  }
+
+  function followExtensions() {
+    if (!state.ready || state.extensionScope === extensionsKey()) return;
+    store.loadExtensions();
   }
 
   // A conversation owns its context, always — before a plan exists, before an
@@ -5764,6 +5780,9 @@ window.SW = window.SW || {};
       state.bootStatus = null;
       state.openWeightModels = (healthz && healthz.open_weight_models) || [];
       state.resourcesLoading = true;
+      // A mode change moves the switch target from the conversation to the app without the store
+      // hearing of it.
+      SW.router.subscribe(followExtensions);
       notify();
       // A reload during a turn lands here with no stream and no memory of one. Ask the lock, so
       // the composer opens disabled with a Stop beside it rather than taking a question the
@@ -6214,7 +6233,7 @@ window.SW = window.SW || {};
 
     async loadExtensions() {
       const target = store.extensionTarget();
-      const scope = target.app ? `app:${target.app}` : (target.thread ? `thread:${target.thread}` : '');
+      const scope = extensionsKey();
       state.extensionScope = scope;
       try {
         const read = await SW.api.extensions(target);
