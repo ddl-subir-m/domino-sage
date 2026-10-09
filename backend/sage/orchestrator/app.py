@@ -736,6 +736,7 @@ async def _lifespan(app: FastAPI):
     for step, name in ((_run_slot_preflight, "sage-preflight-slots"),
                        (_warm_then_check_permissions, "sage-warm-opencode")):
         threading.Thread(target=_boot, args=(step,), name=name, daemon=True).start()
+    orchestrator.start_preview_reaper()
     yield
     orchestrator.shutdown()
 
