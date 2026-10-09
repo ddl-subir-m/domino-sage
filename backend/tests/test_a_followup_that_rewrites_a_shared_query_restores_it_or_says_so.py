@@ -205,7 +205,7 @@ def test_a_rewritten_shared_query_is_put_back_before_the_page_is_checked(selecte
     assert "`open_deals`" in repair and OVERVIEW in repair
     assert OPEN_DEALS["sql"] in repair and REWRITTEN["sql"] not in repair
     assert "new name" in repair and "Do not rewrite" in repair
-    assert [e["reason"] for e in events if e["type"] == "iterate"][0].startswith(
+    assert next(e["reason"] for e in events if e["type"] == "iterate").startswith(
         "a query another screen reads was changed")
     assert json.loads((root / CATALOG).read_text())[0] == OPEN_DEALS
     assert _notices(app) == []
