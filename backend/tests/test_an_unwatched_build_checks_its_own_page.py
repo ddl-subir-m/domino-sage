@@ -303,12 +303,14 @@ def test_a_check_that_exits_early_is_not_waited_on(monkeypatch, tmp_path):
         check.close()
 
 
-def test_the_tab_walk_fits_inside_the_check_budget():
+def test_the_screen_walk_fits_inside_the_check_budget():
     script = page_check.SCRIPT.read_text()
-    tabs, click, settle = (int(re.search(rf"const {name} = (\d+)", script).group(1))
-                           for name in ("MAX_TABS", "CLICK_MS", "SETTLE_MS"))
+    screens, click, settle = (int(re.search(rf"const {name} = (\d+)", script).group(1))
+                              for name in ("MAX_SCREENS", "CLICK_MS", "SETTLE_MS"))
     # The rest of the budget is for launching Chromium and loading a cold preview.
-    assert tabs * (click + settle) / 1000 <= BuildPolicy().page_check_wait_seconds - 10
+    assert screens * (click + settle) / 1000 <= BuildPolicy().page_check_wait_seconds - 10
+    # Every control the walk opens counts against MAX_SCREENS: one loop, one counter.
+    assert script.count("opened += 1") == 1 and "if (opened === MAX_SCREENS) break;" in script
 
 
 # --- Real Chromium ------------------------------------------------------------------------------
@@ -334,6 +336,26 @@ def _tabbed(second_pane: str) -> str:
 HEALTHY_TABS = _tabbed("document.getElementById('pane').textContent = 'insights';")
 CRASHES_ON_SECOND_TAB = _tabbed(
     "const state = {}; document.getElementById('pane').textContent = state.metrics.join(',');")
+
+
+def _navved(second_screen: str) -> str:
+    """Screens switched by plain `<button>`s in a `<nav>` (#722), with a "Write brief" button before
+    the nav and another after it that each post `/api/brief`, as a button that calls a model would.
+    The second screen posts `/api/screen` when it renders."""
+    return ("const root = document.getElementById('root');"
+            "root.innerHTML = \"<header><button>Write brief</button><nav><button aria-current='page'>"
+            "Overview</button><button>Usage Drift</button></nav></header><main id='screen'>overview"
+            "</main><button>Write brief</button>\";"
+            "for (const b of root.querySelectorAll('button:not(nav button)')) b.addEventListener("
+            "'click', () => fetch('/api/brief', { method: 'POST' }));"
+            "root.querySelectorAll('nav button')[1].addEventListener('click', () => {"
+            f" {second_screen} }});")
+
+
+HEALTHY_NAV = _navved("fetch('/api/screen', { method: 'POST' });"
+                      " document.getElementById('screen').textContent = 'usage drift';")
+CRASHES_ON_SECOND_NAV_SCREEN = _navved(
+    "const state = {}; document.getElementById('screen').textContent = state.bins.map(String);")
 REPORTER = (Path(__file__).resolve().parents[2] / "template" / "fastapi-antd" / "static" / "sage"
             / "reportRuntimeError.js")
 
@@ -363,6 +385,7 @@ class _Preview(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"] or 0)) or b"{}")
+        self.posts.append(self.path)
         if self.path == "/api/preview/ack":
             self.orch.record_preview_ack(body.get("validationId", ""))
         elif self.path == "/api/preview/runtime-error":
@@ -383,7 +406,7 @@ def served(tmp_path, monkeypatch):
     project.supervisor = Preview(project.workspace.app_id)
     project.record.write_settings({"skip_planning": True})
     project.control.set_mode(Mode.IMPLEMENT)
-    handler = type("Handler", (_Preview,), {"orch": orch, "app_id": project.workspace.app_id})
+    handler = type("Handler", (_Preview,), {"orch": orch, "app_id": project.workspace.app_id, "posts": []})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, name="preview-server")
     thread.start()
@@ -429,6 +452,25 @@ def test_real_chromium_passes_a_healthy_page_with_tabs(served):
 def test_real_chromium_fails_a_page_whose_second_tab_crashes(served):
     orch, handler = served
     handler.screen = CRASHES_ON_SECOND_TAB
+    _, done = run(orch)
+    assert done["verification"]["stages"]["page"] == "passed"
+    assert done["verification"]["stages"]["runtime"] == "failed"
+    assert done["ok"] is False
+
+
+@pytest.mark.skipif(_UNAVAILABLE is not None, reason=f"real headless page check: {_UNAVAILABLE}")
+def test_real_chromium_opens_each_nav_screen_and_no_other_button(served):
+    orch, handler = served
+    handler.screen = HEALTHY_NAV
+    _, done = run(orch)
+    assert done["verification"]["stages"]["runtime"] == "passed"
+    assert [p for p in handler.posts if not p.startswith("/api/preview/")] == ["/api/screen"]
+
+
+@pytest.mark.skipif(_UNAVAILABLE is not None, reason=f"real headless page check: {_UNAVAILABLE}")
+def test_real_chromium_fails_a_page_whose_nav_screen_crashes(served):
+    orch, handler = served
+    handler.screen = CRASHES_ON_SECOND_NAV_SCREEN
     _, done = run(orch)
     assert done["verification"]["stages"]["page"] == "passed"
     assert done["verification"]["stages"]["runtime"] == "failed"
