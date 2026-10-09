@@ -36,6 +36,12 @@ class Preview:
     def query_reads(self):
         return []
 
+    def hold_reloads(self):
+        pass
+
+    def release_reloads(self):
+        pass
+
 
 @pytest.fixture
 def build(tmp_path, monkeypatch):

@@ -1,7 +1,10 @@
 # Build verification
 
-A completed writer and a clean code check do not prove the app ran. Build pins the app, turn, and
-code tree, then starts a fresh preview generation. An explicit retry reserves that generation
+A completed writer and a clean code check do not prove the app ran. While a Build turn writes, its
+app's preview restarts on none of the writes; it restarts once when the turn ends, unless the check
+below has already restarted it on the final code. Build pins the app and turn, then starts a fresh
+preview generation, and pins the code tree that generation started from: the restart's own
+writes, such as `sage_keys.json`, are part of the code it checks. An explicit retry reserves that generation
 before returning; its scheduled child spawn consumes the same reservation. Later crashes, reloads,
 and retries still create new generations. The supervisor must see a successful app-entry
 response before Workbench receives `preview-validation`. The iframe reloads with that validation

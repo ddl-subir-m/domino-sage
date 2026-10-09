@@ -117,6 +117,12 @@ class _Preview:
     def query_reads(self) -> list[dict]:
         return []
 
+    def hold_reloads(self) -> None:
+        pass
+
+    def release_reloads(self) -> None:
+        pass
+
     def stop(self) -> None:
         pass
 

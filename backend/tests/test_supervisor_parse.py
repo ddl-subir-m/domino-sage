@@ -141,7 +141,7 @@ def test_a_no_build_app_is_served_by_its_own_uvicorn(monkeypatch, tmp_path):
     assert sup.mount_base() == ""
     sup._spawn()
 
-    assert seen["argv"][:4] == [sys.executable, "-m", "uvicorn", "app:app"]
+    assert seen["argv"][:2] == [sys.executable, "-c"] and seen["argv"][3] == "app:app"
     assert seen["argv"][seen["argv"].index("--port") + 1] == "5402"
     assert "--reload" in seen["argv"]
     assert seen["env"]["SAGE_PREVIEW"] == "1"
