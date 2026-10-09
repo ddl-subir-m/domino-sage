@@ -22,6 +22,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..workspace.snapshot import QUERIES
 from ..workspace.stack import FASTAPI_ANTD, REACT_VITE, stack_of
 
 # tsc line: "src/App.tsx(12,5): error TS2304: Cannot find name 'foo'."
@@ -264,6 +265,7 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
     errors += [e for js in js_files for e in _untyped_view_fields(workspace, js)]
     errors += _hand_written_url_state(workspace, js_files, FASTAPI_ANTD.view_state, "sage.useViewState")
     errors += [e for js in js_files for e in _list_series_colours(workspace, js)]
+    errors += _missing_queries(workspace)
     if not errors:
         errors += [_placeholder_error(rel) for rel in _shown_scripts(workspace)
                    if re.search(r"""className:\s*["']sage-placeholder["']""",
@@ -555,6 +557,126 @@ def _list_series_colours(workspace: Path, js: Path) -> list[FeedbackError]:
     return errors
 
 
+# `runQuery(` / `useQuery(`, `sage.` or imported, a TypeScript type argument allowed, opening a
+# quoted first argument. Read off blanked code, so the quotes are still there and the name is not.
+_QUERY_CALL_RE = re.compile(r"\b(?:runQuery|useQuery)\s*(?:<[^()]*?>)?\s*\(\s*([\"'`])")
+_ARG_END_RE = re.compile(r"\s*[,)]")
+_IMPORT_SPEC_RE = re.compile(r"""(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}/[^"']+)["']""")
+
+
+def _running_scripts(workspace: Path) -> list[Path]:
+    """The app's own scripts that run in its page: the ones `static/index.html` loads, or what the
+    react-vite entry reaches by relative import. A file nothing runs asks the catalog for nothing —
+    the template's example screens ship in every app and call names no app declares."""
+    stack = stack_of(workspace)
+    if stack.checker == "python":
+        return [workspace / rel for rel, _ in _loaded_scripts(workspace)
+                if not rel.startswith(_JS_SKIP) and (workspace / rel).is_file()]
+    src = (workspace / "src").resolve()
+    seen: list[Path] = []
+    todo = [(workspace / stack.entry_file).resolve()]
+    while todo:
+        path = todo.pop()
+        if path in seen or not path.is_file() or not path.is_relative_to(src):
+            continue
+        seen.append(path)
+        for spec in _IMPORT_SPEC_RE.findall(path.read_text(errors="ignore")):
+            base = path.parent / spec
+            found = [p for p in (base, base.with_name(base.name + ".tsx"), base.with_name(base.name + ".ts"),
+                                 base / "index.tsx", base / "index.ts")
+                     if p.suffix in (".ts", ".tsx") and p.is_file()]
+            todo += [found[0].resolve()] if found else []
+    root = workspace.resolve()
+    return [workspace / rel for rel in (p.relative_to(root).as_posix() for p in seen)
+            if rel not in stack.owned_sources and not rel.startswith(stack.vendored)]
+
+
+def _query_calls(workspace: Path) -> list[tuple[str, int, str]]:
+    """(file, line, name) for each literal query name the app's running scripts call. A name built at
+    run time — concatenated, interpolated, held in a variable — is not guessed at."""
+    calls = []
+    for path in _running_scripts(workspace):
+        source = path.read_text(errors="ignore")
+        if "Query" not in source:
+            continue
+        code = _blank_text(source)
+        for m in _QUERY_CALL_RE.finditer(code):
+            close = code.find(m[1], m.end())
+            if close < 0 or not _ARG_END_RE.match(code, close + 1):
+                continue
+            name = source[m.end():close]
+            if name.strip() and "${" not in name:
+                calls.append((path.relative_to(workspace).as_posix(),
+                              source.count("\n", 0, m.start()) + 1, name))
+    return calls
+
+
+def _catalog_entries(text: str) -> list | None:
+    """The catalog's entries, or None when `text` is not a JSON list."""
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        return None
+    return raw if isinstance(raw, list) else None
+
+
+def _entry_name(entry: object) -> str:
+    """An entry's query name as the app's `load_queries` reads it; "" for one it skips."""
+    return str(entry.get("name") or "") if isinstance(entry, dict) else ""
+
+
+def catalog_names(workspace: Path) -> set[str] | None:
+    """The query names `.sage/queries.json` declares; None when it is there and cannot be read."""
+    path = workspace / QUERIES
+    entries = _catalog_entries(path.read_text(errors="ignore")) if path.is_file() else []
+    return None if entries is None else {_entry_name(e) for e in entries} - {""}
+
+
+def _missing_queries(workspace: Path) -> list[FeedbackError]:
+    """A literal name the app calls that `.sage/queries.json` does not declare (#721). The app's own
+    query server answers it with a 404 that reads like a store refusing access, and the store is
+    never asked. Every call site is named, not only the ones a rendered screen reaches."""
+    calls = _query_calls(workspace)
+    if not calls:
+        return []
+    declared = catalog_names(workspace)
+    why = (f"{QUERIES} is not a JSON list of query objects, so it declares no query" if declared is None
+           else f"{QUERIES} has no query called '{{name}}'")
+    declared = declared or set()
+    return [FeedbackError(
+        file=rel, line=line, col=1, code="SAGE007",
+        message=(f"This calls the query '{name}', but {why.format(name=name)}, so the screen gets "
+                 f"\"This app has no query called {name}.\" instead of rows. Add '{name}' to "
+                 f"{QUERIES} and keep every query already in it, or call one it declares."),
+    ) for rel, line, name in calls if name not in declared]
+
+
+def restore_removed_queries(workspace: Path, before: str | None) -> list[str]:
+    """Put back each query `.sage/queries.json` held when the turn began (`before`, its text then)
+    that it no longer holds and the app still calls by name (#721), and return their names.
+
+    Only a name the catalog no longer declares is added, so no edit to a query is overridden; a query
+    removed together with its callers stays removed. A catalog this cannot read is never written."""
+    prior = _catalog_entries(before) if before else None
+    if not prior:
+        return []
+    path = workspace / QUERIES
+    current = _catalog_entries(path.read_text(errors="ignore")) if path.is_file() else []
+    if current is None:
+        return []
+    called = {name for _, _, name in _query_calls(workspace)}
+    have = {_entry_name(e) for e in current}
+    back: dict[str, dict] = {}
+    for entry in prior:
+        name = _entry_name(entry)
+        if name in called and name not in have:
+            back.setdefault(name, entry)
+    if back:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(current + list(back.values()), indent=2) + "\n", encoding="utf-8")
+    return list(back)
+
+
 def _python() -> str:
     import sys
     return sys.executable
@@ -669,6 +791,7 @@ class FeedbackRunner:
                                   if p.as_posix() not in REACT_VITE.owned_sources
                                   and not p.as_posix().startswith(REACT_VITE.vendored)],
                 REACT_VITE.view_state, "useViewState")
+            errors += _missing_queries(Path(workspace))
         except subprocess.TimeoutExpired as e:
             return FeedbackReport(ok=False, raw=f"typecheck timed out after {self._timeout_s}s: {e}")
 
