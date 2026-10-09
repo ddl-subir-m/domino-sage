@@ -147,18 +147,26 @@ def test_a_switched_off_skill_is_hidden_from_available_skills(tmp_path):
     assert system.count("<skill>") == 1 and "</available_skills>" in system
 
 
-NAMED = "Load each with the skill tool before answering"
+GIVEN = '<project_skill name="{}">'
 
 
-def test_a_skill_named_with_at_is_loaded_and_beats_its_switch_for_that_turn(tmp_path):
-    """#628: the person named it, so it is offered and asked for even while switched off."""
+def _user(sent: dict) -> str:
+    content = sent["messages"][-1]["content"]
+    return content if isinstance(content, str) else " ".join(p["text"] for p in content)
+
+
+def test_a_skill_named_with_at_is_given_and_beats_its_switch_for_that_turn(tmp_path):
+    """#628: the person named it, so it is offered even while switched off, and its SKILL.md goes
+    with the turn (#737)."""
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
     control.set_extensions(_catalog(tmp_path))
-    control.arm_extensions_off(frozenset({"skill:beta"}))
-    system = _sent(control, user="Summarize revenue using @beta.")[1]["messages"][0]["content"]
+    control.arm_extensions_off(frozenset({"skill:beta"}), "Summarize revenue using @beta.")
+    sent = _sent(control, user="Summarize revenue using @beta.")[1]
+    system = sent["messages"][0]["content"]
     assert "<name>alpha</name>" in system and "<name>beta</name>" in system
-    assert f"The person named these skills with @: beta. {NAMED}" in system
+    assert GIVEN.format("beta") in _user(sent) and "Do the thing." in _user(sent)
     # The switch itself is untouched: the next turn, which names nothing, hides it again.
+    control.arm_extensions_off(frozenset({"skill:beta"}))
     assert "<name>beta</name>" not in _sent(control)[1]["messages"][0]["content"]
 
 
@@ -167,14 +175,14 @@ def test_a_skill_named_with_at_is_loaded_and_beats_its_switch_for_that_turn(tmp_
 def test_only_a_whole_at_token_names_a_skill(tmp_path, user):
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
     control.set_extensions(_catalog(tmp_path))
-    assert NAMED not in _sent(control, user=user)[1]["messages"][0]["content"]
+    assert "<project_skill" not in _user(_sent(control, user=user)[1])
 
 
 def test_a_mention_in_any_text_part_of_the_prompt_counts(tmp_path):
     control = ModelControl(mode=Mode.IMPLEMENT, phase=Phase.IMPLEMENT)
     control.set_extensions(_catalog(tmp_path))
     parts = [{"type": "text", "text": "context"}, {"type": "text", "text": "go, @alpha"}]
-    assert "with @: alpha." in _sent(control, user=parts)[1]["messages"][0]["content"]
+    assert GIVEN.format("alpha") in _user(_sent(control, user=parts)[1])
 
 
 def test_the_switch_is_per_turn_and_drops_with_its_token(tmp_path):
