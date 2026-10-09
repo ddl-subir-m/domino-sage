@@ -230,7 +230,7 @@ def _crash_then_ack(orch, message):
 ])
 def test_the_runtime_repair_quotes_the_rule_only_when_one_names_the_symbol(build, message,  # noqa: F811
                                                                           quoted, tmp_path):
-    orch, project, oc = build
+    orch, _, oc = build
     (tmp_path / "template" / "AGENTS.md").write_text(
         (REPO / "template" / "fastapi-antd" / "AGENTS.md").read_text(encoding="utf-8"),
         encoding="utf-8")
