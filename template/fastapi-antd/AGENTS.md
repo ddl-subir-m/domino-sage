@@ -169,7 +169,8 @@ Build the user's app by editing its screens under `static/components/`, the file
   new package, say so plainly instead of trying to install it.
 - **Each screen is its own file; `static/app.js` is the shell.**
   A follow-up changes only the files its request is about: a change to one screen leaves
-  `static/app.js` and every other screen as they are.
+  `static/app.js` and every other screen as they are, and leaves alone a query in
+  `.sage/queries.json` that another screen calls — give the new code its own query instead.
   - `static/app.js` mounts the app inside its `ConfigProvider` and `sage.ErrorBoundary` wrappers
     and decides which screen shows. It holds state only when more than one screen needs it.
   - A screen is `static/components/<Name>.js`; the first is `static/components/MainScreen.js`

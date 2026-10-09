@@ -518,7 +518,13 @@ def _how_to_ask(sources: list[BoundSource], max_rows: int, names: HelperNames) -
          "doing whenever they are."),
         f"- One query answers at most {max_rows} rows. Aggregate in SQL rather than in the browser.",
         ("- **`.sage/queries.json` is yours to write** — the one file under `.sage/` that is. Keep it "
-         "valid JSON; a catalog that will not parse leaves the app with no queries at all."), "",
+         "valid JSON; a catalog that will not parse leaves the app with no queries at all."),
+        # #745: a follow-up for one tab rewrote the query another tab read, and its repair then
+        # rewrote that tab to fit.
+        ("- **A query is shared by every screen that calls it.** Before you change an existing "
+         "query's statement, parameters or columns, find every file that calls it by name. If a "
+         "screen your request is not about calls it, leave that query as it is and add a new query "
+         "under a new name."), "",
         "Call it from the app:", "",
         *(["```js",
            '// `sage.runQuery` is on the page already (static/sage/appQuery.js); nothing to import.',
