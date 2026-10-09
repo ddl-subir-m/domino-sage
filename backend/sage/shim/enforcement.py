@@ -131,6 +131,41 @@ def _hide_skills(messages: list[Any], names: set[str], own: set[str] = frozenset
     return out
 
 
+# What `template/chat/AGENTS.md` says about `findings.md`, and what a lane that cannot write it is
+# told instead. Exact text: `test_a_lane_that_cannot_write_findings_is_not_told_to` runs the shipped
+# prompt through this and fails on any mention left, so an edit to the prompt cannot slip past it.
+_FINDINGS_SECTION = re.compile(r"## Keeping findings across turns\n.*?(?=\n## |\Z)", re.DOTALL)
+_FINDINGS_EXCEPTIONS = (
+    (("— with two exceptions,\n`.sage/scratch/<threadId>/` above and "
+      "`.sage/threads/<threadId>/findings.md` below."),
+     "— with one exception,\n`.sage/scratch/<threadId>/` above."),
+    ("the two exceptions above are yours", "the exception above is yours"),
+)
+
+
+def _without_findings(messages: list[Any]) -> list[Any]:
+    """The system prompt with the findings file taken out of it (#733)."""
+    def strip(text: str) -> str:
+        text = _FINDINGS_SECTION.sub("", text)
+        for said, instead in _FINDINGS_EXCEPTIONS:
+            text = text.replace(said, instead)
+        return text
+
+    out: list[Any] = []
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) and m.get("role") == "system" else None
+        if isinstance(content, str):
+            out.append({**m, "content": strip(content)})
+        elif isinstance(content, list):
+            out.append({**m, "content": [
+                {**p, "text": strip(p["text"])}
+                if isinstance(p, dict) and isinstance(p.get("text"), str) else p
+                for p in content]})
+        else:
+            out.append(m)
+    return out
+
+
 def _give_skills(messages: list[Any], catalog, names: set[str]) -> tuple[list[Any], list[dict]]:
     """Put each named skill's SKILL.md into the request's last user message (#737), and say what
     was put there. A mention used to be only a request to load the skill, which a model could skip
@@ -830,6 +865,14 @@ class EnforcementShim:
                 outside = outside | {"sage_source_map"}
             request = {**request, "tools": [tool for tool in request["tools"]
                 if (tool.get("function") or {}).get("name", "").lower() not in outside]}
+        if chat_id and isinstance(request.get("messages"), list) and not any(
+                str((t.get("function") or {}).get("name", "")).lower() in READ_ONLY_DENIED
+                for t in request.get("tools") or []):
+            # No tool on this request can write `findings.md`, so it is not told to keep one (#733):
+            # a lane told to write a file it cannot reach tries the tool it has, and narrates the
+            # refusal. Read off the tools actually offered, after every filter above.
+            request = {**request, "messages": _hide_skills(
+                _without_findings(request["messages"]), {"investigate-weak-signals"})}
         if chat_id and isinstance(request.get("tools"), list):
             # Whether the model was actually OFFERED Live read, which nothing else can say. Sage has
             # told people it could not see their data — naming the `sage-live-read_` tools from its

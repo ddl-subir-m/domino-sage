@@ -83,7 +83,7 @@ from ..liveread import mcp as live_mcp
 from ..liveread import reference as live_reference
 from ..liveread import result as live_result
 from ..liveread import run as live_read
-from ..liveread.held import HeldRead, unsupported_numbers
+from ..liveread.held import HeldRead, replaced, unsupported_numbers
 from ..pre_edit_guard import (
     PreEditAction,
     PreEditDecision,
@@ -287,6 +287,7 @@ from .plan_steps import (
     step_index,
     validate_execution_contract,
 )
+from .plumbing import unnarrated
 from .query_faults import is_compile_fault
 
 # The one reader of a gateway answer, shared rather than written again here. `chat_intent`,
@@ -7628,6 +7629,9 @@ class Orchestrator:
         # drawn from these rows and the answer's numbers are checked against what was disclosed.
         # Reset and swept with the count above.
         self._held_reads: dict[str, list[HeldRead]] = {}
+        # The held reads (by card slug) a chart was drawn from this turn: what an answer is drawn
+        # from, for #732's replaced read. Reset and swept with the count above.
+        self._charted_reads: dict[str, set[str]] = {}
         # The last `not-in-range` refusal a Live read handed the model this turn, per Conversation
         # (#488). Kept beside the count, reset and swept with it, so a turn the repeat brake stops
         # can say what the model was told and went past. One sentence, not a list: the brake fires
@@ -14695,6 +14699,7 @@ class Orchestrator:
             self._live_reads.pop(thread_id, None)
             self._live_results.pop(thread_id, None)
             self._held_reads.pop(thread_id, None)
+            self._charted_reads.pop(thread_id, None)
             self._live_read_refused.pop(thread_id, None)
         # The same token names this turn for a Delegated model call, so this is the moment that
         # turn's call count starts over (ADR-0057). Reset here rather than at the end of the last
@@ -14724,6 +14729,7 @@ class Orchestrator:
                     self._live_reads.pop(thread_id, None)
                     self._live_results.pop(thread_id, None)
                     self._held_reads.pop(thread_id, None)
+                    self._charted_reads.pop(thread_id, None)
                     self._live_read_refused.pop(thread_id, None)
                     expired.append(thread_id)
                 elif tok == token:
@@ -15299,7 +15305,10 @@ class Orchestrator:
                 f"Results this turn: {named}." if named
                 else "Run the statement first, with a title, then chart that result."))
         chat_chart.check_labels(read, x, reads)
-        return chat_chart.draw(read, x, ys)
+        data = chat_chart.draw(read, x, ys)
+        with self._live_read_lock:
+            self._charted_reads.setdefault(thread_id, set()).add(read.slug)
+        return data
 
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
         """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`.
@@ -16297,7 +16306,7 @@ class Orchestrator:
                      history: list[dict] | None = None,
                      declined: bool = False, rebuilt: str = "", investigating: bool = False,
                      catalogue: dict[str, str] | None = None,
-                     already_asked: bool = False) -> str:
+                     already_asked: bool = False, keeps_findings: bool = True) -> str:
         catalogue = catalogue or {}
         continuing = _has_earlier_user_turn(history)
         lines = [
@@ -16315,7 +16324,8 @@ class Orchestrator:
              "latest date in the data. Use calendar quarters unless a convention this turn names "
              "defines a fiscal calendar. If the data does not reach that period, say so rather "
              "than answering for the latest period it does have."),
-            self._findings_note(thread_id, continuing=continuing),
+            # Only to a lane that holds a tool able to write the file (#733).
+            self._findings_note(thread_id, continuing=continuing) if keeps_findings else "",
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
             # An absent Live read tool is NOT sent to Python here: a bounded turn loses the shell to
@@ -17134,7 +17144,9 @@ class Orchestrator:
         # What the findings slice asks, next to the arming it is about (#601). A bounded label on
         # an unbounded turn is armed with shell and write above, so it can keep its measurements;
         # reading `bounded_intent` alone there left an open investigation nothing at the ceiling.
-        can_write_findings = unbounded or not bounded_intent
+        # The arming, not the label (#733): an unclassified plain question is armed answer-only by
+        # `_plain_chat_answer_only` and holds no writer either.
+        can_write_findings = not answer_only and artifact_token is None
         # The same lock Build takes (ADR-0043), armed here rather than inside the router so that
         # Chat and Build cannot drift: `llm_router` applies it outside their fork, and this is the
         # Chat half of putting it there. A refusal ends the turn before OpenCode is even started.
@@ -17237,6 +17249,10 @@ class Orchestrator:
                 log.warning("chat: %d stated number(s) carried by no disclosed read; the answer "
                             "was replaced by what was read", len(unbacked))
                 body = self._numbers_refused(thread_id)
+            # A tool's refusal, or any other word about Sage's plumbing, is not the answer (#733).
+            # Dropping one still owes the final text event: it replaces the streamed prose.
+            said = unnarrated(body, prompt)
+            narrated, body = said != body, said
             with timing.span("after.artifacts"):
                 # The end-of-turn scan is the only thing skipped here, and only when no tool ran at
                 # all (#418) — a turn that ran nothing wrote nothing, so this read finds nothing.
@@ -17271,8 +17287,14 @@ class Orchestrator:
                 # wrote, so this is where the two are joined back together. A path with no event
                 # — every Artifact written before this shipped, and every lane that records no
                 # operation — is `'answer'` and draws.
-                roles = live_data_use.artifact_roles(
-                    project.shim.data_use.events(self._data_use_turns.get(thread_id, "")))
+                operations = project.shim.data_use.events(self._data_use_turns.get(thread_id, ""))
+                roles = live_data_use.artifact_roles(operations)
+                # A read a later one replaced is a step, not a second answer (#732).
+                with self._live_read_lock:
+                    charted = set(self._charted_reads.get(thread_id, ()))
+                for rel in replaced(operations, roles, self._held(thread_id), charted, body,
+                                    prompt):
+                    roles[rel] = "working"
                 for rel in redundant_tables(project.record.path, thread_id, tables.before, roles):
                     (project.record.path / rel).unlink(missing_ok=True)
                 withhold_table_rows(project.record.path, thread_id, tables.before,
@@ -17289,7 +17311,7 @@ class Orchestrator:
                 turn_writes.extend(written)
                 turn_rewrites.update(rel for rel in written if rel in tables.before)
             events = []
-            if body.strip() or invalid:
+            if body.strip() or invalid or narrated:
                 # The failure text below is authoritative. A phrase filter cannot remove every
                 # possible success claim or know which surrounding numbers remain supported. An
                 # empty final text event also removes provisional streamed prose in Workbench.
@@ -17454,7 +17476,8 @@ class Orchestrator:
                                                     rebuilt=rebuilt,
                                                     investigating=investigating,
                                                     catalogue=catalogue,
-                                                    already_asked=already_asked)
+                                                    already_asked=already_asked,
+                                                    keeps_findings=can_write_findings)
                 if artifact_token is not None:
                     # Says what to do, never what this turn is or cannot do. The block is
                     # model-facing, so every word in it is a word the model can hand back to the
