@@ -2186,9 +2186,9 @@ window.SW = window.SW || {};
   // event, and `record` stamps `turn_id` before it persists, so a restored event does carry one.
   //
   // Dedupe on `operation_id` INSIDE the group, and do it keeping the latest copy — without that
-  // this card multiplies by model call instead of by read. `DataUse.observe`'s `save()` re-persists
-  // the whole event every time a gateway request settles, and today's find-and-replace on
-  // `operation_id` is the only thing collapsing those re-persists.
+  // this card multiplies by read copy instead of by read. A turn's `done` row repeats its events,
+  // and a transcript written before #731 re-persisted the whole event every time a gateway request
+  // settled; this find-and-replace on `operation_id` is the only thing collapsing those copies.
   function putDataUsed(messages, ensureAssistant, events) {
     for (const event of events || []) {
       const turnId = event.turn_id || event.operation_id;
@@ -2210,17 +2210,38 @@ window.SW = window.SW || {};
       // Replace IN PLACE, never append: the card keeps first-sighting order, and the later copy
       // wins on content only. Order on the last row instead and a read from turn 1 that a turn-6
       // model call happened to touch sorts as the newest thing in the Thread. Latest-wins is the
-      // direction that matters, because the re-persists are how `requests` accumulates — keep the
-      // first copy and the gateway evidence is empty.
+      // direction that matters, because a later copy carries the `requests` gathered since — keep
+      // the first copy and the gateway evidence is empty.
       const at = existing.events.findIndex((e) => e.operation_id === event.operation_id);
       if (at < 0) existing.events.push(event);
       else existing.events[at] = event;
-      // A card that has just stopped being whole. `DataUse.observe`'s `save()` re-persists the
-      // event as each gateway request settles, so `failure` and a short `coverage` routinely
+      // A card that has just stopped being whole. A later copy of the event carries the requests
+      // settled since, so `failure` and a short `coverage` routinely
       // arrive AFTER the copy that minted this card — which means the rule "never hide a read that
       // fell short" cannot be a decision taken once at mint time. Without this the shortfall
       // surfaces only on the next reload, and the preference is what delayed it.
       if (owner) applyDataAccess(owner);
+    }
+  }
+
+  // One model request's evidence for the operations it carried (#731). `DataUse.observe` appends
+  // this row rather than re-persisting each whole event, and `data_use.fold_requests` is the same
+  // merge: the entry with this `request_id` is replaced and moved to the end.
+  function putDataUseRequest(messages, ev) {
+    const request = ev.request;
+    if (!request) return;
+    for (const oid of ev.operations || []) {
+      for (const m of messages) {
+        const block = (m.blocks || []).find((b) => b && b.type === 'data_used'
+          && (b.events || []).some((e) => e.operation_id === oid));
+        if (!block) continue;
+        const at = block.events.findIndex((e) => e.operation_id === oid);
+        const event = block.events[at];
+        block.events[at] = { ...event, requests: [
+          ...(event.requests || []).filter((r) => r.request_id !== request.request_id), request] };
+        applyDataAccess(m);
+        break;
+      }
     }
   }
 
@@ -2293,6 +2314,7 @@ window.SW = window.SW || {};
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
       if (ev.dataUsed) putDataUsed(messages, ensureAssistant, ev.dataUsed);
+      if (ev.type === 'data_used_request') putDataUseRequest(messages, ev);
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
@@ -3262,6 +3284,7 @@ window.SW = window.SW || {};
     for (const [i, ev] of (history || []).entries()) {
       pos = ev.order === undefined ? i : ev.order;
       if (ev.dataUsed) putDataUsed(messages, ensureAssistant, ev.dataUsed);
+      if (ev.type === 'data_used_request') putDataUseRequest(messages, ev);
       if (ev.type === 'user') {
         assistant = null;
         messages.push({
