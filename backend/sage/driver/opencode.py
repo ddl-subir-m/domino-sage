@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -34,6 +35,9 @@ log = logging.getLogger("sage.driver")  # "sage.*" -> surfaced by /api/diag's lo
 # from disk to build a TLS context even for this plain-HTTP loopback server, and a bundle caught
 # mid-rewrite failed a findings-slice status poll with `[X509] PEM lib` (2026-09-29).
 _TLS = httpx.create_ssl_context()
+
+_SESSIONS_CREATED = [0]
+_SESSIONS_LOCK = threading.Lock()
 
 
 def with_attachment_listing(text: str, attachments: list[dict] | None, *, chat: bool = False,
@@ -387,6 +391,12 @@ class OpenCodeClient:
     # did when it could not tell — see there.
     _dirs: dict[str, str] = dataclass_field(default_factory=dict)
 
+    @staticmethod
+    def sessions_created() -> int:
+        """Sessions every client in this process has created (#738). Process-wide, because a
+        restarted OpenCode server gets a new client and its sessions still hold memory."""
+        return _SESSIONS_CREATED[0]
+
     def warm_directory(self, directory: str) -> None:
         """Initialize location services without creating a session or making a model call.
 
@@ -438,6 +448,8 @@ class OpenCodeClient:
         payload = r.json()
         # /api/* responses wrap the resource in {"data": {...}}.
         sid = (payload.get("data") or payload)["id"]
+        with _SESSIONS_LOCK:
+            _SESSIONS_CREATED[0] += 1
         # A TITLE THAT DOES NOT LAND IS THE OLD BEHAVIOUR AND NOTHING WORSE. The session is already
         # created and complete at this point — `sid` is in hand, and nothing in Sage ever reads a
         # title. So a PATCH that 500s or never answers costs the one model call this saves, and must
