@@ -18,14 +18,16 @@ window.sage = window.sage || {};
   const validationId = new URLSearchParams(window.location.search).get("sageValidation") || "";
   // Capture the document identity when its own data fetch is issued. The proxy observes HTTP
   // results; this catches a rejected fetch even if app code catches it and renders an empty state.
+  // Every data read counts, the app's own `app.py` routes as much as its queries and platform reads;
+  // a model call is not a data read.
   if (sage.preview && validationId) {
     const originalFetch = window.fetch.bind(window);
     const previewBase = new URL(sage.base.replace(/\/$/, "") + "/", window.location.href).pathname;
     window.fetch = (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
       if (url.origin !== window.location.origin
-          || !(url.pathname.startsWith(previewBase + "api/queries/")
-               || url.pathname.startsWith(previewBase + "api/domino/"))) {
+          || !url.pathname.startsWith(previewBase + "api/")
+          || url.pathname.startsWith(previewBase + "api/llm/")) {
         return originalFetch(input, init);
       }
       const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
