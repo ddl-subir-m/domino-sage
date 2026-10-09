@@ -16,6 +16,7 @@ import copy
 import json
 import shutil
 import subprocess
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -93,7 +94,7 @@ def test_each_build_request_adds_the_same_bytes_however_long_the_conversation(tm
     Quadratic growth shows as a per-request increment that rises with the request count. Linear
     growth is a flat increment: the 98th request costs what the 1st did."""
     _store, _data, sizes = _plant(tmp_path, reads=6, chat_requests=9, build_requests=98)
-    steps = [b - a for a, b in zip(sizes, sizes[1:])]
+    steps = [b - a for a, b in pairwise(sizes)]
     print(f"history bytes: before Build {sizes[0]}, after 98 Build requests {sizes[-1]}; "
           f"first request +{steps[0]}, last request +{steps[-1]}")
     assert steps[-1] <= steps[0] * 1.05, (

@@ -290,6 +290,22 @@ def test_a_read_that_goes_short_later_surfaces_without_a_reload():
 
 
 @needs_node
+def test_a_request_row_that_fails_a_read_surfaces_it():
+    """The same rule for the row `DataUse.observe` appends since #731: a request naming the
+    operation, not a whole copy of it."""
+    answer = _answer(_run({
+        "thread": _thread(
+            {"type": "data_used", "dataUsed": [_event("du_1")]},
+            {"type": "data_used_request", "operations": ["du_1"],
+             "request": {"request_id": "r1", "failure": "refused"}},
+        ),
+        "shown": False,
+    }))
+    assert answer["types"] == ["data_used"]
+    assert answer["hidden"] == 0
+
+
+@needs_node
 def test_the_offer_to_go_and_look_is_never_hidden():
     """`message-blocks.js:1342` draws `investigation_offer` INSTEAD of an answer. Hidden, it is a
     question nobody is asked and a turn that renders nothing — so it is a shown row in the table,
