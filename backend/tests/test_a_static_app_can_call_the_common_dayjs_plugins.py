@@ -109,7 +109,7 @@ def _page_toolbox() -> list[str]:
 def _on_the_page(probe: str):
     got = subprocess.run(
         ["node", "-e", HARNESS], input=json.dumps({"scripts": _page_toolbox(), "probe": probe}),
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, check=False,
     )
     assert got.returncode == 0, got.stderr[-2000:]
     return json.loads(got.stdout)
