@@ -2605,6 +2605,7 @@ window.SW = window.SW || {};
         ensureContinueChecked(card);
       }
       if (ev.type === 'done' && ev.turnId && assistant) assistant.turnId = ev.turnId;
+      if (ev.type === 'done' && skillsSentBlock(ev)) ensureAssistant().blocks.push(skillsSentBlock(ev));
     }
     if (hiddenTables.size) {
       for (const message of messages.filter((m) => m.role === 'assistant')) {
@@ -3079,6 +3080,21 @@ window.SW = window.SW || {};
   // Whether the ACTION is drawn is the route's answer, kept in `state.continueOffers` by turn id.
   // `record` is an older cause row: superseded by the route's own rule (a later `user` or `done`
   // row in the log), so it keeps its cause text and is never asked about.
+  // Which Project skills named with @ went to the model with this turn (#737), off the `done` row,
+  // so a reload reads the same as the live turn. A named skill whose SKILL.md could not be read is
+  // said too: that is the turn that only asked the model to load it.
+  function skillsSentBlock(ev) {
+    const skills = (ev && ev.skills) || [];
+    if (!skills.length) return null;
+    const given = skills.filter((s) => s.sent).map((s) => (s.cut ? `${s.name} (its start only)` : s.name));
+    const missed = skills.filter((s) => !s.sent).map((s) => s.name);
+    const parts = [];
+    if (given.length) parts.push(`Skills given to the model: ${given.join(', ')}.`);
+    if (missed.length) parts.push(`Named but not given, its SKILL.md could not be read: ${missed.join(', ')}.`);
+    return { type: 'status', ok: missed.length ? null : true, warn: !!missed.length,
+             fromEvent: 'skills', value: parts.join(' ') };
+  }
+
   function continueCardBlock(ev, conversation, app, record) {
     return { type: 'continue_model', turnId: ev.turnId || '', conversation: conversation || '',
              app: app || '', stage: ev.stage || '', cause: ev.cause, record: !!record };
@@ -3459,6 +3475,7 @@ window.SW = window.SW || {};
           ensureAssistant().blocks.push(card);
           ensureContinueChecked(card);
         }
+        if (skillsSentBlock(ev)) ensureAssistant().blocks.push(skillsSentBlock(ev));
       } else if (ev.type === 'error' && ev.message) {
         // Same backstop as `done` above: a turn that failed is not still reading a warehouse.
         dropTableCard(messages, null);
@@ -10038,6 +10055,10 @@ window.SW = window.SW || {};
           } else if (ev.type === 'done') {
             // What a Retry on this answer names (#665).
             if (ev.turnId) assistant.turnId = ev.turnId;
+            if (skillsSentBlock(ev)) {
+              ensurePushed();
+              assistant.blocks = [...assistant.blocks, skillsSentBlock(ev)];
+            }
             // A failed turn that names its cause is one another model can pick up (ADR-0069,
             // #570). The row that arrived is the promise itself, so the card is drawn available
             // without asking the route; the GET is for a reload.
