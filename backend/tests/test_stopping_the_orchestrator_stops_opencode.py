@@ -20,6 +20,9 @@ def test_serving_control_app_under_any_asgi_server_tears_down_on_exit(monkeypatc
     calls = []
 
     class _Recorder:
+        def start_preview_reaper(self):
+            pass
+
         def shutdown(self):
             calls.append("shutdown")
 
@@ -109,6 +112,9 @@ def test_the_lifespan_is_what_warms_opencode(monkeypatch):
 
         def _ensure_opencode(self):
             warmed.set()
+
+        def start_preview_reaper(self):
+            pass
 
         def shutdown(self):
             pass

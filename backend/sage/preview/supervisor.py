@@ -302,13 +302,26 @@ class ViteSupervisor:
         """A proxy hit or a status/retry read. Idle reap reads this and nothing else."""
         self.last_traffic = now
 
+    @property
+    def running(self) -> bool:
+        """A process is up or a start is under way: what the idle reap and the preview cap count."""
+        with self._state_lock:
+            if self._proc is not None:
+                return True
+            retry = self._retry_thread
+        return retry is not None and retry.is_alive()
+
     def idle_stop(self) -> None:
         """The tab that was asking for this preview has gone. The next request may start it.
 
         Not `stop()`: that latches `_stopped`, and `retry_start` then refuses until somebody
         presses Retry. An idle preview comes back when its tab does.
+
+        The idle clock goes with the process, so whatever starts it next starts a fresh window
+        rather than inheriting one that already ran out.
         """
         with self._state_lock:
+            self.last_traffic = None
             self._kill()
             self._requested = False
             self._state = "failed"
