@@ -578,6 +578,8 @@ class ViteSupervisor:
         kept = {"name": read["name"][:200], "status": read["status"]}
         if isinstance(read.get("error"), str):
             kept["error"] = read["error"][:1000]
+        if isinstance(read.get("sent"), str):
+            kept["sent"] = read["sent"][:1000]
         if read.get("empty") is True:
             kept["empty"] = True
         self._query_reads.append({**kept, "generation": f"{self._instance}:{self._generation}"})

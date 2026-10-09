@@ -86,7 +86,8 @@ def test_a_route_returning_a_refusal_as_200_still_reports_it(tmp_path, monkeypat
         assert lines == []
         return
     reads = [json.loads(line[len("[sage] query-read "):]) for line in lines]
-    assert reads == [{"name": "feature_adoption", "status": 400, "error": NEEDS},
+    assert reads == [{"name": "feature_adoption", "status": 400, "error": NEEDS,
+                      "sent": json.dumps({"start_date": "2026-01-01"})},
                      {"name": "feature_adoption", "status": 200, "empty": True}]
 
 
@@ -139,6 +140,7 @@ def test_a_real_fastapi_antd_route_calling_answer_is_seen_by_the_preview(tmp_pat
         while not sup.query_reads() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert sup.query_reads() == [{"name": "feature_adoption", "status": 400, "error": NEEDS,
+                                      "sent": json.dumps({"start_date": "2026-01-01"}),
                                       "generation": sup.status()["generation"]}]
     finally:
         sup.stop()
