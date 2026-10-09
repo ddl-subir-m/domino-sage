@@ -83,7 +83,7 @@ from ..liveread import mcp as live_mcp
 from ..liveread import reference as live_reference
 from ..liveread import result as live_result
 from ..liveread import run as live_read
-from ..liveread.held import HeldRead, replaced, unsupported_numbers
+from ..liveread.held import HeldRead, replaced, unsupported_numbers, without_unsupported
 from ..pre_edit_guard import (
     PreEditAction,
     PreEditDecision,
@@ -4881,6 +4881,13 @@ _CHAT_NUMBERS_NOTE = (
     "values you were not given went to the person's table, and you cannot see it, so no number may "
     "come from it. Rewrite the answer without those numbers: say what was read, its columns and how "
     "many rows it has, and point the person at the table. This is the only recovery attempt."
+)
+# The same correction when every value WAS given (#747): the numbers disagree with rows it has.
+_CHAT_ROWS_NOTE = (
+    "Your answer states numbers that the rows you read do not carry: {numbers}. Take each number "
+    "from those rows, or from a total of a column or of one label's rows, and check it is the "
+    "figure for what the sentence names. If a number is not in them, leave it out. This is the "
+    "only recovery attempt."
 )
 
 
@@ -15415,25 +15422,40 @@ class Orchestrator:
         return {"path": path, "bytes": len(data)}
 
     def _unbacked_numbers(self, thread_id: str, body: str, prompt: str) -> list[str]:
-        """The answer's numbers no disclosed read carries, on a turn that had values withheld (#729).
+        """The answer's numbers no disclosed read this turn carries (#729, #747).
 
-        Keyed on a structure-only read because that is where every invented figure sat: a turn that
-        read nothing, or was handed every value it read, has nothing it could not see to invent.
+        Every turn that read, not only one with values withheld: a model handed all twenty rows
+        still wrote "$9.0M" for a team the rows put at $10.0M (#747). A turn that read nothing has
+        no rows to hold its words to.
         """
         reads = self._held(thread_id)
-        if not any(r.withheld for r in reads):
-            return []
-        return unsupported_numbers(body, reads, prompt)
+        return unsupported_numbers(body, reads, prompt) if reads else []
 
-    def _numbers_refused(self, thread_id: str) -> str:
-        """What ships instead of an answer that kept stating numbers it was never given (#729):
-        what was read, its shape and its row count, which is all a structure-only read may say."""
-        lines = ["I wasn't given the values from what I read, so I can't quote numbers from it."]
-        for r in self._held(thread_id):
-            if r.withheld:
-                lines.append(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
-                             f"columns {', '.join(r.columns)}.")
-        return "\n".join(lines)
+    def _numbers_note(self, thread_id: str, unbacked: list[str]) -> str:
+        """The one correction, said as what went wrong: values it never saw, or rows it misread."""
+        note = (_CHAT_NUMBERS_NOTE if any(r.withheld for r in self._held(thread_id))
+                else _CHAT_ROWS_NOTE)
+        return note.format(numbers=", ".join(unbacked))
+
+    def _numbers_left_out(self, thread_id: str, body: str, prompt: str) -> str:
+        """The answer without the sentences that kept stating numbers its reads do not carry, and
+        one note saying so (#729, #747). Never empty: the note stands alone if nothing else does.
+
+        On a withheld turn the note is #729's: what was read, its shape and its row count, which is
+        all a structure-only read may say. On a disclosed one it is a single line, because the model
+        was given the rows and the table beside the answer has the figures."""
+        reads = self._held(thread_id)
+        kept, _removed = without_unsupported(body, reads, prompt)
+        withheld = [r for r in reads if r.withheld]
+        if withheld:
+            note = "\n".join(
+                ["I wasn't given the values from what I read, so I can't quote numbers from it.",
+                 *(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
+                   f"columns {', '.join(r.columns)}." for r in withheld)])
+        else:
+            note = ("A figure was left out because it didn't match the rows I read. The table has "
+                    "the figures.")
+        return f"{kept}\n\n{note}" if kept else note
 
     def _chat_chart(self, thread_id: str, body: dict) -> tuple[bytes, str]:
         """A PNG drawn from a result this turn read, never from values the model sent (#729), and
@@ -17405,12 +17427,13 @@ class Orchestrator:
             # bare token under a half-finished answer.
             body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
             # The refuse half of #729, on every exit: a number no disclosed read carries does not
-            # ship. Bounded lanes only — a shell lane computes numbers its reads never handed it.
+            # ship, and only its sentence goes (#747). Bounded lanes only — a shell lane computes
+            # numbers its reads never handed it.
             if (answer_only or artifact_token is not None) and (
                     unbacked := self._unbacked_numbers(thread_id, body, prompt)):
-                log.warning("chat: %d stated number(s) carried by no disclosed read; the answer "
-                            "was replaced by what was read", len(unbacked))
-                body = self._numbers_refused(thread_id)
+                log.warning("chat: %d stated number(s) carried by no disclosed read; their "
+                            "sentences were left out", len(unbacked))
+                body = self._numbers_left_out(thread_id, body, prompt)
             # A tool's refusal, or any other word about Sage's plumbing, is not the answer (#733).
             # Dropping one still owes the final text event: it replaces the streamed prose.
             said = unnarrated(body, prompt)
@@ -18615,7 +18638,7 @@ class Orchestrator:
                                           tool=broken_call,
                                           fault=_INVALID_CALL_SAID[broken_category])
                                       if call_repair else
-                                      _CHAT_NUMBERS_NOTE.format(numbers=", ".join(unbacked))
+                                      self._numbers_note(thread_id, unbacked)
                                       if number_repair else
                                       "Your turn ended without an answer or an answer artifact. "
                                       "Answer the user's question using the work already done. "
