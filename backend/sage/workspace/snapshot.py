@@ -145,3 +145,10 @@ class TurnSnapshot:
         return [line for line in result.stdout.splitlines() if line and not line.startswith("../")][
             :max(0, limit)
         ]
+
+    def diff(self, before: str, after: str, paths: list[str]) -> str:
+        """The unified diff of `paths` between two tree identities, or "" when there is none."""
+        if not before or not after or before == after or not paths:
+            return ""
+        result = self._run("diff", "--no-renames", "--no-color", before, after, "--", *paths)
+        return result.stdout if result.returncode == 0 else ""
