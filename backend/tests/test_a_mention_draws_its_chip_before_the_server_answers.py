@@ -59,8 +59,9 @@ def _run(act: str) -> dict:
 def test_the_chip_is_on_screen_before_the_post_goes_out():
     got = _run("pick-twice")
     # The list as it stood when the POST was issued — one chip, marked pending.
-    assert got["chipsAtRequest"][0] == [{"id": "pending:table:ds-dwh:DWH.MARTS.MIXPANEL__EVENT",
-                                         "pending": True}]
+    post = next(i for i, r in enumerate(got["requests"]) if r.startswith("POST") and r.endswith("/context"))
+    assert got["chipsAtRequest"][post] == [{"id": "pending:table:ds-dwh:DWH.MARTS.MIXPANEL__EVENT",
+                                            "pending": True}]
     assert got["duringWait"][0]["pending"] is True
     assert got["duringWait"][0]["name"] == "MIXPANEL__EVENT"
 
@@ -90,7 +91,8 @@ def test_a_turn_waits_for_the_chip_to_land():
     posts = [r for r in got["requests"] if r.startswith("POST")]
     assert posts[0].endswith("/context") and posts[1].endswith("/chat/stream"), posts
     # The turn's own request saw the server's row, not the placeholder.
-    assert got["chipsAtRequest"][1] == [{"id": "att_1", "pending": False}]
+    turn = next(i for i, r in enumerate(got["requests"]) if r.endswith("/chat/stream"))
+    assert got["chipsAtRequest"][turn] == [{"id": "att_1", "pending": False}]
 
 
 @needs_node
