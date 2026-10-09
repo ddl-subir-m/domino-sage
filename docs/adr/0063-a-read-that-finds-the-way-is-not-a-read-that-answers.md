@@ -136,3 +136,16 @@ calls, 487s of model time out of 598.6s, context growing 6KB → 290KB within th
 
 **What is committed.** This is a view over rows that are already written. `kept_rows`,
 withholding and the disclosure verdict are untouched. #441 owns that lane.
+
+## Amendment: a read a later read replaced is working (2026-10-09, #732)
+
+A model that reads the wrong period and then the right one leaves two `answer` reads, and the stale
+one drew as a second answer. Sage now demotes it at publish, beside the fell-short rule, because
+only at the end of the turn is it known what the answer was drawn from.
+
+An earlier `answer` read is shown as `working` when a later `answer` read in the same turn, from the
+same source, is one the answer is drawn from and the earlier one is not. Drawn from means Sage
+charted it (`artifact_write` names the read), the answer names its card, or the answer states a
+number that read disclosed and the other did not (`liveread/held.py`, `replaced`). Both reads must
+be held, so Sage knows what each returned. Anything less certain leaves both drawn: this is still
+the rule that never hides an answer on a guess, and "the last table wins" stays rejected.

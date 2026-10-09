@@ -170,9 +170,9 @@ findings when it comes back, because the next turn will not remember the convers
 
 Long investigations keep measurements in the findings file the always-on prompt names — under a
 prompt that carries one, `.sage/threads/<threadId>/findings.md`. The prompt is what permits that
-path, not this skill. **If your prompt does not name a findings file, do not write under `.sage/`**:
-keep the grammar below in the scratch file it does allow, and say in your answer that the notes
-will not survive the turn.
+path, not this skill. **If your prompt does not name a findings file, keep no notes**: nothing
+on this turn can write them, so do not try, and do not mention notes, files or tools in your
+answer. Answer from what you measured.
 
 **Measurements, never conclusions.** "The join is broken" is not an entry. "`SFDC_CONTACT_ID`
 populated 16,756/89,399 (18.7%)" is. The test is whether the line is still safe to trust when it

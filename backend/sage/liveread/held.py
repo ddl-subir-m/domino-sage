@@ -4,6 +4,8 @@ Two jobs, and neither is the model's. A chart is drawn by Sage from `rows` — e
 including the rows the model was never shown and, where **Kept rows** is off, the rows the file on
 disk no longer holds (ADR-0045). And the answer's numbers are checked against `disclosed`, which is
 exactly what the model was handed: a number may be stated only from a read whose values reached it.
+The same two facts say which read an answer was drawn from, so a read a later one replaced is
+shown as working rather than as a second answer (#732).
 
 Never written down. The rows live on the orchestrator for one turn and are dropped when the next
 turn's token is minted, the same lifetime as `_live_results`.
@@ -67,7 +69,13 @@ def _stated(text: str) -> list[_Stated]:
 
 def _carried(read: HeldRead) -> list[float]:
     """Every number the model was handed by this read: its values, and its shape."""
-    out = [float(len(read.rows)), float(len(read.columns)), float(len(read.disclosed))]
+    return [float(len(read.rows)), float(len(read.columns)), float(len(read.disclosed)),
+            *_values(read)]
+
+
+def _values(read: HeldRead) -> list[float]:
+    """The numbers in what this read disclosed, without its shape."""
+    out: list[float] = []
 
     def walk(value):
         if isinstance(value, bool) or value is None:
@@ -105,13 +113,48 @@ def unsupported_numbers(text: str, reads: list[HeldRead], prompt: str) -> list[s
     read may still be described by. The person's own numbers and a plain year are not claims.
     """
     carried = [v for read in reads for v in _carried(read)]
+    return [stated.said for stated in _claims(text, prompt) if not _matches(stated, carried)]
+
+
+def _claims(text: str, prompt: str) -> list[_Stated]:
+    """The numbers `text` states about data: not a plain year, and not one the person typed."""
     asked = {s.value * s.scale for s in _stated(prompt)}
-    out = []
-    for stated in _stated(text):
-        if stated.plain and 1900 <= stated.value <= 2100:
-            continue
-        if stated.value * stated.scale in asked or stated.value in asked:
-            continue
-        if not _matches(stated, carried):
-            out.append(stated.said)
+    return [s for s in _stated(text)
+            if not (s.plain and 1900 <= s.value <= 2100)
+            and s.value * s.scale not in asked and s.value not in asked]
+
+
+def replaced(events: list[dict], roles: dict[str, str], reads: list[HeldRead],
+             charted: set[str], text: str, prompt: str) -> set[str]:
+    """The cards of answer reads a later read in this turn replaced (#732), to be shown as working.
+
+    An earlier answer read is replaced when a LATER answer read from the same source is one the
+    answer is drawn from, and the earlier one is not. Drawn from means Sage charted it, the answer
+    names its card, or the answer states a number that read carries and the other does not. Both
+    reads must be held, so Sage knows what each returned; anything less certain shows both
+    (ADR-0063: an answer is never hidden on a guess).
+    """
+    held = {r.slug: r for r in reads if r.slug}
+    claims = _claims(text, prompt)
+    answers = [(str(e.get("artifact") or ""), str(e.get("source") or "")) for e in events]
+    answers = [(path, source) for path, source in answers
+               if path and source and roles.get(path) == "answer"
+               and _slug(path) in held]
+
+    def drawn(path: str, other: str) -> bool:
+        read, rival = held[_slug(path)], _values(held[_slug(other)])
+        mine = _values(read)
+        return (read.slug in charted or path.rsplit("/", 1)[-1] in text
+                or any(_matches(s, mine) and not _matches(s, rival) for s in claims))
+
+    out: set[str] = set()
+    for i, (earlier, source) in enumerate(answers):
+        for later, other in answers[i + 1:]:
+            if (other == source and later != earlier and drawn(later, earlier)
+                    and not drawn(earlier, later)):
+                out.add(earlier)
     return out
+
+
+def _slug(path: str) -> str:
+    return path.rsplit("/", 1)[-1].removesuffix(".table.json")

@@ -34,8 +34,9 @@ from .fake_opencode import FakeOpenCode, Turn
 # What a turn is asked and what its slice writes down. The question is investigation-shaped on
 # purpose: `bounded_intent` leaves `suggestion` non-None for a build-shaped one, and the handoff
 # arm fires BEFORE the ceiling arm — so a build-shaped prompt here would exercise a branch this
-# file makes no claim about and read as though it had exercised this one.
-QUESTION = "which accounts are at risk, and why"
+# file makes no claim about and read as though it had exercised this one. And not question-shaped:
+# an unclassified question is armed answer-only, which holds no writer and so gets no slice (#733).
+QUESTION = "Work out which accounts are at risk, and why"
 MEASURED = "2026-09-19T14:02Z — DWH.MARTS.ACCOUNT.SFDC_CONTACT_ID populated 16,756/89,399 (18.7%)\n"
 
 
@@ -642,8 +643,8 @@ def test_a_bounded_turn_keeps_its_whole_ceiling(tmp_path: Path, monkeypatch):
     bounded turn cannot write `.sage/threads/<threadId>/findings.md` however long it is given.
     Opening the slice there cuts the work at 540s and buys nothing with the 60s.
 
-    `bounded_intent` is the predicate the turn already computed, rather than a second reading of
-    the same question that could drift from the arming it is about.
+    The predicate is the turn's own arming (#733), rather than a second reading of the same
+    question that could drift from it.
     """
     from sage.orchestrator import chat_intent
 
