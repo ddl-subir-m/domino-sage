@@ -69,6 +69,9 @@ class FakePreview:
     def runtime_fault(self):
         return None
 
+    def query_reads(self):
+        return []
+
 
 class FakeQueries:
     def __init__(self, workspace, template=None) -> None:
