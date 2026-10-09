@@ -25050,14 +25050,9 @@ class Orchestrator:
                                    "message": "Not done from the plan, after one repair: "
                                               + _plan_review_sentence(plan_unmet)})
                 yield persist({"type": "done", "ok": (report.ok and not queries_failed
-<<<<<<< HEAD
-                                                      and rt is None
+                                                      and rt is None and not routes_notice
                                                       and refused is None and not unbuilt
                                                       and not plan_unmet),
-=======
-                                                      and rt is None and not routes_notice
-                                                      and refused is None and not unbuilt),
->>>>>>> origin/main
                                "decision": ("queries failed" if queries_failed
                                             else "runtime failed" if rt
                                             else "platform read failed" if refused
