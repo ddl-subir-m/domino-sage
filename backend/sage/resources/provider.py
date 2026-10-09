@@ -1757,6 +1757,7 @@ class DominoResourceProvider:
         self._local_evidence: Path | None = None
         self._local_rows: list[dict] = []
         self._measure_lock = threading.Lock()
+        self._measured = threading.Condition(self._measure_lock)  # notified as each one ends
         self._measuring: list[tuple[str, ...]] = []
         self._cooldown: dict[tuple[str, ...], float] = {}
         self._failed: dict[tuple[str, ...], str] = {}  # why the last measurement gave no row
@@ -1812,6 +1813,16 @@ class DominoResourceProvider:
             raise ValueError(capability.reason or f"{model} has no gateway route to measure.")
         self._enqueue(capability.identity, force=True)
 
+    def wait_for_measurement(self, model: str, timeout_s: float) -> None:
+        """Return once this builder is no longer measuring `model`, or after `timeout_s` (#724).
+
+        Returns at once when nothing is measuring it. The lock is released while waiting, so the
+        measurement it waits for can finish.
+        """
+        key = self.reasoning_capability(model).identity
+        with self._measured:
+            self._measured.wait_for(lambda: key not in self._measuring, timeout_s)
+
     def is_measuring(self, identity: tuple[str, ...]) -> bool:
         with self._measure_lock:
             return identity in self._measuring
@@ -1864,6 +1875,7 @@ class DominoResourceProvider:
                     self._failed[key] = said[-1] if said else "the gateway gave no verdict"
                 self._measuring.remove(key)
                 self._reasoning_cache = (0, {})
+                self._measured.notify_all()
 
     def _record(self, measured: dict) -> None:
         """Keep `measured`, replacing any earlier row for the same identity. Caller holds the lock."""

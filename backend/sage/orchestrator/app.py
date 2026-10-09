@@ -5056,9 +5056,11 @@ async def chat_completions(request: Request):
         project.note_resolved(model, phase, reason)
         call.model(model, phase, reason)
 
-    gen = project.shim.handle(body, project=project.id,
-                              session=project.active_session_id or project.session_id,
-                              on_resolved=_resolved, on_refused=_refused)
+    # In the threadpool: `handle` can wait for a model's measurement (#724), and on the event loop
+    # that wait would stall every other request this process serves.
+    gen = await run_in_threadpool(project.shim.handle, body, project=project.id,
+                                  session=project.active_session_id or project.session_id,
+                                  on_resolved=_resolved, on_refused=_refused)
     # The boundary between our time and the gateway's. `handle` is not a generator — it rewrites the
     # request here and now (phase classification, the read-only tool filter, routing, the signing
     # veto) and only the `route` it returns is lazy, so the HTTP call does not start until `ka.pump`
