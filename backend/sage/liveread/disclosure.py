@@ -376,7 +376,38 @@ def _classify(node, exp) -> str:
     # OVER (…)` returns a stored value per row, which is a row read wearing a function.
     if isinstance(node, exp.Window):
         return "value"
+    if _arithmetic_of_derived(node, exp):
+        return "derived"
     return "plain"
+
+
+# What may sit between derived aggregates and still be a number worked out from them (#726): a win
+# rate is `ROUND(100.0 * SUM(…) / COUNT(*), 1)`. Arithmetic only — a string function could read
+# characters out of whatever it wraps.
+_ARITHMETIC = ("Add", "Sub", "Mul", "Div", "Neg", "Paren", "Round", "Abs", "Floor", "Ceil",
+               "Nullif", "Coalesce", "Cast", "TryCast", "DataType", "Literal")
+
+
+def _arithmetic_of_derived(node, exp) -> bool:
+    """Arithmetic whose every leaf is a literal or an always-numeric derived aggregate.
+
+    `MIN`/`MAX` are not leaves here. Bare, rule 4 settles them on what came back; through `+ 0` a
+    phone number stored as text comes back a number and rule 4 would pass it.
+    """
+    found = False
+
+    def leaf_ok(n) -> bool:
+        nonlocal found
+        name = type(n).__name__
+        if name in _DERIVED or (name == "Anonymous"
+                                and str(n.this or "").upper() in _DERIVED_FUNCTIONS):
+            found = True
+            return True
+        if name not in _ARITHMETIC:
+            return False
+        return all(leaf_ok(child) for child in n.iter_expressions())
+
+    return leaf_ok(node) and found
 
 
 def _label_of(node, grouped: set[str]) -> bool:

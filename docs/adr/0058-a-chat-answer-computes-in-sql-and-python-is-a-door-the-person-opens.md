@@ -265,3 +265,16 @@ disclosure rule. The replay used real models with synthetic local tables, so it 
 production warehouse access.
 
 **Diagnostics (#603, 2026-09-28):** the composed statement is logged, capped at 2,000 characters, to the `sage.liveread` server log beside its `source_sha256`; it still never enters Thread history, a committed file, the data-use event or Recall (ADR-0041).
+
+## Arithmetic over derived aggregates — #726, 2026-10-08
+
+A number worked out from derived aggregates is itself derived. `ROUND(100.0 * SUM(…) / COUNT(*), 1)`
+(a win rate), `(SUM(A) - SUM(B)) / NULLIF(SUM(B), 0)` (a change) and `ROUND(AVG(X), 2)` reach the
+model; until this amendment only a bare aggregate did, so the whole result was withheld and a haiku
+turn said the win rate was "not available" over the card that showed it.
+
+The arithmetic is a closed list — `+ - * /`, negation, parentheses, `ROUND`, `ABS`, `FLOOR`, `CEIL`,
+`NULLIF`, `COALESCE`, `CAST` — and every leaf is a literal or an always-numeric aggregate.
+`MIN`/`MAX` are not leaves: bare, rule 4 settles them on what came back, but through `+ 0` a number
+stored as text comes back a number. A window, a value aggregate, a bare column or any other function
+in the expression keeps the result on the card. Rule 4 still reads every returned value.

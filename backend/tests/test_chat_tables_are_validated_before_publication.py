@@ -107,7 +107,9 @@ def test_empty_results_receipts_and_labelled_pandas_tables_are_valid(tmp_path, b
     events = list(orch.chat_stream(tid, "summarize the file"))
     assert len(oc.prompts) == 1
     assert next(e for e in events if e["type"] == "done")["ok"] is True
-    assert [a["path"] for a in orch.get_thread(tid)["artifacts"]] == [table]
+    # Valid, so never repaired; but an empty result is published as no card at all (#726).
+    empty = body in ({"columns": ["total"], "rows": []}, {"columns": [], "rows": []}, [])
+    assert [a["path"] for a in orch.get_thread(tid)["artifacts"]] == ([] if empty else [table])
 
 
 def test_multiple_tables_share_one_repair_and_keep_the_successes(tmp_path):
@@ -115,8 +117,10 @@ def test_multiple_tables_share_one_repair_and_keep_the_successes(tmp_path):
     second = f"examples/{tid}/second.table.json"
     good = f"examples/{tid}/good.table.json"
     raw = json.dumps({"columns": ["secret"], "rows": [["private-cell"]]})
+    # A different result from `good`'s: the same one twice is published once (#726).
+    repaired = json.dumps({"columns": ["secret"], "rows": [["private-cell"], ["private-cell"]]})
     oc.turns = [Turn(text="The total is 42.", writes={table: "", second: "{bad", good: raw}),
-                Turn(writes={table: raw})]
+                Turn(writes={table: repaired})]
     events = list(orch.chat_stream(tid, "summarize the file"))
     assert len(oc.prompts) == 2
     assert table in oc.prompts[1]["text"] and second in oc.prompts[1]["text"]
