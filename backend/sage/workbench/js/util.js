@@ -1419,10 +1419,16 @@ window.SW = window.SW || {};
     // the server's URL is not what the person typed. Not global, so `.test` holds no state.
     MCP_REF: /\{mcp:([a-z0-9][a-z0-9_-]*)\}/,
 
+    // A link opens in a new tab and only for http(s) (#734): the href is whatever the model wrote,
+    // so `javascript:`, `data:` and every other scheme stay text as written. A markdown link's URL
+    // may hold one level of parens; a bare URL gives back trailing punctuation and any `)` it did
+    // not open, so the period ending a sentence is not part of the link.
     inline(text) {
       const parts = String(text).split(
-        /(`[^`]+`|\{env:[A-Za-z_][A-Za-z0-9_]*\}|\{mcp:[a-z0-9][a-z0-9_-]*\}|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)(?:\\\$|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
+        /(`[^`]+`|\{env:[A-Za-z_][A-Za-z0-9_]*\}|\{mcp:[a-z0-9][a-z0-9_-]*\}|\[[^\]\n]+\]\((?:[^\s()]|\([^\s()]*\))+\)|https?:\/\/[^\s<>"`]+|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$])\$(?=\S)(?:\\\$|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*]+\*\*)/g
       );
+      const anchor = (key, href, label) =>
+        h('a', { key, href, target: '_blank', rel: 'noopener noreferrer' }, label);
       // Odd indices are what the pattern captured; an even one is prose even when it starts with
       // `$` — a table cell reading `$420k` is money, not a formula missing its closing dollar.
       return parts.map((part, i) => {
@@ -1440,6 +1446,19 @@ window.SW = window.SW || {};
         if (part.startsWith('{mcp:')) {
           return h('span', { key: i, className: 'sw-mcp-ref', title: `The MCP server ${part.slice(5, -1)}` },
                    part.slice(5, -1));
+        }
+        if (part.startsWith('[')) {
+          const split = part.indexOf('](');
+          const href = part.slice(split + 2, -1);
+          return /^https?:\/\//i.test(href) ? anchor(i, href, part.slice(1, split)) : part;
+        }
+        if (/^https?:\/\//i.test(part)) {
+          let href = part;
+          const opens = (s) => s.split('(').length - s.split(')').length;
+          while (/[.,;:!?'"\]]$/.test(href) || (href.endsWith(')') && opens(href) < 0)) {
+            href = href.slice(0, -1);
+          }
+          return h(Fragment, { key: i }, anchor('a', href, href), part.slice(href.length) || null);
         }
         if (/^(\$|\\[([])/.test(part)) {
           const display = part.startsWith('$$') || part.startsWith('\\[');
