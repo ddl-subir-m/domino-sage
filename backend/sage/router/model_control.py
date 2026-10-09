@@ -107,7 +107,8 @@ class ModelControl:
 
     def skills_sent(self) -> list[dict]:
         """The armed turn's record: one entry per @-named skill, by name."""
-        return [dict(self._skills_sent[name]) for name in sorted(self._skills_sent)]
+        sent = self._skills_sent.copy()
+        return [dict(sent[name]) for name in sorted(sent)]
 
     def set_mode(self, mode: Mode) -> None:
         """The user's standing mode choice — what the next turn runs as. While a turn is pinned
