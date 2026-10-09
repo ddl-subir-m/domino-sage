@@ -340,7 +340,7 @@ def test_a_repair_turn_is_checked_for_the_catalog_too(selected_stack):  # noqa: 
     """The repair of a syntax error is the turn that drops the queries and calls a new one — the
     shape #720 names, a repair checked only for what it was told to fix."""
     app = selected_stack
-    root = _seed(app, [_query(q) for q in LOST + KEPT])
+    _seed(app, [_query(q) for q in LOST + KEPT])
     pipeline = "static/components/Pipeline.js"
     app.oc.turns.extend([
         Turn(writes={"app.py": "def broken(:\n    pass\n"}),
