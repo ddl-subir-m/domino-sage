@@ -149,6 +149,8 @@ def calculate(args, turn):
         return "The CSV could not be calculated. Check its encoding and numeric column. No result was saved."
     receipt = result.record(turn.examples_dir, name, str(args.get("title") or "CSV totals"),
                             [group, value], rows, keep_rows=turn.keep_rows)
+    from .run import hold
+    hold(turn, receipt, str(args.get("title") or "CSV totals"), rows, [values] if values else [])
     unfinished = 1 if args.get("source") and scope is not None and count > processed else 0
     event = {
         "operation_id": operation, "source": source,

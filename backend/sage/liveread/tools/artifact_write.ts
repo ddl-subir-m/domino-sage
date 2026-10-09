@@ -51,21 +51,30 @@ const TIMEOUT_MS =
 const NOT_CONFIRMED = " No artifact was confirmed."
 
 export default {
-  description: "Write one requested Chat table or PNG chart under examples/<thread_id>/. Render standard SVG to PNG without shell tools. Cannot edit apps or other threads.",
+  description: "Write one requested Chat table, or a PNG chart drawn from the rows of a result read this turn, under examples/<thread_id>/. Cannot edit apps or other threads.",
   args: {
     thread_id: { type: "string", description: "The current thread_id from this turn's prompt." },
-    path: { type: "string", description: "Artifact path under examples/<thread_id>/." },
-    content: { type: "string", description: "Table JSON, standard SVG chart markup (inline shapes/text only), or base64 PNG bytes." },
-    encoding: { type: "string", enum: ["utf8", "svg", "base64"], description: "utf8 for .table.json; svg renders a .png chart; base64 saves existing PNG bytes." },
+    path: { type: "string", description: "Artifact path under examples/<thread_id>/: <name>.table.json or <name>.png." },
+    // Nullable rather than optional, for the reason `live_read.ts` gives: OpenCode marks every key
+    // of `args` required. The nulls are dropped before posting, so Python sees the key absent.
+    content: { anyOf: [{ type: "string" }, { type: "null" }], description: "Table JSON, for a .table.json path. Send null for a chart." },
+    encoding: { anyOf: [{ type: "string", enum: ["utf8"] }, { type: "null" }], description: "utf8 for .table.json. Send null for a chart." },
+    table: { anyOf: [{ type: "string" }, { type: "null" }], description: "For a .png chart: the title of the result read this turn to plot. Send null for a table." },
+    x: { anyOf: [{ type: "string" }, { type: "null" }], description: "For a .png chart: the column holding the labels. Send null for a table." },
+    y: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }], description: "For a .png chart: the column or columns holding the numbers. Send null for a table." },
   },
   async execute(args) {
+    const sent = {}
+    for (const key of Object.keys(args)) {
+      if (args[key] !== null && args[key] !== undefined) sent[key] = args[key]
+    }
     let response
     try {
       response = await fetch(`http://127.0.0.1:${PORT}/api/chat/artifact`, {
         method: "POST",
         signal: AbortSignal.timeout(TIMEOUT_MS),
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(args),
+        body: JSON.stringify(sent),
       })
     } catch (error) {
       // Two conditions, not one, and the difference is the whole point of the bound. "Could not be
