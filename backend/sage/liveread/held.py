@@ -67,23 +67,34 @@ def _stated(text: str) -> list[_Stated]:
     return out
 
 
-def _carried(read: HeldRead) -> list[float]:
-    """Every number the model was handed by this read: its values, and its shape."""
-    return [float(len(read.rows)), float(len(read.columns)), float(len(read.disclosed)),
-            *_values(read)]
+@dataclass(frozen=True)
+class _Carried:
+    value: float
+    # A count, or any other value with no fraction. `$9.0M` is never one: a figure stated in
+    # thousands, millions or billions matches a value at its own scale, or one already in that unit
+    # (`PIPELINE_M = 9.0`), and a deal count of 9 is neither (#747).
+    whole: bool
 
 
-def _values(read: HeldRead) -> list[float]:
+def _carried(read: HeldRead) -> list[_Carried]:
+    """Every number the model was handed by this read: its values, its totals, and its shape."""
+    shape = [_Carried(float(n), True)
+             for n in (len(read.rows), len(read.columns), len(read.disclosed))]
+    return [*shape, *_values(read), *_totals(read)]
+
+
+def _values(read: HeldRead) -> list[_Carried]:
     """The numbers in what this read disclosed, without its shape."""
-    out: list[float] = []
+    out: list[_Carried] = []
 
     def walk(value):
         if isinstance(value, bool) or value is None:
             return
         if isinstance(value, (int, float)):
-            out.append(abs(float(value)))
+            out.append(_Carried(abs(float(value)), isinstance(value, int)))
         elif isinstance(value, str):
-            out.extend(s.value * s.scale for s in _stated(value))
+            out.extend(_Carried(s.value * s.scale, s.scale == 1.0 and "." not in s.said)
+                       for s in _stated(value))
         elif isinstance(value, dict):
             for v in value.values():
                 walk(v)
@@ -95,12 +106,64 @@ def _values(read: HeldRead) -> list[float]:
     return out
 
 
-def _matches(stated: _Stated, carried: list[float]) -> bool:
+def _cell(value) -> _Carried | None:
+    """A disclosed cell as a number, when the whole cell is one."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return _Carried(float(value), isinstance(value, int))
+    if isinstance(value, str):
+        try:
+            return _Carried(float(value), "." not in value)
+        except ValueError:
+            return None
+    return None
+
+
+def _totals(read: HeldRead) -> list[_Carried]:
+    """What the disclosed rows add up to, which an answer states as often as a row (#747).
+
+    A numeric column's total, each label's total and row count in every other column, and each
+    value's and label total's share of its column. Nothing finer: every subset of rows sums to
+    something, and a check that carried those would pass any figure at all.
+    """
+    rows = [r for r in read.disclosed
+            if isinstance(r, (list, tuple)) and len(r) == len(read.columns)]
+    if not rows:
+        return []
+    cells = [[_cell(v) for v in r] for r in rows]
+    numeric = [i for i in range(len(read.columns))
+               if any(c[i] for c in cells)
+               and all(c[i] is not None or r[i] is None for c, r in zip(cells, rows))]
+    out: list[_Carried] = []
+    for i in numeric:
+        whole = all(c[i] is None or c[i].whole for c in cells)
+        total = sum(c[i].value for c in cells if c[i])
+        groups: dict[tuple[int, str], float] = {}
+        counts: dict[tuple[int, str], int] = {}
+        for c, r in zip(cells, rows):
+            for g in range(len(read.columns)):
+                if g not in numeric:
+                    key = (g, str(r[g]))
+                    groups[key] = groups.get(key, 0.0) + (c[i].value if c[i] else 0.0)
+                    counts[key] = counts.get(key, 0) + 1
+        out.append(_Carried(abs(total), whole))
+        out.extend(_Carried(abs(v), whole) for v in groups.values())
+        out.extend(_Carried(float(n), True) for n in counts.values())
+        if total:
+            out.extend(_Carried(abs(v / total), False)
+                       for v in [*(c[i].value for c in cells if c[i]), *groups.values()])
+    return out
+
+
+def _matches(stated: _Stated, carried: list[_Carried]) -> bool:
     tolerance = 0.5 * 10 ** -stated.decimals
     for scale in {stated.scale, 1.0}:
-        for value in carried:
-            candidates = [value, value * 100] if stated.percent else [value]
-            if any(abs(stated.value * scale - c) <= tolerance * scale + 1e-9 for c in candidates):
+        for c in carried:
+            if scale != stated.scale and c.whole:
+                continue
+            candidates = [c.value, c.value * 100] if stated.percent else [c.value]
+            if any(abs(stated.value * scale - v) <= tolerance * scale + 1e-9 for v in candidates):
                 return True
     return False
 
@@ -114,6 +177,50 @@ def unsupported_numbers(text: str, reads: list[HeldRead], prompt: str) -> list[s
     """
     carried = [v for read in reads for v in _carried(read)]
     return [stated.said for stated in _claims(text, prompt) if not _matches(stated, carried)]
+
+
+# Where a sentence may end: its stop, any closing bracket or quote, then space. A decimal point has
+# no space after it, so `$4.85M.` ends once.
+_STOP = re.compile(r"[.!?]+[\"')\]]*\s+")
+# Words whose stop is not a sentence's end.
+_ABBREVIATIONS = frozenset({"e.g.", "i.e.", "vs.", "etc.", "approx.", "incl.", "inc.", "ltd.",
+                            "corp.", "co.", "no."})
+# What opens a line without being part of its first sentence: a bullet, a number, a heading, a quote.
+_MARKER = re.compile(r"^(\s*(?:[-*+]|\d+[.)]|#{1,6}|>)\s+)?(.*)$", re.DOTALL)
+
+
+def _sentences(line: str) -> list[str]:
+    out, start = [], 0
+    for m in _STOP.finditer(line):
+        word = line[:m.start() + 1].rsplit(None, 1)[-1].lower().lstrip("(\"'")
+        if word in _ABBREVIATIONS:
+            continue
+        out.append(line[start:m.end()])
+        start = m.end()
+    if start < len(line):
+        out.append(line[start:])
+    return out
+
+
+def without_unsupported(text: str, reads: list[HeldRead], prompt: str) -> tuple[str, bool]:
+    """`text` without the sentences that state a number no read carries, and whether any went (#747).
+
+    Only the sentence goes: one figure that does not match must not cost the person every line
+    around it. A line left with no sentence goes with its bullet; a table row is one sentence.
+    """
+    kept_lines, removed = [], False
+    for line in text.split("\n"):
+        marker, body = _MARKER.match(line).groups()
+        kept = [s for s in _sentences(body) if not unsupported_numbers(s, reads, prompt)]
+        if len(kept) == len(_sentences(body)):
+            kept_lines.append(line)
+            continue
+        removed = True
+        if kept:
+            kept_lines.append((marker or "") + "".join(kept).rstrip())
+    if not removed:
+        return text, False
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip(), removed
 
 
 def _claims(text: str, prompt: str) -> list[_Stated]:
