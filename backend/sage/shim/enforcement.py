@@ -667,17 +667,19 @@ class EnforcementShim:
             redacted = redact_invalid_tool_results(request["messages"])
             if redacted is not request["messages"]:
                 request = {**request, "messages": redacted}
-            hidden = hide_secret_values(request["messages"], project_secrets.known_values())
+            noted = request["messages"]
             # Build only. Chat already has a connected server's tools; a mention there would be a
             # second way to point at it. The note is on the request, not the stored message, so
-            # the transcript keeps `{mcp:name}` and the URL stays in the app's code.
+            # the transcript keeps `{mcp:name}` and the URL stays in the app's code. Before the
+            # values are hidden, so a key typed into a server's URL is hidden in the note too.
             if state.chat_thread_id is None:
                 try:
                     servers = (extension_mcp.list_servers(extension_mcp.project_root())
                                if extension_mcp.project_root() is not None else [])
                 except extension_mcp.ExtensionError:
                     servers = []
-                hidden = extension_mcp.note_mentions(hidden, servers)
+                noted = extension_mcp.note_mentions(noted, servers)
+            hidden = hide_secret_values(noted, project_secrets.known_values())
             hidden = note_secret_mentions(hidden)
             if hidden is not request["messages"]:
                 request = {**request, "messages": hidden}
