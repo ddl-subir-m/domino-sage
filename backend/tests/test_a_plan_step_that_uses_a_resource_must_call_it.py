@@ -19,6 +19,8 @@ from sage.orchestrator.plan_steps import parse_steps, validate_execution_contrac
 
 from .fake_opencode import Turn, execution_plan
 from .test_a_dead_alias_stops_the_turn_before_it_starts import _no_waiting, _orch  # noqa: F401
+from .test_a_handoff_plan_names_the_apps_stack import _door, _plan, _plan_prompts
+from .test_model_calls_answers_this_turn_on_chat import _no_real_waiting  # noqa: F401
 
 DEAL_DESK_URL = "https://deal-desk.example.com/mcp"
 
@@ -42,8 +44,7 @@ DEAL_DESK_SENT_BACK = "Plan step 1 (Deal desk route) uses deal-desk, but nothing
 NEWS_KEY_SENT_BACK = "Plan step 2 (News panel) uses NEWS_KEY, but nothing in the app reads it."
 
 
-def _project_resources(orch, monkeypatch) -> None:
-    root = orch.project(start_preview=False).record.path
+def _project_resources(root: Path, monkeypatch) -> None:
     extension_mcp.add(root, "deal-desk", DEAL_DESK_URL,
                       {"Authorization": "Bearer {env:DEAL_DESK_TOKEN}"})
     extension_mcp.set_tools(root, "deal-desk", ["open_deals", "deal_terms"], None)
@@ -56,7 +57,7 @@ def _project_resources(orch, monkeypatch) -> None:
 
 def _approve(tmp_path: Path, monkeypatch, *builds: Turn):
     orch, oc = _orch(tmp_path, turns=[PLAN, *builds])
-    _project_resources(orch, monkeypatch)
+    _project_resources(orch.project(start_preview=False).record.path, monkeypatch)
     list(orch.build_stream("build me a signal room", conversation="c1"))
     events = list(orch.approve_stream(conversation="c1"))
     history = orch.project(start_preview=False).app_for_turn().read_history("c1")
@@ -91,7 +92,7 @@ def test_uses_is_read_under_the_names_a_model_drifts_to():
 
 def test_the_planner_is_given_the_projects_servers_secrets_and_models(tmp_path: Path, monkeypatch):
     orch, oc = _orch(tmp_path, turns=[PLAN])
-    _project_resources(orch, monkeypatch)
+    _project_resources(orch.project(start_preview=False).record.path, monkeypatch)
     orch.bind_llm_alias("id-impl")
     list(orch.build_stream("build me a signal room", conversation="c1"))
 
@@ -101,6 +102,21 @@ def test_the_planner_is_given_the_projects_servers_secrets_and_models(tmp_path: 
     assert "`implement-model`" in prompt
     assert "'- Uses —'" in prompt
     # Names, never values; never Sage's own reserved names; never a server switched off.
+    assert "never-shown" not in prompt and "SAGE_APP_KEY" not in prompt
+    assert "switched-off" not in prompt
+
+
+def test_the_chat_handoff_planner_is_given_the_same_resources(tmp_path: Path, monkeypatch):
+    # The Signal Room demo plans through the Chat→Build handoff, not the gated Build turn.
+    orch, tid, oc = _door(tmp_path, "fastapi-antd", (_plan("fastapi-antd"),))
+    _project_resources(orch._chat_project().record.path, monkeypatch)
+
+    orch.draft_handoff_plan(tid)
+
+    [prompt] = _plan_prompts(oc)
+    assert "`deal-desk`" in prompt and "open_deals" in prompt
+    assert "`DEAL_DESK_TOKEN`" in prompt and "`NEWS_KEY`" in prompt
+    assert "'- Uses —'" in prompt
     assert "never-shown" not in prompt and "SAGE_APP_KEY" not in prompt
     assert "switched-off" not in prompt
 
