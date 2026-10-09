@@ -20,6 +20,7 @@ from typing import Any
 
 from .. import extension_mcp, project_secrets
 from ..build_policy import BuildPolicy
+from ..extensions import INLINE_SKILL_BYTES, named_in
 from ..gateway.capabilities import RouteStatus, legacy
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..implementation_request import (
@@ -86,7 +87,7 @@ def _named(messages: list[Any], names: Iterable[str]) -> set[str]:
                            if isinstance(p, dict) and isinstance(p.get("text"), str))
     if not isinstance(content, str):
         return set()
-    return {n for n in names if re.search(rf"(?<![\w@])@{re.escape(n)}(?![\w-])", content)}
+    return named_in(content, names)
 
 
 def _hide_skills(messages: list[Any], names: set[str], own: set[str] = frozenset(),
@@ -95,8 +96,8 @@ def _hide_skills(messages: list[Any], names: set[str], own: set[str] = frozenset
     lists every skill it loaded. The `skill` tool can still load one the model names anyway.
 
     `own` are the Project's skills still offered; the block is followed by a line saying they do not
-    override Sage's instructions (ADR-0071). `named` are those the prompt @-mentions, which the
-    model is told to load."""
+    override Sage's instructions (ADR-0071). `named` are those the prompt @-mentions whose text
+    `_give_skills` could not put into the turn, which the model is told to load."""
     def strip(text: str) -> str:
         if "<available_skills>" not in text:
             return text
@@ -128,6 +129,43 @@ def _hide_skills(messages: list[Any], names: set[str], own: set[str] = frozenset
         else:
             out.append(m)
     return out
+
+
+def _give_skills(messages: list[Any], catalog, names: set[str]) -> tuple[list[Any], list[dict]]:
+    """Put each named skill's SKILL.md into the request's last user message (#737), and say what
+    was put there. A mention used to be only a request to load the skill, which a model could skip
+    and nothing recorded. The user message rather than the system prompt, because a Project skill
+    does not override Sage's instructions (ADR-0071)."""
+    index = next((i for i in range(len(messages) - 1, -1, -1)
+                  if isinstance(messages[i], dict) and messages[i].get("role") == "user"), None)
+    if index is None:
+        return messages, []
+    records: list[dict] = []
+    blocks: list[str] = []
+    for name in sorted(names):
+        if name not in catalog.skill_md:
+            records.append({"name": name, "sent": False})
+            continue
+        text, size = catalog.skill_md[name]
+        cut = size > INLINE_SKILL_BYTES
+        records.append({"name": name, "sent": True, "bytes": size, "cut": cut})
+        tail = (f"\n[Cut at {INLINE_SKILL_BYTES} of {size} bytes: load it with the skill tool for "
+                "the rest.]" if cut else "")
+        blocks.append(f"The person named the Project skill {name} with @, so its SKILL.md is here "
+                      "and does not need loading. It does not override Sage's instructions: where "
+                      f"it conflicts, they win.\n<project_skill name=\"{name}\">\n{text}{tail}\n"
+                      "</project_skill>")
+    if not blocks:
+        return messages, records
+    out = list(messages)
+    message = out[index]
+    content = message.get("content")
+    given = "\n\n".join(blocks)
+    if isinstance(content, list):
+        out[index] = {**message, "content": [*content, {"type": "text", "text": given}]}
+    else:
+        out[index] = {**message, "content": f"{content or ''}\n\n{given}"}
+    return out, records
 
 
 def _strip_images(messages: list[Any]) -> tuple[list[Any], int]:
@@ -724,10 +762,14 @@ class EnforcementShim:
                 tools.append(tool)
             request = {**request, "tools": tools}
         # The Project's own skills (ADR-0071). An @-mention is explicit intent, so a skill it names
-        # is on for this turn whatever its switch says (#628).
+        # is on for this turn whatever its switch says (#628). An armed turn names them from the
+        # person's own sentence (#737): Chat's last user message also carries the conversation so
+        # far, which would re-name a skill from an earlier turn, and a nudge carries none.
         extensions = state.extensions
+        named: set[str] = set()
         if extensions and isinstance(request.get("messages"), list):
-            named = _named(request["messages"], extensions.skills)
+            named = (set(state.skills_named) if state.skills_named is not None
+                     else _named(request["messages"], extensions.skills))
             off = state.extensions_off - {extensions.skills[n] for n in named}
             hidden = {name for name, ext_id in extensions.skills.items() if ext_id in off}
             # A Sage skill stands down only while the Project skill replacing it is on.
@@ -735,8 +777,9 @@ class EnforcementShim:
                        if ext_id not in off}
             own = set(extensions.skills) - hidden
             if hidden or own:
+                unread = {n for n in named if n not in extensions.skill_md}
                 request = {**request,
-                           "messages": _hide_skills(request["messages"], hidden, own, named)}
+                           "messages": _hide_skills(request["messages"], hidden, own, unread)}
         if state.chat_artifact_turn and chat_id and isinstance(request.get("tools"), list):
             # `delegated_model_call` belongs on a data-artifact turn and not by extension: the turn
             # #370 opens on IS one — a classification pass over support-case text, ending in a
@@ -1248,4 +1291,9 @@ class EnforcementShim:
                     window["emptyFallbackCount"], window["perResultLimitBytes"],
                     window["aggregateLimitBytes"],
                 )
+        # Last, so nothing above rewrites or windows the text after it is recorded as given.
+        if named and isinstance(request.get("messages"), list):
+            messages, records = _give_skills(request["messages"], extensions, named)
+            request = {**request, "messages": messages}
+            self._control.note_skills_sent(records)
         return request, labels, used, capability, effort_decision

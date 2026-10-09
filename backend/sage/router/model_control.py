@@ -5,6 +5,7 @@ Single serialized writer, so the manual-toggle-vs-auto-phase race has one arbite
 """
 from __future__ import annotations
 
+from ..extensions import named_in
 from .models import Mode, ModelId, Phase, SessionState
 
 
@@ -67,6 +68,10 @@ class ModelControl:
         self._extensions = None
         self._extensions_off: frozenset[str] = frozenset()
         self._extensions_off_token: object | None = None
+        # The Project skills this turn's request names with @, and what the shim did with each
+        # (#737), by name. Scoped to the extensions arming, which every Chat and Build turn takes.
+        self._skills_named: frozenset[str] = frozenset()
+        self._skills_sent: dict[str, dict] = {}
         # The code map tool (#700), offered per Build turn where the Project switched it on. Same
         # token discipline as Direct.
         self._source_map_token: object | None = None
@@ -74,17 +79,35 @@ class ModelControl:
     def set_extensions(self, catalog) -> None:
         self._extensions = catalog or None
 
-    def arm_extensions_off(self, ids: frozenset[str]) -> object:
-        """Pin the extension ids this turn's Thread or App switched off, and return a token."""
+    def arm_extensions_off(self, ids: frozenset[str], prompt: str = "") -> object:
+        """Pin the extension ids this turn's Thread or App switched off, and the Project skills
+        the person's `prompt` names with @, and return a token."""
         token = object()
         self._extensions_off = frozenset(ids)
+        self._skills_named = frozenset(
+            named_in(prompt, self._extensions.skills) if self._extensions else ())
         self._extensions_off_token = token
+        self._skills_sent = {}
         return token
 
     def disarm_extensions_off(self, token: object) -> None:
         if self._extensions_off_token is token:
             self._extensions_off_token = None
             self._extensions_off = frozenset()
+            self._skills_named = frozenset()
+            self._skills_sent = {}
+
+    def note_skills_sent(self, records: list[dict]) -> None:
+        """Record what the shim did with each @-named skill. Outside an armed turn there is no turn
+        to record it on."""
+        if self._extensions_off_token is None:
+            return
+        for record in records:
+            self._skills_sent.setdefault(record["name"], dict(record))
+
+    def skills_sent(self) -> list[dict]:
+        """The armed turn's record: one entry per @-named skill, by name."""
+        return [dict(self._skills_sent[name]) for name in sorted(self._skills_sent)]
 
     def set_mode(self, mode: Mode) -> None:
         """The user's standing mode choice — what the next turn runs as. While a turn is pinned
@@ -341,5 +364,7 @@ class ModelControl:
             extensions=self._extensions,
             extensions_off=(self._extensions_off if self._extensions_off_token is not None
                             else frozenset()),
+            skills_named=(self._skills_named if self._extensions_off_token is not None
+                          else None),
             source_map_offered=self._source_map_token is not None,
         )

@@ -16623,6 +16623,9 @@ class Orchestrator:
             data_used = project.shim.data_use.events(self._data_use_turns.get(thread_id, ""))
             if data_used:
                 done["dataUsed"] = data_used
+            skills = project.control.skills_sent()
+            if skills:
+                done["skills"] = skills
             # Stamped on EVERY turn, never only when the condition fires (ADR-0061). A field that
             # appears only on failure cannot tell a turn that passed from one that ran before the
             # field existed, and this row is the only place the question is ever asked.
@@ -17045,7 +17048,7 @@ class Orchestrator:
         # and an un-armed restart would refuse every turn all over again.
         withheld_token = project.control.arm_withheld(recall.withheld(history))
         extensions_token = project.control.arm_extensions_off(
-            self._extensions_off((store.get(thread_id) or {}).get("extensions")))
+            self._extensions_off((store.get(thread_id) or {}).get("extensions")), prompt)
         web_token = project.control.arm_web() if _chat_wants_web(prompt, history) else None
         # `investigating` exempts this Thread from both bounded lanes, and that is a SCOPE decision
         # before it is a latency one. #364 bounds a turn that only answers a question; while an
@@ -21313,6 +21316,9 @@ class Orchestrator:
         # inside an error path, which is the worst place to find out.
         read_only = ""
         image_reference_operations: list[str] = []
+        # This turn's @-named skill record (#737), kept by `restore_mode` before it disarms: most
+        # endings restore first and persist their `done` after.
+        turn_skills: list[dict] | None = None
         # One automatic retry for a tool call whose intended tool never ran (`_invalid_tool_call`).
         # Bounded to one so a model that emits broken calls systematically still ends, rather than
         # spending a whole build on the same break. Declared HERE, beside `read_only` and for the
@@ -21379,6 +21385,11 @@ class Orchestrator:
                     self._data_use_turns.get(project.build_conversation, ""))
                 if data_used:
                     ev["dataUsed"] = data_used
+                # Which @-named Project skills reached the model, and whether whole (#737).
+                skills = (turn_skills if turn_skills is not None
+                          else project.control.skills_sent())
+                if skills:
+                    ev["skills"] = skills
                 # WHICH model this turn actually ran on, and which rule chose it (#316). Here for
                 # the reason the two records above give: every terminal `done` passes through
                 # persist(), and the yield sites that can end a turn are that many chances to
@@ -21504,7 +21515,7 @@ class Orchestrator:
         _warn_if_history_lossy(build_history_for_turn, "_build_stream (withheld)")
         withheld_token = project.control.arm_withheld(recall.withheld(build_history_for_turn))
         extensions_token = project.control.arm_extensions_off(
-            self._extensions_off(project.app_for_turn().extension_overrides()))
+            self._extensions_off(project.app_for_turn().extension_overrides()), prompt)
         # The token that lets this turn read a bound table (ADR-0041). Unlike the notes below it
         # rides EVERY send and is never cleared: the nudge/fix follow-ups run in the same session,
         # and a compaction that dropped the first send would otherwise leave the agent holding a
@@ -21800,6 +21811,7 @@ class Orchestrator:
         sens_token: object | None = None
 
         def restore_mode() -> None:
+            nonlocal turn_skills
             # Dropping the pin is the whole restore: a mid-turn escalation moved the PINNED mode, so
             # the user's standing choice was never touched and there is nothing to put back. Whatever
             # they picked while this turn streamed is what runs next.
@@ -21809,6 +21821,8 @@ class Orchestrator:
             # below withholds against the payload it captured, not against the armed set, and every
             # request this turn will make has already been made.
             project.control.disarm_withheld(withheld_token)
+            if turn_skills is None:
+                turn_skills = project.control.skills_sent()
             project.control.disarm_extensions_off(extensions_token)
             if escalated_pick:
                 project.control.pick(original_pick, original_effort)
