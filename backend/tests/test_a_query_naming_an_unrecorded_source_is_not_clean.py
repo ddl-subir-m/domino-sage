@@ -65,8 +65,15 @@ def test_a_query_naming_the_recorded_source_is_not_sent_back(build, tmp_path):
     _app(tmp_path, project, "ds-dwh", [{"kind": "data_source", "id": "ds-dwh",
                                         "name": "warehouse", "connector_type": "SnowflakeConfig"}])
 
-    events, done = run(orch, report=_ack(orch))
+    def read(event):
+        orch.record_preview_ack(event["validationId"])
+        context = orch.capture_preview_read(event["validationId"], "/api/queries/mixpanel_events_page",
+                                            kind="query")
+        orch.record_platform_read_failure(200, "/api/queries/mixpanel_events_page", context=context,
+                                          body=b'{"columns": ["n"], "rows": [[1]]}')
+
+    events, done = run(orch, report=read)
 
     assert len(oc.prompts) == 1
     assert not [e for e in events if e["type"] == "data-source-failed"]
-    assert done["verification"]["stages"]["data"] == "unverified"
+    assert done["verification"]["stages"]["data"] == "passed"

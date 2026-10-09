@@ -26,7 +26,7 @@ from sage.orchestrator.service import _PERSISTED_EVENTS, Orchestrator
 
 from .fake_opencode import Turn
 from .test_a_view_state_field_without_a_type_fails_the_check import ROOT, _check
-from .test_controlled_build_faults_on_each_stack import _ack, _run, selected_stack  # noqa: F401
+from .test_controlled_build_faults_on_each_stack import _run, selected_stack  # noqa: F401
 
 # The run's own names: the seven prompt 7 wrote, and the three prompt 8 wrote whole over them.
 KEPT = ["drift_quantiles", "drift_bins", "drift_trend"]
@@ -43,7 +43,7 @@ CATALOG = ".sage/queries.json"
 
 
 def _query(name: str, sql: str = "") -> dict:
-    return {"name": name, "sql": sql or f"SELECT * FROM {name}"}
+    return {"name": name, "binding": "ds-dwh", "sql": sql or f"SELECT * FROM {name}"}
 
 
 def _screen_js(name: str, calls: list[str]) -> str:
@@ -315,7 +315,21 @@ def _seed(app, catalog: list[dict]) -> Path:
         "ReactDOM.createRoot(document.getElementById('root'))"
         ".render(React.createElement(window.app.Pipeline));\n")
     (root / CATALOG).write_text(json.dumps(catalog))
+    app.project.workspace.update_bindings(lambda _: [
+        {"kind": "data_source", "id": "ds-dwh", "name": "warehouse",
+         "connector_type": "SnowflakeConfig"}])
     return root
+
+
+def _reads(app):
+    """The page loads and reads its first screen's query (#730: an app with queries must read one)."""
+    def report(event):
+        app.orch.record_preview_ack(event["validationId"])
+        path = f"/api/queries/{SCREENS['Pipeline'][0]}"
+        context = app.orch.capture_preview_read(event["validationId"], path, kind="query")
+        app.orch.record_platform_read_failure(200, path, context=context,
+                                              body=b'{"columns": ["n"], "rows": [[1]]}')
+    return report
 
 
 @pytest.mark.parametrize("selected_stack", ["fastapi-antd"], indirect=True)
@@ -324,7 +338,7 @@ def test_a_build_that_wrote_the_catalog_whole_ends_with_every_called_query(selec
     root = _seed(app, [_query(q) for q in LOST + KEPT])
     app.oc.turns.append(Turn(writes={CATALOG: json.dumps([_query(q) for q in KEPT])}))
 
-    events, done = _run(app, _ack(app))
+    events, done = _run(app, _reads(app))
 
     assert {q["name"] for q in json.loads((root / CATALOG).read_text())} == set(LOST + KEPT)
     [restored] = [e for e in events if e["type"] == "queries-restored"]
@@ -350,7 +364,7 @@ def test_a_repair_turn_is_checked_for_the_catalog_too(selected_stack):  # noqa: 
             [_query(q) for q in KEPT + LOST] + [_query("stage_history")])}),
     ])
 
-    events, done = _run(app, _ack(app))
+    events, done = _run(app, _reads(app))
 
     assert [e["ok"] for e in events if e["type"] == "typecheck"] == [False, False, True]
     repair = app.oc.prompts[2]["text"]
