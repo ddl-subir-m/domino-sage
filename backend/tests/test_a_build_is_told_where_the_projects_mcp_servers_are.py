@@ -119,7 +119,7 @@ def test_a_uses_line_that_copies_the_list_lines_kind_still_names_the_resource():
 
 def test_the_template_says_to_call_only_a_listed_server_at_its_listed_url():
     agents = (REPO / "template/fastapi-antd/AGENTS.md").read_text()
-    assert "Call only a server {assistantName} lists for this Project" in agents
+    assert "Call only a server {assistantName} lists for this {project}" in agents
     assert "never write an address of your own" in agents
     # A Built App's AGENTS.md is re-branded at seed time (#114): only a token is.
     assert not re.search(r"\bSage\b", agents)

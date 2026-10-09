@@ -508,7 +508,7 @@ with `secret("NAME")`.
   sentence for the App's log. Before writing a `call_tool`, read that tool's `inputSchema` from
   `list_tools` and pass only the arguments it names, with the exact values its enums allow: a
   guessed argument is refused by the server, and the refusal reaches whoever pressed the button.
-  Call only a server {assistantName} lists for this Project in the turn, at the URL and with the headers it
+  Call only a server {assistantName} lists for this {project} in the turn, at the URL and with the headers it
   lists. When the request needs a server it does not list, say so in your reply and on the page;
   never write an address of your own.
 - Do not build a page for entering keys: the Your keys button is already on every page.
