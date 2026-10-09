@@ -3573,6 +3573,9 @@ window.SW = window.SW || {};
         // read as a failed turn, and an `{ type: 'error' }` frame would be one: `endedBadly` keys
         // on the frame type alone and would go and fetch a gateway listing over a clean build.
         ensureAssistant().blocks.push({ type: 'status', value: ev.message });
+      } else if (ev.type === 'queries-restored' && ev.message) {
+        // Plain, like the line above: Sage already put the queries back, so the turn did not fail.
+        ensureAssistant().blocks.push({ type: 'status', value: ev.message });
       } else if ((ev.type === 'plan-unbuilt' || ev.type === 'skill-copy-drift') && ev.message) {
         // Amber like an unverified build: the turn finished, and what it left out of the plan is
         // a gap to read, not a failure of the turn.
