@@ -16913,6 +16913,16 @@ class Orchestrator:
             # before this ticket, on an unscoped store named in the same sentence — so this is one
             # move that closes both rather than a hole the funnel opened.
             self._dataset_dismissed.add((thread_id, dismissed_dataset))
+        elif asking:
+            # The way past answers the question it was pressed on, not the Dataset (#748). A NEW
+            # question that @names the Dataset asks about it again; without this the card never
+            # came back, the turn ran on a Dataset with no file, and the model reported the file
+            # unreadable. Only on `asking`: a later card's replay carries the declined sentence.
+            for item in items:
+                if (str(item.get("kind") or "") == "dataset"
+                        and _mentioned_in(prompt, str(item.get("name") or "").split("/")[-1])):
+                    self._dataset_dismissed.discard(
+                        (thread_id, _bare_kind_id(str(item.get("resourceId") or ""), "dataset")))
 
         # An investigation is open in this Thread — a capability the PERSON granted, recorded on the
         # Thread's own context row (#386, ADR-0056). Read once, used by the offer below and at both
