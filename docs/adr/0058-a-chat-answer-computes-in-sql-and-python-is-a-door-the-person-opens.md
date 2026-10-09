@@ -278,3 +278,23 @@ The arithmetic is a closed list — `+ - * /`, negation, parentheses, `ROUND`, `
 `MIN`/`MAX` are not leaves: bare, rule 4 settles them on what came back, but through `+ 0` a number
 stored as text comes back a number. A window, a value aggregate, a bare column or any other function
 in the expression keeps the result on the card. Rule 4 still reads every returned value.
+
+## A number comes from a disclosed read, and a chart from a read's rows — #729, 2026-10-09
+
+A demo rerun stated figures no read produced, and every one sat on a read whose values this ADR had
+withheld: the model invents when it cannot see. Decided by the person, both halves:
+
+**An answer states a number only from a read whose values were disclosed to the model.** A
+structure-only read may be described — what was read, its columns, its row count — and never
+quoted, and its tool result says so in those words. On the bounded lanes, a turn that had values
+withheld and whose answer states a number no disclosed read carries is corrected once, on the
+turn's one recovery allowance; if the correction still states one, the answer is replaced by what
+was read and its shape. The shell lanes are not checked: Python computes numbers no read handed
+over. What each read returned is held in memory for the turn (`liveread/held.py`), never written.
+
+**A Chat chart is plotted by Sage from the rows of a result read this turn.** `artifact_write`
+names the result by its title and the columns to plot (`table`, `x`, `y`), and nothing else; it no
+longer accepts SVG or PNG bytes, so a series that matches no read cannot be drawn. The rows are the
+card's, including those the model never saw, which is not a widening: ADR-0045 already governs the
+PNG by **Kept rows**. Labels a chart needs from another table come from a join in the statement — a
+label column of identifiers that another read this turn names is refused with that instruction.
