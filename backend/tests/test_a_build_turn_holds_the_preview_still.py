@@ -179,6 +179,7 @@ def test_a_held_uvicorn_restarts_once_after_many_writes(tmp_path, monkeypatch):
         time.sleep(0.6)
         assert _reloads(sup) == 1, sup.recent_output()
     finally:
+        proc = proc or sup._proc
         sup.release_reloads()
         sup.stop()
         if proc is not None:
