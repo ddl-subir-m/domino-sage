@@ -90,6 +90,9 @@ class Turn:
     # the repeat brake stops can then say what the model was told and ignored. A refusal names a
     # source or a Dataset, never a row — the same class `_no_card` already logs.
     record_refusal: Callable[[str], None] | None = None
+    # Given a result's digest and the card path about to be written, answers the path of the card
+    # this turn already wrote for that result — or the path given, the first time (#726).
+    same_result: Callable[[str, str], str] | None = None
 
 
 def _slug(*parts: str) -> str:
@@ -648,25 +651,39 @@ def _statement(args: dict, turn: Turn) -> str:
     connector_type = getattr(source, "connector_type", "")
     verdict = disclosure.decide(sql, answer.rows, connector_type=connector_type)
     title = str(args.get("title") or "Query result")
-    receipt = result.record(
-        turn.examples_dir,
-        _slug(title),
-        title,
-        answer.columns,
-        answer.rows,
-        truncated=answer.truncated,
-        keep_rows=turn.keep_rows,
-        # `binding` and `table` are left empty on purpose, which keeps `result.record`'s own `values`
-        # None. That field is gated on `grant.values_allowed` — whether the CREATOR shared a named
-        # table's rows — and this result has no single table behind it and is not governed by that
-        # question at all. Two disclosure gates on one path would be one gate too many, and the one
-        # that answers this question is `disclosure.decide` below.
-        #
-        # `source` is left out for the same reason: **Read again** replays a table or a file, and a
-        # computed answer is neither. A card with no button beats a button whose press can only come
-        # back with a failure (#258).
-    )
-    said = _computed_text(receipt, verdict, answer, sql, args, turn)
+    slug = _slug(title)
+    # One card per distinct result, and none for no rows (#726). The digest never leaves this turn.
+    digest = hashlib.sha256(json.dumps(
+        [list(answer.columns), [result.json_safe(list(r)) for r in answer.rows]],
+        default=str).encode()).hexdigest()
+    path = f"examples/{turn.examples_dir.name}/{slug}.table.json"
+    shown = (turn.same_result(digest, path) if turn.same_result and answer.rows else path)
+    again = bool(answer.rows) and shown != path
+    if not answer.rows or again:
+        receipt = result.Receipt(path=shown if again else "", columns=list(answer.columns),
+                                 rows=min(len(answer.rows), result.CAP_ROWS),
+                                 truncated=answer.truncated or len(answer.rows) > result.CAP_ROWS,
+                                 kept=turn.keep_rows)
+    else:
+        receipt = result.record(
+            turn.examples_dir,
+            slug,
+            title,
+            answer.columns,
+            answer.rows,
+            truncated=answer.truncated,
+            keep_rows=turn.keep_rows,
+            # `binding` and `table` are left empty on purpose, which keeps `result.record`'s own
+            # `values` None. That field is gated on `grant.values_allowed` — whether the CREATOR
+            # shared a named table's rows — and this result has no single table behind it and is
+            # not governed by that question at all. Two disclosure gates on one path would be one
+            # gate too many, and the one that answers this question is `disclosure.decide` below.
+            #
+            # `source` is left out for the same reason: **Read again** replays a table or a file,
+            # and a computed answer is neither. A card with no button beats a button whose press
+            # can only come back with a failure (#258).
+        )
+    said = _computed_text(receipt, verdict, answer, sql, args, turn, again=again)
     hint = sql_hints.regex_hint(sql, connector_type)
     return f"{said}\n{hint}" if hint else said
 
@@ -775,7 +792,7 @@ def _catalogue_statement(node, exp) -> bool:
 
 
 def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dict,
-                   turn: Turn) -> str:
+                   turn: Turn, *, again: bool = False) -> str:
     """What the assistant is told, and what gets written down about it.
 
     Recorded whatever the verdict, because the record is about the READ and not about the
@@ -790,6 +807,12 @@ def _computed_text(receipt: result.Receipt, verdict, answer, sql: str, args: dic
     lines = [f"The query ran: {shape}, now on screen as a table." if receipt.kept else
              f"The query ran: {shape}, now on screen as a card giving this result's shape.",
              f"Columns: {', '.join(receipt.columns) or '(none)'}."]
+    if not receipt.rows:
+        lines[0] = ("The query ran and returned no rows, so nothing was put on screen. A filter "
+                    "that matches nothing usually means a value is not spelled the way the column "
+                    "holds it. Do not write an empty chart or table.")
+    elif again:
+        lines[0] += " It is the same result as a card already on screen, so no second card was written."
 
     # Through `json_safe` for the reason the card's rows are (#435), and separately from them: this
     # lane's `record` call leaves `binding` and `table` empty, so `receipt.values` is always None

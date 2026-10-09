@@ -7198,6 +7198,11 @@ _CONVERSATION_SO_FAR = (
 )
 
 
+def _chat_today():
+    """The date a Chat turn counts relative periods from (#726). A seam so a test can move it."""
+    return datetime.now(UTC).date()
+
+
 def _has_earlier_user_turn(history) -> bool:
     """True when the person has already asked something in this conversation.
 
@@ -7557,6 +7562,9 @@ class Orchestrator:
         # Live reads this turn has served, per Conversation, under the same lock as the token they
         # spend. Reset when the token is minted, so a count is always about one turn.
         self._live_reads: dict[str, int] = {}
+        # The digest of each result a composed statement put on a card this turn, and that card's
+        # path (#726). Reset and swept with the count above.
+        self._live_results: dict[str, dict[str, str]] = {}
         # The last `not-in-range` refusal a Live read handed the model this turn, per Conversation
         # (#488). Kept beside the count, reset and swept with it, so a turn the repeat brake stops
         # can say what the model was told and went past. One sentence, not a list: the brake fires
@@ -14547,6 +14555,7 @@ class Orchestrator:
             self._live_read[thread_id] = (token, time.monotonic(), include_app_bindings)
             self._live_read_app[thread_id] = project.app_for_turn()
             self._live_reads.pop(thread_id, None)
+            self._live_results.pop(thread_id, None)
             self._live_read_refused.pop(thread_id, None)
         # The same token names this turn for a Delegated model call, so this is the moment that
         # turn's call count starts over (ADR-0057). Reset here rather than at the end of the last
@@ -14574,6 +14583,7 @@ class Orchestrator:
                     self._live_read_app.pop(thread_id, None)
                     self._live_read_earlier.pop(thread_id, None)
                     self._live_reads.pop(thread_id, None)
+                    self._live_results.pop(thread_id, None)
                     self._live_read_refused.pop(thread_id, None)
                     expired.append(thread_id)
                 elif tok == token:
@@ -14892,6 +14902,10 @@ class Orchestrator:
             with self._live_read_lock:
                 self._live_read_refused[thread_id] = says
 
+        def same_result(digest: str, path: str) -> str:
+            with self._live_read_lock:
+                return self._live_results.setdefault(thread_id, {}).setdefault(digest, path)
+
         def remember_statement(source: str, sql: str) -> None:
             elided = _elide_literals(sql)
             with self._live_read_lock:
@@ -14923,6 +14937,7 @@ class Orchestrator:
             text_effort_for=text_effort_for,
             remember_statement=remember_statement,
             record_refusal=record_refusal,
+            same_result=same_result,
         )
 
     def live_read_again(self, thread_id: str, source: dict) -> dict:
@@ -16148,6 +16163,12 @@ class Orchestrator:
             # refused: a read-only turn, having lost the shell, had nowhere to put a file at all.
             (f"Scratch files and any data you fetch go under .sage/scratch/{thread_id}/ — "
              f"not /tmp, and never anywhere else outside this project."),
+            # #726: with no date in the turn, "this quarter" was read off MAX(FISCAL_YEAR).
+            (f"Today is {_chat_today().isoformat()} (UTC). Relative periods — this quarter, next "
+             "quarter, this year, the last N days, current — count from today, not from the "
+             "latest date in the data. Use calendar quarters unless a convention this turn names "
+             "defines a fiscal calendar. If the data does not reach that period, say so rather "
+             "than answering for the latest period it does have."),
             self._findings_note(thread_id, continuing=continuing),
             # ADR-0041. The token is what a Live read tool call uses to say which turn it is; it is
             # minted per turn and is worthless on any other.
@@ -17011,7 +17032,12 @@ class Orchestrator:
                 chat_approved.names, chat_approved.order
             )
         tap: _EventTap | None = None
-        from ..workspace.chat_tables import ChatTables, failed_table_name, validate_table_bytes
+        from ..workspace.chat_tables import (
+            ChatTables,
+            failed_table_name,
+            redundant_tables,
+            validate_table_bytes,
+        )
 
         tables: ChatTables | None = None
         primary_body = ""
@@ -17083,12 +17109,6 @@ class Orchestrator:
                         path.write_bytes(previous)
                     elif previous is None or not path.exists() or path.read_bytes() != previous:
                         path.unlink(missing_ok=True)
-                withhold_table_rows(project.record.path, thread_id, tables.before,
-                                    kept_rows=project.record.kept_rows())
-                runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
-                written = [rel for rel in new_artifact_paths(project.record.path, thread_id,
-                                                            tables.before)
-                           if rel not in invalid]
                 # An Artifact is DISCOVERED, not reported: the scan above hands back a path and
                 # nothing else, and the statement that produced it is long gone (ADR-0063). The
                 # operation recorded its own verdict on its `DataUse` event, keyed by the path it
@@ -17097,6 +17117,14 @@ class Orchestrator:
                 # operation — is `'answer'` and draws.
                 roles = live_data_use.artifact_roles(
                     project.shim.data_use.events(self._data_use_turns.get(thread_id, "")))
+                for rel in redundant_tables(project.record.path, thread_id, tables.before, roles):
+                    (project.record.path / rel).unlink(missing_ok=True)
+                withhold_table_rows(project.record.path, thread_id, tables.before,
+                                    kept_rows=project.record.kept_rows())
+                runaway = refuse_oversize_findings(project.record.path, thread_id, tables.before)
+                written = [rel for rel in new_artifact_paths(project.record.path, thread_id,
+                                                            tables.before)
+                           if rel not in invalid]
                 artifacts = [store.record_artifact(thread_id, path=rel,
                                                   role=roles.get(rel, "answer"))
                              for rel in written]
