@@ -619,6 +619,48 @@ def _startup_failure(status: dict) -> dict:
     output pane shows."""
     return {"message": status.get("error") or "App startup failed",
             "stack": "\n".join(status.get("output") or ()), "source": "startup"}
+
+
+# How much of a failed query's request body and of its response a repair carries, each (#735).
+EVIDENCE_LIMIT = 1000
+
+
+def _clip(value: bytes | str | None) -> str:
+    text = value.decode("utf-8", "replace") if isinstance(value, bytes) else value or ""
+    return text if len(text) <= EVIDENCE_LIMIT else text[:EVIDENCE_LIMIT] + "… [truncated]"
+
+
+def _request_evidence(evidence: dict | None) -> str:
+    """A failed query's request and response, as Sage captured them, for a repair prompt (#735)."""
+    if not evidence:
+        return ""
+    return (f"\n  Request body ({evidence['via']}): {evidence.get('sent') or '(not recorded)'}"
+            f"\n  Response: {evidence.get('status') or 'no response'} "
+            f"{evidence.get('body') or '(no body)'}")
+
+
+# The symbol a JS or Python error says is missing: `x.isBetween is not a function`, `foo is not
+# defined`, `name 'foo' is not defined`.
+_MISSING_SYMBOL = re.compile(r"([A-Za-z_$][\w$]*)'? is not (?:a function|defined)\b")
+
+
+def _rules_naming(template: Path | None, message: str) -> list[str]:
+    """The lines of `template`'s AGENTS.md that name, in code, a symbol `message` says is missing
+    (#735): a rule the runtime repair should read before it guesses. At most three, each bounded."""
+    symbols = set(_MISSING_SYMBOL.findall(message or ""))
+    if not symbols or template is None:
+        return []
+    try:
+        text = brand.apply_voice((template / "AGENTS.md").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    named = re.compile(r"`[^`\n]*(?<![\w$])(?:" + "|".join(map(re.escape, sorted(symbols)))
+                       + r")(?![\w$])[^`\n]*`")
+    rules = list(dict.fromkeys(line.strip()[:EVIDENCE_LIMIT] for line in text.splitlines()
+                               if named.search(line)))
+    return rules[:3]
+
+
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})
@@ -24587,6 +24629,11 @@ class Orchestrator:
                     nudge = {"server": SERVER_FIX_NUDGE,
                              "startup": STARTUP_FIX_NUDGE}.get(rt.get("source"), RUNTIME_FIX_NUDGE)
                     current = nudge.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
+                    rules = _rules_naming(self._wm.template, rt.get("message", ""))
+                    if rules:
+                        current += ("\n\nThe app's AGENTS.md has a rule naming what this error "
+                                    "says is missing. Read it before you edit:\n\n"
+                                    + "\n".join(f"> {rule}" for rule in rules))
                     continue
                 # The relay refused a platform read while this turn's code ran (#556). No wait of
                 # its own: the runtime wait above is the window, and a refusal that landed inside
@@ -24725,11 +24772,15 @@ class Orchestrator:
                         iterate_reason = ("a query was refused — fixing "
                                           f"({', '.join(refusals)[:140]})")
                         yield {"type": "iterate", "reason": iterate_reason}
+                        requests = project.page_validation.query_requests
                         current = (
                             "The app's own query server refused these requests while the preview "
                             "loaded the page, so the screens that make them show an error, even "
-                            "where the route answered 200:\n\n"
-                            + "\n".join(f"- `{name}`: {reason}" for name, reason in refusals.items())
+                            "where the route answered 200. Each failing request and its response "
+                            "are below as Sage captured them; start from them:\n\n"
+                            + "\n".join(f"- `{name}`: {reason}"
+                                        + _request_evidence(requests.get(name))
+                                        for name, reason in refusals.items())
                             + "\n\n`answer()` in `sage_queries.py` reads a query's values only "
                             'from `body["params"]`, and every parameter a query declares is '
                             "required. Read it, then fix the code that makes each request so it "
@@ -24751,7 +24802,11 @@ class Orchestrator:
                             "reading one shows an error. Fix each statement to name only columns "
                             "and tables that exist; do not replace a query with rows you write "
                             "yourself.\n\n{faults}",
-                            faults="\n\n".join(uncompiled.values()))
+                            faults="\n\n".join(
+                                fault + _request_evidence(
+                                    (project.page_validation.query_requests
+                                     if project.page_validation is not None else {}).get(name))
+                                for name, fault in uncompiled.items()))
                         continue
                 # A Done-when no structural check can see (#716): one plan-tier read of the code,
                 # only on a turn every other check passed, and on the same one-repair budget.
@@ -25927,7 +25982,12 @@ class Orchestrator:
                                    b'{"rows": []}' if answered.get("empty") else None)
                 validation.data_reads.append(read)
                 if read["outcome"] == "failed" and answered.get("error"):
-                    validation.query_failures[read["path"].rsplit("/", 1)[-1]] = answered["error"]
+                    name = read["path"].rsplit("/", 1)[-1]
+                    validation.query_failures[name] = answered["error"]
+                    validation.query_requests[name] = {
+                        "via": "as `answer()` was handed it", "sent": _clip(answered.get("sent")),
+                        "status": answered["status"],
+                        "body": _clip(json.dumps({"error": answered["error"]}))}
             validation.closed = True
 
     def _active_validation(self, validation_id: str) -> PageValidation | None:
@@ -25985,7 +26045,8 @@ class Orchestrator:
                 "queries": self._project.queries if kind == "query" else None}
 
     def record_platform_read_failure(self, status: int | None, path: str, *,
-                                     context: dict | None = None, body: bytes | None = None) -> None:
+                                     context: dict | None = None, body: bytes | None = None,
+                                     sent: bytes | None = None) -> None:
         """Extend #556's callback with success, empty and failure evidence for its issued read.
 
         The legacy two-argument call remains readable outside validation. It cannot establish any
@@ -26012,6 +26073,9 @@ class Orchestrator:
             # Preserve #203's existing readable query error, from the server captured when this
             # matched request was issued. Keep it out of the bounded diagnostic read metadata.
             name = result["path"].rsplit("/", 1)[-1]
+            validation.query_requests[name] = {
+                "via": f"as the page sent it to {result['path']}", "sent": _clip(sent),
+                "status": status, "body": _clip(body)}
             try:
                 reason = (context["queries"].failures() or {}).get(name)
                 if not isinstance(reason, str) and body:

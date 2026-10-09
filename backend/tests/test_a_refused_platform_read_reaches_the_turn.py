@@ -151,4 +151,4 @@ def test_the_control_app_hands_the_proxys_report_to_the_record(monkeypatch):
 
     app_module._preview_platform_read(404, PATH)
 
-    assert stub.heard == (404, PATH, {"context": None, "body": None})
+    assert stub.heard == (404, PATH, {"context": None, "body": None, "sent": None})

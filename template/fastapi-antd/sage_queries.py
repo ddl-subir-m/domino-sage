@@ -528,13 +528,16 @@ def answer(queries: dict, executor, name: str, body: object) -> tuple[int, dict]
 
     In Sage's preview it also prints one `PREVIEW_READ` line per call, which the builder reads off
     this server's output (#730). A route of the app's own that calls this and returns a refusal as a
-    200 is otherwise invisible: the preview proxy sees only `/api/queries/<name>`.
+    200 is otherwise invisible: the preview proxy sees only `/api/queries/<name>`. A refusal also
+    carries the body this was handed, at most `PREVIEW_SENT` characters of it, so the repair reads
+    the request as the route made it (#735).
     """
     status, payload = _answer(queries, executor, name, body)
     if os.environ.get("SAGE_PREVIEW") == "1":
         read = {"name": name, "status": status}
         if "error" in payload:
             read["error"] = payload["error"]
+            read["sent"] = json.dumps(body, default=str)[:PREVIEW_SENT]
         elif payload.get("rows") == []:
             read["empty"] = True
         print(PREVIEW_READ + json.dumps(read), flush=True)
@@ -542,6 +545,7 @@ def answer(queries: dict, executor, name: str, body: object) -> tuple[int, dict]
 
 
 PREVIEW_READ = "[sage] query-read "
+PREVIEW_SENT = 1000
 
 
 def _answer(queries: dict, executor, name: str, body: object) -> tuple[int, dict]:
