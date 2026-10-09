@@ -201,7 +201,9 @@ def test_a_claim_the_review_refuses_is_sent_back_and_cannot_be_made_again(tmp_pa
 
     repairs = [p["text"] for p in oc.prompts[2:]]
     assert len(repairs) == 2 and "app.js is loaded first" in repairs[1]
-    assert len(gateway.reviews) == 1
+    # The pass that answers the review's repair is reviewed again (#750); the step it still names
+    # is reported once, as not built.
+    assert len(gateway.reviews) == 2
     [done] = [e for e in events if e["type"] == "done"]
     assert done["ok"] is False
     assert done["decision"] == "incomplete — plan step 3 (Fix script load order) not built"

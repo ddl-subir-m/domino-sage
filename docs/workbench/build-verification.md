@@ -20,6 +20,14 @@ Startup and page acknowledgment each have a finite `SAGE_BUILD_PAGE_ACK_WAIT_SEC
 the written code. A hidden or switched preview, no browser, or a missing reporter leaves the
 runtime unverified. A later visit does not reopen the completed turn.
 
+The headless check also reports what each screen it opened showed: its tab label, the charts and
+tables it drew, whether it was still loading, and its visible text. An approved plan's review
+(#716) reads that beside each step's Verify and the plan's Screens, and only the text the app's own
+code spells goes to the model, so no row from a read reaches it. A step the review names unmet is
+sent back once. The pass that answers that repair is reviewed again, and a step still unmet ends
+the build "Incomplete — plan step N not met", never clean. A screen the walk did not open, such as
+one reached only from a table row, is judged from the code alone (#750).
+
 Each repair gets a fresh ID and supervisor generation. Old documents, old attempts, other apps,
 and completed checks cannot contribute runtime evidence. Phased Build validates after its final
 phase. The synchronous Build API has no page event consumer and reports runtime unverified.
