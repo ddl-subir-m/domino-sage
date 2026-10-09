@@ -152,12 +152,16 @@ def _mention_line(name: str, row: dict | None) -> str:
     if row is None:
         return (f"{token} names no MCP server in this Project. Do not invent a URL or a "
                 "sign-in for it.")
+    return _server_line(f"{token} is the MCP server `{name}`", row)
+
+
+def _server_line(lead: str, row: dict) -> str:
+    """How a Built App calls one server: its URL, tools and header references, never a value."""
     hosted = row.get("kind") == DOMINO
     tools = [t for t in (row.get("tools") or []) if isinstance(t, str)]
     headers = row.get("headers") if isinstance(row.get("headers"), dict) else {}
     header_text = ", ".join(f"{key}: {value}" for key, value in headers.items())
-    line = (f"{token} is the MCP server `{name}` "
-            f"({'Domino-hosted' if hosted else 'remote'}). "
+    line = (f"{lead} ({'Domino-hosted' if hosted else 'remote'}). "
             f"URL: {row.get('url') or ''}. Tools: {', '.join(tools) or 'none listed'}.")
     if header_text:
         line += f" Headers, as stored: {header_text}."
@@ -170,16 +174,26 @@ def _mention_line(name: str, row: dict | None) -> str:
                  "written `{env:NAME}` is read with `secret(\"NAME\")` inside the route.")
     else:
         line += (" The published app calls this URL itself with `sage_mcp.call_tool`, from a "
-                 "route. A header written `{env:NAME}` is read with `secret(\"NAME\")` inside the "
-                 "route. Never write a key's value.")
+                 "route. A `{env:NAME}` in the URL or a header is read with `secret(\"NAME\")` "
+                 "inside the route. Never write a key's value.")
+    names = variables([row.get("url") or "", headers])
+    if names:
+        line += " Here: " + ", ".join(f'`secret("{n}")`' for n in names) + "."
     return line + " Use the URL only in the app's server code."
 
 
+_SERVERS_LEAD = ("This Project's switched-on MCP servers, for the app to call when it needs what "
+                 "their tools provide. Call one at the URL given here and no other address. A "
+                 "server the request names that is not listed here is not in this Project: say "
+                 "so, and write no address for it.")
+
+
 def note_mentions(messages: list, servers: list[dict]) -> list:
-    """Append how a Built App calls each `{mcp:name}` the last user message names.
+    """Append how a Built App calls each `{mcp:name}` the last user message names, and every other
+    switched-on server: a plan's `Uses` or a request in plain words names a server without the token.
 
     Header values are copied as stored, so `{env:NAME}` stays a name and a secret's value never
-    enters the note. The same list when the message names no server.
+    enters the note. The same list when the message names no server and none is switched on.
     """
     by_name = {row["name"]: row for row in servers if isinstance(row, dict) and row.get("name")}
     for index in range(len(messages) - 1, -1, -1):
@@ -189,9 +203,14 @@ def note_mentions(messages: list, servers: list[dict]) -> list:
     else:
         return messages
     names = list(dict.fromkeys(_MCP_MENTION.findall(_text_of(message.get("content")))))
-    if not names:
+    others = [row for name, row in by_name.items() if name not in names and row.get("enabled")]
+    if not names and not others:
         return messages
-    note = "\n".join(_mention_line(name, by_name.get(name)) for name in names)
+    lines = [_mention_line(name, by_name.get(name)) for name in names]
+    if others:
+        lines += [_SERVERS_LEAD,
+                  *(_server_line(f"- MCP server `{row['name']}`", row) for row in others)]
+    note = "\n".join(lines)
     content = message.get("content")
     if isinstance(content, list):
         updated = {**message, "content": [*content, {"type": "text", "text": note}]}

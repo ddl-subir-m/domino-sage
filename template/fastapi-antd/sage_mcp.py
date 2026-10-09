@@ -3,9 +3,10 @@
     from sage_mcp import call_tool, list_tools
     from sage_secrets import secret
 
-    headers = {"Authorization": f"Bearer {secret('CRM_TOKEN')}"}
-    tools = list_tools("https://crm.example.com/mcp", headers)
-    result = call_tool("https://crm.example.com/mcp", "find_account", {"name": "Acme"}, headers)
+    url = URL  # the URL Sage lists for this Project's server, never one of your own
+    headers = {"Authorization": f"Bearer {secret('TOKEN')}"}  # its headers, as Sage lists them
+    tools = list_tools(url, headers)
+    result = call_tool(url, "a_tool_it_lists", {"name": "Acme"}, headers)
 
 Streamable HTTP only: one POST per JSON-RPC message, answered as JSON or as an event stream. Each
 call opens a session (`initialize`), makes its request and closes. Call it from a route; `secret()`

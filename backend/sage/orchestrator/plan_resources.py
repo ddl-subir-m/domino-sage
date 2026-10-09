@@ -64,7 +64,9 @@ def planner_note(res: Resources) -> str:
         return ""
     return brand.apply_voice(
         "This {project} has these resources. When a plan step depends on one of them, give that "
-        "step a '- Uses —' bullet naming each one exactly as written here, comma-separated. Leave "
+        "step a '- Uses —' bullet naming each one by its name in backticks alone, comma-separated. "
+        "A step that needs what an MCP server's tools provide depends on that server even when the "
+        "request does not name it: the app calls it, and shows no sample data in its place. Leave "
         "the bullet out of a step that depends on none.") + "\n" + "\n".join(lines)
 
 
@@ -140,11 +142,18 @@ def unreached(steps: list[PlanStep], res: Resources, sources: list[tuple[str, st
     the names in `.sage/queries.json`.
     """
     texts = [text for _path, text in sources if text]
+    kind = re.compile(r"(?i)(?:mcp server|secret|query|" + re.escape(
+        brand.apply_voice("{llmAlias}")) + r")\s+`?(.+?)`?$")
     out = []
     for step in steps:
         missing = []
         for name in step.uses:
             reached = _reached(name, res, texts, queries)
+            # A planner copying a line of `planner_note` writes its kind too: "MCP server deal-desk".
+            bare = kind.match(name)
+            if reached is None and bare:
+                name = bare.group(1)
+                reached = _reached(name, res, texts, queries)
             if reached is None:
                 if name not in _logged_unknown:
                     _logged_unknown.add(name)
