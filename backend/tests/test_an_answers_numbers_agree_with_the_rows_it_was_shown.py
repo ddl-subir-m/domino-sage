@@ -233,7 +233,8 @@ def test_a_withheld_turn_loses_only_its_invented_sentences_too(tmp_path):
     assert shown == saved
     assert shown.startswith("The pipeline read has 20 rows by stage and team.\n\n")
     assert "9.0M" not in shown
-    assert "wasn't given the values" in shown and "20 rows" in shown
+    assert "wasn't given the values" in shown
+    assert "\n- Pipeline by stage and team: 20 rows, columns " in shown
 
 
 def test_prose_that_agrees_with_the_shown_rows_passes_untouched(tmp_path):
