@@ -4882,6 +4882,13 @@ _CHAT_NUMBERS_NOTE = (
     "come from it. Rewrite the answer without those numbers: say what was read, its columns and how "
     "many rows it has, and point the person at the table. This is the only recovery attempt."
 )
+# The same correction when every value WAS given (#747): the numbers disagree with rows it has.
+_CHAT_ROWS_NOTE = (
+    "Your answer states numbers that the rows you read do not carry: {numbers}. Take each number "
+    "from those rows, or from a total of a column or of one label's rows, and check it is the "
+    "figure for what the sentence names. If a number is not in them, leave it out. This is the "
+    "only recovery attempt."
+)
 
 
 def _at_token_hits(token: str, name: str, path: str) -> bool:
@@ -15354,24 +15361,33 @@ class Orchestrator:
         return {"path": path, "bytes": len(data)}
 
     def _unbacked_numbers(self, thread_id: str, body: str, prompt: str) -> list[str]:
-        """The answer's numbers no disclosed read carries, on a turn that had values withheld (#729).
+        """The answer's numbers no disclosed read this turn carries (#729, #747).
 
-        Keyed on a structure-only read because that is where every invented figure sat: a turn that
-        read nothing, or was handed every value it read, has nothing it could not see to invent.
+        Every turn that read, not only one with values withheld: a model handed all twenty rows
+        still wrote "$9.0M" for a team the rows put at $10.0M (#747). A turn that read nothing has
+        no rows to hold its words to.
         """
         reads = self._held(thread_id)
-        if not any(r.withheld for r in reads):
-            return []
-        return unsupported_numbers(body, reads, prompt)
+        return unsupported_numbers(body, reads, prompt) if reads else []
+
+    def _numbers_note(self, thread_id: str, unbacked: list[str]) -> str:
+        """The one correction, said as what went wrong: values it never saw, or rows it misread."""
+        note = (_CHAT_NUMBERS_NOTE if any(r.withheld for r in self._held(thread_id))
+                else _CHAT_ROWS_NOTE)
+        return note.format(numbers=", ".join(unbacked))
 
     def _numbers_refused(self, thread_id: str) -> str:
-        """What ships instead of an answer that kept stating numbers it was never given (#729):
+        """What ships instead of an answer that kept stating numbers its reads do not carry (#729):
         what was read, its shape and its row count, which is all a structure-only read may say."""
-        lines = ["I wasn't given the values from what I read, so I can't quote numbers from it."]
-        for r in self._held(thread_id):
-            if r.withheld:
-                lines.append(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
-                             f"columns {', '.join(r.columns)}.")
+        reads = self._held(thread_id)
+        withheld = [r for r in reads if r.withheld]
+        lines = (["I wasn't given the values from what I read, so I can't quote numbers from it."]
+                 if withheld else
+                 ["Some numbers I wrote didn't match the rows I read, so I've left them out. The "
+                  "table has the figures."])
+        for r in withheld or reads:
+            lines.append(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
+                         f"columns {', '.join(r.columns)}.")
         return "\n".join(lines)
 
     def _chat_chart(self, thread_id: str, body: dict) -> bytes:
@@ -18535,7 +18551,7 @@ class Orchestrator:
                                           tool=broken_call,
                                           fault=_INVALID_CALL_SAID[broken_category])
                                       if call_repair else
-                                      _CHAT_NUMBERS_NOTE.format(numbers=", ".join(unbacked))
+                                      self._numbers_note(thread_id, unbacked)
                                       if number_repair else
                                       "Your turn ended without an answer or an answer artifact. "
                                       "Answer the user's question using the work already done. "
