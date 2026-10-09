@@ -9,7 +9,7 @@ from collections import deque
 from uuid import uuid4
 
 from .. import build_intent, timing
-from ..router.phase_classifier import READ_TOOLS, SHELL_TOOLS
+from ..router.phase_classifier import READ_TOOLS, SHELL_TOOLS, WRITE_TOOLS
 from ..shim.chat_paths import (
     MENTION_MARK,
     MENTION_PATH_LINE,
@@ -33,11 +33,14 @@ _READ_LINE_NUMBER = re.compile(r"^\d+: ")
 # The one string every redaction placeholder carries, so that a placeholder the model has written
 # back into its own work can be recognised however it was reshaped (#510).
 _MARK_BODY = "local data withheld"
+# The one string every repair of a copied placeholder carries. The repair is model-facing too, so
+# it is copied as well — into an app file, live in #718 — and must be recognised the same way.
+_MARK_ECHO_BODY = "withheld placeholder removed"
 _MARKER_ECHO_DEDUPE_IDS = 10_000
 _MARKER_ECHO_COUNT_CAP = 10_000
-_MARK_ECHO_REPLACEMENT = "[copied withheld placeholder removed after prior execution]"
-_MARK_ECHO_COMMAND_REPLACEMENT = ": # copied withheld placeholder removed after prior execution"
-_MARK_ECHO_PYTHON_REPLACEMENT = "# copied withheld placeholder removed after prior execution"
+_MARK_ECHO_REPLACEMENT = f"[copied {_MARK_ECHO_BODY} after prior execution]"
+_MARK_ECHO_COMMAND_REPLACEMENT = f": # copied {_MARK_ECHO_BODY} after prior execution"
+_MARK_ECHO_PYTHON_REPLACEMENT = f"# copied {_MARK_ECHO_BODY} after prior execution"
 _MARK_ECHO_CORRECTION = (
     "This call reproduced the placeholder that stands in the place of withheld local data in this "
     "conversation. The placeholder is a marker: it is not a command, and not content to write to a "
@@ -316,7 +319,10 @@ class DataUse:
                             _replace_call(message, cid, call)
                         else:
                             raw_args = _call_arguments_text(call)
-                            if _contains_local_text(raw_args, local_texts):
+                            # A write or edit is the app's code, not data Sage read. A placeholder
+                            # in its place is what the model copies back into the file (#718).
+                            if (tool_call_name_and_args(call)[0] not in WRITE_TOOLS
+                                    and _contains_local_text(raw_args, local_texts)):
                                 source = {"sources": [], "withheld": False}
                                 direct[cid] = source
                                 _replace_call(message, cid, _sanitize_call(call, source))
@@ -817,7 +823,8 @@ def _echoes_the_withheld_mark(call):
     every string argument of a sanitised call, so every slot the model can write is a slot it can
     imitate, and a guard drawn around the tool that happened to bite is short by construction.
 
-    Keyed on `_MARK_BODY` rather than on the whole marker: the reproductions were not copies. The
+    Keyed on the bodies `carries_withheld_mark` reads rather than on the whole marker: the
+    reproductions were not copies, and the repair of one was copied in turn (#718). The
     count varied, and one heredoc carried the literal `N` from no marker this code ever emitted.
 
     The accepted cost of keying on a bare phrase: a call that legitimately carries "local data
@@ -831,10 +838,16 @@ def _echoes_the_withheld_mark(call):
     return arguments_echo_withheld_mark(args)
 
 
+def carries_withheld_mark(text: str) -> bool:
+    """Whether `text` carries any placeholder this module puts in the model's view: the marker, in
+    every form `_withheld_mark` renders, or the repair of a copied one."""
+    return _MARK_BODY in text or _MARK_ECHO_BODY in text
+
+
 def arguments_echo_withheld_mark(arguments):
     """Whether any model-authored string argument carries the withheld marker."""
     if isinstance(arguments, str):
-        return _MARK_BODY in arguments
+        return carries_withheld_mark(arguments)
     if isinstance(arguments, list):
         return any(arguments_echo_withheld_mark(value) for value in arguments)
     if isinstance(arguments, dict):
@@ -851,7 +864,7 @@ def _repair_marker_echo_call(call):
     name, args = tool_call_name_and_args(call or {})
 
     def clean(value, key=""):
-        if isinstance(value, str) and _MARK_BODY in value:
+        if isinstance(value, str) and carries_withheld_mark(value):
             if name in _EXECUTION_TOOLS and key in _COMMAND_KEYS:
                 if name in _PYTHON_TOOLS:
                     return _MARK_ECHO_PYTHON_REPLACEMENT
