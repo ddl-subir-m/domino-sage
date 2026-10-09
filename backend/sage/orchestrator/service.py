@@ -15325,8 +15325,9 @@ class Orchestrator:
         if path.endswith(".table.json") and tables is not None:
             tables.write_failures[path] = "table write did not complete"
         encoding = body.get("encoding", "utf8")
+        charted = None
         if path.endswith(".png"):
-            data = self._chat_chart(thread_id, body)
+            data, charted = self._chat_chart(thread_id, body)
         elif encoding == "utf8" and path.endswith(".table.json") and content is not None:
             from ..workspace.chat_tables import validate_table_bytes
 
@@ -15351,6 +15352,9 @@ class Orchestrator:
                 tables.write_failures.pop(path, None)
         else:
             dest.write_bytes(data)
+            # Recorded once the chart is on disk: a read counted as charted folds its card (#746).
+            with self._live_read_lock:
+                self._charted_reads.setdefault(thread_id, set()).add(charted)
         return {"path": path, "bytes": len(data)}
 
     def _unbacked_numbers(self, thread_id: str, body: str, prompt: str) -> list[str]:
@@ -15374,15 +15378,18 @@ class Orchestrator:
                              f"columns {', '.join(r.columns)}.")
         return "\n".join(lines)
 
-    def _chat_chart(self, thread_id: str, body: dict) -> bytes:
-        """A PNG drawn from a result this turn read, never from values the model sent (#729)."""
+    def _chat_chart(self, thread_id: str, body: dict) -> tuple[bytes, str]:
+        """A PNG drawn from a result this turn read, never from values the model sent (#729), and
+        the slug of the read it was drawn from."""
         from ..workspace import chat_chart
 
-        table, x, ys = body.get("table"), body.get("x"), body.get("y")
-        if isinstance(ys, str):
-            ys = [ys]
+        table, x, ys, by = body.get("table"), body.get("x"), body.get("y"), body.get("by")
+        money, percent = body.get("money") or [], body.get("percent") or []
+        ys, money, percent = ([v] if isinstance(v, str) else v for v in (ys, money, percent))
         if (not isinstance(table, str) or not table or not isinstance(x, str)
-                or not isinstance(ys, list) or not all(isinstance(y, str) for y in ys)):
+                or not all(isinstance(v, list) and all(isinstance(c, str) for c in v)
+                           for v in (ys, money, percent))
+                or not (by is None or isinstance(by, str) and by)):
             raise ValueError(
                 "A chart is drawn from a result this turn read: pass table as that result's "
                 "title, x as the column for the labels and y as the column or columns of numbers.")
@@ -15396,10 +15403,7 @@ class Orchestrator:
                 f"Results this turn: {named}." if named
                 else "Run the statement first, with a title, then chart that result."))
         chat_chart.check_labels(read, x, reads)
-        data = chat_chart.draw(read, x, ys)
-        with self._live_read_lock:
-            self._charted_reads.setdefault(thread_id, set()).add(read.slug)
-        return data
+        return chat_chart.draw(read, x, ys, by, money, percent), read.slug
 
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
         """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`.
@@ -17396,6 +17400,12 @@ class Orchestrator:
                 for rel in replaced(operations, roles, self._held(thread_id), charted, body,
                                     prompt):
                     roles[rel] = "working"
+                # A read Sage charted is shown by the chart, drawn from every one of its rows, so
+                # its card folds under the chart instead of repeating it as a table (#746).
+                for rel, role in list(roles.items()):
+                    if (role == "answer"
+                            and PurePosix(rel).name.removesuffix(".table.json") in charted):
+                        roles[rel] = "working"
                 for rel in redundant_tables(project.record.path, thread_id, tables.before, roles):
                     (project.record.path / rel).unlink(missing_ok=True)
                 withhold_table_rows(project.record.path, thread_id, tables.before,
@@ -17596,7 +17606,10 @@ class Orchestrator:
                         "from the rows of a result read this turn: run the statement with a title, "
                         f"then call artifact_write with path examples/{thread_id}/<name>.png, table "
                         "set to that title, x set to the column of labels and y set to the column or "
-                        "columns of numbers. When the labels should be names that another table holds, "
+                        "columns of numbers. For one measure by two categories, such as amount by "
+                        "stage within team, set by to the second category's column: one bar per x, "
+                        "stacked by it. List the y columns that are money in money and those that are "
+                        "percentages in percent. When the labels should be names that another table holds, "
                         "join that table in the same statement so the result carries the names. "
                         "If you can't produce something, say so in one plain sentence and don't describe "
                         "how you work."

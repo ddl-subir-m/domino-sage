@@ -298,3 +298,11 @@ longer accepts SVG or PNG bytes, so a series that matches no read cannot be draw
 card's, including those the model never saw, which is not a widening: ADR-0045 already governs the
 PNG by **Kept rows**. Labels a chart needs from another table come from a join in the statement — a
 label column of identifiers that another read this turn names is refused with that instruction.
+
+**Amendment (#746, 2026-10-09): the chart also names its shape and its units.** `table`, `x` and `y`
+could not say how a result of one measure by two categories is drawn, nor what the numbers are, so a
+`GROUP BY team, stage` came out as one bar per row with the teams repeated, money printed as
+`2.69e+06`, and calls and a win rate shared one axis. The call now also takes `by`, a column of the
+same result that splits the one `y` into stacked parts, and `money` and `percent`, which name `y`
+columns. Each is a column of the result, never a value, so the chart is still drawn from the rows
+alone. Measures in different units get a panel each.
