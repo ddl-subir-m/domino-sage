@@ -91,14 +91,36 @@ function serve(url) {
 // between the single write and the end of `openThread` — the attachments read is awaited after
 // the view is painted. A marker cleared a line late rather than IN the write is only visible
 // inside that window, so without this the test for it would pass on a fix that does not work.
-function delayFor(url) {
+function keyFor(url) {
   // The thread LIST, which is not a thread. `setScope` awaits `loadThreadList` at the end, so
   // this key is what holds a cross-Project open open long enough to look at it from INSIDE
   // `adoptThreadScope` — the window a clear placed in the scope switch takes the marker off.
-  if (/\/threads(\?|$)/.test(String(url))) return latency['threads:list'] || 0;
+  if (/\/threads(\?|$)/.test(String(url))) return 'threads:list';
   const m = String(url).match(/\/threads\/([^/?]+)(\/context)?/);
-  if (!m) return 0;
-  return (m[2] ? latency[`${m[1]}:context`] : latency[m[1]]) || 0;
+  if (!m) return null;
+  return m[2] ? `${m[1]}:context` : m[1];
+}
+
+// A latency of `'hold'` parks the request for the rest of the run rather than for a number of
+// milliseconds. A window measured in milliseconds is a race against `settle`, whose own drain
+// takes a varying 100ms or more: a snapshot meant to land inside a 150ms reload landed after it
+// in 6 runs of 20 (#755). Held, the window cannot close before the harness has looked. A parked
+// promise holds no handle, so it does not keep the process alive.
+const held = new Set();
+
+function hold(key) {
+  held.add(key);
+  return new Promise(() => {});
+}
+
+// Waits on the request being MADE, which is the event a held window opens on. Bounded so a
+// request that is never made fails the run with its name rather than hanging it.
+async function untilHeld(key) {
+  for (let i = 0; i < 2000; i += 1) {
+    if (held.has(key)) return;
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  throw new Error(`nothing requested ${key}`);
 }
 
 // --- a browser that dispatches ---------------------------------------------
@@ -199,7 +221,9 @@ const sandbox = {
   icons: new Proxy({}, { get: (_, name) => String(name) }),
   EventSource: function () {},
   fetch: async (url) => {
-    await new Promise((r) => setTimeout(r, delayFor(url)));
+    const key = keyFor(url);
+    const wait = (key && latency[key]) || 0;
+    await (wait === 'hold' ? hold(key) : new Promise((r) => setTimeout(r, wait)));
     return serve(url);
   },
 };
@@ -376,6 +400,11 @@ for (const act of acts) {
     pass();
   } else if (act.act === 'settle') {
     await settle(act.ms);
+    pass();
+  } else if (act.act === 'until') {
+    // The screen once a held request has been made, with everything not held let land.
+    await untilHeld(act.held);
+    await settle(0);
     pass();
   } else {
     throw new Error(`unknown act ${JSON.stringify(act)}`);
