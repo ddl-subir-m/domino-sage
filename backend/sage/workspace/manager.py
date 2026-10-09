@@ -1389,6 +1389,30 @@ class Workspace:
         except OSError:
             pass
 
+    def read_plan_build_baseline(self) -> tuple[str, str] | None:
+        """The (tree, query catalog digest) the live plan's build started from, or None (#753).
+
+        Read only for a plan that still owes a build: a retry or a Continue of it is the same
+        build, and what an earlier Attempt wrote is this build's work. Every other approve
+        writes its own, so one left by an earlier plan is never read."""
+        raw = _read_settings_file(self._settings_path).get("planBuildBaseline")
+        if not isinstance(raw, dict):
+            return None
+        tree, queries = raw.get("tree"), raw.get("queries")
+        if not (isinstance(tree, str) and tree and isinstance(queries, str)):
+            return None
+        return tree, queries
+
+    def set_plan_build_baseline(self, tree: str, queries: str) -> None:
+        """Record where the live plan's build started. Best-effort, like `set_plan_retry_step`:
+        a lost write means a retry counts from itself, which is the behaviour before #753."""
+        try:
+            settings = _read_settings_file(self._settings_path)
+            settings["planBuildBaseline"] = {"tree": tree, "queries": queries}
+            _write_settings_file(self._settings_path, settings)
+        except OSError:
+            pass
+
     @property
     def architecture_path(self) -> Path:
         """A design document the user asked for ("give me an architecture for…"). Deliberately NOT
