@@ -10,7 +10,7 @@ Two halves, and the second is the one that holds when the first is not enough:
 
     the model's own writes are its code    a write or edit is not data Sage read, so it is never
                                            replaced by a copyable placeholder in its history
-    an app file carrying any placeholder   fails the end-of-turn check (`SAGE007`) and gets a
+    an app file carrying any placeholder   fails the end-of-turn check (`SAGE008`) and gets a
                                            repair turn. Keyed on what EVERY placeholder Sage
                                            substitutes carries, not on one rendering of it.
 
@@ -125,7 +125,7 @@ def test_a_copied_repair_string_is_answered_as_an_echo():
 
 
 def _placeholder_errors(report):
-    return [(e.file, e.line) for e in report.errors if e.code == "SAGE007"]
+    return [(e.file, e.line) for e in report.errors if e.code == "SAGE008"]
 
 
 def test_the_live_files_fail_the_check_without_repeating_the_placeholder(tmp_path: Path, monkeypatch):
@@ -204,6 +204,6 @@ def test_a_turn_that_writes_the_placeholder_is_sent_back_once(selected_stack):  
     events, done = _run(app, _ack(app))
 
     assert [e["ok"] for e in events if e["type"] == "typecheck"] == [False, True]
-    assert "SAGE007" in app.oc.prompts[-1]["text"]
+    assert "SAGE008" in app.oc.prompts[-1]["text"]
     assert len(app.oc.prompts) == 2
     assert done["ok"] is True
