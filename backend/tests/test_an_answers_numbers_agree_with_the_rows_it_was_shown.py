@@ -86,11 +86,20 @@ def test_a_figure_in_millions_is_not_a_count():
 
 
 def test_a_figure_already_in_millions_is_stated_in_millions():
-    """`SUM(AMOUNT) / 1e6 AS PIPELINE_M` is a decimal, and "$9.0M" is how it is said."""
-    read = HeldRead(title="Pipeline", slug="pipeline", columns=["TEAM", "PIPELINE_M"],
-                    rows=[["FSI", 9.0], ["Life Sciences", "14.00"]],
-                    disclosed=[["FSI", 9.0], ["Life Sciences", "14.00"]])
-    assert unsupported_numbers("FSI has $9.0M and Life Sciences $14M.", [read], "") == []
+    """`SUM(AMOUNT) / 1e6 AS PIPELINE_M` is a decimal, as a float or as the string a NUMBER(38, 2)
+    arrives as, and "$9.0M" is how it is said — its total too."""
+    as_text = HeldRead(title="Pipeline", slug="pipeline", columns=["TEAM", "PIPELINE_M"],
+                       rows=[["FSI", "9.00"], ["Life Sciences", "14.00"]],
+                       disclosed=[["FSI", "9.00"], ["Life Sciences", "14.00"]])
+    as_float = HeldRead(title="Other", slug="other", columns=["TEAM", "PIPELINE_M"],
+                        rows=[["Manufacturing", 4.0]], disclosed=[["Manufacturing", 4.0]])
+    said = "FSI has $9.0M and Life Sciences $14M, $23M together; Manufacturing has $4M."
+    assert unsupported_numbers(said, [as_text, as_float], "") == []
+    # A calculation's selected values are not rows, so nothing above totals them: each value's own
+    # kind is all that says it is a figure in millions.
+    calculated = HeldRead(title="CSV totals", slug="csv-totals", columns=["TEAM", "PIPELINE_M"],
+                          rows=[["FSI", "9.00"]], disclosed=[{"total": "9.00", "mean": 4.0}])
+    assert unsupported_numbers("$9.0M in all, $4M on average.", [calculated], "") == []
 
 
 # --- the turn ---------------------------------------------------------------------------------------
