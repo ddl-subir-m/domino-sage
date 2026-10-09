@@ -368,6 +368,11 @@ def _resolve_sage_version() -> str | None:
 
 _SAGE_VERSION = _resolve_sage_version()
 
+# How long a turn waits for the measurement of a model whose saved level is not yet known (#724).
+# A measurement is ~30 short calls; this stays well under undici's 300 s for a request with no
+# response headers, which is what the wait holds back.
+MEASURE_WAIT_S = 60.0
+
 
 class EnforcementShim:
     def __init__(
@@ -421,6 +426,10 @@ class EnforcementShim:
         # provider can measure it for the next turn (#646). Here and not at save time: this is the
         # first point the sensitivity lock has already had its say about which model that is.
         self.on_unmeasured_route: Callable[[str], None] = lambda _model: None
+        # Blocks until that measurement ends or the bound passes (#724). Called only when a saved
+        # level would otherwise fail on an answer nobody has yet, and never on the event loop:
+        # every caller of `prepare` that is served by an async route runs it in the threadpool.
+        self.await_measurement: Callable[[str, float], None] = lambda _model, _timeout: None
         # The last capability each model resolved to, for dispatch only. The resolver re-reads the
         # Gateway listing every few seconds and raises when that read fails; measured 2026-09-29,
         # one failed read ended a Chat turn at 7 minutes on "The gateway route cannot be checked
@@ -923,18 +932,40 @@ class EnforcementShim:
         if effort_choice is not None:
             configured, source = effort_choice.configured_effort, effort_choice.source
 
+        # A saved level this route has no answer for YET (#724). The measurement started above, or
+        # by an earlier request, is that answer, and the first turn after a repoint used to fail on
+        # its absence and pass on a retry. Waited for only where the turn would otherwise fail.
+        unknown = (RouteStatus.UNMEASURED, RouteStatus.MEASURING)
+        if (configured is not None and configured not in accepted
+                and source is not EffortSource.STAGE_DEFAULT
+                and getattr(capability, "status", None) in unknown):
+            try:
+                self.await_measurement(request["model"], MEASURE_WAIT_S)
+            except Exception:  # the turn then fails below exactly as it did before the wait
+                logging.getLogger("sage.shim").exception(
+                    "could not wait for the measurement of %s", request["model"])
+            capability = self._capability_for(request["model"])
+            accepted = capability.efforts_with_tools if tool_call else capability.efforts
+
         effort = configured
         status = (EffortStatus.PROVIDER_DEFAULT
                   if source is EffortSource.PROVIDER_DEFAULT
                   else EffortStatus.APPLIED)
         if effort is not None and effort not in accepted:
             if source is not EffortSource.STAGE_DEFAULT and (native or capability.identity):
-                # Names no menu row. The way back out of a saved level is spelled "Automatic" on a
-                # Build plan or implement row and "Model default" on the Chat and Ask one since
-                # #545, and this seam serves both — so it says what to DO, which is the same act on
-                # either surface, rather than a label that would be wrong on one of them.
-                raise ValueError(f"{request['model']} cannot use the saved reasoning setting {effort!r}. "
-                                 "Clear it or choose a supported setting. " + capability.reason)
+                # Names the control, not a menu row. The way back out of a saved level is spelled
+                # "Automatic" on a Build plan or implement row and "Model default" on the Chat and
+                # Ask one since #545, and this seam serves both. Never a script path: a person reads
+                # this, and the measurement that would repair it is Sage's to run (#724).
+                if getattr(capability, "status", None) in unknown:
+                    why = ("Sage couldn't confirm in time which reasoning efforts it accepts. Try "
+                           "again once its levels show in Model assignments, or clear the setting.")
+                else:
+                    why = (f"It accepts {', '.join(accepted) or 'no reasoning effort'}"
+                           f"{' on a request carrying tools' if tool_call else ''}. Change its "
+                           "Reasoning effort in Model assignments, or clear it. " + capability.reason)
+                raise ValueError(f"{request['model']} cannot use the saved reasoning setting "
+                                 f"{effort!r}. " + why.strip())
             # Said out loud. A dropped effort is a silent bill — the turn runs at the alias's own
             # default, costs more or thinks less than the person asked for, and looks exactly like a
             # turn nobody configured. This line is what tells a stale stored level from a slot that

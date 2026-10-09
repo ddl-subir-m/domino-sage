@@ -8499,6 +8499,7 @@ class Orchestrator:
         if hasattr(self._resources, "measure_on_first_use"):
             self._resources.use_local_evidence(record.path / ".sage" / "reasoning-evidence.json")
             shim.on_unmeasured_route = self._resources.measure_on_first_use
+            shim.await_measurement = self._resources.wait_for_measurement
         supervisor = _supervisor_for(workspace.path, domino_base_prefix(), pinned_port=True)
         queries = PreviewQueries(workspace.path, self._wm.template)
         view = AppView(workspace=workspace, supervisor=supervisor, queries=queries)
