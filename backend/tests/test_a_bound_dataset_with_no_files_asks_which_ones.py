@@ -456,6 +456,64 @@ def test_the_same_way_past_holds_in_chat(tmp_path: Path, monkeypatch):
     assert [f for f in _frames(later) if f.get("type") == "dataset-files"] == []
 
 
+# The sentence names the Dataset the way the `@` menu writes it (`mentionToken`).
+NAMED = "what do the calls in @revenue_2026 say?"
+
+
+def _declined(client: TestClient, tid: str) -> None:
+    """The card, then "Answer without a file" on it: the replay that records the way past."""
+    _card(_ask(client, tid, NAMED))
+    _ask(client, tid, NAMED, skipDatasetGate=True, datasetDismissed="ds_revenue_2026")
+
+
+def test_naming_the_dataset_again_after_the_way_past_asks_again(tmp_path: Path, monkeypatch):
+    """#748. "Answer without a file" answers the question it was pressed on. A later question that
+    @names the same Dataset is a new question about it, and gets the card — not a turn on a Dataset
+    nobody pointed it at, which is where the model came to say the file could not be accessed."""
+    orch, oc = _orch(tmp_path, _calls_dataset(tmp_path))
+    client = _client(orch, monkeypatch)
+    tid = _thread_with_dataset(orch, "ds_revenue_2026", "revenue_2026")
+    _declined(client, tid)
+    asked = len(oc.prompts)
+
+    card = _card(_ask(client, tid, NAMED))
+
+    assert card["datasetId"] == "ds_revenue_2026"
+    assert len(oc.prompts) == asked, "the model was asked instead of the person"
+
+
+def test_a_file_picked_from_the_card_asked_again_is_read(tmp_path: Path, monkeypatch):
+    """#748. The pick on the card offered again works the way it does in a new conversation."""
+    orch, oc = _orch(tmp_path, _calls_dataset(tmp_path))
+    client = _client(orch, monkeypatch)
+    tid = _thread_with_dataset(orch, "ds_revenue_2026", "revenue_2026")
+    _declined(client, tid)
+    _card(_ask(client, tid, NAMED))
+    asked = len(oc.prompts)
+
+    client.post(f"/api/threads/{tid}/context/dataset/ds_revenue_2026/file",
+                json={"path": "calls_daily.csv"})
+    body = _ask(client, tid, NAMED, skipDatasetGate=True)
+
+    assert [f for f in _frames(body) if f.get("type") == "dataset-files"] == []
+    assert len(oc.prompts) > asked, "the question never reached the model"
+    assert "calls_daily.csv" in oc.prompts[asked]["text"]
+
+
+def test_a_later_card_replaying_the_declined_question_does_not_ask_again(
+        tmp_path: Path, monkeypatch):
+    """Only a NEW question re-opens the Dataset. Another card answered on the declined question
+    replays the same sentence, @name and all, and must not put the declined card back (#392)."""
+    orch, _ = _orch(tmp_path, _calls_dataset(tmp_path))
+    client = _client(orch, monkeypatch)
+    tid = _thread_with_dataset(orch, "ds_revenue_2026", "revenue_2026")
+    _declined(client, tid)
+
+    replay = _ask(client, tid, NAMED, skipTableGate=True)
+
+    assert [f for f in _frames(replay) if f.get("type") == "dataset-files"] == []
+
+
 def test_the_card_carries_the_gates_this_turn_had_already_answered(tmp_path: Path, monkeypatch):
     """#185's loop, inherited rather than rediscovered. "Start over and summarise my calls" answers
     the reset offer and then reaches this card; a replay that dropped `skipResetGate` would offer to
