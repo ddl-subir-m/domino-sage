@@ -62,6 +62,9 @@ export default {
     table: { anyOf: [{ type: "string" }, { type: "null" }], description: "For a .png chart: the title of the result read this turn to plot. Send null for a table." },
     x: { anyOf: [{ type: "string" }, { type: "null" }], description: "For a .png chart: the column holding the labels. Send null for a table." },
     y: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }], description: "For a .png chart: the column or columns holding the numbers. Send null for a table." },
+    by: { anyOf: [{ type: "string" }, { type: "null" }], description: "For a .png chart of one y by two categories: the second category's column. Draws one bar per x, stacked by it. Send null otherwise." },
+    money: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }], description: "For a .png chart: the y columns that are amounts of money. Send null if none." },
+    percent: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }], description: "For a .png chart: the y columns that are percentages (28.7 means 28.7%). Send null if none." },
   },
   async execute(args) {
     const sent = {}
