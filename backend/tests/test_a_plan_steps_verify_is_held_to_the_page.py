@@ -127,8 +127,9 @@ class Answers(ReviewGateway):
         yield from super().route(request, labels)
 
 
-def _approve(tmp: Path, monkeypatch, gateway: ReviewGateway, *after: Turn, screens=SCREENS):
-    orch, oc = _orch(tmp, gateway, [PLAN, BUILT, *after],
+def _approve(tmp: Path, monkeypatch, gateway: ReviewGateway, *after: Turn, screens=SCREENS,
+             reads=(), built=BUILT):
+    orch, oc = _orch(tmp, gateway, [PLAN, built, *after],
                      replace(BuildPolicy(), page_ack_wait_seconds=0.5))
     project = orch.project(start_preview=False)
     monkeypatch.setattr(orch, "_restart_preview_for_config_change", lambda project: None)
@@ -137,6 +138,7 @@ def _approve(tmp: Path, monkeypatch, gateway: ReviewGateway, *after: Turn, scree
 
     def page_check(url, timeout):
         orch.record_preview_ack(parse_qs(urlsplit(url).query)["sageValidation"][0])
+        project.page_validation.data_reads.extend(dict(r) for r in reads)
         checks.append(Check(screens))
         return checks[-1]
 
@@ -193,6 +195,49 @@ def test_a_screen_still_loading_is_marked_so(tmp_path, monkeypatch):
     _approve(tmp_path, monkeypatch, gateway, screens=loading)
 
     assert 'Screen "Product insights" (still loading when read)' in _payload(gateway.reviews[0])
+
+
+def test_the_review_reads_which_data_the_page_read_and_how_each_came_back(tmp_path, monkeypatch):
+    """#743's handoff: a section the plan names whose route is never read, or comes back empty.
+    The review gets every read the page made by path and outcome, never a value, and is told those
+    are the only reads, so a route the step needs and the page never read shows by its absence.
+    Plant: leave the reads out of the payload and this goes red."""
+    gateway = Answers({"unmet": []})
+    reads = [{"kind": "route", "path": "/api/deals", "resourceIds": [], "status": 200,
+              "outcome": "passed"},
+             {"kind": "query", "path": "/api/queries/approvals", "resourceIds": [], "status": 200,
+              "outcome": "empty"}]
+    _approve(tmp_path, monkeypatch, gateway, reads=reads)
+
+    text = _payload(gateway.reviews[0])
+    assert "Only these data reads were made" in text
+    assert "- /api/deals: answered\n- /api/queries/approvals: came back empty" in text
+
+
+def test_a_page_that_read_no_data_says_so(tmp_path, monkeypatch):
+    gateway = Answers({"unmet": []})
+    _approve(tmp_path, monkeypatch, gateway)
+
+    assert "The page made no data reads." in _payload(gateway.reviews[0])
+
+
+def test_a_screen_is_judged_as_it_opens_at_its_defaults(tmp_path, monkeypatch):
+    """#743's handoff, the Usage drift case: the tab's own default periods overlap, so it opens on
+    "Periods must not overlap" and never queries. Each screen is read as it first opens, so its
+    error message reaches the review, which is told that an error there means its defaults fail
+    the step. Plant: drop the defaults sentence from the prompt and this goes red."""
+    gateway = Answers({"unmet": []})
+    drift = {"screen": "Usage drift", "charts": 0, "tables": 0, "loading": False,
+             "texts": ["Usage drift", "Periods must not overlap"]}
+    built = Turn(writes={**BUILT.writes, "static/components/UsageDrift.js": (
+        "export const UsageDrift = () => page('Usage drift', "
+        "overlap ? refuse('Periods must not overlap') : chart());\n")})
+    _approve(tmp_path, monkeypatch, gateway, screens=[drift], built=built)
+
+    text = _payload(gateway.reviews[0])
+    assert "as it first opened, at its default selections" in text
+    assert 'Screen "Usage drift": 0 charts, 0 tables\nUsage drift · Periods must not overlap' in text
+    assert "an error or refusal message on a screen as it first opened" in _PLAN_REVIEW_SYSTEM
 
 
 def test_with_no_page_seen_the_review_is_told_so(tmp_path, monkeypatch):

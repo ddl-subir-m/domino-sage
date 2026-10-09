@@ -26,7 +26,10 @@ tables it drew, whether it was still loading, and its visible text. An approved 
 code spells goes to the model, so no row from a read reaches it. A step the review names unmet is
 sent back once. The pass that answers that repair is reviewed again, and a step still unmet ends
 the build "Incomplete — plan step N not met", never clean. A screen the walk did not open, such as
-one reached only from a table row, is judged from the code alone (#750).
+one reached only from a table row, is judged from the code alone (#750). The review also gets the
+data reads the page made, by path and outcome only, so a section whose read never happened or came
+back empty is visible; and since every screen is read as it first opens, an error message there
+(two default periods that overlap) fails the step whose defaults produced it.
 
 Each repair gets a fresh ID and supervisor generation. Old documents, old attempts, other apps,
 and completed checks cannot contribute runtime evidence. Phased Build validates after its final

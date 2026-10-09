@@ -6928,8 +6928,10 @@ _PLAN_REVIEW_SYSTEM = (
     "visibly missing or wrong in the code, or a chart, card, section or message the item or "
     "the plan's screen names that a screen Sage opened plainly lacks. Name the step that builds "
     "that screen. A screen Sage did not open, or one still loading, cannot show what it lacks: "
-    "judge that only from the code. Never flag data you cannot see, or code outside the "
-    "change.\n"
+    "judge that only from the code. Name it too when a section an item names depends on a data "
+    "read the page never made or that came back empty, or when there is an error or refusal "
+    "message on a screen as it first opened, before anyone chose anything: its defaults then "
+    "fail the step that builds it. Never flag data you cannot see, or code outside the change.\n"
     "A step the build says needed no edit comes with its reason and its files as they are now. "
     "Name its Done-when if those files plainly do not meet it.\n"
     'Answer with JSON only: {"unmet": [{"step": <number>, "done_when": "<the item>", '
@@ -6980,12 +6982,14 @@ def _counted(n: int, noun: str) -> str:
     return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
-def _page_review_block(plan_md: str, screens: list[dict], code: str) -> str:
-    """The plan's Screens, then what each screen showed when the page check opened it (#750).
+def _page_review_block(plan_md: str, screens: list[dict], code: str, reads: list[dict]) -> str:
+    """The plan's Screens, then what each screen showed when the page check opened it, and the
+    data reads the page made with how each came back (#750).
 
     A screen's text and its label go in only where `code`, the app's own code, spells them: a
     heading, a label, an empty or error message. Everything else on a page came from data, and a
-    row reaches a model only by the person's consent (ADR-0041), never by a review.
+    row reaches a model only by the person's consent (ADR-0041), never by a review. A read is its
+    path and outcome only (`read_outcomes` keeps no values).
     """
     def spelled(text: str) -> bool:
         return bool(re.search(r"[^\W\d_]", text)) and text in code
@@ -7004,9 +7008,15 @@ def _page_review_block(plan_md: str, screens: list[dict], code: str) -> str:
           f"{_counted(int(s.get('tables') or 0), 'table')}\n"
         + " · ".join(t for t in s.get("texts") or [] if spelled(t))
         for s in screens)
-    return out + ("\n\nWhat each screen showed when Sage opened the running app: the charts and "
-                  "tables it drew, and the text on it that the app's code spells (values from "
-                  "data are left out). Only these screens were opened:\n" + shown)
+    outcome = {"passed": "answered", "empty": "came back empty", "failed": "failed"}
+    read = "\n".join(dict.fromkeys(
+        f"- {r['path']}: {outcome.get(r.get('outcome'), r.get('outcome'))}" for r in reads))
+    return out + ("\n\nWhat each screen showed when Sage opened the running app, each as it first "
+                  "opened, at its default selections: the charts and tables it drew, and the text "
+                  "on it that the app's code spells (values from data are left out). Only these "
+                  "screens were opened:\n" + shown
+                  + ("\n\nOnly these data reads were made by the page, by path:\n" + read if read
+                     else "\n\nThe page made no data reads."))
 
 
 def _plan_review_sentence(unmet: list[dict]) -> str:
@@ -25572,7 +25582,8 @@ class Orchestrator:
             and not _PLAN_REVIEW_SKIP & set(PurePosix(rel).parts))
         payload = ("Plan steps:\n" + "\n".join(
             f"{s.n}. {s.label}\n   Do: {s.do}\n   Done when: {s.done_when}" for s in steps)
-            + _page_review_block(plan_md, screens, code)
+            + _page_review_block(plan_md, screens, code,
+                                 validation.data_reads if validation is not None else [])
             + f"\n\nThe change (code files only{cut}):\n"
             + diff[:_PLAN_REVIEW_DIFF_MAX_BYTES].decode("utf-8", errors="ignore"))
         if claimed:
