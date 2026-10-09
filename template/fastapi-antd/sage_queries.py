@@ -525,7 +525,26 @@ def answer(queries: dict, executor, name: str, body: object) -> tuple[int, dict]
     missing name, an undeclared parameter or a store that did not answer is worth. Everything a
     caller can influence is the name and the values in `params`. The name selects a statement the
     app's own repo declared; it is never part of one.
+
+    In Sage's preview it also prints one `PREVIEW_READ` line per call, which the builder reads off
+    this server's output (#730). A route of the app's own that calls this and returns a refusal as a
+    200 is otherwise invisible: the preview proxy sees only `/api/queries/<name>`.
     """
+    status, payload = _answer(queries, executor, name, body)
+    if os.environ.get("SAGE_PREVIEW") == "1":
+        read = {"name": name, "status": status}
+        if "error" in payload:
+            read["error"] = payload["error"]
+        elif payload.get("rows") == []:
+            read["empty"] = True
+        print(PREVIEW_READ + json.dumps(read), flush=True)
+    return status, payload
+
+
+PREVIEW_READ = "[sage] query-read "
+
+
+def _answer(queries: dict, executor, name: str, body: object) -> tuple[int, dict]:
     try:
         if not name:
             raise QueryProblem(HTTPStatus.NOT_FOUND, "No such endpoint.")

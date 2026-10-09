@@ -136,7 +136,6 @@ from ..resources.builtapp import (
     query_problems,
     serve_module,
     stranded_levels,
-    unrecorded_source_problems,
 )
 from ..resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
 from ..resources.model_api_credentials import (
@@ -22073,9 +22072,9 @@ class Orchestrator:
         # beside it, and for the same reason: a defect we can describe but cannot make the agent fix.
         gateway_fixes = 0
         max_gateway_fixes = self._build_policy.gateway_repair_limit
-        # A query naming a Data Source this app does not record (#704). Once, like the platform
-        # read above: the app's own sentence names the fix, and only a person can record a store.
-        source_fixes = 0
+        # A query the app's own catalog check refuses (#704, #740). Once, like the platform read
+        # above: the app's own sentence names the fix, and only a person can record a store.
+        catalog_fixes = 0
         # App code that reads a store itself, outside `.sage/queries.json` (#705). Once, for the
         # reason the line above gives.
         store_fixes = 0
@@ -24484,22 +24483,26 @@ class Orchestrator:
                             files=", ".join(n for n, _ in raw_calls),
                             helper=project.app_for_turn().helpers.llm_path)
                         continue
-                if report.ok and wrote_code and not source_fixes and not project.stop_requested:
-                    unrecorded = unrecorded_source_problems(self._wm.template,
-                                                            project.app_for_turn().path)
-                    if unrecorded:
-                        source_fixes += 1
+                # Every sentence the app's own catalog check says, from the files on disk (#704,
+                # #740): the app refuses these queries whatever the preview does.
+                if report.ok and wrote_code and not catalog_fixes and not project.stop_requested:
+                    problems = catalog_problems(self._wm.template, project.app_for_turn().path)
+                    if problems:
+                        catalog_fixes += 1
                         recorded = ", ".join(
                             f"{b.id} ({b.display_name})"
                             for b in self._data_source_bindings(project.app_for_turn()))
-                        iterate_reason = "a query names a store this app does not record — fixing"
+                        iterate_reason = ("the app will refuse a query in its catalog — fixing "
+                                          f"({problems[0][:140]})")
                         yield {"type": "iterate", "reason": iterate_reason}
                         current = brand.text(
-                            "{problems} In `.sage/queries.json`, `binding` must be the id of a "
-                            "{dataSource} this app records: {recorded}. Fix each query to name "
-                            "one. If none is recorded, do not invent one: say this app needs a "
-                            "{dataSource} chosen for it, and stop.",
-                            problems=" ".join(unrecorded.values()),
+                            "{problems} Fix `.sage/queries.json` so the app accepts each query: "
+                            "every `:name` a statement uses is declared in its `params`, every "
+                            "declared parameter is used, and `binding` is the id of a "
+                            "{dataSource} this app records: {recorded}. If none is recorded, do "
+                            "not invent one: say this app needs a {dataSource} chosen for it, "
+                            "and stop.",
+                            problems=" ".join(problems),
                             recorded=recorded or "it records none")
                         continue
                 if report.ok and wrote_code and not store_fixes and not project.stop_requested:
@@ -24543,6 +24546,29 @@ class Orchestrator:
                 # that validated (`verification`), so the outcomes are this pass's reads (#557 P10).
                 # A store that is down or refuses the person never gets here: `is_compile_fault`
                 # leaves those to the notice below.
+                # A request the app's own query server refused as the app's fault (#730) — a
+                # parameter missing, a name it does not have — on the same budget and judged on the
+                # same pass as the compile repair below.
+                if (report.ok and wrote_code and verification is not None
+                        and query_fixes < self._build_policy.runtime_repair_limit
+                        and not project.stop_requested):
+                    refusals = self._refused_queries(project)
+                    if refusals:
+                        query_fixes += 1
+                        iterate_reason = ("a query was refused — fixing "
+                                          f"({', '.join(refusals)[:140]})")
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = (
+                            "The app's own query server refused these requests while the preview "
+                            "loaded the page, so the screens that make them show an error, even "
+                            "where the route answered 200:\n\n"
+                            + "\n".join(f"- `{name}`: {reason}" for name, reason in refusals.items())
+                            + "\n\n`answer()` in `sage_queries.py` reads a query's values only "
+                            'from `body["params"]`, and every parameter a query declares is '
+                            "required. Read it, then fix the code that makes each request so it "
+                            "asks for a query the catalog declares, with the values that query "
+                            "declares. Do not replace a query with rows you write yourself.")
+                        continue
                 if (report.ok and wrote_code and verification is not None
                         and query_fixes < self._build_policy.runtime_repair_limit
                         and not project.stop_requested):
@@ -24570,7 +24596,7 @@ class Orchestrator:
                         and (not plan_fixes or bool(plan_no_edit))
                         and not project.stop_requested
                         and not self._query_failures(project)
-                        and not unrecorded_source_problems(
+                        and not catalog_problems(
                             self._wm.template, project.app_for_turn().path)
                         and not self._detect_store_clients(project)
                         and self._fresh_platform_read_failure(project, since=send_ts) is None):
@@ -24609,15 +24635,28 @@ class Orchestrator:
                 # of the fault. Query outcomes now come from this validation's issued reads, so a
                 # late response from another app cannot change the result (#557 P10).
                 failed = self._query_failures(project) if report.ok and (owns_turn or validate_page) else {}
-                # And the ones the app refuses before any read (#704): judged against its own
-                # Bindings alone, the data check would call an app with none `not_applicable`.
+                # And the ones the app refuses before any read (#704, #740): judged against its own
+                # Bindings alone, the data check would call an app with none `not_applicable`. A
+                # catalog fault names no query, so it is said on its own.
+                catalog_faults: list[str] = []
                 if report.ok and (owns_turn or validate_page):
-                    failed = {**unrecorded_source_problems(self._wm.template,
-                                                           project.app_for_turn().path), **failed}
+                    unusable = query_problems(self._wm.template, project.app_for_turn().path)
+                    failed = {**unusable, **failed}
+                    catalog_faults = [p for p in catalog_problems(
+                        self._wm.template, project.app_for_turn().path) or []
+                        if p not in unusable.values()]
+                unread = bool(verification is not None and verification.get("queriesUnread"))
                 if failed:
                     yield persist({"type": "data-source-failed",
                                    "message": self._failed_notice(
                                        failed, catalog_names(project.app_for_turn().path))})
+                if catalog_faults:
+                    yield persist({"type": "data-source-failed", "message": " ".join(catalog_faults)})
+                if unread and not failed:
+                    yield persist({"type": "data-source-failed", "message": brand.text(
+                        "This {builtApp} declares queries in {catalog}, but its page asked for "
+                        "none of them while {assistantName} checked it, so its data was never "
+                        "shown working.", catalog=QUERIES)})
                 store_clients = (self._detect_store_clients(project)
                                  if report.ok and (owns_turn or validate_page) else [])
                 if store_clients:
@@ -24629,15 +24668,19 @@ class Orchestrator:
                 # the turn's work — which is also what keeps this a report rather than the gate
                 # ADR-0010 rules out.
                 refused = self._fresh_platform_read_failure(project, since=send_ts) if report.ok else None
-                if verification is not None and (failed or store_clients or refused):
+                queries_failed = bool(failed or catalog_faults or unread or store_clients)
+                if verification is not None and (queries_failed or refused):
                     verification["stages"]["data"] = "failed"
                     verification["overall"] = "failed"
+                if verification is not None and failed:
+                    # By name, with the sentence that refused it: what a repair reproduces from.
+                    verification["queryFailures"] = dict(failed)
                 if verification is not None:
                     project.evidence_recorder.verification(verification)
-                yield persist({"type": "done", "ok": (report.ok and not failed
-                                                      and not store_clients and rt is None
+                yield persist({"type": "done", "ok": (report.ok and not queries_failed
+                                                      and rt is None
                                                       and refused is None and not unbuilt),
-                               "decision": ("queries failed" if failed or store_clients
+                               "decision": ("queries failed" if queries_failed
                                             else "runtime failed" if rt
                                             else "platform read failed" if refused
                                             else f"incomplete — plan {_listed_steps(unbuilt)} not built"
@@ -25607,6 +25650,7 @@ class Orchestrator:
         bindings = parse_bindings(app.read_bindings())
         validation.data_expected = any(b.kind in (KIND_DATASET, KIND_DATA_SOURCE) for b in bindings)
         validation.dataset_ids = tuple(b.id for b in bindings if b.kind == KIND_DATASET)
+        validation.queries_declared = bool(catalog_names(app.path))
         project.page_validation = validation
         timeout = self._build_policy.page_ack_wait_seconds
         # The turn's app, not the one on screen: a `?app=` tab builds an app it never selects (#692).
@@ -25701,6 +25745,20 @@ class Orchestrator:
                     and status["state"] == "failed"):
                 validation.stages["startup"] = "failed"
                 validation.error = validation.error or {"message": status.get("error") or "App startup failed"}
+            # What the app's own `answer()` answered in this document's server, by whatever route
+            # called it (#730): a read like any the proxy saw, and its refusal sentence the reason.
+            for answered in (supervisor.query_reads() if validation.generation else []):
+                if answered["generation"] != validation.generation:
+                    continue
+                if len(validation.data_reads) >= 20:
+                    validation.reads_truncated = True
+                    break
+                read = read_result(read_request(f"/api/queries/{answered['name']}", kind="query"),
+                                   answered["status"],
+                                   b'{"rows": []}' if answered.get("empty") else None)
+                validation.data_reads.append(read)
+                if read["outcome"] == "failed" and answered.get("error"):
+                    validation.query_failures[read["path"].rsplit("/", 1)[-1]] = answered["error"]
             validation.closed = True
 
     def _active_validation(self, validation_id: str) -> PageValidation | None:
@@ -25787,6 +25845,9 @@ class Orchestrator:
             name = result["path"].rsplit("/", 1)[-1]
             try:
                 reason = (context["queries"].failures() or {}).get(name)
+                if not isinstance(reason, str) and body:
+                    # A refusal before the executor ran: `answer()`'s own sentence (#730).
+                    reason = (json.loads(body) or {}).get("error")
                 if isinstance(reason, str):
                     validation.query_failures[name] = reason
             except Exception:
@@ -31147,6 +31208,27 @@ class Orchestrator:
         except Exception:
             log.exception("preview queries: could not read what failed; saying nothing")
             return {}
+
+    def _refused_queries(self, project: Project) -> dict[str, str]:
+        """The failed queries the app's own query server refused as the request's fault, each with
+        its sentence (#730): a parameter missing or of the wrong type, a name it does not have.
+
+        Only where `answer()` said why: a 404 with no sentence is no query server at all. Not an
+        access refusal or a 5xx, which are the store's, and not a query its catalog refuses, which
+        the catalog repair owns.
+        """
+        validation = project.page_validation
+        if validation is None:
+            return {}
+        refused = {read["path"].rsplit("/", 1)[-1] for read in validation.data_reads
+                   if read["kind"] == "query" and read["outcome"] == "failed"
+                   and read.get("status") in (400, 404, 422)}
+        refused &= set(validation.query_failures)
+        if not refused:
+            return {}
+        unusable = query_problems(self._wm.template, project.app_for_turn().path)
+        return {name: validation.query_failures[name] for name in sorted(refused)
+                if name not in unusable}
 
     def _uncompiled_queries(self, project: Project) -> dict[str, str]:
         """The failed queries that are a fault in the app's own SQL, each as a paragraph the repair

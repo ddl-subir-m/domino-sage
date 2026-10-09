@@ -123,8 +123,9 @@ def _ready(orch: Orchestrator, answer) -> None:
     validate = orch._validate_page
     def report(project, kind):
         for event in validate(project, kind):
-            orch.record_preview_ack(event['validationId'])
             if answer is not None:
+                # No ack for None: a page that loaded and asked for nothing is a failure (#730).
+                orch.record_preview_ack(event['validationId'])
                 context = orch.capture_preview_read(event['validationId'], '/api/queries/usage', kind='query')
                 orch.record_platform_read_failure(503 if answer else 200, '/api/queries/usage',
                                                    context=context, body=b'{"rows":[]}')

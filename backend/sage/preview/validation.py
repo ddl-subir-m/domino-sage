@@ -23,6 +23,7 @@ class PageValidation:
     data_reads: list[dict] = field(default_factory=list)
     reads_truncated: bool = False
     query_failures: dict[str, str] = field(default_factory=dict)
+    queries_declared: bool = False
     reason: str = ''
 
     def event(self) -> dict:
@@ -32,8 +33,13 @@ class PageValidation:
 
     def summary(self) -> dict:
         outcomes = [read["outcome"] for read in self.data_reads]
+        # An app with queries whose loaded page asked for none of them has not shown its data
+        # working, whichever way it reads it (#730).
+        unread = (self.queries_declared and self.stages["page"] == "passed"
+                  and not self.reads_truncated
+                  and not any(read["kind"] == "query" for read in self.data_reads))
         self.stages["data"] = (
-            "failed" if "failed" in outcomes else
+            "failed" if "failed" in outcomes or unread else
             "unverified" if self.reads_truncated or "pending" in outcomes else
             "passed" if outcomes else
             "unverified" if self.data_expected else "not_applicable")
@@ -44,4 +50,5 @@ class PageValidation:
                 'codeGeneration': self.code_generation, 'codeKind': self.code_kind,
                 'stages': dict(self.stages), 'dataReads': [dict(read) for read in self.data_reads],
                 'readsTruncated': self.reads_truncated,
+                **({'queriesUnread': True} if unread else {}),
                 **({'reason': self.reason} if overall == 'unverified' and self.reason else {})}

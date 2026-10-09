@@ -31,6 +31,9 @@ class Preview:
     def runtime_fault(self):
         return None
 
+    def query_reads(self):
+        return []
+
 
 @pytest.fixture
 def build(tmp_path, monkeypatch):
