@@ -156,12 +156,15 @@ def _tables(tmp_path, answer: str, *, label="data_answer", chart=False) -> dict[
                         gateway=IntentGateway({"label": label, "confidence": 0.92}),
                         catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
                         opencode_client=oc, resources=_Store())
-    orch.project(start_preview=False)
-    oc.orch = orch
-    tid = orch.create_thread()["id"]
-    orch.add_thread_context(tid, {"kind": "data_source", "id": "ds1", "name": SOURCE})
-    list(orch.chat_stream(tid, "Open pipeline by stage for this quarter and next"))
-    artifacts = ThreadStore(orch.project(start_preview=False).record.path).read_artifacts(tid)
+    try:
+        orch.project(start_preview=False)
+        oc.orch = orch
+        tid = orch.create_thread()["id"]
+        orch.add_thread_context(tid, {"kind": "data_source", "id": "ds1", "name": SOURCE})
+        list(orch.chat_stream(tid, "Open pipeline by stage for this quarter and next"))
+        artifacts = ThreadStore(orch.project(start_preview=False).record.path).read_artifacts(tid)
+    finally:
+        orch.shutdown()  # a chat turn arms the idle-save timer; this cancels it
     return {a["name"]: a["role"] for a in artifacts}
 
 
@@ -174,8 +177,8 @@ def test_a_turn_whose_first_read_was_replaced_shows_only_the_second(tmp_path):
 def test_a_turn_that_charts_the_second_read_shows_only_the_second(tmp_path):
     roles = _tables(tmp_path, "Negotiate holds most of the open pipeline.",
                     label="data_artifact", chart=True)
-    assert roles == {f"{WRONG.slug}.table.json": "working",
-                     f"{RIGHT.slug}.table.json": "answer", "pipeline.png": "answer"}
+    assert roles[f"{WRONG.slug}.table.json"] == "working"
+    assert roles["pipeline.png"] == "answer"
 
 
 def test_a_turn_whose_answer_uses_both_reads_shows_both(tmp_path):

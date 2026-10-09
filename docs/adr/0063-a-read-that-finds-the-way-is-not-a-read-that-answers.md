@@ -149,3 +149,12 @@ charted it (`artifact_write` names the read), the answer names its card, or the 
 number that read disclosed and the other did not (`liveread/held.py`, `replaced`). Both reads must
 be held, so Sage knows what each returned. Anything less certain leaves both drawn: this is still
 the rule that never hides an answer on a guess, and "the last table wins" stays rejected.
+
+## Amendment: a read Sage charted is shown by its chart (2026-10-09, #746)
+
+A Chat chart is drawn by Sage from every row of one read (ADR-0058, #729), so that read's card
+repeated the chart as a table beneath it. The skill the person named said no table, and the only
+way to say so was `step: true` on the read, which the model left off. Sage now shows a read it
+charted this turn as `working`: its card folds under the chart, one click away, and the chart is
+the answer. This is not a guess. Sage drew the chart from that read, and the turn wrote it. A read
+the turn did not chart keeps its own role, so a second read the answer lists still draws.
