@@ -83,7 +83,7 @@ from ..liveread import mcp as live_mcp
 from ..liveread import reference as live_reference
 from ..liveread import result as live_result
 from ..liveread import run as live_read
-from ..liveread.held import HeldRead, replaced, unsupported_numbers
+from ..liveread.held import HeldRead, replaced, unsupported_numbers, without_unsupported
 from ..pre_edit_guard import (
     PreEditAction,
     PreEditDecision,
@@ -15380,19 +15380,25 @@ class Orchestrator:
                 else _CHAT_ROWS_NOTE)
         return note.format(numbers=", ".join(unbacked))
 
-    def _numbers_refused(self, thread_id: str) -> str:
-        """What ships instead of an answer that kept stating numbers its reads do not carry (#729):
-        what was read, its shape and its row count, which is all a structure-only read may say."""
+    def _numbers_left_out(self, thread_id: str, body: str, prompt: str) -> str:
+        """The answer without the sentences that kept stating numbers its reads do not carry, and
+        one note saying so (#729, #747). Never empty: the note stands alone if nothing else does.
+
+        On a withheld turn the note is #729's: what was read, its shape and its row count, which is
+        all a structure-only read may say. On a disclosed one it is a single line, because the model
+        was given the rows and the table beside the answer has the figures."""
         reads = self._held(thread_id)
+        kept, _removed = without_unsupported(body, reads, prompt)
         withheld = [r for r in reads if r.withheld]
-        lines = (["I wasn't given the values from what I read, so I can't quote numbers from it."]
-                 if withheld else
-                 [("Some numbers I wrote didn't match the rows I read, so I've left them out. The "
-                   "table has the figures.")])
-        for r in withheld or reads:
-            lines.append(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
-                         f"columns {', '.join(r.columns)}.")
-        return "\n".join(lines)
+        if withheld:
+            note = "\n".join(
+                ["I wasn't given the values from what I read, so I can't quote numbers from it.",
+                 *(f"- {r.title}: {len(r.rows)} row{'' if len(r.rows) == 1 else 's'}, "
+                   f"columns {', '.join(r.columns)}." for r in withheld)])
+        else:
+            note = ("A figure was left out because it didn't match the rows I read. The table has "
+                    "the figures.")
+        return f"{kept}\n\n{note}" if kept else note
 
     def _chat_chart(self, thread_id: str, body: dict) -> tuple[bytes, str]:
         """A PNG drawn from a result this turn read, never from values the model sent (#729), and
@@ -17364,12 +17370,13 @@ class Orchestrator:
             # bare token under a half-finished answer.
             body, asked_for_the_other_lane = _take_needs_more_than_sql_marker(body)
             # The refuse half of #729, on every exit: a number no disclosed read carries does not
-            # ship. Bounded lanes only — a shell lane computes numbers its reads never handed it.
+            # ship, and only its sentence goes (#747). Bounded lanes only — a shell lane computes
+            # numbers its reads never handed it.
             if (answer_only or artifact_token is not None) and (
                     unbacked := self._unbacked_numbers(thread_id, body, prompt)):
-                log.warning("chat: %d stated number(s) carried by no disclosed read; the answer "
-                            "was replaced by what was read", len(unbacked))
-                body = self._numbers_refused(thread_id)
+                log.warning("chat: %d stated number(s) carried by no disclosed read; their "
+                            "sentences were left out", len(unbacked))
+                body = self._numbers_left_out(thread_id, body, prompt)
             # A tool's refusal, or any other word about Sage's plumbing, is not the answer (#733).
             # Dropping one still owes the final text event: it replaces the streamed prose.
             said = unnarrated(body, prompt)

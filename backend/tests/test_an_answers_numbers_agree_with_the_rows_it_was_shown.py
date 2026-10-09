@@ -8,7 +8,9 @@ row carries a total. Held here:
 
 - a turn whose reads were all disclosed is checked too;
 - a figure stated in millions is never matched against a whole count;
-- a total, a group's total and a share of the total, worked from the disclosed rows, are carried.
+- a total, a group's total and a share of the total, worked from the disclosed rows, are carried;
+- a number that still disagrees after the one correction costs only its own sentence: the rest of
+  the answer ships, with one line saying a figure was left out and the table has the figures.
 
 The rows are a reconstruction: the ticket gives the totals ($31.99M, 103 deals, 66 with no amount,
 FSI $10.0M, Life Sciences $14.0M, FSI $4.85M across its first three stages), not the rows.
@@ -18,7 +20,7 @@ from __future__ import annotations
 
 import re
 
-from sage.liveread.held import HeldRead, unsupported_numbers
+from sage.liveread.held import HeldRead, unsupported_numbers, without_unsupported
 from sage.resources.provider import StatementRows
 from sage.workspace.threads import ThreadStore
 
@@ -102,6 +104,39 @@ def test_a_figure_already_in_millions_is_stated_in_millions():
     assert unsupported_numbers("$9.0M in all, $4M on average.", [calculated], "") == []
 
 
+# --- leaving out what does not match ------------------------------------------------------------
+
+def test_only_the_sentences_that_disagree_are_left_out():
+    said = ("Here is open pipeline by stage and team. FSI holds $9.0M across its early stages. "
+            "Life Sciences leads with $14.0M.\n"
+            "- 115 deals lack pricing.\n"
+            "- Open pipeline is $31.99M across 103 deals.")
+    kept, removed = without_unsupported(said, [_read()], QUESTION)
+    assert removed
+    assert kept == ("Here is open pipeline by stage and team. Life Sciences leads with $14.0M.\n"
+                    "- Open pipeline is $31.99M across 103 deals.")
+
+
+def test_an_answer_whose_numbers_all_agree_is_left_as_written():
+    assert without_unsupported(RIGHT, [_read()], QUESTION) == (RIGHT, False)
+
+
+def test_a_figure_ending_a_sentence_ends_only_that_sentence():
+    """`$4.85M.` closes a sentence; the decimal inside it does not, and neither does the `M`."""
+    said = "FSI's first three stages hold $4.85M. Life Sciences leads with $14.0M."
+    assert without_unsupported(said, [_read()], QUESTION) == (
+        "Life Sciences leads with $14.0M.", True)
+
+
+def test_an_abbreviation_does_not_end_a_sentence():
+    said = "Some stages are thin, e.g. Negotiation holds $1.5M. FSI holds $10.0M."
+    assert without_unsupported(said, [_read()], QUESTION) == ("FSI holds $10.0M.", True)
+
+
+def test_when_every_sentence_disagrees_nothing_is_left():
+    assert without_unsupported(WRONG, [_read()], QUESTION) == ("", True)
+
+
 # --- the turn ---------------------------------------------------------------------------------------
 
 class _Store(Warehouse):
@@ -113,16 +148,17 @@ class _ReadingOpenCode(FakeOpenCode):
     """Runs prompt 1's statement on the turn's first prompt, as a model relaying its token would."""
 
     orch = None
+    sql = SQL
 
     def send_prompt(self, session_id, text, model=None, agent=None, attachments=None, chat=False):
         m = re.search(r"Read token: (lrt_[A-Za-z0-9_-]+)", text)
         if m and self.orch is not None:
-            _call(self.orch, "live_read_query", {"token": m.group(1), "source": SOURCE, "sql": SQL,
+            _call(self.orch, "live_read_query", {"token": m.group(1), "source": SOURCE, "sql": self.sql,
                                                  "title": "Pipeline by stage and team"})
         return super().send_prompt(session_id, text, model, agent, attachments, chat)
 
 
-def _answer(tmp_path, answers: list[str]):
+def _answer(tmp_path, answers: list[str], sql: str = SQL):
     from sage.orchestrator.service import Orchestrator
 
     template = tmp_path / "template"
@@ -131,6 +167,7 @@ def _answer(tmp_path, answers: list[str]):
     (template / "package.json").write_text("{}")
     ws = tmp_path / "mnt" / "code"
     oc = _ReadingOpenCode(ws, [Turn(text=a) for a in answers])
+    oc.sql = sql
     orch = Orchestrator(workspace_dir=ws, template=template,
                         gateway=IntentGateway({"label": "data_answer", "confidence": 0.92}),
                         catalog=_catalog(), project_id="Sage", feedback=OkFeedback(),
@@ -161,13 +198,42 @@ def test_prose_that_disagrees_with_the_shown_rows_is_corrected(tmp_path):
     assert next(e for e in events if e.get("type") == "done")["ok"] is True
 
 
-def test_prose_that_still_disagrees_after_the_correction_is_left_out(tmp_path):
-    _oc, _events, shown, saved = _answer(tmp_path, [WRONG, "FSI holds $9.0M; 115 lack pricing."])
+NOTE = "didn't match the rows I read"
+
+
+def test_prose_that_still_disagrees_after_the_correction_loses_only_those_sentences(tmp_path):
+    still = "Life Sciences leads with $14.0M. FSI holds $9.0M; 115 lack pricing."
+    _oc, _events, shown, saved = _answer(tmp_path, [WRONG, still])
 
     assert shown == saved
+    assert shown.startswith("Life Sciences leads with $14.0M.\n\n")
     assert "9.0M" not in shown and "115" not in shown
-    assert "wasn't given the values" not in shown
-    assert "Pipeline by stage and team" in shown and "20 rows" in shown
+    assert NOTE in shown and "table has the figures" in shown
+    assert "wasn't given" not in shown
+    assert len(shown.splitlines()) == 3, "the answer kept, a blank line, and one line of note"
+
+
+def test_an_answer_with_every_figure_left_out_still_shows_the_note(tmp_path):
+    _oc, _events, shown, saved = _answer(tmp_path, [WRONG, WRONG])
+
+    assert shown == saved
+    assert NOTE in shown and "table has the figures" in shown
+    assert "9.0M" not in shown and "18M" not in shown and "115" not in shown
+
+
+# The statement a withheld read takes: stored values, no aggregate (ADR-0058).
+WITHHELD_SQL = "SELECT STAGE, TEAM, AMOUNT FROM DWH.MARTS.OPEN_DEALS"
+
+
+def test_a_withheld_turn_loses_only_its_invented_sentences_too(tmp_path):
+    """#729's path, the same way: what the model may say about a structure-only read stays."""
+    said = "The pipeline read has 20 rows by stage and team. FSI holds $9.0M."
+    _oc, _events, shown, saved = _answer(tmp_path, [said, said], sql=WITHHELD_SQL)
+
+    assert shown == saved
+    assert shown.startswith("The pipeline read has 20 rows by stage and team.\n\n")
+    assert "9.0M" not in shown
+    assert "wasn't given the values" in shown and "20 rows" in shown
 
 
 def test_prose_that_agrees_with_the_shown_rows_passes_untouched(tmp_path):

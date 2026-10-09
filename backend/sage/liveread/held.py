@@ -179,6 +179,50 @@ def unsupported_numbers(text: str, reads: list[HeldRead], prompt: str) -> list[s
     return [stated.said for stated in _claims(text, prompt) if not _matches(stated, carried)]
 
 
+# Where a sentence may end: its stop, any closing bracket or quote, then space. A decimal point has
+# no space after it, so `$4.85M.` ends once.
+_STOP = re.compile(r"[.!?]+[\"')\]]*\s+")
+# Words whose stop is not a sentence's end.
+_ABBREVIATIONS = frozenset({"e.g.", "i.e.", "vs.", "etc.", "approx.", "incl.", "inc.", "ltd.",
+                            "corp.", "co.", "no."})
+# What opens a line without being part of its first sentence: a bullet, a number, a heading, a quote.
+_MARKER = re.compile(r"^(\s*(?:[-*+]|\d+[.)]|#{1,6}|>)\s+)?(.*)$", re.DOTALL)
+
+
+def _sentences(line: str) -> list[str]:
+    out, start = [], 0
+    for m in _STOP.finditer(line):
+        word = line[:m.start() + 1].rsplit(None, 1)[-1].lower().lstrip("(\"'")
+        if word in _ABBREVIATIONS:
+            continue
+        out.append(line[start:m.end()])
+        start = m.end()
+    if start < len(line):
+        out.append(line[start:])
+    return out
+
+
+def without_unsupported(text: str, reads: list[HeldRead], prompt: str) -> tuple[str, bool]:
+    """`text` without the sentences that state a number no read carries, and whether any went (#747).
+
+    Only the sentence goes: one figure that does not match must not cost the person every line
+    around it. A line left with no sentence goes with its bullet; a table row is one sentence.
+    """
+    kept_lines, removed = [], False
+    for line in text.split("\n"):
+        marker, body = _MARKER.match(line).groups()
+        kept = [s for s in _sentences(body) if not unsupported_numbers(s, reads, prompt)]
+        if len(kept) == len(_sentences(body)):
+            kept_lines.append(line)
+            continue
+        removed = True
+        if kept:
+            kept_lines.append((marker or "") + "".join(kept).rstrip())
+    if not removed:
+        return text, False
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip(), removed
+
+
 def _claims(text: str, prompt: str) -> list[_Stated]:
     """The numbers `text` states about data: not a plain year, and not one the person typed."""
     asked = {s.value * s.scale for s in _stated(prompt)}
