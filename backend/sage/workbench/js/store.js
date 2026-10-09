@@ -3633,7 +3633,8 @@ window.SW = window.SW || {};
       } else if (ev.type === 'queries-restored' && ev.message) {
         // Plain, like the line above: Sage already put the queries back, so the turn did not fail.
         ensureAssistant().blocks.push({ type: 'status', value: ev.message });
-      } else if ((ev.type === 'plan-unbuilt' || ev.type === 'skill-copy-drift') && ev.message) {
+      } else if ((ev.type === 'plan-unbuilt' || ev.type === 'skill-copy-drift'
+                  || ev.type === 'shared-query-changed') && ev.message) {
         // Amber like an unverified build: the turn finished, and what it left out of the plan is
         // a gap to read, not a failure of the turn.
         ensureAssistant().blocks.push({ type: 'status', ok: null, warn: true, value: ev.message });

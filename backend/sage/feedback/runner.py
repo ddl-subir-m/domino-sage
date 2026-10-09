@@ -775,6 +775,45 @@ def restore_removed_queries(workspace: Path, before: str | None) -> list[str]:
     return list(back)
 
 
+def query_readers(workspace: Path) -> dict[str, list[str]]:
+    """Each literal query name the app's running scripts call, and the files that call it (#745)."""
+    readers: dict[str, set[str]] = {}
+    for rel, _, name in _query_calls(workspace):
+        readers.setdefault(name, set()).add(rel)
+    return {name: sorted(files) for name, files in readers.items()}
+
+
+@dataclass(frozen=True)
+class SharedQueryEdit:
+    name: str
+    readers: list[str]
+    before: dict
+
+
+def changed_shared_queries(workspace: Path, before: str | None,
+                           readers: dict[str, list[str]]) -> list[SharedQueryEdit]:
+    """Each query whose `.sage/queries.json` entry differs from `before` (the catalog's text when the
+    turn began) and that a running script called then (`readers`, `query_readers` then) (#745).
+
+    The catalog is one file every screen reads, so a follow-up about one screen that rewrites a query
+    another screen reads changes that screen too. A query the turn added or removed, or one no script
+    called when the turn began, is the turn's own. A catalog this cannot read names nothing."""
+    prior = _catalog_entries(before) if before else None
+    path = workspace / QUERIES
+    current = _catalog_entries(path.read_text(errors="ignore")) if path.is_file() else None
+    if not prior or not current:
+        return []
+    was: dict[str, object] = {}
+    for entry in prior:
+        was.setdefault(_entry_name(entry), entry)
+    edits: dict[str, SharedQueryEdit] = {}
+    for entry in current:
+        name = _entry_name(entry)
+        if name and name not in edits and readers.get(name) and name in was and entry != was[name]:
+            edits[name] = SharedQueryEdit(name, readers[name], was[name])
+    return list(edits.values())
+
+
 def _python() -> str:
     import sys
     return sys.executable
