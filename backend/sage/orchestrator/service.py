@@ -6983,10 +6983,13 @@ def _counted(n: int, noun: str) -> str:
 def _page_review_block(plan_md: str, screens: list[dict], code: str) -> str:
     """The plan's Screens, then what each screen showed when the page check opened it (#750).
 
-    A screen's text goes in only where `code`, the app's own code, spells it: a heading, a label,
-    an empty or error message. Everything else on a page came from data, and a row reaches a
-    model only by the person's consent (ADR-0041), never by a review.
+    A screen's text and its label go in only where `code`, the app's own code, spells them: a
+    heading, a label, an empty or error message. Everything else on a page came from data, and a
+    row reaches a model only by the person's consent (ADR-0041), never by a review.
     """
+    def spelled(text: str) -> bool:
+        return bool(re.search(r"[^\W\d_]", text)) and text in code
+
     named = plan_doc.parse_sections(plan_md)["sections"]["screens"]
     out = ("\n\nScreens the plan names:\n" + "\n".join(
         f"- {s['name']} — {s['detail']}" if s["detail"] else f"- {s['name']}" for s in named)
@@ -6995,12 +6998,11 @@ def _page_review_block(plan_md: str, screens: list[dict], code: str) -> str:
         return out + ("\n\nThe running app's screens were not opened this time: judge only from "
                       "the code.")
     shown = "\n".join(
-        f"Screen \"{s.get('screen') or 'first screen'}\""
+        (f"Screen \"{s['screen']}\"" if spelled(str(s.get("screen") or "")) else "A screen")
         + (" (still loading when read)" if s.get("loading") else "")
         + f": {_counted(int(s.get('charts') or 0), 'chart')}, "
           f"{_counted(int(s.get('tables') or 0), 'table')}\n"
-        + " · ".join(t for t in s.get("texts") or []
-                     if re.search(r"[^\W\d_]", t) and t in code)
+        + " · ".join(t for t in s.get("texts") or [] if spelled(t))
         for s in screens)
     return out + ("\n\nWhat each screen showed when Sage opened the running app: the charts and "
                   "tables it drew, and the text on it that the app's code spells (values from "

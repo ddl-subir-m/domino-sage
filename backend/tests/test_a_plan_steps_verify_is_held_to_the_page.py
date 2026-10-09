@@ -171,11 +171,14 @@ def test_no_value_from_the_apps_data_reaches_the_review(tmp_path, monkeypatch):
     """Only text the app's code spells goes to the model; a row goes only by the person's consent
     (ADR-0041). Plant: send every text piece and the rows show up."""
     gateway = Answers({"unmet": []})
-    _approve(tmp_path, monkeypatch, gateway)
+    by_account = {"screen": "Acme Corp", "charts": 1, "tables": 0, "loading": False,
+                  "texts": ["Acme Corp", "Deal page"]}
+    _approve(tmp_path, monkeypatch, gateway, screens=[*SCREENS, by_account])
 
     text = _payload(gateway.reviews[0])
-    for row in ("Jobs", "+5.8%", "Experiments", "Johnson & Johnson", "$12.4M"):
+    for row in ("Jobs", "+5.8%", "Experiments", "Johnson & Johnson", "$12.4M", "Acme Corp"):
         assert row not in text
+    assert "A screen: 1 chart, 0 tables\nDeal page" in text
 
 
 def test_the_review_is_allowed_to_judge_the_page_it_is_shown():
