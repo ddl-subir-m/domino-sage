@@ -239,6 +239,8 @@ progress limits themselves stay unchanged.
 build's result appears when you select that app. Per-app previews are now *possible* (#67 closed,
 Built Apps have their own directories) and are deliberately not in scope: building one grows this
 from "run turns at once" into "run apps at once". If it becomes a complaint it is its own issue.
+(Since superseded: each open app keeps its own preview, and #739 bounds them — at most three run,
+and an idle one is stopped. ADR-0008 holds the rule.)
 
 ## Stop's referent
 
