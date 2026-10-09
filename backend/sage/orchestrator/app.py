@@ -5392,8 +5392,9 @@ def _preview_read_context(validation_id: str, path: str, query: str, kind: str):
     return orchestrator.capture_preview_read(validation_id, path, query, kind)
 
 
-def _preview_platform_read(status: int | None, path: str, *, context=None, body=None) -> None:
-    orchestrator.record_platform_read_failure(status, path, context=context, body=body)
+def _preview_platform_read(status: int | None, path: str, *, context=None, body=None,
+                           sent=None) -> None:
+    orchestrator.record_platform_read_failure(status, path, context=context, body=body, sent=sent)
 
 
 # The previewed app's own model calls (#7). A published app calls the gateway straight from the

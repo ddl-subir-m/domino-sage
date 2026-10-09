@@ -506,11 +506,13 @@ class ViteSupervisor:
             with self._state_lock:
                 if proc is not self._proc:
                     break
-                self._tail.append(line.rstrip()[:1000])
                 if line.startswith(_QUERY_READ):
-                    # Before the fault match below: a refusal's sentence is the app's to word.
-                    self._record_query_read(line[len(_QUERY_READ):])
+                    # Before the fault match below: a refusal's sentence is the app's to word. The
+                    # body it was sent goes to the repair only, not to the output pane (#735).
+                    shown = self._record_query_read(line[len(_QUERY_READ):])
+                    self._tail.append((_QUERY_READ + shown if shown else line.rstrip())[:1000])
                     continue
+                self._tail.append(line.rstrip()[:1000])
                 if self._READY_LINE and ("Reloading..." in line or "Shutting down" in line):
                     self._begin_generation()
                 # A failed reload child leaves the parent watching. Keep the final exception.
@@ -566,21 +568,28 @@ class ViteSupervisor:
                         self._last_error = f"Could not restart {self._NAME}: {exc}"
                         self._settled.set()
 
-    def _record_query_read(self, payload: str) -> None:
-        """One `PREVIEW_READ` line, kept only in the shape `answer()` prints. Called holding the lock."""
+    def _record_query_read(self, payload: str) -> str | None:
+        """One `PREVIEW_READ` line, kept only in the shape `answer()` prints. Called holding the lock.
+
+        Returns the line as the output pane shows it, without the body it was sent; None when the
+        line is not in that shape."""
         try:
             read = json.loads(payload)
         except ValueError:
-            return
+            return None
         if (not isinstance(read, dict) or not isinstance(read.get("name"), str)
                 or not isinstance(read.get("status"), int)):
-            return
+            return None
         kept = {"name": read["name"][:200], "status": read["status"]}
         if isinstance(read.get("error"), str):
             kept["error"] = read["error"][:1000]
         if read.get("empty") is True:
             kept["empty"] = True
+        shown = json.dumps(kept)
+        if isinstance(read.get("sent"), str):
+            kept["sent"] = read["sent"][:1000]
         self._query_reads.append({**kept, "generation": f"{self._instance}:{self._generation}"})
+        return shown
 
     def _kill(self) -> None:
         with self._state_lock:

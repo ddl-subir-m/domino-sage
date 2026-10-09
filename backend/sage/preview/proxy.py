@@ -338,11 +338,13 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                                     read_path, request.url.query, kind)
                    if kind and get_read_context is not None else None)
         observer = on_platform_read if kind and (context is not None or get_read_context is None) else None
+        # What the page asked a query for, so a repair reads the request as it was sent (#735).
+        sent = await request.body() if observer is not None and kind == "query" else None
 
         def observed(response):
             if observer is not None:
                 observer(response.status_code, read_request(read_path, kind=kind)["path"],
-                         context=context, body=getattr(response, "body", None))
+                         context=context, body=getattr(response, "body", None), sent=sent)
             return response
 
         # The app's own named queries, before Vite gets a chance to 404 them (#24). Vite serves the
@@ -404,10 +406,12 @@ def make_preview_app(get_upstream: Callable[[], str], base_prefix: str = "",
                     yield chunk
                 if observer is not None:
                     observer(upstream.status_code, read_request(read_path, kind=kind)["path"],
-                             context=context, body=bytes(sampled) if sampled is not None else None)
+                             context=context, body=bytes(sampled) if sampled is not None else None,
+                             sent=sent)
             except (httpx.HTTPError, OSError):
                 if observer is not None:
-                    observer(None, read_request(read_path, kind=kind)["path"], context=context)
+                    observer(None, read_request(read_path, kind=kind)["path"], context=context,
+                             sent=sent)
                 raise
             finally:
                 await upstream.aclose()

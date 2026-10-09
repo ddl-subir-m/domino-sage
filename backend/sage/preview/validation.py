@@ -23,6 +23,9 @@ class PageValidation:
     data_reads: list[dict] = field(default_factory=list)
     reads_truncated: bool = False
     query_failures: dict[str, str] = field(default_factory=dict)
+    # What a failed query was sent and what it answered, by name, for the repair only (#735): it
+    # holds request values, so it never joins `data_reads` or the summary.
+    query_requests: dict[str, dict] = field(default_factory=dict)
     queries_declared: bool = False
     reason: str = ''
 
