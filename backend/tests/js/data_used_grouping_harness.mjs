@@ -141,6 +141,7 @@ console.log(JSON.stringify({
   // plausible ids — only the card count would red, and it would red with a misleading message.
   // Without the fallback the ids come back `[[null]]` and name the actual breakage.
   operations: blocks.map((b) => (b.events || []).map((e) => e && e.operation_id)),
+  events: blocks.map((b) => b.events),
   rendered: blocks.map(draw),
   typing: SW.store.get().typing,
 }));

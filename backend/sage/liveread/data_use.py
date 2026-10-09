@@ -125,6 +125,7 @@ class DataUse:
 
     def restore(self, history, persist):
         """Reopen metadata after a restart. Saved Artifacts default to structure, never values."""
+        history = fold_requests(history)
         latest = {event["operation_id"]: event for row in history for event in row.get("dataUsed", [])
                   if event.get("operation_id")}
         with self.lock:
@@ -497,12 +498,18 @@ class DataUse:
                     "failure": None, "state": "attempted"}
 
         def save():
+            # One row naming the operations, never each whole event: a Build carries every Chat
+            # read, and re-saving them grew history as reads x requests x list length (#731).
             with self.lock:
-                for oid in used:
+                rows = {}
+                for oid in sorted(used):
                     event, _, persist = self.operations[oid]
                     event["requests"] = [r for r in event["requests"] if r["request_id"] != request_id]
                     event["requests"].append(copy.deepcopy(evidence))
-                    persist({"type": "data_used", "dataUsed": [copy.deepcopy(event)]})
+                    rows.setdefault(id(persist), (persist, []))[1].append(oid)
+                for persist, oids in rows.values():
+                    persist({"type": REQUEST_ROW, "operations": oids,
+                             "request": copy.deepcopy(evidence)})
 
         save()
         buffer = ""
@@ -551,6 +558,51 @@ class DataUse:
 # `test_a_working_read_is_folded_out_of_the_answer`, which reads both files.
 FELL_SHORT = ("excluded", "failed", "unfinished")
 DID_NOT_SETTLE = ("interrupted",)
+
+# A model request's evidence for the operations it carried, appended by `observe`. `store.js`'s
+# `putDataUseRequest` folds it for the Data used panel the way `fold_requests` does here.
+REQUEST_ROW = "data_used_request"
+
+
+def fold_requests(history):
+    """History with every request row folded into the `dataUsed` events it names, and dropped.
+
+    Each operation's `requests` comes out as the in-memory event held it: a whole event resets the
+    list, and a request replaces any entry with its `request_id` and moves to the end.
+    """
+    requests: dict[str, dict] = {}
+    touched = set()
+    for row in history or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("type") == REQUEST_ROW:
+            request = row.get("request")
+            if not isinstance(request, dict):
+                continue
+            for oid in row.get("operations") or []:
+                kept = requests.setdefault(oid, {})
+                kept.pop(request.get("request_id"), None)
+                kept[request.get("request_id")] = request
+                touched.add(oid)
+            continue
+        events = row.get("dataUsed")
+        for event in events if isinstance(events, list) else []:
+            if isinstance(event, dict) and event.get("operation_id"):
+                requests[event["operation_id"]] = {
+                    r.get("request_id"): r for r in event.get("requests") or []
+                    if isinstance(r, dict)}
+    out = []
+    for row in history or []:
+        if isinstance(row, dict) and row.get("type") == REQUEST_ROW:
+            continue
+        events = row.get("dataUsed") if isinstance(row, dict) else None
+        if isinstance(events, list) and touched:
+            row = {**row, "dataUsed": [
+                {**event, "requests": list(requests[event["operation_id"]].values())}
+                if isinstance(event, dict) and event.get("operation_id") in touched else event
+                for event in events]}
+        out.append(row)
+    return out
 
 
 def fell_short(event: dict) -> bool:

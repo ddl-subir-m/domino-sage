@@ -18,6 +18,7 @@ from pathlib import Path
 from .. import degraded
 from ..gateway.capabilities import RouteCapability, legacy
 from ..gateway.client import CostLabels, GatewayClient
+from ..liveread.data_use import fold_requests
 from ..resources.bindings import (
     KIND_DATA_SOURCE,
     KIND_DATASET,
@@ -443,7 +444,7 @@ def data_use_summaries(history: list[dict]) -> list[str]:
     """
     found: dict[str, dict] = {}
     order: list[str] = []
-    for row in history or []:
+    for row in fold_requests(history):
         if not isinstance(row, dict):
             continue
         for event in _row_data_used(row):
@@ -502,14 +503,14 @@ def data_reads_by_source(history: list[dict]) -> list[dict]:
     twelve column names into each line; the next Chat turn needs to know a source has been read
     and where to look, not what the read selected.
 
-    Deduped on `operation_id` before anything is counted. An event is re-persisted every time a
-    model call touches it — `DataUse.observe` saves the same operation again with fresh request
-    evidence — so one read appears in many rows, and counting rows would count a turn's model
-    calls as reads.
+    Deduped on `operation_id` before anything is counted. An event is persisted again on its
+    turn's `done` row, and a transcript written before #731 re-persisted it on every model call
+    that touched it, so one read appears in many rows and counting rows would count copies as
+    reads.
 
     Turns are counted on `turn_id`, which `DataUse.record` stamps onto every event it writes. It
     is the only field that says which turn a read belongs to; a row is not a turn, since one turn
-    persists a `data_used` row per operation and then again per model call.
+    persists a `data_used` row per operation and then the operations again on `done`.
 
     Recency is the position of the READ, not of its last re-persist, so a source is as recent as
     when it was last looked at rather than as when it was last sent to a model.
