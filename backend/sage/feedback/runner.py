@@ -431,15 +431,86 @@ def _not_an_object(code: str, value: str) -> bool:
     return bool(_NOT_AN_OBJECT_RE.match(value))
 
 
+def _object_entries(code: str, start: int) -> list[tuple[int, int]]:
+    """The `(begin, stop)` of each top-level entry of the object literal opening at `code[start]`."""
+    entries, depth, begin = [], 0, start + 1
+    for k in range(start + 1, len(code)):
+        if code[k] in "{[(":
+            depth += 1
+        elif code[k] in "}])" and depth:
+            depth -= 1
+        elif code[k] in ",}" and not depth:
+            entries.append((begin, k))
+            begin = k + 1
+            if code[k] == "}":
+                break
+    return entries
+
+
+# The helper's own list: `var TYPES = { string: true, ... }` or `new Set(["string", ...])`.
+_HELPER_TYPES_RE = re.compile(r"\bTYPES\s*=\s*(?:\{([^}]*)\}|new\s+Set\s*\(\s*\[([^\]]*)\])")
+
+
+def _helper_types(workspace: Path) -> list[str] | None:
+    """The field types the app's `static/sage/viewState.js` accepts, read from the helper itself so
+    the check cannot drift from the code that throws; None when this app has no helper to read."""
+    helper = workspace / FASTAPI_ANTD.view_state
+    m = _HELPER_TYPES_RE.search(helper.read_text(errors="ignore")) if helper.is_file() else None
+    if not m:
+        return None
+    names = (re.findall(r"""["']?([A-Za-z_$][\w$]*)["']?\s*:""", m[1]) if m[1] is not None
+             else re.findall(r"""["'](\w+)["']""", m[2]))
+    return names or None
+
+
+def _listed(types: list[str] | None) -> str:
+    return ", ".join(types) if types else "the types listed at the top of static/sage/viewState.js"
+
+
+def _field_problem(code: str, source: str, at: int, value: str, types: list[str] | None) -> str | None:
+    """What the helper throws on in the field `value` at `code[at]`, or that an enum lists no
+    `values`. Only an object this file shows — written there or a `const` bound to one — whose
+    `type` is a string literal; a spread or a computed type is not guessed at."""
+    if _IDENT_RE.fullmatch(value):
+        at = _bound_value(code, value) or at
+    if code[at:at + 1] != "{":
+        return None
+    props: dict[str, str] = {}
+    for begin, stop in _object_entries(code, at):
+        key = _VIEW_FIELD_KEY_RE.match(code, begin, stop)
+        if not key:
+            if code[begin:stop].strip():  # a spread, a shorthand or a computed key: not shown here
+                return None
+            continue
+        prop = re.sub(r"\s*:\s*$", "", source[begin:key.end()]).strip().strip("'\"")
+        props[prop] = source[key.end():stop].strip()
+    if "type" not in props:
+        return f"names no type, and the helper throws: it accepts {_listed(types)}"
+    literal = re.fullmatch(r"""(["'`])(\w*)\1""", props["type"])
+    if not literal:
+        return None
+    kind = literal[2]
+    if types is not None and kind not in types:
+        return f"has type '{kind}', and the helper throws: it accepts only {_listed(types)}"
+    if kind == "enum" and "values" not in props:
+        return "is an enum with no values, so it never accepts one: list them as values: [...]"
+    if kind == "string" and props.get("shareable") == "true" and "pattern" not in props:
+        return "is a shareable string with no pattern, and the helper throws: free text never goes in the URL"
+    return None
+
+
 def _untyped_view_fields(workspace: Path, js: Path) -> list[FeedbackError]:
-    """A `useViewState` field whose value is not an object (#706). `static/sage/viewState.js` wants
-    each field to name its type and throws on the first render at a bare default, and every file
-    still parses. Only a schema this file shows is read — written in the call, or a `const` object
-    here passed by name. One from anywhere else is another file's, and is not guessed at."""
+    """A `useViewState` field `static/sage/viewState.js` throws on at the first render, while every
+    file still parses: a value that is not an object (#706), a type the helper does not accept, a
+    shareable string with no pattern, the reserved key `v` (#722) — and an enum with no `values`,
+    which the helper does not throw on but which never accepts a value. Only a schema this file
+    shows is read — written in the call, or a `const` object here passed by name. One from anywhere
+    else is another file's, and is not guessed at."""
     source = js.read_text(errors="ignore")
     if "useViewState" not in source:
         return []
     code = _blank_text(source)
+    types = _helper_types(workspace)
     errors = []
     for call in _VIEW_STATE_CALL_RE.finditer(code):
         start: int | None = call.end()
@@ -448,35 +519,32 @@ def _untyped_view_fields(workspace: Path, js: Path) -> list[FeedbackError]:
             start = _bound_value(code, name[0])
         if start is None or code[start:start + 1] != "{":
             continue
-        entries, depth, begin = [], 0, start + 1
-        for k in range(start + 1, len(code)):
-            if code[k] in "{[(":
-                depth += 1
-            elif code[k] in "}])" and depth:
-                depth -= 1
-            elif code[k] in ",}" and not depth:
-                entries.append((begin, k))
-                begin = k + 1
-                if code[k] == "}":
-                    break
-        for begin, stop in entries:
+        for begin, stop in _object_entries(code, start):
             key = _VIEW_FIELD_KEY_RE.match(code, begin, stop)
             value = code[key.end():stop].rstrip() if key else ""
-            if not value or not _not_an_object(code, value):
+            if not value:
                 continue
             lead = begin + len(code[begin:stop]) - len(code[begin:stop].lstrip())
             field = re.sub(r"\s*:\s*$", "", source[lead:key.end()]).strip("'\"")
-            shown = source[key.end():key.end() + len(value)]
+            if _not_an_object(code, value):
+                shown = source[key.end():key.end() + len(value)]
+                message = (f"useViewState field '{field}' is {shown[:40]}, but static/sage/viewState.js "
+                           f"needs each field to be an object naming its type, and the app crashes on "
+                           f"its first render without one. Write it as {field}: {{ type: \"enum\", "
+                           f"values: [...], default: ..., shareable: true }} or {field}: {{ type: "
+                           f"\"string\", default: \"\" }}. Types are {_listed(types)}; a shareable "
+                           f"string also needs a pattern.")
+            elif field == "v":
+                message = ("useViewState field 'v' is reserved: static/sage/viewState.js keeps the URL's "
+                           "version there and throws on the app's first render. Rename the field.")
+            elif problem := _field_problem(code, source, key.end(), value, types):
+                message = (f"useViewState field '{field}' {problem}. The schema each type needs is "
+                           f"at the top of static/sage/viewState.js.")
+            else:
+                continue
             errors.append(FeedbackError(
                 file=js.relative_to(workspace).as_posix(), line=source.count("\n", 0, lead) + 1,
-                col=1, code="SAGE004",
-                message=(f"useViewState field '{field}' is {shown[:40]}, but static/sage/viewState.js "
-                         f"needs each field to be an object naming its type, and the app crashes on "
-                         f"its first render without one. Write it as {field}: {{ type: \"enum\", "
-                         f"values: [...], default: ..., shareable: true }} or {field}: {{ type: "
-                         f"\"string\", default: \"\" }}. Types are string, integer, boolean and "
-                         f"enum; a shareable string also needs a pattern."),
-            ))
+                col=1, code="SAGE004", message=message))
     return errors
 
 
