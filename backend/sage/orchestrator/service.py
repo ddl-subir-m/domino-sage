@@ -658,6 +658,8 @@ def _rules_naming(template: Path | None, message: str) -> list[str]:
     rules = list(dict.fromkeys(line.strip()[:EVIDENCE_LIMIT] for line in text.splitlines()
                                if named.search(line)))
     return rules[:3]
+
+
 # Published-app deploy status -> terminal phase. Matched case-insensitively; anything else means
 # the deploy is still in progress.
 _RUNNING_STATES = frozenset({"running"})

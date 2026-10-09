@@ -99,9 +99,13 @@ def test_the_supervisor_keeps_what_answer_was_sent(tmp_path):
              '[sage] query-read {"name": "b", "status": 400, "error": "e", "sent": 7}\n']
     with _read(sup, lines, hang=True):
         a, b = sup.query_reads()
+        shown = sup.recent_output()
     assert a == {"name": "a", "status": 400, "error": NEEDS, "sent": "y" * EVIDENCE_LIMIT,
                  "generation": generation}
     assert "sent" not in b
+    # The request's values go to the repair only, not to the server output pane.
+    assert shown[0] == '[sage] query-read ' + json.dumps({"name": "a", "status": 400, "error": NEEDS})
+    assert not any("sent" in line for line in shown)
 
 
 # ---- the proxy hands over the body the page sent ---------------------------------------------------
