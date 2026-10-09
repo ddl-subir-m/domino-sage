@@ -229,6 +229,18 @@ Build the user's app by editing its screens under `static/components/`, the file
   print 10 or 11 digits in a row, including digits after a decimal point, and the gateway's PII
   rule treats that shape as a phone number. Use `round()`, `to_string(float_format=...)`, or build
   a small summary dict with fixed precision instead of printing a frame slice.
+- **A section whose data is missing shows its empty or error state, never invented content.** Every
+  section, whatever feeds it: a query, a platform read, a route in `app.py`, a model, an MCP server,
+  an outside API, an attached file. When its source did not answer, the section says what the app
+  could not reach; when the read succeeded with nothing in it, the section says it is empty. Never
+  stand in sample, mock, placeholder or "realistic" generated records, a link on `example.com` or
+  any other host reserved for examples, or a hard-coded rule presented as the system the request
+  named. Invented content looks finished and is wrong; an honest empty or error state is right.
+- **A screen opens on a valid default selection.** Its defaults (dates, periods, a selected record,
+  filters) are what its first load runs, so they must pass its own validation and make its read:
+  periods that must not overlap default to periods that do not, and a screen that needs a record
+  opens with one selected. Take them from the request's words — "the last 7 complete days against
+  the 28 days before" puts the current period 7 days back and ends the reference the day before it.
 - **Plain scripts, no modules.** There is no bundler: `static/app.js` runs as a `<script>`, so
   there is no `import`, no `export`, and no JSX. Build elements with `React.createElement` —
   alias it to `h` at the top of each file — and share code between files through `window.app`.

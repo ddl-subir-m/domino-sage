@@ -2903,6 +2903,7 @@ window.SW = window.SW || {};
   // `continue unavailable` is here because the refusal is about the record — a newer turn, a
   // moved plan, a model this person may not run — and nothing was asked of the gateway.
   const NO_PLATFORM_FAULT = { 'no app described': true, 'queries failed': true,
+                              'app route failed': true,
                               'table generation failed': true, 'empty answer': true,
                               'stale question': true, timeout: true,
                               pre_edit_limit: true, 'continue unavailable': true };

@@ -24988,6 +24988,10 @@ class Orchestrator:
                 if store_clients:
                     yield persist({"type": "data-source-failed",
                                    "message": direct_store_notice(store_clients)})
+                routes_notice = (self._route_failures_notice(project)
+                                 if report.ok and (owns_turn or validate_page) else "")
+                if routes_notice:
+                    yield persist({"type": "data-source-failed", "message": routes_notice})
                 # A build that cannot read its data has not finished cleanly, so it does not say it
                 # has. What does NOT change is anything below this line: the code was written and it
                 # typechecks, and a store that was down for ten seconds must not cost the creator
@@ -24995,7 +24999,7 @@ class Orchestrator:
                 # ADR-0010 rules out.
                 refused = self._fresh_platform_read_failure(project, since=send_ts) if report.ok else None
                 queries_failed = bool(failed or catalog_faults or unread or store_clients)
-                if verification is not None and (queries_failed or refused):
+                if verification is not None and (queries_failed or refused or routes_notice):
                     verification["stages"]["data"] = "failed"
                     verification["overall"] = "failed"
                 if verification is not None and failed:
@@ -25004,11 +25008,12 @@ class Orchestrator:
                 if verification is not None:
                     project.evidence_recorder.verification(verification)
                 yield persist({"type": "done", "ok": (report.ok and not queries_failed
-                                                      and rt is None
+                                                      and rt is None and not routes_notice
                                                       and refused is None and not unbuilt),
                                "decision": ("queries failed" if queries_failed
                                             else "runtime failed" if rt
                                             else "platform read failed" if refused
+                                            else "app route failed" if routes_notice
                                             else f"incomplete — plan {_listed_steps(unbuilt)} not built"
                                             if unbuilt else decision.reason),
                                **({"verification": verification} if verification is not None else {})})
@@ -25947,7 +25952,8 @@ class Orchestrator:
                     return True
                 if outcome is not None:
                     reason = str(outcome.get("decision") or reason)
-                    if reason in {"pre_edit_limit", "context_limit", "platform read failed", "queries failed"}:
+                    if reason in {"pre_edit_limit", "context_limit", "platform read failed",
+                                  "queries failed", "app route failed"}:
                         # Data validation already used its allowed repair. A phase retry must not
                         # reset that budget or make another model call to probe an unavailable store.
                         return reason
@@ -26206,7 +26212,8 @@ class Orchestrator:
         if _APP_ID.fullmatch(segment):
             path = rest
         path = "/" + path.lstrip("/")
-        kind = "query" if path.startswith("/api/queries/") else "platform"
+        kind = ("query" if path.startswith("/api/queries/") else
+                "platform" if path.startswith("/api/domino/") else "route")
         if path.startswith("/api/domino/"):
             path = path[len("/api/domino"):]
         context = self.capture_preview_read(validation_id, path, kind=kind)
@@ -31548,6 +31555,26 @@ class Orchestrator:
         except Exception:
             log.exception("preview queries: could not read what failed; saying nothing")
             return {}
+
+    @staticmethod
+    def _route_failures_notice(project: Project) -> str:
+        """One sentence for the person about the app's own routes the page read and that did not
+        answer with live data (#743), or "" when none failed. A section fed by `app.py` is a data
+        read like a query: one that failed or served made-up records is not a clean build."""
+        validation = project.page_validation
+        failed = {read["path"]: read for read in (validation.data_reads if validation else [])
+                  if read["kind"] == "route" and read["outcome"] == "failed"}
+        if not failed:
+            return ""
+        named = "; ".join(
+            f"`{path}` answered with links to a host reserved for examples, such as example.com, "
+            "so what it shows is made up" if read.get("reason") == "placeholder_host" else
+            f"`{path}` failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')})"
+            for path, read in failed.items())
+        return brand.text(
+            "While {assistantName} checked the page, this {builtApp}'s own server did not answer "
+            "with live data: {named}. The sections that read it are not showing real data.",
+            named=named)
 
     def _refused_queries(self, project: Project) -> dict[str, str]:
         """The failed queries the app's own query server refused as the request's fault, each with
