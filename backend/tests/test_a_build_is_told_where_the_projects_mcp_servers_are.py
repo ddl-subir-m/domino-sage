@@ -10,6 +10,7 @@ but not that a step needing what their tools provide uses them, and a plan that 
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from sage import extension_mcp, project_secrets
@@ -75,6 +76,7 @@ def test_a_key_typed_into_a_servers_url_is_hidden_in_the_note(tmp_path, monkeypa
     plane = FakeControlPlane()
     plane.env_vars["p"] = {"TYPED_KEY": _PLANTED}
     monkeypatch.setattr(project_secrets, "_active", None)
+    monkeypatch.setattr(project_secrets, "_reason", None)
     project_secrets.install(plane, "p", tmp_path / ".sage" / "secrets.json")
     project_secrets.active().refresh()
     sent = _sent(tmp_path, monkeypatch, "Build a page.")
@@ -117,7 +119,9 @@ def test_a_uses_line_that_copies_the_list_lines_kind_still_names_the_resource():
 
 def test_the_template_says_to_call_only_a_listed_server_at_its_listed_url():
     agents = (REPO / "template/fastapi-antd/AGENTS.md").read_text()
-    assert "Call only a server Sage lists for this Project" in agents
+    assert "Call only a server {assistantName} lists for this Project" in agents
     assert "never write an address of your own" in agents
+    # A Built App's AGENTS.md is re-branded at seed time (#114): only a token is.
+    assert not re.search(r"\bSage\b", agents)
     # The helper's example is the only address the model saw; it must not be one to copy.
     assert "example.com" not in (REPO / "template/fastapi-antd/sage_mcp.py").read_text()
