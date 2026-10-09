@@ -24,6 +24,14 @@ never the workspace. `{env:NAME}` therefore resolves a secret added after the wo
 The shim replaces any secret value of 8 characters or more in a model request with `{env:NAME}`,
 tool results included. "Storing credentials in Sage" stays rejected: Domino is the store.
 
+## Amended 2026-10-09 (#737): an @-mention gives the skill
+
+A Project skill the person names with @ in a turn's request has its SKILL.md, cut to its first
+32 KiB, put into that turn's last user message on every model request of the turn, beside a line
+saying it does not override Sage's instructions. The turn's `done` row carries `skills`: each named
+skill and whether its text went out. A mention is read off the person's own sentence, not off the
+prompt Sage assembles around it. Whether the model then follows the skill is not decided here.
+
 ## Amended 2026-10-03 (#638): skills only
 
 Project custom tools and Project MCP servers were taken out; Project skills stay as decided below.

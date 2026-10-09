@@ -37,6 +37,9 @@ _FRONTMATTER_NAME = re.compile(r"\A---\s*\n(?:.*\n)*?name:\s*['\"]?([^'\"\n]*?)[
 # What one upload or git import may bring in, across every skill it holds.
 _MAX_SKILL_BYTES = 5 * 1024 * 1024
 _MAX_SKILL_FILES = 200
+# How much of one SKILL.md an @-mention puts into the turn (#737). The rest stays loadable with the
+# skill tool.
+INLINE_SKILL_BYTES = 32 * 1024
 _LOCK = threading.Lock()
 # A clone's credential helper prints the token from its environment, so only the variable's name
 # is ever in argv.
@@ -57,6 +60,10 @@ class ExtensionCatalog:
     # Built-in skill or instruction section -> the id of the Project skill that replaces it while
     # enabled.
     replaced: dict[str, str] = field(default_factory=dict)
+    # Skill name -> its SKILL.md cut to INLINE_SKILL_BYTES, and the file's whole size in bytes. Read
+    # when OpenCode reloads, so it is the text OpenCode's own skill tool would load. A skill whose
+    # SKILL.md cannot be read is absent.
+    skill_md: dict[str, tuple[str, int]] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
         return bool(self.skills)
@@ -75,6 +82,11 @@ def catalog_of(entries: list[dict]) -> ExtensionCatalog:
             if isinstance(entry.get("replaces"), str) and entry["replaces"]:
                 replaced[entry["replaces"]] = ext_id
     return ExtensionCatalog(skills, replaced)
+
+
+def named_in(text: str, names) -> set[str]:
+    """The `names` that `text` mentions as a whole `@<name>`."""
+    return {n for n in names if re.search(rf"(?<![\w@])@{re.escape(n)}(?![\w-])", text)}
 
 
 def skill_description(text: str) -> str:
@@ -132,7 +144,17 @@ def read_manifest(root: Path) -> list[dict]:
 def load_catalog(root: Path) -> ExtensionCatalog:
     """Without shadowed skills: the entry OpenCode offers under that name is Sage's, so switching
     the Project's off must not hide it, nor may it be described as the Project's."""
-    return catalog_of([e for e in list_extensions(root) if not e.get("shadowed")])
+    catalog = catalog_of([e for e in list_extensions(root) if not e.get("shadowed")])
+    skill_md: dict[str, tuple[str, int]] = {}
+    for name in catalog.skills:
+        path = Path(root) / SLOT / "skills" / name / "SKILL.md"
+        try:
+            with path.open("rb") as f:
+                head = f.read(INLINE_SKILL_BYTES)
+            skill_md[name] = (head.decode("utf-8", errors="ignore"), path.stat().st_size)
+        except OSError:
+            continue
+    return ExtensionCatalog(catalog.skills, catalog.replaced, skill_md)
 
 
 def disabled(entries: list[dict], overrides: dict) -> frozenset[str]:
