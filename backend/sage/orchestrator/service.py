@@ -31802,6 +31802,8 @@ class Orchestrator:
         named = "; ".join(
             f"`{path}` answered with links to a host reserved for examples, such as example.com, "
             "so what it shows is made up" if read.get("reason") == "placeholder_host" else
+            f"`{path}` answered {read.get('status')} with an error in its body, so the page read "
+            "a failure as data" if read.get("reason") == "error_body" else
             f"`{path}` failed ({read.get('status') or 'network'}; {read.get('reason', 'http_error')})"
             for path, read in failed.items())
         return brand.text(

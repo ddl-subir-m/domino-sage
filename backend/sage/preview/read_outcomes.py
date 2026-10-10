@@ -90,6 +90,17 @@ def _reserved_host(body: bytes | None) -> bool:
     return False
 
 
+def _error_body(body: bytes | None) -> bool:
+    # A route that caught its own failure and answered it as data (#764). Keeps nothing.
+    if body is None or len(body) > 1024 * 1024:
+        return False
+    try:
+        value = json.loads(body)
+    except (ValueError, UnicodeError):
+        return False
+    return isinstance(value, dict) and bool(value.get("error"))
+
+
 def read_result(request: dict, status: int | None, body: bytes | None = None,
                 *, bound_ids=()) -> dict:
     """Classify HTTP/transport evidence, with emptiness only from a recognized response shape.
@@ -124,6 +135,8 @@ def read_result(request: dict, status: int | None, body: bytes | None = None,
         reason = "http_error"
     elif safe["kind"] == "route" and _reserved_host(body):
         reason = "placeholder_host"
+    elif safe["kind"] == "route" and _error_body(body):
+        reason = "error_body"
     else:
         result["outcome"] = "empty" if status == 200 and _empty(safe, body) else "passed"
         return result

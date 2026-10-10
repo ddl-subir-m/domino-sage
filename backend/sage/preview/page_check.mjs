@@ -6,6 +6,9 @@
 // every button in its navigation (#722) — so a screen mounted only when it is chosen renders and
 // runs its queries where reportRuntimeError can see them (#709), then prints `done` on stdout. A
 // button outside navigation is never clicked: it can call a model or write data.
+// A screen whose tab or nav button is disabled until something is chosen is reached by choosing (#764):
+// while one waits, the walk clicks the first table row of the screen it is on, once, in a cell with no
+// control in it — a row click selects, it does not write — and then opens what that enabled.
 // Each screen it sees, the first one included, is printed as one JSON line before `done` (#750):
 // its label, its visible text pieces, and how many charts and tables it drew. Sage keeps only the
 // pieces the app's own code spells, so no row a query returned reaches the plan review.
@@ -22,6 +25,9 @@ const TEXTS_MAX = 200;
 const TEXT_MAX = 120;
 const NAV = ":is(nav, [role=navigation], [role=tablist])";
 const SCREENS = `[role=tab], ${NAV} :is(button, [role=button])`;
+const WAITING = `:is(${SCREENS}):is([aria-disabled=true], :disabled)`;
+const CONTROL = "a, button, input, select, textarea, label, [role=button], [role=checkbox], [role=switch], [role=link], [contenteditable]";
+const SELECTED = `:is(${SCREENS}):is([aria-selected=true], [aria-current]:not([aria-current=false]))`;
 
 const [url, executablePath, seconds] = process.argv.slice(2);
 const budget = Number(seconds) * 1000;
@@ -66,15 +72,36 @@ async function report(page, label) {
   console.log(JSON.stringify({ screen: label, ...rest, loading: busy || inflight > 0 }));
 }
 
+async function shownLabel(page) {
+  const shown = await page.$(SELECTED);
+  return shown ? (await shown.innerText().catch(() => "")).trim().slice(0, 80) : "";
+}
+
+// The first visible table cell holding no control, while a screen waits on a choice.
+async function rowCell(page) {
+  if (!(await page.$(WAITING))) return null;
+  const cell = await page.evaluateHandle((control) => [...document.querySelectorAll(
+    "tbody tr:not([aria-hidden=true]) > td")].find((el) => el.checkVisibility()
+      && !el.closest(`${control}, .ant-table-placeholder`) && !el.querySelector(control)) || null,
+  CONTROL).catch(() => null);
+  return cell?.asElement() || null;
+}
+
 // A crash replaces the app and a navigation replaces the document; either detaches the controls,
 // and the walk stops there. A control that is a link, or is the screen already showing, is skipped.
 async function openScreens(page) {
   const controls = await page.$$(`:is(${SCREENS}):not([aria-selected=true]):not([aria-disabled=true]):not(:disabled)`);
   let opened = 0;
-  for (const control of controls) {
+  let chosen = false;
+  for (;;) {
     if (opened === MAX_SCREENS) break;
+    const cell = chosen ? null : await rowCell(page);
+    if (!cell && !controls.length) break;
+    chosen ||= Boolean(cell);
+    const waiting = cell ? await page.$$(WAITING) : [];
+    const control = cell || controls.shift();
     const [state, label] = await control.evaluate((el) => [!el.isConnected ? "gone"
-      : el.closest("a[href]") || !el.checkVisibility()
+      : el.closest("a[href]") || !el.checkVisibility() || el.getAttribute("aria-selected") === "true"
         || (el.getAttribute("aria-current") || "false") !== "false" ? "skip" : "open",
       (el.innerText || "").trim().slice(0, 80)]).catch(() => ["gone", ""]);
     if (state === "gone") break;
@@ -82,7 +109,11 @@ async function openScreens(page) {
     opened += 1;
     await control.click({ timeout: CLICK_MS, noWaitAfter: true }).catch(() => {});
     await page.waitForTimeout(SETTLE_MS);
-    await report(page, label);
+    await report(page, cell ? await shownLabel(page) : label);
+    for (const enabled of waiting.reverse()) {
+      if (await enabled.evaluate((el) => el.isConnected && !el.matches(":disabled")
+          && el.getAttribute("aria-disabled") !== "true").catch(() => false)) controls.unshift(enabled);
+    }
   }
 }
 
@@ -95,8 +126,7 @@ try {
   page.on("requestfailed", settled);
   await page.goto(url, { waitUntil: "load", timeout: budget });
   await page.waitForTimeout(SETTLE_MS);
-  const first = await page.$(`:is(${SCREENS}):is([aria-selected=true], [aria-current]:not([aria-current=false]))`);
-  await report(page, first ? (await first.innerText().catch(() => "")).trim().slice(0, 80) : "");
+  await report(page, await shownLabel(page));
   await openScreens(page);
 } catch (error) {
   console.error(String(error?.message || error));
