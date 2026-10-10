@@ -3,7 +3,8 @@
 The Workbench loads `preview/<app>/?sageValidation=<id>` only while a person is looking at that app in
 Build mode, so a build nobody watches never had its page checked. This opens the same document from
 inside the container. It judges nothing: the page's own `reportRuntimeError` posts the ack and any
-crash, exactly as it does in the Workbench, and `_validate_page` decides from those.
+crash, exactly as it does in the Workbench, and `_validate_page` decides from those. What each
+screen showed (`screens`) is evidence for the plan review, which does the judging (#750).
 
 One short-lived process per check, in its own process group, so `close()` takes Chromium with it.
 No browser is downloaded at runtime: the image installs one (environment/Dockerfile), and a machine
@@ -11,6 +12,7 @@ without one gets the page check it had before, with the reason on the record.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -88,12 +90,33 @@ class PageCheck:
     def __init__(self, process: subprocess.Popen, stderr, stdout):
         self.process, self._stderr, self._stdout = process, stderr, stdout
 
+    def _said(self) -> list[bytes]:
+        # `pread`, not seek-and-read: the script writes through the same file offset, and a seek
+        # back to 0 between its writes would put its next line over the first.
+        if self._stdout.closed:
+            return []
+        fd = self._stdout.fileno()
+        return os.pread(fd, os.fstat(fd).st_size, 0).splitlines()
+
     def walked(self) -> bool:
         """Whether the script has opened every tab it will (#709), or has exited."""
         if self._stdout.closed or self.process.poll() is not None:
             return True
-        self._stdout.seek(0)
-        return b"done" in self._stdout.read()
+        return b"done" in self._said()
+
+    def screens(self) -> list[dict]:
+        """What each screen the script opened showed (#750): `screen` (its tab's label), `texts`
+        (its visible text pieces, rows included), `charts`, `tables` and `loading`. Only the
+        screens reported so far; read before `close()`."""
+        out = []
+        for line in self._said():
+            try:
+                seen = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(seen, dict) and "screen" in seen:
+                out.append(seen)
+        return out
 
     def close(self) -> None:
         """Stop the script and everything it started, and reap it. Safe to call twice."""

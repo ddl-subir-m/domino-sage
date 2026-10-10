@@ -42,6 +42,9 @@ class FakeCheck:
         step()
         return False
 
+    def screens(self):
+        return []
+
     def close(self):
         self.closed += 1
 
@@ -292,6 +295,21 @@ def test_the_check_says_when_its_tab_walk_is_done(monkeypatch, tmp_path, says):
     assert check.process.returncode is not None
 
 
+def test_a_screen_whose_text_says_done_does_not_end_the_walk(monkeypatch, tmp_path):
+    """#750: the script prints each screen's text before `done`. Plant: match `done` anywhere in
+    stdout again and this goes red."""
+    says = json.dumps({"screen": "Status", "texts": ["Export done"], "charts": 0, "tables": 0,
+                       "loading": False})
+    start, _, _ = _started(monkeypatch, tmp_path, says=says)
+    check = start("http://127.0.0.1:1/", 5)
+    try:
+        assert check.walked() is False
+        assert check.screens() == [json.loads(says)]
+    finally:
+        check.close()
+    assert check.process.returncode is not None
+
+
 def test_a_check_that_exits_early_is_not_waited_on(monkeypatch, tmp_path):
     monkeypatch.setattr(page_check, "_command", lambda url, timeout: [sys.executable, "-c", "pass"])
     monkeypatch.setattr(page_check, "unavailable", lambda: None)
@@ -307,8 +325,9 @@ def test_the_screen_walk_fits_inside_the_check_budget():
     script = page_check.SCRIPT.read_text()
     screens, click, settle = (int(re.search(rf"const {name} = (\d+)", script).group(1))
                               for name in ("MAX_SCREENS", "CLICK_MS", "SETTLE_MS"))
-    # The rest of the budget is for launching Chromium and loading a cold preview.
-    assert screens * (click + settle) / 1000 <= BuildPolicy().page_check_wait_seconds - 10
+    # The rest of the budget is for launching Chromium and loading a cold preview. The first screen
+    # settles once before it is reported (#750).
+    assert (settle + screens * (click + settle)) / 1000 <= BuildPolicy().page_check_wait_seconds - 10
     # Every control the walk opens counts against MAX_SCREENS: one loop, one counter.
     assert script.count("opened += 1") == 1 and "if (opened === MAX_SCREENS) break;" in script
 
@@ -475,6 +494,29 @@ def test_real_chromium_fails_a_page_whose_nav_screen_crashes(served):
     assert done["verification"]["stages"]["page"] == "passed"
     assert done["verification"]["stages"]["runtime"] == "failed"
     assert done["ok"] is False
+
+
+CHART_THEN_TABLE = _tabbed(
+    "document.getElementById('pane').innerHTML = '<table><tr><td>Jobs</td><td>+5.8%</td></tr></table>';"
+).replace("<div id='pane'>overview</div>",
+          "<div id='pane'>Pipeline<svg width='300' height='150'><rect width='300' height='150'/></svg>"
+          "<svg width='14' height='14'><rect width='14' height='14'/></svg>"
+          "<div class='ant-empty'><svg width='184' height='152'></svg></div></div>")
+
+
+@pytest.mark.skipif(_UNAVAILABLE is not None, reason=f"real headless page check: {_UNAVAILABLE}")
+def test_real_chromium_reports_what_each_screen_drew(served):
+    """#750: one report per screen, the first included. An icon and an empty state's picture are
+    not charts. Plant: count every svg and Overview reports 3."""
+    orch, handler = served
+    handler.screen = CHART_THEN_TABLE
+    run(orch)
+    screens = orch.project(start_preview=False).page_validation.screens
+    assert [(s["screen"], s["charts"], s["tables"]) for s in screens] == [
+        ("Overview", 1, 0), ("Insights", 0, 1)]
+    assert "Pipeline" in screens[0]["texts"] and "+5.8%" in screens[1]["texts"]
+    assert "Pipeline" not in screens[1]["texts"]
+    assert not any(s["loading"] for s in screens)
 
 
 def test_availability_names_what_is_missing(monkeypatch, tmp_path):

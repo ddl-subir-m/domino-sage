@@ -48,9 +48,9 @@ def _review_reads(orch: Orchestrator) -> list[list[str]]:
     def review(project, plan_md, tree_before, no_edit=None):
         reads.append(project.snapshot.changed_paths(
             tree_before, project.snapshot.working_tree_hash()))
-        return ""
+        return []
 
-    orch._plan_review_nudge = review
+    orch._plan_review = review
     return reads
 
 

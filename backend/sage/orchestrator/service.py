@@ -555,7 +555,7 @@ _PERSISTED_EVENTS = frozenset({
     "app_change", "build-stalled", "build-rollover", "build-context-limit",
     "gateway-call", "gateway-alias-unbound",
     "data-source-unasked", "data-source-failed", "build-recovery", "build-pre-edit-limit",
-    "keep-going", "queries-restored", "shared-query-changed",
+    "keep-going", "queries-restored", "plan-unbuilt", "shared-query-changed",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -6956,10 +6956,17 @@ _PLAN_NAME_TIMEOUT_S = 30.0
 # reach a vendor model, and `.env` or a `.json` of rows is exactly that.
 _PLAN_REVIEW_SYSTEM = (
     "You check a finished build against its approved plan. The message below lists the plan's "
-    "steps, each with what it does and when it is done, then the code change the build made.\n"
-    "Name only a Done-when item the code plainly fails: a value, branch or default that is "
-    "visibly missing or wrong. Never flag what the code cannot show, such as how the page looks, "
-    "data you cannot see, or code outside the change.\n"
+    "steps, each with what it does and when it is done, and the screens the plan names. Then "
+    "what each screen showed when Sage opened the running app, and the code change the build "
+    "made.\n"
+    "Name only a Done-when item the build plainly fails: a value, branch or default that is "
+    "visibly missing or wrong in the code, or a chart, card, section or message the item or "
+    "the plan's screen names that a screen Sage opened plainly lacks. Name the step that builds "
+    "that screen. A screen Sage did not open, or one still loading, cannot show what it lacks: "
+    "judge that only from the code. Name it too when a section an item names depends on a data "
+    "read the page never made or that came back empty, or when there is an error or refusal "
+    "message on a screen as it first opened, before anyone chose anything: its defaults then "
+    "fail the step that builds it. Never flag data you cannot see, or code outside the change.\n"
     "A step the build says needed no edit comes with its reason and its files as they are now. "
     "Name its Done-when if those files plainly do not meet it.\n"
     'Answer with JSON only: {"unmet": [{"step": <number>, "done_when": "<the item>", '
@@ -7004,6 +7011,54 @@ def _no_edit_review_block(root: Path, claimed: list[PlanStep], no_edit: dict[int
     return (f"\n\nSteps the build changed nothing for, saying the code already meets them:\n{claims}"
             f"\n\nThose steps' files as they are now{cut}:\n"
             + body[:_PLAN_REVIEW_DIFF_MAX_BYTES].decode("utf-8", errors="ignore"))
+
+
+def _counted(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
+def _page_review_block(plan_md: str, screens: list[dict], code: str, reads: list[dict]) -> str:
+    """The plan's Screens, then what each screen showed when the page check opened it, and the
+    data reads the page made with how each came back (#750).
+
+    A screen's text and its label go in only where `code`, the app's own code, spells them: a
+    heading, a label, an empty or error message. Everything else on a page came from data, and a
+    row reaches a model only by the person's consent (ADR-0041), never by a review. A read is its
+    path and outcome only (`read_outcomes` keeps no values).
+    """
+    def spelled(text: str) -> bool:
+        return bool(re.search(r"[^\W\d_]", text)) and text in code
+
+    named = plan_doc.parse_sections(plan_md)["sections"]["screens"]
+    out = ("\n\nScreens the plan names:\n" + "\n".join(
+        f"- {s['name']} — {s['detail']}" if s["detail"] else f"- {s['name']}" for s in named)
+        if named else "")
+    if not screens:
+        return out + ("\n\nThe running app's screens were not opened this time: judge only from "
+                      "the code.")
+    shown = "\n".join(
+        (f"Screen \"{s['screen']}\"" if spelled(str(s.get("screen") or "")) else "A screen")
+        + (" (still loading when read)" if s.get("loading") else "")
+        + f": {_counted(int(s.get('charts') or 0), 'chart')}, "
+          f"{_counted(int(s.get('tables') or 0), 'table')}\n"
+        + " · ".join(t for t in s.get("texts") or [] if spelled(t))
+        for s in screens)
+    outcome = {"passed": "answered", "empty": "came back empty", "failed": "failed"}
+    read = "\n".join(dict.fromkeys(
+        f"- {r['path']}: {outcome.get(r.get('outcome'), r.get('outcome'))}" for r in reads))
+    return out + ("\n\nWhat each screen showed when Sage opened the running app, each as it first "
+                  "opened, at its default selections: the charts and tables it drew, and the text "
+                  "on it that the app's code spells (values from data are left out). Only these "
+                  "screens were opened:\n" + shown
+                  + ("\n\nOnly these data reads were made by the page, by path:\n" + read if read
+                     else "\n\nThe page made no data reads."))
+
+
+def _plan_review_sentence(unmet: list[dict]) -> str:
+    """The unmet Done-when items a review named, one sentence each."""
+    return " ".join(
+        f"Plan step {i.get('step', '?')}'s Done-when \"{str(i['done_when']).strip()}\" is not "
+        f"met in {i.get('file') or 'the code'}: {str(i.get('why') or '').strip()}" for i in unmet)
 
 
 def _repair_heading_name(answer: str, request: str) -> str:
@@ -21268,7 +21323,7 @@ class Orchestrator:
                       initial_repair_objective: str = "implementation",
                       how_sage_works: str = "guided", dataset_note: str = "",
                       unbuilt_steps: Callable[[], list[PlanStep]] | None = None,
-                      plan_review: Callable[[], str] | None = None,
+                      plan_review: Callable[[], list[dict]] | None = None,
                       plan_no_edit: dict[int, str] | None = None,
                       wrote_before: bool = False):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
@@ -22446,9 +22501,13 @@ class Orchestrator:
         # no-edit turn that would set aside what the build already wrote.
         plan_fixes = 0
         answering_plan_fix = False
-        # The review runs at most once a turn (#716). Steps the reply says need no edit (#725) are
-        # taken into `plan_no_edit` only until it has run, so a claim it refused cannot be made again.
+        # The review sends back at most one repair a turn (#716). Steps the reply says need no edit
+        # (#725) are taken into `plan_no_edit` only until it has run, so a claim it refused cannot be
+        # made again. The pass that answers its repair is reviewed once more, and what that second
+        # review still names ends the turn incomplete rather than clean (#750).
         plan_reviewed = False
+        review_repaired = False
+        plan_unmet: list[dict] = []
         # The same for every repair (#694): once an iteration of this turn wrote, a later reply that
         # writes nothing ends the way an unsuccessful repair ends, not on the no-edit ladder, which
         # would report "didn't change any files" and leave the earlier work unsaved.
@@ -24979,14 +25038,17 @@ class Orchestrator:
                                      if project.page_validation is not None else {}).get(name))
                                 for name, fault in uncompiled.items()))
                         continue
-                # A Done-when no structural check can see (#716): one plan-tier read of the code,
-                # only on a turn every other check passed, and on the same one-repair budget.
+                # A Done-when no structural check can see (#716): one plan-tier read of the code and
+                # of what the page check saw on each screen (#750), only on a turn every other check
+                # passed, and on the same one-repair budget. The pass that answers that repair is
+                # read again, and what is still unmet ends the turn incomplete, never clean.
                 # A step said to need no edit (#725) is read here even after the unbuilt-step repair
                 # spent the budget: that repair is what asked for the claim.
-                review_nudge = ""
+                unmet: list[dict] = []
                 if (plan_review is not None and report.ok
-                        and wrote_code and rt is None and not plan_reviewed
-                        and (not plan_fixes or bool(plan_no_edit))
+                        and wrote_code and rt is None
+                        and (review_repaired or not plan_reviewed
+                             and (not plan_fixes or bool(plan_no_edit)))
                         and not project.stop_requested
                         and not self._query_failures(project)
                         and not catalog_problems(
@@ -24994,13 +25056,20 @@ class Orchestrator:
                         and not self._detect_store_clients(project)
                         and self._fresh_platform_read_failure(project, since=send_ts) is None):
                     plan_reviewed = True
-                    review_nudge = plan_review()
-                if review_nudge:
+                    unmet = plan_review()
+                    if review_repaired:
+                        # A step still unwritten is already reported as not built.
+                        plan_unmet = [i for i in unmet if str(i.get("step"))
+                                      not in {str(s.n) for s in unbuilt}]
+                        review_repaired, unmet = False, []
+                if unmet:
                     plan_fixes += 1
+                    review_repaired = True
                     answering_plan_fix = True
                     iterate_reason = "the build misses a Done-when in the plan — fixing it"
                     yield {"type": "iterate", "reason": iterate_reason}
-                    current = review_nudge
+                    current = _plan_review_sentence(unmet) + (
+                        " Fix that now." if len(unmet) == 1 else " Fix those now.")
                     continue
                 restore_mode()
                 # The receipt for what this turn changed, before the line that closes the turn.
@@ -25081,15 +25150,25 @@ class Orchestrator:
                     verification["queryFailures"] = dict(failed)
                 if verification is not None:
                     project.evidence_recorder.verification(verification)
+                unmet_steps = list(dict.fromkeys(str(i.get("step", "?")) for i in plan_unmet))
+                if plan_unmet:
+                    yield persist({"type": "plan-unbuilt",
+                                   "steps": [int(n) for n in unmet_steps if n.isdigit()],
+                                   "message": "Not done from the plan, after one repair: "
+                                              + _plan_review_sentence(plan_unmet)})
                 yield persist({"type": "done", "ok": (report.ok and not queries_failed
                                                       and rt is None and not routes_notice
-                                                      and refused is None and not unbuilt),
+                                                      and refused is None and not unbuilt
+                                                      and not plan_unmet),
                                "decision": ("queries failed" if queries_failed
                                             else "runtime failed" if rt
                                             else "platform read failed" if refused
                                             else "app route failed" if routes_notice
                                             else f"incomplete — plan {_listed_steps(unbuilt)} not built"
-                                            if unbuilt else decision.reason),
+                                            if unbuilt else
+                                            f"incomplete — plan step{'s' if len(unmet_steps) > 1 else ''} "
+                                            f"{' and '.join(unmet_steps)} not met"
+                                            if plan_unmet else decision.reason),
                                **({"verification": verification} if verification is not None else {})})
                 if wrote_code and owns_turn:
                     # Written work is durable even when verification fails. A phase leaves this
@@ -25441,7 +25520,7 @@ class Orchestrator:
                                        if retry_evidence else ""),
                     unbuilt_steps=lambda: self._unbuilt_plan_steps(
                         project, plan_md, tree_before, queries_before, plan_res, no_edit),
-                    plan_review=lambda: self._plan_review_nudge(
+                    plan_review=lambda: self._plan_review(
                         project, plan_md, tree_before, no_edit),
                     plan_no_edit=no_edit, wrote_before=landed)
             for event in self._plan_unbuilt_events(
@@ -25579,18 +25658,19 @@ class Orchestrator:
             aliases = ()
         return plan_resources.Resources(servers=servers, secrets=secrets, aliases=aliases)
 
-    def _plan_review_nudge(self, project: Project, plan_md: str, tree_before: str,
-                           no_edit: dict[int, str] | None = None) -> str:
-        """The repair for the Done-when items one plan-tier call reads as plainly unmet, or "" (#716).
+    def _plan_review(self, project: Project, plan_md: str, tree_before: str,
+                     no_edit: dict[int, str] | None = None) -> list[dict]:
+        """The Done-when items one plan-tier call reads as plainly unmet, or [] (#716).
 
         Never blocks a build: off, nothing to read, a timeout, a failed call and an unreadable
-        answer all return "", and every one but the first two says why in the log. The input is
-        the plan's steps and this turn's diff of code files, cut at a byte cap the prompt states.
+        answer all return [], and every one but the first two says why in the log. The input is
+        the plan's steps and Screens, what each screen showed when this pass's page check opened
+        it (#750), and this turn's diff of code files, cut at a byte cap the prompt states.
         A step in `no_edit` (#725) comes with its reason and its code files as they are now, and
         is taken out of `no_edit` when the answer names it.
         """
         if not self._build_policy.plan_review:
-            return ""
+            return []
         steps = [s for s in parse_steps(plan_md) if s.done_when]
         after = project.snapshot.working_tree_hash()
         paths = [p for p in project.snapshot.changed_paths(tree_before, after, limit=100_000)
@@ -25599,11 +25679,19 @@ class Orchestrator:
         diff = project.snapshot.diff(tree_before, after, paths[:500]).encode()
         claimed = [s for s in steps if s.n in (no_edit or {})]
         if not steps or not (diff or claimed):
-            return ""
+            return []
         cut = (f" — truncated to the first {_PLAN_REVIEW_DIFF_MAX_BYTES} of {len(diff)} bytes; "
                "do not flag what the cut hides" if len(diff) > _PLAN_REVIEW_DIFF_MAX_BYTES else "")
+        validation = project.page_validation
+        screens = validation.screens if validation is not None else []
+        code = "\n".join(
+            text for rel, text in (self._scan_app_sources(project.app_for_turn()) if screens else [])
+            if text and PurePosix(rel).suffix in _PLAN_REVIEW_CODE
+            and not _PLAN_REVIEW_SKIP & set(PurePosix(rel).parts))
         payload = ("Plan steps:\n" + "\n".join(
             f"{s.n}. {s.label}\n   Do: {s.do}\n   Done when: {s.done_when}" for s in steps)
+            + _page_review_block(plan_md, screens, code,
+                                 validation.data_reads if validation is not None else [])
             + f"\n\nThe change (code files only{cut}):\n"
             + diff[:_PLAN_REVIEW_DIFF_MAX_BYTES].decode("utf-8", errors="ignore"))
         if claimed:
@@ -25660,29 +25748,24 @@ class Orchestrator:
         except concurrent.futures.TimeoutError:
             log.warning("plan review: timed out after %.1fs model=%s — ending the turn as it was",
                         timeout_s, model)
-            return ""
+            return []
         except Exception as e:
             log.warning("plan review: call failed (%s: %s) model=%s — ending the turn as it was",
                         type(e).__name__, e, model)
-            return ""
+            return []
         finally:
             pool.shutdown(wait=False)
         unmet = _plan_review_unmet(answer)
         if unmet is None:
             log.warning("plan review: malformed answer %r model=%s — ending the turn as it was",
                         answer[:200], model)
-            return ""
-        if not unmet:
-            return ""
+            return []
         for item in unmet if no_edit else []:
             try:
                 no_edit.pop(int(item.get("step")), None)
             except (TypeError, ValueError):
                 pass
-        return " ".join(
-            f"Plan step {i.get('step', '?')}'s Done-when \"{str(i['done_when']).strip()}\" is not "
-            f"met in {i.get('file') or 'the code'}: {str(i.get('why') or '').strip()}"
-            for i in unmet) + (" Fix that now." if len(unmet) == 1 else " Fix those now.")
+        return unmet
 
     def _skill_copy_drift(self, project: Project, tree_before: str, rows_before: int):
         """Yields and records the `skill-copy-drift` row for a build that finished (#682).
@@ -26164,6 +26247,7 @@ class Orchestrator:
             return validation
         finally:
             if check is not None:
+                validation.screens = check.screens()
                 check.close()
             status = supervisor.status()
             if (validation.generation and status["generation"] == validation.generation
