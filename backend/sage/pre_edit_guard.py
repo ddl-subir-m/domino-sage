@@ -211,6 +211,19 @@ class PreEditGuard:
             decision = self._witness_locked()
             return decision is not None and decision.action is PreEditAction.DISARM
 
+    def landed_earlier(self) -> None:
+        """Disarm for a build whose earlier Attempt already changed the app's own files (#753).
+
+        A retry or a Continue of an approved plan is the same build, and its first edit has
+        landed. The caller measured that between snapshots, which this tree witness cannot see.
+        """
+        with self._lock:
+            if self._state is not PreEditState.INITIAL_ARMED:
+                return
+            self._first_edit_observed = True
+            self._transition(PreEditState.DISARMED, PreEditDecision(PreEditAction.DISARM),
+                             pending=False)
+
     def rebaseline(self, baseline: str) -> None:
         """Move the witness over a user-side attachment or approved-source change."""
         if not baseline:
