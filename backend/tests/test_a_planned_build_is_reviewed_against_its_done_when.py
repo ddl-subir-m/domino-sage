@@ -104,9 +104,8 @@ def test_an_unmet_done_when_is_sent_back_once_with_its_text(tmp_path: Path):
     assert len(repairs) == 1
     assert "The defaults show results." in repairs[0]
     assert "presets overlap" in repairs[0] and "static/UsageDrift.js" in repairs[0]
-    assert len(gateway.reviews) == 1
     assert any(e["type"] == "iterate" and "Done-when" in e["reason"] for e in events)
-    assert _done(events)["ok"] is True
+    assert len(gateway.reviews) == 2
 
 
 def test_the_review_reads_the_plan_and_the_turns_code(tmp_path: Path):
@@ -229,13 +228,14 @@ def test_the_review_shares_the_unbuilt_step_repair_budget(tmp_path: Path):
 
 
 def test_a_second_unmet_answer_is_not_sent_back_again(tmp_path: Path):
-    """Plant: reset the budget after a review repair and the second pass is reviewed too."""
+    """The pass that answers the repair is reviewed once more, and what is still unmet ends the
+    turn incomplete rather than going back a second time (#750)."""
     events, gateway, oc = _approve(tmp_path, json.dumps(UNMET), Turn(writes={
         "static/UsageDrift.js": "const presets = stillWrong();\n"}))
 
-    assert len(gateway.reviews) == 1
+    assert len(gateway.reviews) == 2
     assert len(oc.prompts) == 3
-    assert _done(events)["ok"] is True
+    assert _done(events)["ok"] is False
 
 
 def test_the_prompt_carries_code_only(tmp_path: Path):
