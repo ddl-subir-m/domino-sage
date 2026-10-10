@@ -161,7 +161,7 @@ def test_a_refused_summary_is_logged_and_leaves_no_compaction_pending(running, c
 
 
 def test_the_next_prompt_is_answered_after_a_summary_failed(running):
-    orch, oc, gateway, tid = _chat(running, [
+    orch, _oc, gateway, tid = _chat(running, [
         Turn(text="five", tokens={"input": OVER, "output": 1}),
         Turn(text="The deal desk approves it."),
     ])
@@ -179,7 +179,7 @@ def test_the_next_prompt_is_answered_after_a_summary_failed(running):
 def test_a_compaction_left_pending_earlier_does_not_answer_this_prompt(running, caplog):
     """A session can already carry one: written by a Sage without this fix, or left when the
     summary was interrupted or the delete after it failed. The prompt must still be answered."""
-    orch, oc, gateway, tid = _chat(running, [Turn(text="five"), Turn(text="The deal desk approves it.")])
+    orch, oc, _gateway, tid = _chat(running, [Turn(text="five"), Turn(text="The deal desk approves it.")])
     list(orch.chat_stream(tid, "what is in the news"))
     orch._cancel_chat_idle_save()
     oc._by_session["fake-session"] += [
@@ -200,7 +200,7 @@ def test_a_compaction_left_pending_earlier_does_not_answer_this_prompt(running, 
 def test_a_stop_during_compaction_does_not_reach_the_next_turn(running):
     """The summary runs under a named Chat turn, so a Stop can find it — and its flag has to end
     with the compaction, or the next question is stopped before it runs a step."""
-    orch, oc, gateway, tid = _chat(running, [
+    orch, oc, _gateway, tid = _chat(running, [
         Turn(text="five", tokens={"input": OVER, "output": 1}),
         Turn(text="The deal desk approves it."),
     ])
