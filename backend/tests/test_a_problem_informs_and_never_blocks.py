@@ -331,7 +331,7 @@ def test_the_readiness_probe_and_the_problem_route_are_two_different_calls():
     while the composed Problems went unasked for by anybody at all."""
     assert "health: () => request('/health')" in API
     assert "healthz: async () => {" in API
-    assert "fetch('./healthz')" in API
+    assert "sageFetch('./healthz')" in API
     # The boot reads the probe for the picker's open-weight list, under its own name.
     assert "SW.api.healthz()" in STORE
     assert "healthz.open_weight_models" in STORE

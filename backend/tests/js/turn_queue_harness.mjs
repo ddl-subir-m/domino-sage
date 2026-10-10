@@ -115,13 +115,13 @@ const sandbox = {
     // cannot answer `{}` to: throwing the verdict away here leaves the client's reading of it
     // untested whichever way the client reads it.
     if (href.includes('/turn/cancel')) {
-      // A 200 that is not JSON — the proxy answering instead of the app, which `api.js:45` hands
-      // on as `{}`. Neither a verdict nor an error, and the only shape that tells `=== false`
-      // apart from a falsy test. Reachable on a freshly opened Workbench; see api.js:52.
+      // A 200 that is not JSON, which `request()` hands on as `{}`. Neither a verdict nor an
+      // error, and the only shape that tells `=== false` apart from a falsy test. Not HTML: an
+      // HTML page is the proxy's sign-in and reads as an expired session instead (#754).
       if (mode === 'cancel-unreadable') {
-        return { ok: true, status: 200, headers: { get: () => 'text/html' },
-                 json: async () => { throw new Error('Unexpected token <'); },
-                 text: async () => '<html>502</html>' };
+        return { ok: true, status: 200, headers: { get: () => 'text/plain' },
+                 json: async () => { throw new Error('Unexpected end of JSON input'); },
+                 text: async () => '' };
       }
       return { ok: true, status: 200, headers: { get: () => 'application/json' },
                json: async () => ({ cancelled: CANCEL_VERDICT }), text: async () => '' };
