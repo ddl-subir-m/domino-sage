@@ -35,6 +35,9 @@ _FONT_PT = 10
 _MAX_BARS = 30
 _LABEL_CHARS = 22
 _TITLE_CHARS = 44
+# A bar's text sits right of the bar, sharing the plot's width with it: two short lines keep
+# `81 calls · 28.7% win rate · 164 closed deals` inside the figure with room left for the bar.
+_BAR_LABEL_CHARS = 24
 # One category's row, in inches: a 10 pt label is ~0.14 in, so a one-line label keeps clear of the
 # next and a 12-bar chart stays inside the 420 px the Thread gives a drawn page (`chat.css`).
 _ROW_IN = 0.24
@@ -68,11 +71,11 @@ def _when(value) -> datetime | None:
     return None
 
 
-def _label(value) -> str:
+def _label(value, chars: int = _LABEL_CHARS) -> str:
     text = "" if value is None else str(value)
-    lines = textwrap.wrap(text, _LABEL_CHARS) or [""]
+    lines = textwrap.wrap(text, chars) or [""]
     if len(lines) > 2:
-        lines = [lines[0], textwrap.shorten(" ".join(lines[1:]), _LABEL_CHARS, placeholder="…")]
+        lines = [lines[0], textwrap.shorten(" ".join(lines[1:]), chars, placeholder="…")]
     return "\n".join(lines)
 
 
@@ -147,8 +150,26 @@ def _tick(value: float, unit: str) -> str:
     return _shown(value, unit)
 
 
-def _bars(ax, labels: list, values: dict[str, list], unit: str, stacked: bool, colors) -> None:
-    """Horizontal bars, one row per label, each labelled with its value (or its total, stacked)."""
+def _bar_texts(read: HeldRead, x: str, ys: list[str], by: str | None, dated: bool,
+               column: str) -> list[str]:
+    """Each row's text from `column`, to label its bar in place of its value (#758)."""
+    if column not in read.columns:
+        raise ValueError(f"{column} is not a column of {read.title}. Its columns: "
+                         f"{', '.join(read.columns)}.")
+    if by is not None or len(ys) != 1:
+        raise ValueError("bar_label labels the bars of one measure: name one y column and no by, "
+                         "or send bar_label as null.")
+    if dated:
+        raise ValueError(f"The {x} values of {read.title} are dates, so it is drawn as a line, "
+                         "which has no bars to label. Send bar_label as null.")
+    i = read.columns.index(column)
+    return [_label(row[i], _BAR_LABEL_CHARS) for row in read.rows]
+
+
+def _bars(ax, labels: list, values: dict[str, list], unit: str, stacked: bool, colors,
+          texts: list[str] | None = None) -> None:
+    """Horizontal bars, one row per label, each labelled with its value (or its total, stacked),
+    or with its row's text from a label column."""
     rows = range(len(labels))
     if stacked:
         left = [0.0] * len(labels)
@@ -166,12 +187,13 @@ def _bars(ax, labels: list, values: dict[str, list], unit: str, stacked: bool, c
     for k, (color, (name, series)) in enumerate(zip(colors, values.items(), strict=False)):
         spots = [i + (k - (len(values) - 1) / 2) * height for i in rows]
         bars = ax.barh(spots, [v or 0 for v in series], height=height, color=color, label=name)
-        ax.bar_label(bars, labels=[_shown(v, unit) if v is not None else "" for v in series],
+        ax.bar_label(bars, labels=texts if texts is not None else
+                     [_shown(v, unit) if v is not None else "" for v in series],
                      padding=3, fontsize=_FONT_PT - 1)
 
 
 def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
-           money=(), percent=()):
+           money=(), percent=(), bar_label: str | None = None):
     from matplotlib.figure import Figure
     from matplotlib.ticker import FuncFormatter, MaxNLocator
 
@@ -184,6 +206,7 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
     title = textwrap.fill(read.title, _TITLE_CHARS)
     when = [_when(v) for v in labels]
     dated = len(labels) > 1 and all(when)
+    texts = None if bar_label is None else _bar_texts(read, x, ys, by, dated, bar_label)
     if dated:
         height = 3.0
     else:
@@ -192,7 +215,7 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
                              f"{_MAX_BARS}. ORDER BY what matters and LIMIT the statement, then "
                              "chart that result.")
         shown = [_label(v) for v in labels]
-        per = _TALL_ROW_IN if any("\n" in s for s in shown) else _ROW_IN
+        per = _TALL_ROW_IN if any("\n" in s for s in [*shown, *(texts or [])]) else _ROW_IN
         if not by:
             per *= max(1.0, 0.8 * max(len(p) for p in panels))
         height = (0.8 + 0.2 * title.count("\n") + (0.35 if legend else 0)
@@ -217,7 +240,7 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
                         [math.nan if series[i] is None else series[i] for i in order],
                         color=color, linewidth=2, label=name)
         else:
-            _bars(ax, labels, part, unit, stacked=by is not None, colors=shade)
+            _bars(ax, labels, part, unit, stacked=by is not None, colors=shade, texts=texts)
             ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _, u=unit: _tick(v, u)))
             ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
             if len(panels) > 1:
@@ -242,13 +265,13 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
 
 
 def draw(read: HeldRead, x: str, ys: list[str], by: str | None = None,
-         money=(), percent=()) -> bytes:
+         money=(), percent=(), bar_label: str | None = None) -> bytes:
     from matplotlib import font_manager
 
     out = io.BytesIO()
     try:
-        figure(read, x, ys, by, money, percent).savefig(out, format="png", dpi=_DPI,
-                                                         facecolor="white")
+        figure(read, x, ys, by, money, percent, bar_label).savefig(out, format="png", dpi=_DPI,
+                                                                   facecolor="white")
     finally:
         # matplotlib holds every face it drew with open in a process-wide cache. A chart is drawn
         # a few times a conversation, so reopening one costs nothing next to holding descriptors.

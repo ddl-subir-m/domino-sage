@@ -15495,6 +15495,7 @@ class Orchestrator:
 
         table, x, ys, by = body.get("table"), body.get("x"), body.get("y"), body.get("by")
         money, percent = body.get("money") or [], body.get("percent") or []
+        bar_label = body.get("bar_label")
         ys, money, percent = ([v] if isinstance(v, str) else v for v in (ys, money, percent))
         if (not isinstance(table, str) or not table or not isinstance(x, str)
                 or not all(isinstance(v, list) and all(isinstance(c, str) for c in v)
@@ -15503,6 +15504,9 @@ class Orchestrator:
             raise ValueError(
                 "A chart is drawn from a result this turn read: pass table as that result's "
                 "title, x as the column for the labels and y as the column or columns of numbers.")
+        if not (bar_label is None or isinstance(bar_label, str) and bar_label):
+            raise ValueError("bar_label names one column of the result, whose text labels each "
+                             "bar. Send it as that column's name, or as null.")
         reads = self._held(thread_id)
         wanted = live_read._slug(PurePosix(table).name.removesuffix(".table.json"))
         read = next((r for r in reversed(reads) if r.rows
@@ -15513,7 +15517,7 @@ class Orchestrator:
                 f"Results this turn: {named}." if named
                 else "Run the statement first, with a title, then chart that result."))
         chat_chart.check_labels(read, x, reads)
-        return chat_chart.draw(read, x, ys, by, money, percent), read.slug
+        return chat_chart.draw(read, x, ys, by, money, percent, bar_label), read.slug
 
     def live_read_call(self, message: dict, *, probe: bool = False) -> dict | None:
         """One MCP message from OpenCode. Framing in `liveread.mcp`, the read in `liveread.run`.
@@ -17720,7 +17724,10 @@ class Orchestrator:
                         "columns of numbers. For one measure by two categories, such as amount by "
                         "stage within team, set by to the second category's column: one bar per x, "
                         "stacked by it. List the y columns that are money in money and those that are "
-                        "percentages in percent. When the labels should be names that another table holds, "
+                        "percentages in percent. Each bar is labelled with its value; for a chart of "
+                        "one y and no by, to label each bar with more, build that text as a column "
+                        "in the statement and set bar_label to that column. "
+                        "When the labels should be names that another table holds, "
                         "join that table in the same statement so the result carries the names. "
                         "If you can't produce something, say so in one plain sentence and don't describe "
                         "how you work."
