@@ -66,6 +66,7 @@ testpaths = ["tests"]
 addopts = "-n auto"
 markers = [
     "opencode: boots the pinned OpenCode server; skipped unless --opencode is set",
+    "remote_check: lets the rail's poll start its background remote check; the test joins it",
 ]
 
 [tool.ruff]
