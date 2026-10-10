@@ -213,8 +213,9 @@ def test_a_turn_whose_queries_failed_is_not_reviewed(tmp_path: Path, monkeypatch
 
 def test_the_review_shares_the_unbuilt_step_repair_budget(tmp_path: Path):
     """Step 2 is unwritten on the first pass, so the one plan-level repair goes to it. The pass that
-    writes it is not reviewed: the budget is spent. Plant: let the review run once plan_fixes is 1
-    and this goes red on the review count."""
+    writes it is still reviewed, once, and what it names ends the turn incomplete without a second
+    repair (#765). Plant: skip the review once plan_fixes is 1 and this goes red on the review
+    count; let it repair and a fourth prompt goes out."""
     plan = Turn(text=PLAN.text + (
         "\n\n### 2. Register the tab\n- Files — static/index.html\n"
         "- Do — Load UsageDrift.js.\n- Done when — The tab is in the nav."))
@@ -223,8 +224,8 @@ def test_the_review_shares_the_unbuilt_step_repair_budget(tmp_path: Path):
         plan=plan)
 
     assert [("none were written" in p["text"]) for p in oc.prompts[2:]] == [True]
-    assert gateway.reviews == []
-    assert _done(events)["ok"] is True
+    assert len(gateway.reviews) == 1
+    assert _done(events)["decision"] == "incomplete — plan step 1 not met"
 
 
 def test_a_second_unmet_answer_is_not_sent_back_again(tmp_path: Path):

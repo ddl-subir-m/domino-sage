@@ -29,7 +29,13 @@ the build "Incomplete — plan step N not met", never clean. A screen the walk d
 one reached only from a table row, is judged from the code alone (#750). The review also gets the
 data reads the page made, by path and outcome only, so a section whose read never happened or came
 back empty is visible; and since every screen is read as it first opens, an error message there
-(two default periods that overlap) fails the step whose defaults produced it.
+(two default periods that overlap) fails the step whose defaults produced it. The review runs even
+when another plan repair (an unwritten step) spent the one repair; it then reports and does not
+repair. The diag log says, per turn, how many reviews ran and which steps are still unmet (#765).
+
+A screen the walk opened whose plan step names catalog queries, by a name in backticks or one
+holding `_` or `-`, and which asked for none of them as it first opened, fails the data stage. Its
+`verification.reason` names the screen and the step (#765).
 
 Each repair gets a fresh ID and supervisor generation. Old documents, old attempts, other apps,
 and completed checks cannot contribute runtime evidence. Phased Build validates after its final

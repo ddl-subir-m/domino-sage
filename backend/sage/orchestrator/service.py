@@ -21371,6 +21371,7 @@ class Orchestrator:
                       how_sage_works: str = "guided", dataset_note: str = "",
                       unbuilt_steps: Callable[[], list[PlanStep]] | None = None,
                       plan_review: Callable[[], list[dict]] | None = None,
+                      plan_unread: Callable[[], str] | None = None,
                       plan_no_edit: dict[int, str] | None = None,
                       wrote_before: bool = False):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
@@ -22556,6 +22557,7 @@ class Orchestrator:
         # made again. The pass that answers its repair is reviewed once more, and what that second
         # review still names ends the turn incomplete rather than clean (#750).
         plan_reviewed = False
+        plan_reviews = 0
         review_repaired = False
         plan_unmet: list[dict] = []
         # The same for every repair (#694): once an iteration of this turn wrote, a later reply that
@@ -25093,12 +25095,12 @@ class Orchestrator:
                 # passed, and on the same one-repair budget. The pass that answers that repair is
                 # read again, and what is still unmet ends the turn incomplete, never clean.
                 # A step said to need no edit (#725) is read here even after the unbuilt-step repair
-                # spent the budget: that repair is what asked for the claim.
+                # spent the budget: that repair is what asked for the claim. Any other spent budget
+                # still gets its one review, which reports and does not repair (#765).
                 unmet: list[dict] = []
                 if (plan_review is not None and report.ok
                         and wrote_code and rt is None
-                        and (review_repaired or not plan_reviewed
-                             and (not plan_fixes or bool(plan_no_edit)))
+                        and (review_repaired or not plan_reviewed)
                         and not project.stop_requested
                         and not self._query_failures(project)
                         and not catalog_problems(
@@ -25106,8 +25108,10 @@ class Orchestrator:
                         and not self._detect_store_clients(project)
                         and self._fresh_platform_read_failure(project, since=send_ts) is None):
                     plan_reviewed = True
+                    plan_reviews += 1
+                    report_only = review_repaired or bool(plan_fixes and not plan_no_edit)
                     unmet = plan_review()
-                    if review_repaired:
+                    if report_only:
                         # A step still unwritten is already reported as not built.
                         plan_unmet = [i for i in unmet if str(i.get("step"))
                                       not in {str(s.n) for s in unbuilt}]
@@ -25165,6 +25169,12 @@ class Orchestrator:
                         self._wm.template, project.app_for_turn().path) or []
                         if p not in unusable.values()]
                 unread = bool(verification is not None and verification.get("queriesUnread"))
+                # A screen the page check opened whose plan step names queries it never asked for
+                # at its defaults has not shown its data working (#765).
+                screen_unread = (plan_unread() if plan_unread is not None and report.ok
+                                 and verification is not None else "")
+                if screen_unread:
+                    yield persist({"type": "data-source-failed", "message": screen_unread})
                 if failed:
                     yield persist({"type": "data-source-failed",
                                    "message": self._failed_notice(
@@ -25191,16 +25201,24 @@ class Orchestrator:
                 # the turn's work — which is also what keeps this a report rather than the gate
                 # ADR-0010 rules out.
                 refused = self._fresh_platform_read_failure(project, since=send_ts) if report.ok else None
-                queries_failed = bool(failed or catalog_faults or unread or store_clients)
+                queries_failed = bool(failed or catalog_faults or unread or store_clients
+                                      or screen_unread)
                 if verification is not None and (queries_failed or refused or routes_notice):
                     verification["stages"]["data"] = "failed"
                     verification["overall"] = "failed"
+                if verification is not None and screen_unread:
+                    verification["reason"] = screen_unread
                 if verification is not None and failed:
                     # By name, with the sentence that refused it: what a repair reproduces from.
                     verification["queryFailures"] = dict(failed)
                 if verification is not None:
                     project.evidence_recorder.verification(verification)
                 unmet_steps = list(dict.fromkeys(str(i.get("step", "?")) for i in plan_unmet))
+                if plan_review is not None:
+                    log.info("plan review: this turn ran %s; still unmet: %s",
+                             _counted(plan_reviews, "review"),
+                             f"step{'s' if len(unmet_steps) > 1 else ''} "
+                             f"{' and '.join(unmet_steps)}" if plan_unmet else "none")
                 if plan_unmet:
                     yield persist({"type": "plan-unbuilt",
                                    "steps": [int(n) for n in unmet_steps if n.isdigit()],
@@ -25572,6 +25590,7 @@ class Orchestrator:
                         project, plan_md, tree_before, queries_before, plan_res, no_edit),
                     plan_review=lambda: self._plan_review(
                         project, plan_md, tree_before, no_edit),
+                    plan_unread=lambda: self._plan_screens_unread(project, plan_md),
                     plan_no_edit=no_edit, wrote_before=landed)
             for event in self._plan_unbuilt_events(
                     project, plan_md, tree_before, queries_before, rows_before, plan_res, no_edit):
@@ -25726,6 +25745,7 @@ class Orchestrator:
         is taken out of `no_edit` when the answer names it.
         """
         if not self._build_policy.plan_review:
+            log.info("plan review: off")
             return []
         steps = [s for s in parse_steps(plan_md) if s.done_when]
         after = project.snapshot.working_tree_hash()
@@ -25735,6 +25755,8 @@ class Orchestrator:
         diff = project.snapshot.diff(tree_before, after, paths[:500]).encode()
         claimed = [s for s in steps if s.n in (no_edit or {})]
         if not steps or not (diff or claimed):
+            log.info("plan review: nothing to read (%s)",
+                     "no step has a Verify" if not steps else "no code file changed")
             return []
         cut = (f" — truncated to the first {_PLAN_REVIEW_DIFF_MAX_BYTES} of {len(diff)} bytes; "
                "do not flag what the cut hides" if len(diff) > _PLAN_REVIEW_DIFF_MAX_BYTES else "")
@@ -25816,12 +25838,42 @@ class Orchestrator:
             log.warning("plan review: malformed answer %r model=%s — ending the turn as it was",
                         answer[:200], model)
             return []
+        named = list(dict.fromkeys(str(i.get("step", "?")) for i in unmet))
+        log.info("plan review: ran, %s", f"unmet: step{'s' if len(named) > 1 else ''} "
+                 f"{' and '.join(named)}" if unmet else "nothing unmet")
         for item in unmet if no_edit else []:
             try:
                 no_edit.pop(int(item.get("step")), None)
             except (TypeError, ValueError):
                 pass
         return unmet
+
+    def _plan_screens_unread(self, project: Project, plan_md: str) -> str:
+        """One sentence for each screen the page check opened whose plan step names catalog queries
+        and that read none of them as it first opened, or "" (#765).
+
+        A step's screen is an opened screen whose label the step spells; a screen the check never
+        opened is not judged, since it never had its defaults. A query is named in backticks, or
+        bare when its name holds `_` or `-` and so cannot be an ordinary word."""
+        validation = project.page_validation
+        if validation is None or not validation.screens:
+            return ""
+        catalog = catalog_names(project.app_for_turn().path) or set()
+        read = validation.queries_read | {r["path"].rsplit("/", 1)[-1]
+                                          for r in validation.data_reads if r["kind"] == "query"}
+        out = []
+        for step in parse_steps(plan_md):
+            text = " ".join([step.label, step.do, step.done_when, *step.uses])
+            named = sorted((n for n in catalog if f"`{n}`" in text or re.search(r"[_-]", n) and re.search(
+                rf"(?<![\w-]){re.escape(n)}(?![\w-])", text)), key=text.find)
+            screen = next((str(s["screen"]) for s in validation.screens
+                           if str(s.get("screen") or "").strip()
+                           and str(s["screen"]).casefold() in text.casefold()), "")
+            if named and screen and not read & set(named):
+                listed = ", ".join(named[:-1]) + f" and {named[-1]}" if len(named) > 1 else named[0]
+                out.append(f'The "{screen}" screen (plan step {step.n}) read none of {listed} '
+                           "when it opened at its defaults, so its data was never shown working.")
+        return " ".join(out)
 
     def _skill_copy_drift(self, project: Project, tree_before: str, rows_before: int):
         """Yields and records the `skill-copy-drift` row for a build that finished (#682).
@@ -26320,6 +26372,7 @@ class Orchestrator:
             for answered in (supervisor.query_reads() if validation.generation else []):
                 if answered["generation"] != validation.generation:
                     continue
+                validation.queries_read.add(str(answered["name"]))
                 if len(validation.data_reads) >= 20:
                     validation.reads_truncated = True
                     break
@@ -26382,10 +26435,13 @@ class Orchestrator:
         validation = self._active_validation(validation_id)
         if validation is None:
             return None
+        request = read_request(path, query, kind=kind)
+        if request["kind"] == "query":
+            validation.queries_read.add(request["path"].rsplit("/", 1)[-1])
         if len(validation.data_reads) >= 20:
             validation.reads_truncated = True
             return None
-        read = {**read_request(path, query, kind=kind), "outcome": "pending", "status": None}
+        read = {**request, "outcome": "pending", "status": None}
         validation.data_reads.append(read)
         return {"project": self._project, "validation": validation, "read": read,
                 "queries": self._project.queries if kind == "query" else None}
