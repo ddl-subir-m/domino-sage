@@ -13,6 +13,33 @@ function appHeaders() {
   return {};
 }
 
+class SessionExpiredError extends Error {
+  constructor(status) {
+    super(`${status}: the sign-in in front of this workspace answered instead of the workspace`);
+    this.name = 'SessionExpiredError';
+    this.status = status;
+  }
+}
+
+// Every fetch of Sage's own routes comes through here, `request` and the store's streams alike.
+// Sage writes JSON (or an event stream) on every route the Workbench reads, so an HTML page on one
+// of them was written by the proxy in front of Sage — and below 500 the proxy only answers for
+// itself when it will not pass the request on, which is a Domino login that has lapsed (#754). The
+// store is told here rather than by each caller, because callers catch: half the boot reads fall
+// back to an empty value on any error, and an empty value is the very misreading this replaces.
+//
+// A 5xx page is the other thing the proxy says, and it means something else: a container that is
+// not serving yet, which `throughStartup` waits out (ADR-0027). Not a sign-in.
+async function sageFetch(url, options) {
+  const res = await fetch(url, options);
+  const type = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+  if (res.status < 500 && type.includes('text/html')) {
+    if (SW.store && SW.store.noteSessionExpired) SW.store.noteSessionExpired();
+    throw new SessionExpiredError(res.status);
+  }
+  return res;
+}
+
 async function request(path, options = {}) {
   const url = `${BASE}${path}`;
   try {
@@ -20,7 +47,7 @@ async function request(path, options = {}) {
     if (options.body && !(options.body instanceof Blob) && typeof options.body !== 'string') {
       headers['Content-Type'] = headers['Content-Type'] || 'application/json';
     }
-    const res = await fetch(url, {
+    const res = await sageFetch(url, {
       ...options,
       headers,
       body: options.body && typeof options.body === 'object' && !(options.body instanceof Blob)
@@ -349,6 +376,8 @@ SW.api = {
   throughStartup,
   stillStarting,
   appHeaders,
+  sageFetch,
+  SessionExpiredError,
 
   me: () => request('/me'),
   brand: () => request('/brand'),
@@ -969,7 +998,7 @@ SW.api = {
   // `/api/health` composes the slot Problems from, and `gateway_mode`, `domino` and `project` are
   // answered for the client by `/api/brand` and `/api/project`.
   healthz: async () => {
-    const res = await fetch('./healthz');
+    const res = await sageFetch('./healthz');
     if (!res.ok) {
       // Carries `status` for the same reason `request` does: `stillStarting` reads it, and an
       // error without one is read as a fetch that got no answer at all. Without it every refusal

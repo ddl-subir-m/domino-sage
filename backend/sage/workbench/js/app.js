@@ -108,7 +108,21 @@ window.SW = window.SW || {};
 
     const shellMode = SUBROUTES[route.mode] || route.mode;
     let body;
-    if (error) {
+    if (state.sessionExpired) {
+      // Ahead of the boot wall as well as the Workbench: a lapsed login fails the boot too, and
+      // "could not finish starting up" would send somebody hunting for a fault that a sign-in
+      // fixes (#754). "Looks": the page could be any refusal of the proxy's own, and a sign-in
+      // is the remedy for the one that happens. A reload passes through Domino, which takes an
+      // expired session to its sign-in page and a live one back here.
+      body = h(Result, {
+        status: 'warning',
+        title: SW.brand.text('Your {platformName} session looks expired'),
+        subTitle: SW.brand.text('{platformName} answered in place of {productName}, which '
+          + 'usually means your sign-in has lapsed. Sign in again to carry on.'),
+        extra: h(Button, { type: 'primary', onClick: () => window.location.reload() },
+          'Sign in again'),
+      });
+    } else if (error) {
       // Whatever came back is quoted rather than retold (#121): the title and the reason are ours,
       // the body is the platform's and keeps its own words.
       body = h(Result, {

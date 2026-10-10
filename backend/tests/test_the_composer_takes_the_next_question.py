@@ -118,10 +118,9 @@ def test_a_second_press_on_a_cancel_already_in_flight_is_not_sent():
 
 def test_a_cancel_whose_answer_cannot_be_read_says_nothing():
     """The third state the guard has to tell apart, and the reason it reads `=== false` rather than
-    falsy (#385). A 200 that is not JSON — the proxy answering before the app is up, which the note
-    at `api.js:52` says a freshly opened Workbench really does get — reaches the caller as `{}`.
-    Falsy would read that as a refusal and announce one the server never made, over a cancel that
-    for all anybody here knows succeeded."""
+    falsy (#385). A 200 that is not JSON reaches the caller as `{}`. Falsy would read that as a
+    refusal and announce one the server never made, over a cancel that for all anybody here knows
+    succeeded. (An HTML 200 is the proxy's sign-in page and is #754's expired session instead.)"""
     out = _run("cancel-unreadable")
 
     assert "./api/project/turn/cancel" in out["posted"]

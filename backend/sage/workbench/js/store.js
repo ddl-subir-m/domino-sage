@@ -63,6 +63,10 @@ window.SW = window.SW || {};
     // can say what it is doing instead of spinning. Same shape and the same job as `previewStatus:
     // 'starting'`, which already covers Vite's own warm-up.
     bootStatus: null,
+    // The proxy in front of Sage answered one of Sage's own routes with its sign-in page (#754).
+    // Sticky until a reload: nothing here can sign anybody back in, and every read after it gets
+    // the same page.
+    sessionExpired: false,
     me: null,
     brand: BRAND_DEFAULT,
     projects: [],
@@ -1706,7 +1710,7 @@ window.SW = window.SW || {};
   async function tableArtifactBlocks(art) {
     const path = art.path || '';
     try {
-      const res = await fetch(`./api/project/file?path=${encodeURIComponent(path)}`, {
+      const res = await SW.api.sageFetch(`./api/project/file?path=${encodeURIComponent(path)}`, {
         headers: SW.api.appHeaders(),
       });
       const body = await res.json();
@@ -4890,7 +4894,7 @@ window.SW = window.SW || {};
     const url = `./preview/${app ? `${app}/` : ''}?t=${Date.now()}`;
     try {
       if (statusOnly || retry) {
-        const statusRes = await fetch(`./api/preview/${retry ? 'retry' : 'status'}${
+        const statusRes = await SW.api.sageFetch(`./api/preview/${retry ? 'retry' : 'status'}${
           retry && app ? `?appId=${encodeURIComponent(app)}` : ''}`, {
           method: retry ? 'POST' : 'GET', cache: 'no-store',
           headers: SW.api.appHeaders(),
@@ -5666,6 +5670,14 @@ window.SW = window.SW || {};
     // anything changed.
     openProblems(open) {
       state.problemsOpen = Boolean(open);
+      notify();
+    },
+
+    // Called by `SW.api.sageFetch`, never by a caller of it, so a read that swallows its error
+    // still cannot leave an empty list on screen in place of this.
+    noteSessionExpired() {
+      if (state.sessionExpired) return;
+      state.sessionExpired = true;
       notify();
     },
 
@@ -8486,7 +8498,7 @@ window.SW = window.SW || {};
         // The whole turn, not just the sentence: an @mention names something the server has to be
         // handed as a path or an identity, because the word alone reaches the agent as a word.
         const refs = collectTurnRefs(text);
-        const res = await fetch(url || './api/project/build/stream', {
+        const res = await SW.api.sageFetch(url || './api/project/build/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...SW.api.appHeaders() },
           body: JSON.stringify(postedTurnBody(body || {
@@ -8671,7 +8683,7 @@ window.SW = window.SW || {};
       let detached = false;
       const requestOrder = ++turnRequestOrder;
       try {
-        const res = await fetch('./api/project/build/continue', {
+        const res = await SW.api.sageFetch('./api/project/build/continue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...SW.api.appHeaders() },
           body: JSON.stringify({
@@ -9200,7 +9212,7 @@ window.SW = window.SW || {};
         // document is the one being approved, and a plan drafted by hand since then breaks that.
         if (planId) payload.plan_id = planId;
         if (buildAgain) payload.build_again = true;
-        const res = await fetch('./api/project/build/approve', {
+        const res = await SW.api.sageFetch('./api/project/build/approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...SW.api.appHeaders() },
           body: JSON.stringify(payload),
@@ -9812,7 +9824,7 @@ window.SW = window.SW || {};
       };
 
       try {
-        const res = await fetch(url || `./api/threads/${thread.id}/chat/stream`, {
+        const res = await SW.api.sageFetch(url || `./api/threads/${thread.id}/chat/stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           // The decline route ignores this and reads the pending question off the Thread, so a
@@ -10594,7 +10606,7 @@ window.SW = window.SW || {};
       let thread = state.thread;
       if (!thread) thread = await store.newThread();
       const name = (file && file.name) || String(file);
-      const res = await fetch(`./api/project/upload?name=${encodeURIComponent(name)}`, {
+      const res = await SW.api.sageFetch(`./api/project/upload?name=${encodeURIComponent(name)}`, {
         method: 'POST',
         body: file instanceof Blob ? file : undefined,
       });
