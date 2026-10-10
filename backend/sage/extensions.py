@@ -206,7 +206,7 @@ def list_extensions(root: Path) -> list[dict]:
             for e in read_manifest(root)]
 
 
-def add(root: Path, body: dict) -> dict:
+def add(root: Path, body: dict, *, _created: list[Path] | None = None) -> dict:
     """Write one extension into the project slot and record it. Answers its manifest entry."""
     root = Path(root)
     kind = body.get("kind")
@@ -227,7 +227,7 @@ def add(root: Path, body: dict) -> dict:
         if replaces:
             _check_replaces(replaces, entry["id"], entries)
             entry["replaces"] = replaces
-        entry["files"] = _write_skill(root, name, files)
+        entry["files"] = _write_skill(root, name, files, created=_created)
         entries.append(entry)
         _write_manifest(root, entries)
         return entry
@@ -325,7 +325,27 @@ def _check_description(name: str, skill_md: str) -> None:
                              "loads a skill without one and never offers it to the model.")
 
 
-def _write_skill(root: Path, name: str, files: object) -> list[str]:
+def _same_skill_files(folder: Path, files: dict[PurePosixPath, str]) -> bool:
+    """A copied skill may be registered, but only its exact, local files may become Sage-owned."""
+    try:
+        if any(p.is_symlink() or not p.is_dir()
+               for p in (folder, folder.parent, folder.parent.parent)):
+            return False
+        expected = set(files) | {parent for rel in files for parent in rel.parents
+                                 if parent != PurePosixPath(".")}
+        existing = list(folder.rglob("*"))
+        if {p.relative_to(folder) for p in existing} != expected:
+            return False
+        if any(p.is_symlink() or not (p.is_file() or p.is_dir()) for p in existing):
+            return False
+        return all((folder / rel).is_file() and (folder / rel).read_bytes() == text.encode("utf-8")
+                   for rel, text in files.items())
+    except OSError:
+        return False
+
+
+def _write_skill(root: Path, name: str, files: object, *,
+                 created: list[Path] | None = None) -> list[str]:
     if not isinstance(files, dict) or not isinstance(files.get("SKILL.md"), str):
         raise ExtensionError("A skill needs a SKILL.md.")
     # OpenCode names a skill from its frontmatter, so a different name there would get past the
@@ -337,8 +357,14 @@ def _write_skill(root: Path, name: str, files: object) -> list[str]:
     if not all(isinstance(text, str) for text in paths.values()):
         raise ExtensionError("Every skill file is text.")
     folder = root / SLOT / "skills" / name
-    if folder.exists():
+    try:
+        folder.mkdir(parents=True)
+    except FileExistsError:
+        if _same_skill_files(folder, paths):
+            return sorted((SLOT / "skills" / name / rel).as_posix() for rel in paths)
         raise ExtensionError(f"{folder.relative_to(root)} already exists and is not Sage's.")
+    if created is not None:
+        created.append(folder)
     written = []
     for rel, text in paths.items():
         target = folder / rel
@@ -353,14 +379,20 @@ def add_skills(root: Path, skills: list[dict[str, str]], *, replaces: str = "",
     """Add every skill one upload or import holds, or none of them."""
     if replaces and len(skills) != 1:
         raise ExtensionError(f"This holds {len(skills)} skills. Only one can replace '{replaces}'.")
+    root = Path(root)
+    created: list[Path] = []
     added: list[dict] = []
     try:
         for files in skills:
             added.append(add(root, {"kind": "skill", "files": files, "replaces": replaces,
-                                    "source": source or {"type": "upload"}}))
+                                    "source": source or {"type": "upload"}}, _created=created))
     except ExtensionError:
-        for entry in added:
-            remove(root, entry["id"])
+        if added:
+            with _LOCK:
+                for folder in created:
+                    shutil.rmtree(folder, ignore_errors=True)
+                ids = {entry["id"] for entry in added}
+                _write_manifest(root, [e for e in read_manifest(root) if e["id"] not in ids])
         raise
     return added
 
