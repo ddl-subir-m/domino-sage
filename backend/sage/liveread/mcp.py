@@ -184,7 +184,9 @@ TOOLS: list[dict[str, Any]] = [
                 "dataset": {"type": "string", "description": "The Dataset name."},
                 "operation": {"type": "string", "enum": ["sum", "analyze_text", "document"],
                               "description": "Calculate CSV totals, analyze CSV text, or select "
-                                             "bounded attached document text."},
+                                             "bounded attached document text. For document, always "
+                                             "use dataset=upload and the attached path, including "
+                                             "for a selected Dataset file."},
                 "group_by": {"type": "string", "description": (
                     "The group column for sum, or for analyze_text label counts per value.")},
                 "sum_column": {"type": "string"},

@@ -1026,7 +1026,7 @@ window.SW = window.SW || {};
         trigger: ['click'],
         placement: 'bottomRight',
         open: Boolean(pick),
-        onOpenChange: (next) => (next
+        onOpenChange: (next, info) => (info && info.source === 'menu' ? undefined : next
           ? SW.store.openScopePick(binding)
           : SW.store.closeScopePick()),
         menu: {

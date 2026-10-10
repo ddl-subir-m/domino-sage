@@ -198,7 +198,9 @@ Build the user's app by editing its screens under `static/components/`, the file
 - **A shareable view uses `sage.useViewState`, and only when the plan says the view is shareable**
   — a dashboard or list whose applied selection reopens from a reload or a copied link. Never a
   form, never unasked. Define the schema once at the top of `static/app.js`, call the hook once in
-  the shell, and pass the state and its patch function to the screens, so each screen keeps its
+  the shell as `const [view, patchView] = sage.useViewState(VIEW);`, and pass both to the screens.
+  The result is a pair: read `view.screen` and call `patchView({...})`; it has no `.state` or
+  `.patch` property. Each screen keeps its
   selection when another one shows. Mark `shareable` only the screen and applied filters; draft
   search text, row values and form input stay out. A filter change is `patchView({...})`; switching
   screens or an Apply button adds `{ history: "push" }`. Read the state the hook returns, never

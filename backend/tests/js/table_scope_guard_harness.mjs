@@ -18,7 +18,7 @@ import { unrefTimeout } from './sandbox_timeout.mjs';
 const ROOT = new URL('../../sage/workbench/js/', import.meta.url).pathname;
 // `unscoped` drops the Scope off the app's Binding, which is the ordinary state of a store bound
 // from the header: that picker binds in one argument and leaves the Scope as a second act (#142).
-const { prompt, unscoped } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const { prompt, unscoped, tables } = JSON.parse(fs.readFileSync(0, 'utf8'));
 
 const APP = { id: 'app_a', name: 'Usage dashboard', selected: true };
 
@@ -39,6 +39,7 @@ const BINDINGS = [{
   kind: 'data_source', id: 'ds-dwh', name: 'Snowflake-Data-Warehouse',
   display_name: 'Snowflake-Data-Warehouse',
   ...(unscoped ? {} : { database: 'DWH', schema: 'MARTS', table: 'FCT_USAGE_DAILY' }),
+  ...(tables ? { tables } : {}),
 }];
 
 const sent = [];
@@ -203,6 +204,8 @@ for (const button of pressed.buttons) await button.click();
 await settle();
 report.scopeOpened = scopeOpened;
 report.sentAfterClick = sent.length;
+report.dependenciesOpen = SW.store.get().appDependenciesOpen;
+report.scopeShown = SW.util.scopeShown(BINDINGS[0]);
 
 // And what the turn carries if the warning is read and ignored — the mention is still sent, so the
 // server's own sentence is the backstop. The warning never blocks (#136).

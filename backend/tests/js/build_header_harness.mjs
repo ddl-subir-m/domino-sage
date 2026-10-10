@@ -1680,6 +1680,7 @@ for (const step of steps) {
         throw new Error(`the door offers no ${key} — offered ${JSON.stringify(at.items)}`);
       }
       await at.onMenu({ key });
+      if (step.menuClose) await at.onOpenChange(false, { source: 'menu' });
     };
 
     const shut = doorFor();

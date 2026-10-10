@@ -598,7 +598,7 @@ def _verification(value) -> dict | None:
     stages = value.get("stages")
     result = {"overall": value["overall"], "stages": {
         key: status for key, status in (stages.items() if isinstance(stages, dict) else [])
-        if key in {"code", "startup", "page", "runtime", "data"}
+        if key in {"code", "startup", "page", "runtime", "data", "plan"}
         and isinstance(status, str) and status in allowed}}
     for key in ("validationId", "generation", "codeGeneration"):
         text = value.get(key)

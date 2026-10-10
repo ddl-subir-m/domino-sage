@@ -109,6 +109,8 @@ def test_missing_title_keeps_the_selected_stack_and_can_be_approved(selected_sta
     assert not app.project.workspace.read_plan().startswith('# ')
     assert len(app.gateway.repair_requests()) == 1
     assert len(app.oc.prompts) == 1
+    # Approval calls the plan reviewer, after the first turn's scope classification.
+    app.gateway.word = '{"unmet": []}'
     _, done = _run(app, _ack(app), approve=True)
     assert done['ok'] is True and done['verification']['overall'] == 'passed'
     assert len(app.oc.prompts) == 2

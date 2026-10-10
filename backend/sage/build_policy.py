@@ -74,7 +74,7 @@ plan_review_timeout_seconds      SAGE_BUILD_PLAN_REVIEW_TIMEOUT_SECONDS         
 
 [5] The one plan-tier call that reads an approved build's code diff against its plan's Done-when
     items (#716). ``on`` or ``off``. The cap bounds the call, not the turn's other checks; a call
-    past it ends the turn as it would have ended without the review.
+    past it keeps the built app and marks the plan review unverified.
 """
 
 from __future__ import annotations

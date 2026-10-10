@@ -264,6 +264,7 @@ def check_python_stack(workspace: Path, timeout_s: float = 120.0) -> FeedbackRep
     errors += _unloaded_definitions(workspace, js_files)
     errors += _loaded_after_entry(workspace)
     errors += [e for js in js_files for e in _untyped_view_fields(workspace, js)]
+    errors += [e for js in js_files for e in _object_view_results(workspace, js)]
     errors += _hand_written_url_state(workspace, js_files, FASTAPI_ANTD.view_state, "sage.useViewState")
     errors += [e for js in js_files for e in _list_series_colours(workspace, js)]
     errors += _withheld_placeholders(workspace)
@@ -547,6 +548,44 @@ def _untyped_view_fields(workspace: Path, js: Path) -> list[FeedbackError]:
             errors.append(FeedbackError(
                 file=js.relative_to(workspace).as_posix(), line=source.count("\n", 0, lead) + 1,
                 col=1, code="SAGE004", message=message))
+    return errors
+
+
+# The hook returns a pair. Reading it as an object can leave a valid page on "Loading..." forever.
+_VIEW_RESULT_RE = re.compile(
+    r"\b(?:const|let|var)\s+(?P<binding>[A-Za-z_$][\w$]*|\{[^{}]*\})\s*="
+    r"\s*sage\s*\.\s*useViewState\s*\(")
+
+
+def _object_view_results(workspace: Path, js: Path) -> list[FeedbackError]:
+    source = js.read_text(errors="ignore")
+    if "useViewState" not in source:
+        return []
+    code = _blank_text(source)
+    errors = []
+    for match in _VIEW_RESULT_RE.finditer(code):
+        binding = match["binding"]
+        if not binding.startswith("{"):
+            # Stay inside the declaration's block. A sibling component can use the same name
+            # for an unrelated object without making this hook's result an object.
+            depth, end = 0, len(code)
+            for at in range(match.end(), len(code)):
+                if code[at] == "{":
+                    depth += 1
+                elif code[at] == "}":
+                    if depth == 0:
+                        end = at
+                        break
+                    depth -= 1
+            if not re.search(rf"\b{re.escape(binding)}\s*\.\s*(?:state|patch)\b",
+                             code[match.end():end]):
+                continue
+        errors.append(FeedbackError(
+            file=js.relative_to(workspace).as_posix(), line=code.count("\n", 0, match.start()) + 1,
+            col=1, code="SAGE009",
+            message=("sage.useViewState returns [state, patch], not an object with .state or .patch. "
+                     "Use const [view, patchView] = sage.useViewState(VIEW); then read view.screen "
+                     "and call patchView({...}). A guard on view.state never leaves Loading.")))
     return errors
 
 

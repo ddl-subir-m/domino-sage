@@ -66,6 +66,8 @@ export default {
     money: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }], description: "For a .png chart: the y columns that are amounts of money. Send null if none." },
     percent: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }], description: "For a .png chart: the y columns that are percentages (28.7 means 28.7%). Send null if none." },
     bar_label: { anyOf: [{ type: "string" }, { type: "null" }], description: "For a .png bar chart of one y and no by: the column whose text labels each bar in place of its value. Build that text in the statement, e.g. a column of '81 calls · 28.7% win rate'. Send null to label each bar with its value." },
+    series_order: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }], description: "Series names in the order the person or skill requires. For by, use category names; otherwise use y column names. Missing names add no data. Send null for result order." },
+    series_colors: { anyOf: [{ type: "object", additionalProperties: { type: "string" } }, { type: "null" }], description: "Series names mapped to color strings, such as hex colors required by a skill. Styles existing series only. Send null for Sage colors." },
   },
   async execute(args) {
     const sent = {}

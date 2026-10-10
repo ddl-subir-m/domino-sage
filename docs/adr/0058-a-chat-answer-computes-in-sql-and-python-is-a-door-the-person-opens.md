@@ -306,3 +306,13 @@ could not say how a result of one measure by two categories is drawn, nor what t
 same result that splits the one `y` into stacked parts, and `money` and `percent`, which name `y`
 columns. Each is a column of the result, never a value, so the chart is still drawn from the rows
 alone. Measures in different units get a panel each.
+
+**Amendment (2026-10-10): series order and colors are display metadata.** The chart also accepts
+`series_order` and `series_colors` so a skill can set stage order and its color key. These options
+reorder and style existing series. They do not add categories, values, or missing-row zeroes.
+Labels that combine reads still come from a SQL join in one result; there is no second join
+mechanism in the chart tool.
+
+The answer's number check also includes selected document text recorded for the current turn.
+Text-analysis results enter the same held-read record as SQL and CSV calculations. A number
+already supplied through one of those routes must not be removed because the turn also ran SQL.

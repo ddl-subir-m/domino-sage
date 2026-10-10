@@ -32,18 +32,23 @@ from .test_changed_page_validation import Preview, build, run  # noqa: F401
 class FakeCheck:
     def __init__(self, walk=()):
         self.closed, self.polls, self._walk = 0, 0, iter(walk)
+        self.finished = False
 
     def walked(self):
         """One poll while the script opens tabs: runs the next step of `walk`, done when it runs out."""
         self.polls += 1
         step = next(self._walk, None)
         if step is None:
+            self.finished = True
             return True
         step()
         return False
 
     def screens(self):
         return []
+
+    def failure_reason(self):
+        return "" if self.finished else "the page check did not finish checking the app"
 
     def close(self):
         self.closed += 1
@@ -164,7 +169,8 @@ def test_a_tab_walk_that_never_finishes_ends_at_the_check_budget(build):  # noqa
     browser = FakeBrowser(orch.record_preview_ack, walk=forever)
     orch._page_check = browser
     _, done = run(orch)
-    assert done["verification"]["stages"]["runtime"] == "passed"
+    assert done["verification"]["stages"]["runtime"] == "unverified"
+    assert "page check did not finish" in done["verification"]["reason"]
     [check] = browser.checks
     assert check.closed == 1
     assert check.polls <= 31

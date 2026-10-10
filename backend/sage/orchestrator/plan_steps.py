@@ -65,6 +65,13 @@ _CANON = {
 MIN_STEPS = 3
 
 
+def plan_context(plan_md: str) -> str:
+    """The approved app requirements, without other phases' execution instructions."""
+    parsed = plan_doc.parse_sections(plan_md)
+    sections = {**parsed["sections"], "plan": ""}
+    return plan_doc.render(parsed["summary"], sections, parsed["title"])
+
+
 @dataclass(frozen=True)
 class PlanStep:
     # The step's position in the list, 1..len(steps) — NOT the number the model wrote. `parse_steps`

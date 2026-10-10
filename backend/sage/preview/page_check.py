@@ -99,10 +99,19 @@ class PageCheck:
         return os.pread(fd, os.fstat(fd).st_size, 0).splitlines()
 
     def walked(self) -> bool:
-        """Whether the script has opened every tab it will (#709), or has exited."""
+        """Whether to stop waiting. An exit is not proof of a completed check."""
         if self._stdout.closed or self.process.poll() is not None:
             return True
-        return b"done" in self._said()
+        return b"done" in self._said() or b'{"checkError":true}' in self._said()
+
+    def failure_reason(self) -> str:
+        """Only the script's success marker proves that its screen walk finished."""
+        lines = self._said()
+        if b'{"checkError":true}' in lines:
+            return "the page check crashed before it finished checking the app"
+        if b"done" not in lines:
+            return "the page check did not finish checking the app"
+        return ""
 
     def screens(self) -> list[dict]:
         """What each screen the script opened showed (#750): `screen` (its tab's label), `texts`

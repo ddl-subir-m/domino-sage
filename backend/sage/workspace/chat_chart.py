@@ -2,7 +2,7 @@
 
 The data-artifact lane used to ask the model for SVG, so every bar and label was a literal it
 typed — which is how a chart carried 118/94/67/12 calls over a table that said 47/29/25/14. Here the
-model names a result and its columns, and nothing else: the labels and the numbers are the rows.
+model names a result and its columns, plus display order and colors: the values are still the rows.
 
 Sized for where it is shown. The Thread's message column is ~450 px wide, so the figure is drawn
 4.5 in wide at 200 dpi — 900 px, shown at half — and a 10 pt label lands at ~14 px there. Categories
@@ -193,12 +193,26 @@ def _bars(ax, labels: list, values: dict[str, list], unit: str, stacked: bool, c
 
 
 def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
-           money=(), percent=(), bar_label: str | None = None):
+           money=(), percent=(), bar_label: str | None = None, *,
+           series_order=None, series_colors=None):
+    from matplotlib.colors import is_color_like
     from matplotlib.figure import Figure
     from matplotlib.ticker import FuncFormatter, MaxNLocator
 
     unit_of = _units(ys, money or (), percent or ())
     labels, values = _series(read, x, ys, by)
+    if series_order is not None:
+        if not isinstance(series_order, list) or not all(isinstance(v, str) for v in series_order):
+            raise ValueError("series_order must be a list of series names.")
+        # A skill may include stages that have no rows this time. Order only the series present;
+        # never invent zeroes for the missing stages or drop new stages absent from the style.
+        order = dict.fromkeys([*series_order, *values])
+        values = {name: values[name] for name in order if name in values}
+    series_colors = series_colors if series_colors is not None else {}
+    if (not isinstance(series_colors, dict)
+            or not all(isinstance(k, str) and isinstance(v, str) and is_color_like(v)
+                       for k, v in series_colors.items())):
+        raise ValueError("series_colors must map series names to valid color strings.")
     units = {name: unit_of[ys[0]] if by else unit_of[name] for name in values}
     # One axis per unit: calls and a win rate on one scale read as one measure (#746).
     panels = ([[name] for name in values] if len(set(units.values())) > 1 else [list(values)])
@@ -222,7 +236,8 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
                   + (0.2 if len(panels) > 1 else 0) + per * len(labels))
     fig = Figure(figsize=(_WIDTH_IN, height), dpi=_DPI, facecolor="white", layout="constrained")
     axes = fig.subplots(1, len(panels), sharey=True, squeeze=False)[0]
-    colors = _COLORS * 3
+    colors = [series_colors.get(name, _COLORS[i % len(_COLORS)])
+              for i, name in enumerate(values)]
     for ax, names in zip(axes, panels, strict=True):
         unit = units[names[0]]
         shade = colors[list(values).index(names[0]):] if len(panels) > 1 else colors
@@ -258,20 +273,34 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
         axes[0].set_ylabel(x, fontsize=_FONT_PT)
     fig.suptitle(title, fontsize=_FONT_PT + 1)
     if legend:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.font_manager import FontProperties
+
         handles, names = axes[0].get_legend_handles_labels()
-        fig.legend(handles, names, loc="outside lower center", ncols=min(len(names), 3),
+        names = [textwrap.fill(name, _LABEL_CHARS) for name in names]
+        renderer = FigureCanvasAgg(fig).get_renderer()
+        font = FontProperties(size=_FONT_PT - 1)
+        widest = max(renderer.get_text_width_height_descent(line, font, False)[0]
+                     for name in names for line in name.splitlines())
+        # Include each handle, its gap and the column gap (in legend font units). The old fixed
+        # three-column legend could extend beyond both edges, even with only two long names.
+        column_px = widest + 4.8 * (_FONT_PT - 1) * _DPI / 72
+        ncols = min(len(names), 3, max(1, int((fig.bbox.width - 30) / column_px)))
+        fig.legend(handles, names, loc="outside lower center", ncols=ncols,
                    fontsize=_FONT_PT - 1, frameon=False)
     return fig
 
 
 def draw(read: HeldRead, x: str, ys: list[str], by: str | None = None,
-         money=(), percent=(), bar_label: str | None = None) -> bytes:
+         money=(), percent=(), bar_label: str | None = None, *,
+         series_order=None, series_colors=None) -> bytes:
     from matplotlib import font_manager
 
     out = io.BytesIO()
     try:
-        figure(read, x, ys, by, money, percent, bar_label).savefig(out, format="png", dpi=_DPI,
-                                                                   facecolor="white")
+        figure(read, x, ys, by, money, percent, bar_label,
+               series_order=series_order, series_colors=series_colors).savefig(
+                   out, format="png", dpi=_DPI, facecolor="white")
     finally:
         # matplotlib holds every face it drew with open in a process-wide cache. A chart is drawn
         # a few times a conversation, so reopening one costs nothing next to holding descriptors.

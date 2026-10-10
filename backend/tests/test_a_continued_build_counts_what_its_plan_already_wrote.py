@@ -45,7 +45,7 @@ def _review_reads(orch: Orchestrator) -> list[list[str]]:
     """The code paths each Done-when review was handed, measured from the baseline it was given."""
     reads: list[list[str]] = []
 
-    def review(project, plan_md, tree_before, no_edit=None):
+    def review(project, plan_md, tree_before, no_edit=None, *, queries_before=None):
         reads.append(project.snapshot.changed_paths(
             tree_before, project.snapshot.working_tree_hash()))
         return []

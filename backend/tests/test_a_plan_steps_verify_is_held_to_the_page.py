@@ -105,6 +105,9 @@ class Check:
     def walked(self):
         return True
 
+    def failure_reason(self):
+        return ""
+
     def screens(self):
         return list(self._screens)
 

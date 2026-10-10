@@ -3471,7 +3471,9 @@ window.SW = window.SW || {};
             ok: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified' ? null : ev.ok,
             warn: !!(ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'),
             value: ev.ok !== false && ev.verification && ev.verification.overall === 'unverified'
-              ? (ev.verification.stages && ev.verification.stages.runtime === 'passed'
+              ? (ev.verification.stages && ev.verification.stages.plan === 'unverified'
+                ? 'App built. Plan review was not completed.'
+                : ev.verification.stages && ev.verification.stages.runtime === 'passed'
                 && ev.verification.stages.data === 'unverified'
                 ? 'Page checks passed. Data access wasn\'t checked.'
                 : `Code checks passed. The app wasn't run${
@@ -4654,6 +4656,10 @@ window.SW = window.SW || {};
   let buildThought = '';
   function applyBuildEvent(ev) {
     if (!ev) return;
+    if (ev.type === 'phase' && (ev.phase === 'plan' || ev.phase === 'implement')) {
+      applyModelStatus({ phase: ev.phase });
+      return;
+    }
     // A turn that never ran leaves the transcript alone. The transcript is the receipt and there is
     // nothing here to give one for: `pending` is a composer row, and both ways a queued turn can end
     // without running hand the question back to the composer instead of recording it (#79).
@@ -7123,6 +7129,7 @@ window.SW = window.SW || {};
         (b) => b.kind === entry.kind && b.id === entry.id
       );
       if (!binding) return false;
+      store.openAppDependencies();
       store.openScopePick(binding);
       return true;
     },
@@ -7216,6 +7223,7 @@ window.SW = window.SW || {};
           const at = scopeOf[key];
           if (!ref.table || !at) return;
           const scoped = SW.util.scopeText(at);
+          if ((at.tables || []).some((position) => position.table === ref.table)) return;
           if (scoped && (!at.table || at.table === ref.table)) return;
           seen.add(key);
           entries.push({ kind: ref.kind, id: ref.id, name: ref.table, table: ref.table,
