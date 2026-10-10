@@ -42,10 +42,11 @@ _logged_unknown: set[str] = set()
 @dataclass(frozen=True)
 class Resources:
     """What this Project offers a plan: MCP server rows (`extension_mcp.list_servers`), secret
-    names, and the LLM Alias call names this app may use."""
+    names, the LLM Alias call names this app may use, and the Project skills switched on for it."""
     servers: tuple[dict, ...] = ()
     secrets: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
+    skills: tuple[str, ...] = ()
 
 
 def server_lines(servers: Iterable[dict]) -> list[str]:
@@ -59,15 +60,20 @@ def planner_note(res: Resources) -> str:
     alias = brand.apply_voice("{llmAlias}")
     lines = [*server_lines(res.servers),
              *(f"- Secret `{name}`" for name in res.secrets),
-             *(f"- {alias} `{name}`" for name in res.aliases)]
+             *(f"- {alias} `{name}`" for name in res.aliases),
+             *(brand.apply_voice(f"- {{project}} skill `{name}`") for name in res.skills)]
     if not lines:
         return ""
+    skills = (" A measure, query or default scope a {project} skill defines is binding: a step "
+              "that shows one names the skill, and the build uses the skill's pinned query or "
+              "definition and opens on its default scope rather than writing its own."
+              if res.skills else "")
     return brand.apply_voice(
         "This {project} has these resources. When a plan step depends on one of them, give that "
         "step a '- Uses —' bullet naming each one by its name in backticks alone, comma-separated. "
         "A step that needs what an MCP server's tools provide depends on that server even when the "
         "request does not name it: the app calls it, and shows no sample data in its place. Leave "
-        "the bullet out of a step that depends on none.") + "\n" + "\n".join(lines)
+        "the bullet out of a step that depends on none." + skills) + "\n" + "\n".join(lines)
 
 
 def query_names(path: Path) -> list[str]:

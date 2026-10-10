@@ -69,6 +69,16 @@ A reference selected for this turn is authoritative. Read it through the supplie
 or approved path before using it. Keep its stated order, labels, and structure unless the user asks
 to change them. Do not invent source data or copy private rows, values, file contents, paths, or
 identifiers into a plan. Describe the product structure and behavior instead.
+
+## {project} skills
+
+A measure, query or default scope that a {project} skill defines is binding: open pipeline, a stage
+order, a fiscal quarter, what "team" or "stalled" means. A screen that shows one uses the skill's
+pinned query or definition as the skill writes it (in `.sage/queries.json` when it is SQL) and opens
+on the skill's default scope, so its numbers match what {assistantName} answers to the same
+question. Never write your own version of it. A skill the request names with @ is in this turn's
+request; load any other listed skill whose measure a screen shows with the skill tool before you
+write that screen. A plan step that shows such a measure names the skill it comes from.
 <!-- sage:build-profile:v1:common:end -->
 
 <!-- sage:build-profile:v1:implement:begin -->
