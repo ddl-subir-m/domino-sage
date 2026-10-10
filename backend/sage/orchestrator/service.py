@@ -4275,8 +4275,9 @@ def _progress_armed(project) -> bool:
     Asked of the pre-edit guard rather than of the turn, because the guard is the thing that owns
     a build until its first edit and the budget is the thing that owns it afterwards; reading the
     guard's own state is what makes those two exactly abut, with no turn falling between them.
-    `DISARMED` is reached only through the authoritative tree witness and is terminal, so it means
-    "a change landed in this build" and cannot go back to meaning anything else.
+    `DISARMED` is reached only through a tree witness, this Attempt's or an earlier Attempt's of the
+    same build (#753), and is terminal, so it means "a change landed in this build" and cannot go
+    back to meaning anything else.
 
     A build with no guard at all is a gated, answering or architect turn. Those are armed
     read-only — the shim strips every write and shell tool from the request — so there is no loop
@@ -21127,6 +21128,17 @@ class Orchestrator:
                     and project.snapshot.turn_changed_app(str(previous.get("turnId") or ""),
                                                           ignore=app.sage_owned_paths))
 
+    @staticmethod
+    def _build_landed(project: Project, started: tuple[str, str], tree: str,
+                      queries: str) -> bool:
+        """Whether an earlier Attempt of this build changed the app's own files or its query
+        catalog between where the build `started` and `tree`/`queries` now (#753). A file Sage
+        writes itself is not the agent's work, as in `_previous_turn_did_it`."""
+        owned = project.app_for_turn().sage_owned_paths
+        return started[1] != queries or any(
+            path not in owned for path in project.snapshot.changed_paths(
+                started[0], tree, limit=100_000))
+
     def _mark_turn_wedged(self) -> None:
         """Keep ownership of the tree and release every queued caller with a refusal."""
         self._turn_wedged = True
@@ -21315,7 +21327,8 @@ class Orchestrator:
                       how_sage_works: str = "guided", dataset_note: str = "",
                       unbuilt_steps: Callable[[], list[PlanStep]] | None = None,
                       plan_review: Callable[[], list[dict]] | None = None,
-                      plan_no_edit: dict[int, str] | None = None):
+                      plan_no_edit: dict[int, str] | None = None,
+                      wrote_before: bool = False):
         """Same loop as build(), but yields progress events (dicts) as it goes: agent text/tool
         activity, typecheck results, iteration, and a final done event. Reuses the session so
         each call is a follow-up turn (modify/add features) with full context.
@@ -21332,7 +21345,10 @@ class Orchestrator:
 
         `mentions` are workspace paths of attached files the user @-referenced; they're resolved to
         real files and attached to this turn's prompt (see _resolve_mentions). `resources` are the
-        Bindings they @-referenced, which ride the prompt text instead (see _resource_mention_note)."""
+        Bindings they @-referenced, which ride the prompt text instead (see _resource_mention_note).
+
+        `wrote_before` says an earlier Attempt of this build already changed the app (#753): a
+        reply that writes nothing is then checked like any build's, not sent to no-edit recovery."""
         import time
 
         direct = how_sage_works == "direct"
@@ -21775,6 +21791,8 @@ class Orchestrator:
                     project.snapshot.working_tree_hash,
                     project.snapshot.queries_digest,
                 )
+                if wrote_before:
+                    project.pre_edit_guard.landed_earlier()
         if not gate and not answer_only and not arch and project.context_rollover is None:
             with project.pre_edit_tree_lock:
                 baseline = (project.pre_edit_guard.baseline
@@ -22499,7 +22517,7 @@ class Orchestrator:
         # The same for every repair (#694): once an iteration of this turn wrote, a later reply that
         # writes nothing ends the way an unsuccessful repair ends, not on the no-edit ladder, which
         # would report "didn't change any files" and leave the earlier work unsaved.
-        wrote_earlier = False
+        wrote_earlier = wrote_before
         GATEWAY_FIX_NUDGE = (
             # Self-contained rather than pointing at a heading in AGENTS.md: `agents_block` writes
             # no model section at all for an app with no Alias bound, and titles it in the plural for
@@ -25465,6 +25483,16 @@ class Orchestrator:
                           if resume_from and not phased else "")
         tree_before = project.snapshot.working_tree_hash()
         queries_before = project.snapshot.queries_digest()
+        # A retry or Continue of this plan is the same build (#753): what an earlier Attempt wrote
+        # is this build's work, so the checks below diff from where the build started, and the
+        # pre-edit guard, whose job ends at a build's first edit, does not arm again.
+        started = project.app_for_turn().read_plan_build_baseline() if resume_from else None
+        landed = started is not None and self._build_landed(project, started, tree_before,
+                                                            queries_before)
+        if landed:
+            tree_before, queries_before = started
+        else:
+            project.app_for_turn().set_plan_build_baseline(tree_before, queries_before)
         rows_before = len(project.app_for_turn().read_history(project.build_conversation))
         plan_res = self._plan_resources(project)
         no_edit: dict[int, str] = {}
@@ -25474,7 +25502,7 @@ class Orchestrator:
                                                 start_step=resume_from, mentions=mentions,
                                                 explicit_references=explicit_references,
                                                 source_requests=source_requests,
-                                                dataset_note=dataset_note)
+                                                dataset_note=dataset_note, landed=landed)
             else:
                 # The bubble is what the person did, not what we sent. Approving from the card passes
                 # no `user_text`, and _build_stream's fallback is the prompt itself — so the whole
@@ -25500,7 +25528,7 @@ class Orchestrator:
                         project, plan_md, tree_before, queries_before, plan_res, no_edit),
                     plan_review=lambda: self._plan_review(
                         project, plan_md, tree_before, no_edit),
-                    plan_no_edit=no_edit)
+                    plan_no_edit=no_edit, wrote_before=landed)
             for event in self._plan_unbuilt_events(
                     project, plan_md, tree_before, queries_before, rows_before, plan_res, no_edit):
                 project.app_for_turn().append_history(event, project.build_conversation)
@@ -25535,11 +25563,12 @@ class Orchestrator:
             # A third witness for the exits that never set `_turn_gave_up` — a stream the browser
             # dropped, an exception out of the harness: the tree is where `_build_stream` baselined
             # it, so nothing was built from this plan (#661). An approve turn cannot end `ok`
-            # without a tree delta (the pre-edit guard), so this never keeps a finished build's plan.
+            # without a tree delta (the pre-edit guard) unless an earlier Attempt of this build
+            # landed one (#753), so this never keeps a finished build's plan.
             app = project.app_for_turn()
             if app.read_plan_retry_step() == 0 and (
                     self._turn_gave_up
-                    or (not phased and bool(project.turn_tree_baseline)
+                    or (not phased and not landed and bool(project.turn_tree_baseline)
                         and project.snapshot.working_tree_hash() == project.turn_tree_baseline)):
                 app.set_plan_retry_step(1)
             if app.read_plan_retry_step() == 0:
@@ -25794,7 +25823,7 @@ class Orchestrator:
                         initial_repair_objective: str = "implementation",
                         resumed_phase_intent: BuildIntent | None = None,
                         completion_guard: Callable[[], bool] | None = None,
-                        dataset_note: str = ""):
+                        dataset_note: str = "", landed: bool = False):
         """Build an approved plan one step at a time, each in a FRESH OpenCode session.
 
         The point is context, not parallelism: a cheap coder holds up in a clean 8k window and comes
@@ -25809,6 +25838,7 @@ class Orchestrator:
         that died at phase 4 of 6 keeps phases 1-3 on disk (see the failure path below), so starting
         over would buy a session per phase to redo work that is already there — and each redone
         phase would be editing the files the first attempt wrote. 0 and 1 both mean "from the top".
+        `landed` says that attempt changed the app, so this build's first edit is behind it (#753).
         """
         import time
 
@@ -25881,6 +25911,8 @@ class Orchestrator:
                 project.snapshot.working_tree_hash,
                 project.snapshot.queries_digest,
             )
+            if landed:
+                project.pre_edit_guard.landed_earlier()
             project.context_rollover = ContextRolloverState(self._build_policy, tree_before)
         # And what `examples/` held before any phase ran, for the Kept rows pass in persist(). One
         # snapshot for the whole build rather than one per phase: `before` means "this turn's
