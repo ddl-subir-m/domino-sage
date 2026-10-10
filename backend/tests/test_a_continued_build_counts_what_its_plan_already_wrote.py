@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 
 from sage.orchestrator.service import Orchestrator
+from sage.router.models import Mode
+from sage.workspace.snapshot import QUERIES
 from sage.workspace.stack import STACKS
 
 from .fake_opencode import Turn, execution_plan
@@ -126,6 +128,49 @@ def test_a_continuation_whose_plan_wrote_nothing_is_still_guarded(tmp_path: Path
     (app.path / "AGENTS.md").write_text((app.path / "AGENTS.md").read_text() + "\nrefreshed\n")
 
     events = _click(orch, turn_id, tid, app_id)
+
+    assert [e["message"] for e in _of(events, "build-recovery")] == [
+        "No changes yet. Starting over once."]
+    assert _done(events)["decision"] == "pre_edit_limit"
+
+
+def test_a_first_attempt_that_wrote_only_its_query_catalog_landed(tmp_path: Path):
+    """The query catalog is outside the tree hash, so only its digest sees this attempt's work."""
+    orch, oc = _build_orch(tmp_path, [
+        Turn(text=execution_plan(files=QUERIES)),
+        Turn(writes={QUERIES: '{"drift": {"sql": "select 1"}}\n'}, invalid_calls=["read"]),
+        Turn(invalid_calls=["read"]),
+        Turn(text=_DONE_SAYS), Turn(text=_DONE_SAYS)], stack="react-vite")
+    tid = orch.create_thread()["id"]
+    assert _done(list(orch.build_stream(_ASK, conversation=tid)))["decision"] == "awaiting approval"
+    failed = _done(list(orch.approve_stream(conversation=tid)))
+    assert failed["cause"] == "invalid_tool_call", failed
+    app = orch.project(start_preview=False).app_for_turn()
+
+    events = _click(orch, failed["turnId"], tid, app.app_id)
+
+    assert not _of(events, "build-recovery")
+    assert not _of(events, "build-pre-edit-limit")
+    assert _done(events)["ok"] is True
+
+
+def test_a_fresh_plan_after_a_landed_one_is_guarded_from_its_own_start(tmp_path: Path):
+    """Only a retry or a Continue reads where its build started. A new plan approved after an
+    earlier one landed is a new build, and editing nothing is still a stuck turn."""
+    stack = "react-vite"
+    entry = STACKS[stack].entry_file
+    orch, _oc = _build_orch(tmp_path, [
+        Turn(text=execution_plan(files=entry)),
+        Turn(writes={entry: _TAB}),
+        Turn(text=execution_plan(files=entry, step="Add the drift chart")),
+        Turn(text=_DONE_SAYS), Turn(text=_DONE_SAYS)], stack=stack)
+    tid = orch.create_thread()["id"]
+    assert _done(list(orch.build_stream(_ASK, conversation=tid)))["decision"] == "awaiting approval"
+    assert _done(list(orch.approve_stream(conversation=tid)))["ok"] is True
+    assert _done(list(orch.build_stream("Add a drift chart.", conversation=tid,
+                                        mode=Mode.PLAN)))["decision"] == "awaiting approval"
+
+    events = list(orch.approve_stream(conversation=tid))
 
     assert [e["message"] for e in _of(events, "build-recovery")] == [
         "No changes yet. Starting over once."]
