@@ -30,7 +30,7 @@ for (const file of ['util.js', 'store.js', 'prefs.js', 'components/follow-latest
 }
 const { SW } = sandbox;
 SW.brand = { text: (s) => s };
-SW.api = { appHeaders: () => ({}) };
+SW.api = { appHeaders: () => ({}), sageFetch: (url, options) => sandbox.fetch(url, options) };
 SW.prefs = { get: () => ({}) };
 const reply = (body, status = 200) => ({ ok: status < 400, status,
   json: async () => body, headers: { get: () => 'application/json' } });
