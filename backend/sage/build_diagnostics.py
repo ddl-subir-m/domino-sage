@@ -624,7 +624,8 @@ def _verification(value) -> dict | None:
             safe["status"] = status if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599 else None
             if read.get("reason") in ("transport_error", "access_denied", "invalid_resource_id",
                                        "binding_mismatch", "not_found_or_hidden", "timeout",
-                                       "unavailable", "http_error", "placeholder_host"):
+                                       "unavailable", "http_error", "placeholder_host",
+                                       "error_body"):
                 safe["reason"] = read["reason"]
             result["dataReads"].append(safe)
         result["readsTruncated"] = value.get("readsTruncated") is True or len(reads) > 20
