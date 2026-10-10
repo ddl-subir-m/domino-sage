@@ -7059,13 +7059,13 @@ def _query_review_block(root: Path) -> str:
 
 
 def _skill_review_block(state) -> str:
-    """Give the reviewer the same named, enabled skills the implementation received."""
+    """Give the reviewer the same named skills as the build; an @mention overrides the switch."""
     catalog = state.extensions
     if not catalog:
         return ""
     blocks = []
     for name in sorted(state.skills_named or ()):
-        if catalog.skills.get(name) in state.extensions_off or name not in catalog.skill_md:
+        if name not in catalog.skill_md:
             continue
         text, size = catalog.skill_md[name]
         cut = "\n[Skill text is truncated; do not flag what is outside this excerpt.]" if (

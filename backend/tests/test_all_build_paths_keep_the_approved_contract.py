@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from .fake_opencode import Turn
 from .test_a_dead_alias_stops_the_turn_before_it_starts import _no_waiting  # noqa: F401
 from .test_a_planned_build_is_reviewed_against_its_done_when import (
@@ -99,11 +101,13 @@ def test_a_query_only_build_is_reviewed_without_sending_stored_rows(tmp_path: Pa
     assert "ROW-SENTINEL" not in text
 
 
-def test_review_receives_only_the_skills_the_build_was_told_to_use(tmp_path: Path):
+@pytest.mark.parametrize("enabled", [True, False], ids=["enabled", "mentioned-while-off"])
+def test_review_receives_only_the_skills_the_build_was_told_to_use(tmp_path: Path, enabled: bool):
     gateway = ReviewGateway('{"unmet": []}')
     orch, _ = _orch(tmp_path, gateway, [PLAN, BUILT])
-    orch.add_extension(_skill("alpha"))
+    alpha = orch.add_extension(_skill("alpha"))
     orch.add_extension(_skill("beta", "OTHER-SKILL-SENTINEL"))
+    orch.project(start_preview=False).workspace.set_extension(alpha["id"], enabled)
     list(orch.build_stream("Build a usage drift tab. Follow @alpha.", conversation="c1"))
     list(orch.approve_stream(conversation="c1"))
 
