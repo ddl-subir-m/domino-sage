@@ -136,7 +136,7 @@ def test_a_continuation_whose_plan_wrote_nothing_is_still_guarded(tmp_path: Path
 
 def test_a_first_attempt_that_wrote_only_its_query_catalog_landed(tmp_path: Path):
     """The query catalog is outside the tree hash, so only its digest sees this attempt's work."""
-    orch, oc = _build_orch(tmp_path, [
+    orch, _oc = _build_orch(tmp_path, [
         Turn(text=execution_plan(files=QUERIES)),
         Turn(writes={QUERIES: '{"drift": {"sql": "select 1"}}\n'}, invalid_calls=["read"]),
         Turn(invalid_calls=["read"]),
