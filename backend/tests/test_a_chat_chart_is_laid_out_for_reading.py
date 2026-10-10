@@ -309,7 +309,7 @@ def test_the_tool_offers_the_split_and_the_units_as_nullable_arguments():
         check=False, capture_output=True, text=True, timeout=30, env={**os.environ})
     assert out.returncode == 0, out.stderr
     args = json.loads(out.stdout.strip().splitlines()[-1])
-    for name in ("by", "money", "percent"):
+    for name in ("by", "money", "percent", "bar_label"):
         assert {"type": "null"} in args[name]["anyOf"], f"{name} must be nullable"
 
 
@@ -341,7 +341,7 @@ def test_the_chart_prompt_names_the_split_and_the_units(tmp_path):
         orch.shutdown()  # a chat turn arms the idle-save timer; this cancels it
 
     [said] = [p["text"] for p in oc.prompts if "artifact_write" in p["text"]]
-    for words in ("set by to", "money", "percent"):
+    for words in ("set by to", "money", "percent", "bar_label"):
         assert words in said, words
 
 
