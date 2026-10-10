@@ -10,8 +10,9 @@ with no model call:
   because that is where the call's address is: a URL constant beside some other server's call is not
   this server's call. The URL alone is not enough for a server whose key is in its URL.
 - a secret: `secret("NAME")`, the one way app code reads a key (template AGENTS.md).
-- an LLM Alias: its name as a quoted string, or, when the app has only one, any `askModel(` or
-  `askJson(` call, since a call that names no model gets the only one.
+- an LLM Alias: its name as a quoted string in a file that calls `askModel(` or `askJson(`, or,
+  when the app has only one, any such call, since a call that names no model gets the only one. The
+  name beside any other call is not a model call: `call_tool(..., {"alias": "haiku"})` (#766).
 - a query: in `.sage/queries.json` and its name as a quoted string in the app.
 
 A name in `Uses` that is none of these is not judged: the planner may name something the Project
@@ -122,7 +123,7 @@ def _reached(name: str, res: Resources, texts: list[str], queries: list[str]) ->
             return True
     if name in res.aliases:
         known = True
-        if any(_quoted(t, name) for t in texts) or (
+        if any(_quoted(t, name) and _MODEL_CALL.search(t) for t in texts) or (
                 len(res.aliases) == 1 and any(_MODEL_CALL.search(t) for t in texts)):
             return True
     if name in queries:

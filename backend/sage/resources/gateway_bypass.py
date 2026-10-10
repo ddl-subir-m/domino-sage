@@ -80,6 +80,43 @@ def raw_gateway_calls(
     return out
 
 
+_ROUTE = re.compile(
+    r"""^[ \t]*@\w+\.(?:get|post|put|patch|delete|api_route)\(\s*(["'])(?P<path>[^"']+)\1""", re.M)
+
+
+def server_model_calls(
+    sources: list[tuple[str, str | None]],
+    declared: list[str],
+    owned: frozenset[str],
+) -> list[tuple[str, str, str]]:
+    """(server file, route or "", Alias) for each bound Alias the app's own Python names (#766).
+
+    A model is called only from the page, through the LLM helper; the app's server has no call that
+    reaches one. So an Alias name as a quoted value in server code is a model call that cannot
+    run — `call_tool(..., {"alias": ...})` was the live one — and whatever the route answers in its
+    place is not the model's. The route is the nearest decorator above the name; a name above every
+    route is reported against the file alone.
+    """
+    out: list[tuple[str, str, str]] = []
+    for rel, text in sources:
+        if text is None or rel in owned or not rel.endswith(".py"):
+            continue
+        routes = [(m.start(), m.group("path")) for m in _ROUTE.finditer(text)]
+        for alias in declared:
+            for hit in re.finditer(r"([\"'])" + re.escape(alias) + r"\1", text):
+                route = next((p for at, p in reversed(routes) if at < hit.start()), "")
+                if (rel, route, alias) not in out:
+                    out.append((rel, route, alias))
+    return out
+
+
+def server_model_sentence(calls: list[tuple[str, str, str]]) -> str:
+    """Where the app's server names a model it cannot call, in one clause per place."""
+    return "; ".join(
+        (f"`{route}` in {rel}" if route else rel) + f" names the model `{alias}`"
+        for rel, route, alias in calls)
+
+
 def _models_near(text: str, marks: list[str]) -> set[str]:
     """The models named close enough to a flagged URL to be that call's own (see `_CALL_WINDOW`)."""
     found: set[str] = set()

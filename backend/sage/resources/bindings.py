@@ -229,10 +229,13 @@ def _what_the_app_does_with(b: Binding, first: Binding | None) -> str:
     the platform reads table, and the id is exactly what a name in prose does not carry (#556).
     """
     if b.kind == KIND_LLM_ALIAS:
+        # The call is named (#766): "pass `alias`" alone was passed to `call_tool` from a route.
         if first is None or first.key == b.key:
-            return "This app's default model — the one a call that names no model reaches."
-        return (f'Also callable by name — pass `alias: "{b.name}"` for the calls this request means '
-                f"for it. The default stays **{first.display_name}**.")
+            return ("This app's default model — the one an `askModel` or `askJson` call that names "
+                    "no model reaches, from the page.")
+        return (f'Also callable by name — pass `alias: "{b.name}"` to `askModel` or `askJson`, from '
+                f"the page, for the calls this request means for it. The default stays "
+                f"**{first.display_name}**.")
     if b.kind == KIND_DATA_SOURCE:
         # No default to name: `serve.py` resolves each query against the Binding the query itself
         # carries, so there is no such thing as the Data Source this app reads.
