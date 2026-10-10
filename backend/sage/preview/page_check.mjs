@@ -6,7 +6,10 @@
 // every button in its navigation (#722) — so a screen mounted only when it is chosen renders and
 // runs its queries where reportRuntimeError can see them (#709), then prints `done` on stdout. A
 // button outside navigation is never clicked: it can call a model or write data.
-// At most MAX_SCREENS * (CLICK_MS + SETTLE_MS); test_the_screen_walk_fits_inside_the_check_budget
+// Each screen it sees, the first one included, is printed as one JSON line before `done` (#750):
+// its label, its visible text pieces, and how many charts and tables it drew. Sage keeps only the
+// pieces the app's own code spells, so no row a query returned reaches the plan review.
+// At most SETTLE_MS + MAX_SCREENS * (CLICK_MS + SETTLE_MS); test_the_screen_walk_fits_inside_the_check_budget
 // holds it inside Sage's wait.
 //
 // usage: node page_check.mjs <url> <chromium executable> <seconds>
@@ -15,6 +18,8 @@ import { chromium } from "playwright-core";
 const MAX_SCREENS = 8;
 const CLICK_MS = 1000;
 const SETTLE_MS = 1000;
+const TEXTS_MAX = 200;
+const TEXT_MAX = 120;
 const NAV = ":is(nav, [role=navigation], [role=tablist])";
 const SCREENS = `[role=tab], ${NAV} :is(button, [role=button])`;
 
@@ -26,6 +31,41 @@ const done = () => browser.close().catch(() => {}).finally(() => process.exit(0)
 process.on("SIGTERM", done);
 setTimeout(done, budget);
 
+// The page's own reads still in flight, so a screen read before its data arrived says so.
+let inflight = 0;
+const settled = (request) => {
+  if (["fetch", "xhr"].includes(request.resourceType())) inflight -= 1;
+};
+
+// A chart is a visible svg or canvas big enough to be one: an icon is an svg too, and an empty
+// state's picture is not a chart.
+async function report(page, label) {
+  const seen = await page.evaluate(([most, max]) => {
+    const shown = (el) => el.checkVisibility();
+    const charts = [...document.querySelectorAll("svg, canvas")].filter((el) => {
+      const box = el.getBoundingClientRect();
+      return shown(el) && box.width >= 100 && box.height >= 60
+        && !el.parentElement?.closest("svg, .ant-empty, .ant-result");
+    });
+    const texts = new Set();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode() && texts.size < most) {
+      const text = walker.currentNode.nodeValue.replace(/\s+/g, " ").trim();
+      const parent = walker.currentNode.parentElement;
+      if (text && !parent.closest("script, style") && shown(parent)) texts.add(text.slice(0, max));
+    }
+    return {
+      texts: [...texts],
+      charts: charts.length,
+      tables: [...document.querySelectorAll("table")].filter(shown).length,
+      busy: [...document.querySelectorAll(".ant-spin-spinning, [aria-busy=true]")].some(shown),
+    };
+  }, [TEXTS_MAX, TEXT_MAX]).catch(() => null);
+  if (seen === null) return;
+  const { busy, ...rest } = seen;
+  console.log(JSON.stringify({ screen: label, ...rest, loading: busy || inflight > 0 }));
+}
+
 // A crash replaces the app and a navigation replaces the document; either detaches the controls,
 // and the walk stops there. A control that is a link, or is the screen already showing, is skipped.
 async function openScreens(page) {
@@ -33,20 +73,30 @@ async function openScreens(page) {
   let opened = 0;
   for (const control of controls) {
     if (opened === MAX_SCREENS) break;
-    const state = await control.evaluate((el) => !el.isConnected ? "gone"
+    const [state, label] = await control.evaluate((el) => [!el.isConnected ? "gone"
       : el.closest("a[href]") || !el.checkVisibility()
-        || (el.getAttribute("aria-current") || "false") !== "false" ? "skip" : "open").catch(() => "gone");
+        || (el.getAttribute("aria-current") || "false") !== "false" ? "skip" : "open",
+      (el.innerText || "").trim().slice(0, 80)]).catch(() => ["gone", ""]);
     if (state === "gone") break;
     if (state === "skip") continue;
     opened += 1;
     await control.click({ timeout: CLICK_MS, noWaitAfter: true }).catch(() => {});
     await page.waitForTimeout(SETTLE_MS);
+    await report(page, label);
   }
 }
 
 try {
   const page = await browser.newPage();
+  page.on("request", (request) => {
+    if (["fetch", "xhr"].includes(request.resourceType())) inflight += 1;
+  });
+  page.on("requestfinished", settled);
+  page.on("requestfailed", settled);
   await page.goto(url, { waitUntil: "load", timeout: budget });
+  await page.waitForTimeout(SETTLE_MS);
+  const first = await page.$(`:is(${SCREENS}):is([aria-selected=true], [aria-current]:not([aria-current=false]))`);
+  await report(page, first ? (await first.innerText().catch(() => "")).trim().slice(0, 80) : "");
   await openScreens(page);
 } catch (error) {
   console.error(String(error?.message || error));

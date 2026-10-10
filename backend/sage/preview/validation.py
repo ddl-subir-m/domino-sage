@@ -28,6 +28,8 @@ class PageValidation:
     query_requests: dict[str, dict] = field(default_factory=dict)
     queries_declared: bool = False
     reason: str = ''
+    # What each screen the headless check opened showed (#750), for the plan review only.
+    screens: list[dict] = field(default_factory=list)
 
     def event(self) -> dict:
         return {'type': 'preview-validation', 'validationId': self.id,
