@@ -18910,13 +18910,6 @@ class Orchestrator:
             state = project.control.snapshot()
             if not state.chat_thread_id:
                 return
-            # The summary is a model call, and the native harness refuses one whose lock has no
-            # ticket (#760) — the same refusal the plan door met (#610). Named as this Thread's Chat
-            # turn, so a Stop can find it.
-            ticket = _TurnTicket(new_id("turn"))
-            ticket.kind = "chat"
-            ticket.conversation = state.chat_thread_id
-            self._turns.name_holder(ticket)
             messages = client.messages(sid)
             provider, model = chat_compact.compact_model(state, project.shim.catalog)
             if not chat_compact.should_compact(messages, model):
@@ -18925,6 +18918,13 @@ class Orchestrator:
             # is not always the same string — see chat_compact.summarize_model_id.
             named = "gpt-5.4" if self.native_codec_enabled else chat_compact.summarize_model_id(model)
             log.info("chat compact: session=%s model=%s/%s named=%s", sid, provider, model, named)
+            # The summary is a model call, and the native harness refuses one whose lock has no
+            # ticket (#760) — the same refusal the plan door met (#610). Named as this Thread's Chat
+            # turn, so a Stop can find it.
+            ticket = _TurnTicket(new_id("turn"))
+            ticket.kind = "chat"
+            ticket.conversation = state.chat_thread_id
+            self._turns.name_holder(ticket)
             project.active_session_id = sid
             summarize(sid, provider, named, auto=False)
             if client.is_running(sid):
