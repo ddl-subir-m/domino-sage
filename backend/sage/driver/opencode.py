@@ -708,6 +708,16 @@ class OpenCodeClient:
             json=body, timeout=self.timeout_s, verify=_TLS)
         r.raise_for_status()
 
+    def delete_message(self, session_id: str, message_id: str) -> None:
+        """Remove one message and its parts (OpenCode 1.18.4: DELETE /session/{id}/message/{mid}).
+
+        Reverts no files. OpenCode refuses it while the session is busy, so call it on an idle one.
+        """
+        self._instances.use(self._dirs.get(session_id))
+        r = httpx.delete(f"{self.base_url}/session/{session_id}/message/{message_id}",
+                         timeout=30, verify=_TLS)
+        r.raise_for_status()
+
     def agent_summaries(self) -> list[dict]:
         """The agents OpenCode actually resolved from its config. `send_prompt(agent=...)` silently
         falls back to the default build agent when a name is missing, so a mode's `permission`/`prompt`

@@ -341,8 +341,15 @@ class FakeOpenCode:
         msgs = self._by_session.setdefault(session_id, [])
         msgs.append({"id": f"c{n}", "type": "user",
                      "content": [{"type": "compaction", "auto": auto}]})
+        # The shape OpenCode records for a summary that completed: parented on the compaction
+        # message and finished. Without `finish` the compaction is still pending (#760).
         msgs.append({"id": f"cs{n}", "type": "assistant", "summary": True,
+                     "parentID": f"c{n}", "finish": "stop",
                      "content": [{"type": "text", "text": "compacted"}]})
+
+    def delete_message(self, session_id: str, message_id: str) -> None:
+        msgs = self._by_session.get(session_id, [])
+        msgs[:] = [m for m in msgs if m.get("id") != message_id]
 
     def is_running(self, session_id: str) -> bool:
         if self.stay_running:
