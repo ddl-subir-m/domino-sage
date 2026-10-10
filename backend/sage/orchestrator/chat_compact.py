@@ -167,6 +167,39 @@ def should_compact(messages: list[dict], model: str) -> bool:
     return turns_since_compact(messages) >= TURN_FALLBACK
 
 
+def unfinished_compaction(messages: list[dict]) -> list[dict]:
+    """The messages of a compaction OpenCode will run in place of the next prompt, or [] (#760).
+
+    OpenCode 1.18.4 treats a `compaction` part as a pending task until an assistant message after
+    it finishes, and its loop runs a pending task before anything else — parented on the person's
+    new message, and with `auto=false` it then stops. So a summary that failed (refused, an API
+    error, a Stop) answers the next question with a checkpoint. `/summarize` answers `true` either
+    way, so the session is the only witness. A summary that failed with `finish` set counts as
+    failed too: OpenCode only takes a summary with no `error` as the compaction.
+    """
+    msgs = list(messages or [])
+    for i in range(len(msgs) - 1, -1, -1):
+        info = _info(msgs[i])
+        role = _role(msgs[i])
+        if role == "assistant" and info.get("finish") and not info.get("error"):
+            return []
+        if role == "user" and any(isinstance(p, dict) and p.get("type") == "compaction"
+                                  for p in _parts(msgs[i])):
+            return [msgs[i], *(m for m in msgs[i + 1:]
+                               if _role(m) == "assistant" and _info(m).get("summary"))]
+    return []
+
+
+def failure_text(messages: list[dict]) -> str:
+    """What OpenCode recorded as the reason, for the log line. Empty when it recorded none."""
+    for m in messages:
+        error = _info(m).get("error")
+        if isinstance(error, dict):
+            data = error.get("data") if isinstance(error.get("data"), dict) else {}
+            return str(data.get("message") or error.get("message") or error.get("name") or "")[:300]
+    return ""
+
+
 def last_usage_tokens(messages: list[dict]) -> int | None:
     """Tokens OpenCode reported on the latest assistant message since the last compact.
 
@@ -212,6 +245,12 @@ def _role(m: dict) -> str:
     if isinstance(info, dict):
         return str(info.get("role") or info.get("type") or "")
     return ""
+
+
+def _info(m: dict) -> dict:
+    if not isinstance(m, dict):
+        return {}
+    return m["info"] if isinstance(m.get("info"), dict) else m
 
 
 def _parts(m: dict) -> list:
