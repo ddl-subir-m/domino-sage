@@ -81,7 +81,8 @@ def raw_gateway_calls(
 
 
 _ROUTE = re.compile(
-    r"""^[ \t]*@\w+\.(?:get|post|put|patch|delete|api_route)\(\s*(["'])(?P<path>[^"']+)\1""", re.M)
+    r"""^[ \t]*@\w+\.(?:get|post|put|patch|delete|api_route)\(\s*(["'])(?P<path>[^"']+)\1""",
+    re.MULTILINE)
 
 
 def server_model_calls(
