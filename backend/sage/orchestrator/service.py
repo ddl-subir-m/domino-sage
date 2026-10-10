@@ -146,7 +146,12 @@ from ..resources.builtapp import (
     serve_module,
     stranded_levels,
 )
-from ..resources.gateway_bypass import raw_gateway_calls, unbound_alias_notice
+from ..resources.gateway_bypass import (
+    raw_gateway_calls,
+    server_model_calls,
+    server_model_sentence,
+    unbound_alias_notice,
+)
 from ..resources.model_api_credentials import (
     Credential,
     CredentialRequired,
@@ -22533,6 +22538,9 @@ class Orchestrator:
         # beside it, and for the same reason: a defect we can describe but cannot make the agent fix.
         gateway_fixes = 0
         max_gateway_fixes = self._build_policy.gateway_repair_limit
+        # A bound model named in the app's server code, which cannot call one (#766). Once: the
+        # sentence names each route, and the turn ends not clean if one still does.
+        server_model_fixes = 0
         # A query the app's own catalog check refuses (#704, #740). Once, like the platform read
         # above: the app's own sentence names the fix, and only a person can record a store.
         catalog_fixes = 0
@@ -24980,6 +24988,21 @@ class Orchestrator:
                             files=", ".join(n for n, _ in raw_calls),
                             helper=project.app_for_turn().helpers.llm_path)
                         continue
+                if (report.ok and wrote_code and not server_model_fixes
+                        and not project.stop_requested):
+                    server_calls = self._detect_server_model_calls(project)
+                    if server_calls:
+                        server_model_fixes += 1
+                        iterate_reason = "the server names a model it cannot call — moving it to the page"
+                        yield {"type": "iterate", "reason": iterate_reason}
+                        current = (
+                            f"{server_model_sentence(server_calls)}, but the app's server cannot "
+                            "call a model: only the page can, with `askJson` or `askModel` from "
+                            f"`{project.app_for_turn().helpers.llm_path}` and `alias` set to the "
+                            "model's name. `sage_mcp.call_tool` reaches MCP servers, not a model. "
+                            "Have the route return the facts it gathers, call the model on the page "
+                            "with them, and remove the text the server writes in the model's place.")
+                        continue
                 # Every sentence the app's own catalog check says, from the files on disk (#704,
                 # #740): the app refuses these queries whatever the preview does.
                 if report.ok and wrote_code and not catalog_fixes and not project.stop_requested:
@@ -25196,6 +25219,13 @@ class Orchestrator:
                                  if report.ok and (owns_turn or validate_page) else "")
                 if routes_notice:
                     yield persist({"type": "data-source-failed", "message": routes_notice})
+                server_calls = (self._detect_server_model_calls(project)
+                                if report.ok and (owns_turn or validate_page) else [])
+                if server_calls:
+                    yield persist({"type": "data-source-failed", "message": brand.text(
+                        "{named}, but this {builtApp}'s server cannot call a model, so what it "
+                        "answers there is not the model's.",
+                        named=server_model_sentence(server_calls))})
                 # A build that cannot read its data has not finished cleanly, so it does not say it
                 # has. What does NOT change is anything below this line: the code was written and it
                 # typechecks, and a store that was down for ten seconds must not cost the creator
@@ -25204,7 +25234,8 @@ class Orchestrator:
                 refused = self._fresh_platform_read_failure(project, since=send_ts) if report.ok else None
                 queries_failed = bool(failed or catalog_faults or unread or store_clients
                                       or screen_unread)
-                if verification is not None and (queries_failed or refused or routes_notice):
+                if verification is not None and (queries_failed or refused or routes_notice
+                                                 or server_calls):
                     verification["stages"]["data"] = "failed"
                     verification["overall"] = "failed"
                 if verification is not None and screen_unread:
@@ -25227,12 +25258,14 @@ class Orchestrator:
                                               + _plan_review_sentence(plan_unmet)})
                 yield persist({"type": "done", "ok": (report.ok and not queries_failed
                                                       and rt is None and not routes_notice
+                                                      and not server_calls
                                                       and refused is None and not unbuilt
                                                       and not plan_unmet),
                                "decision": ("queries failed" if queries_failed
                                             else "runtime failed" if rt
                                             else "platform read failed" if refused
                                             else "app route failed" if routes_notice
+                                            else "model not called" if server_calls
                                             else f"incomplete — plan {_listed_steps(unbuilt)} not built"
                                             if unbuilt else
                                             f"incomplete — plan step{'s' if len(unmet_steps) > 1 else ''} "
@@ -32049,6 +32082,13 @@ class Orchestrator:
         declared = [b.name for b in bound_aliases(parse_bindings(app.read_bindings()))]
         return raw_gateway_calls(self._scan_app_sources(app), declared,
                                  self._browser_gateway_base, app.helpers.owned)
+
+    def _detect_server_model_calls(self, project: Project) -> list[tuple[str, str, str]]:
+        """(server file, route, Alias) for each bound Alias the app's own server code names (#766).
+        The app being built, for `_detect_raw_gateway_calls`'s reason."""
+        app = project.app_for_turn()
+        declared = [b.name for b in bound_aliases(parse_bindings(app.read_bindings()))]
+        return server_model_calls(self._scan_app_sources(app), declared, app.sage_owned_paths)
 
     def _detect_store_clients(self, project: Project) -> list[str]:
         """The files of the app a turn is BUILDING that read a Data Source with `domino_data`
