@@ -165,7 +165,7 @@ def _followup(tmp: Path, monkeypatch, answers: tuple[dict, ...], *after: Turn,
 def test_a_followup_tab_that_refuses_its_defaults_does_not_end_passed(tmp_path, monkeypatch):
     """The ticket's first case, on the path where nothing else repaired the turn: the review runs
     on the follow-up and its unmet step ends the turn incomplete."""
-    events, oc, reviews = _followup(tmp_path, monkeypatch, (DRIFT_UNMET, DRIFT_UNMET),
+    events, _, reviews = _followup(tmp_path, monkeypatch, (DRIFT_UNMET, DRIFT_UNMET),
                                     Turn(writes={"static/components/UsageDrift.js": "still();\n"}))
 
     assert len(reviews) == 2
