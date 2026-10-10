@@ -17626,7 +17626,14 @@ class Orchestrator:
             # have its error wiped.
             project.last_gateway_error = None
             with timing.span("setup.baseline"):
-                seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES)
+                recent: list[dict] = []
+                seen = self._seen_baseline(client, sid, limit=_CHAT_POLL_MESSAGES, keep=recent)
+                # One left by an earlier Sage, an interrupted summary, or a delete that failed
+                # would otherwise run in place of this prompt.
+                try:
+                    self._drop_unfinished_compaction(client, sid, recent, "before this prompt")
+                except Exception:
+                    log.exception("chat compact: could not remove an unfinished compaction")
             reasoner = ReasoningNarration()
             # Invalid-call faults already charged, as (session id, call id) — the identity
             # `_invalid_tool_call` hands back (#567). The stream and the transcript both see a
@@ -18903,6 +18910,13 @@ class Orchestrator:
             state = project.control.snapshot()
             if not state.chat_thread_id:
                 return
+            # The summary is a model call, and the native harness refuses one whose lock has no
+            # ticket (#760) — the same refusal the plan door met (#610). Named as this Thread's Chat
+            # turn, so a Stop can find it.
+            ticket = _TurnTicket(new_id("turn"))
+            ticket.kind = "chat"
+            ticket.conversation = state.chat_thread_id
+            self._turns.name_holder(ticket)
             messages = client.messages(sid)
             provider, model = chat_compact.compact_model(state, project.shim.catalog)
             if not chat_compact.should_compact(messages, model):
@@ -18915,10 +18929,29 @@ class Orchestrator:
             summarize(sid, provider, named, auto=False)
             if client.is_running(sid):
                 client.wait_for_idle(sid, appear_grace_s=2.0)
+            # `/summarize` answers `true` whether or not the summary was written.
+            self._drop_unfinished_compaction(
+                client, sid, client.messages(sid, limit=_CHAT_POLL_MESSAGES), "after summarize")
         except Exception:
             log.exception("chat compact failed; leaving the OpenCode session as-is")
         finally:
+            project.stop_requested = False
             self._release_turn()
+
+    def _drop_unfinished_compaction(self, client, sid: str, messages: list[dict], when: str) -> None:
+        """Delete a compaction whose summary never completed, so it cannot answer the next prompt.
+
+        See `chat_compact.unfinished_compaction` for why one left in the session does exactly that.
+        Deleting it costs only the summary, and the trigger is a context size, so the next turn
+        asks again."""
+        stale = chat_compact.unfinished_compaction(messages)
+        if not stale:
+            return
+        log.warning("chat compact: the summary did not complete (%s: %s) — removing it from session "
+                    "%s so it cannot stand in for the next answer", when,
+                    chat_compact.failure_text(stale) or "no summary was written", sid)
+        for m in stale:
+            client.delete_message(sid, (m.get("info") or m)["id"])
 
     def _recheck_app_data(self) -> None:
         """Re-derive what the agent is told about the app's data, now that the turn is over (#15).
@@ -21146,7 +21179,8 @@ class Orchestrator:
         if failed:
             log.error("turn wedged: failed %d pending turn(s) — restart to clear", failed)
 
-    def _seen_baseline(self, client, sid: str, *, limit: int | None = None) -> set[tuple[str, object]]:
+    def _seen_baseline(self, client, sid: str, *, limit: int | None = None,
+                       keep: list[dict] | None = None) -> set[tuple[str, object]]:
         """Keys of every assistant part already in the session, so a turn only emits its OWN parts.
 
         client.messages(sid) returns the ENTIRE session on every poll, and the emit-tracking `seen`
@@ -21156,10 +21190,13 @@ class Orchestrator:
         _message_error_key and must match the poll loop in _build_stream and _chat_stream — a
         message's failure is baselined as well as its parts, since a message that failed before it
         wrote anything has no parts. Best-effort: on a poll error we return an empty
-        baseline (worst case is the echo, not a broken build) and let the loop retry."""
+        baseline (worst case is the echo, not a broken build) and let the loop retry. `keep`, when
+        given, receives the messages read, so a caller that needs them does not read twice."""
         seen: set[tuple[str, object]] = set()
         try:
             for m in client.messages(sid, limit=limit) if limit else client.messages(sid):
+                if keep is not None:
+                    keep.append(m)
                 if m.get("type") == "assistant":
                     seen.add(_message_error_key(m))
                     for i, part in enumerate(m.get("content", [])):
