@@ -249,15 +249,6 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
             "- The call goes from the viewer's browser to {platformName}'s {llmGateway} under the "
             "viewer's own {platformName} identity. There is no key to add, no server to write, and "
             "no CORS to configure."),
-        # #766: a brief built in an `app.py` route, asked to use a bound Alias, called it with
-        # `call_tool(..., {"alias": ...})` — the one server-side call the fastapi guide documents —
-        # and answered from canned text when that failed. Nothing here had said the server can't.
-        ("- **Only the page calls a model — never the app's server.** No call in a route reaches "
-         "one" + ("; `sage_mcp.call_tool` reaches MCP servers, not a model" if js else "")
-         + ", so a route asked for a model's answer can only make one up. When a route gathers "
-           "what the model should read, have it return those facts, call `" + call + "askJson` "
-           "(or `" + call + "askModel`) on the page with them, and write no stand-in for the "
-           "model's part on the server."),
         # Said because the line above it reads like an invitation to write the fetch yourself (#94).
         # A consequence rather than a prohibition, like every rule here: `askModel` is strictly
         # better in each of these respects, so there is nothing to weigh. The preview clause is the
@@ -269,6 +260,15 @@ def agents_block(aliases: list[Binding], sources: list[Binding],
             "written for the viewer, the check for an expired {platformName} session, and "
             "streaming. And `/api/llm` is {assistantName}'s PREVIEW proxy: a call written against "
             "it works while you build and breaks the moment the app is published."),
+        # #766: a brief built in an `app.py` route, asked to use a bound Alias, called it with
+        # `call_tool(..., {"alias": ...})` — the one server-side call the fastapi guide documents —
+        # and answered from canned text when that failed. Nothing here had said the server can't.
+        ("- **Only the page calls a model — never the app's server.** No call in a route reaches "
+         "one" + ("; `sage_mcp.call_tool` reaches MCP servers, not a model" if js else "")
+         + ", so a route asked for a model's answer can only make one up. When a route gathers "
+           "what the model should read, have it return those facts, call `" + call + "askJson` "
+           "(or `" + call + "askModel`) on the page with them, and write no stand-in for the "
+           "model's part on the server."),
         # Said for the same reason the query block says it (#7). A model call used to fail in the
         # preview whatever the app did — cross-origin — so an agent that saw it fail could reasonably
         # build a screen around the model being unreachable. Now that it answers, a failure is a real
