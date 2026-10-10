@@ -22,6 +22,8 @@ class PageValidation:
     dataset_ids: tuple[str, ...] = ()
     data_reads: list[dict] = field(default_factory=list)
     reads_truncated: bool = False
+    # Every query name the page asked for, past the cap on `data_reads` too (#765).
+    queries_read: set[str] = field(default_factory=set)
     query_failures: dict[str, str] = field(default_factory=dict)
     # What a failed query was sent and what it answered, by name, for the repair only (#735): it
     # holds request values, so it never joins `data_reads` or the summary.
