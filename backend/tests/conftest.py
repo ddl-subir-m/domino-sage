@@ -204,6 +204,20 @@ def _no_wait_for_a_preview_that_never_reports(monkeypatch):
     monkeypatch.setattr(service.Orchestrator, "__init__", init)
 
 
+@pytest.fixture(autouse=True)
+def _no_remote_check_behind_the_test(request, monkeypatch):
+    """Start no background check of the remote unless the test is marked `remote_check` (#757).
+
+    The rail's poll, `list_apps`, starts one off the request path in a thread nothing joins, and
+    some twenty files reach the rail. None of them reads its answer — a test of the badge runs
+    `_check_remote` itself — so each paid for a `git fetch` it never looked at, raced the check it
+    did make, and under load left the thread running for `__nothing_is_left_open` to bill. A test
+    of the background check asks for it with the marker and joins the thread itself.
+    """
+    if request.node.get_closest_marker("remote_check") is None:
+        monkeypatch.setattr(service.Orchestrator, "_remote_check_due", lambda self, project: None)
+
+
 # Spread through the collection, slowest file first, so a `-n auto` run does not end on one worker
 # alone with a test that was dealt last. Measured 2026-09-20 with `--durations=0`: the suite's
 # worker-seconds over 14 workers is ~190s and the run took 244s, because these files' tests began

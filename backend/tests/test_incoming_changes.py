@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 from typing import ClassVar
 
@@ -339,6 +340,26 @@ def test_the_rail_badges_the_app_the_remote_is_ahead_of(tmp_path: Path):
 
     rows = {r["id"]: r["behind"] for r in orch.list_apps()}
     assert rows == {first: True, second: False}
+
+
+@pytest.mark.remote_check
+def test_the_rails_poll_checks_the_remote_beside_it(tmp_path: Path):
+    """The poll starts the check and does not wait for it; the badge is on the poll after it lands."""
+    root = _repo(tmp_path)
+    orch, _oc = _orch(tmp_path, root)
+    app_id = _project(orch).workspace.app_id
+    _push_app(root)
+    _mate_edits(_teammate(tmp_path), f"apps/{app_id}/src/App.tsx")
+    before = set(threading.enumerate())
+
+    orch.list_apps()
+
+    checks = [t for t in threading.enumerate()
+              if t not in before and t.name == "sage-remote-check"]
+    assert len(checks) == 1
+    checks[0].join(10)
+    assert not checks[0].is_alive()
+    assert [r["behind"] for r in orch.list_apps()] == [True]
 
 
 def test_pulling_puts_the_badge_out(tmp_path: Path):
