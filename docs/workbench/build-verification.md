@@ -33,6 +33,17 @@ back empty is visible; and since every screen is read as it first opens, an erro
 when another plan repair (an unwritten step) spent the one repair; it then reports and does not
 repair. The diag log says, per turn, how many reviews ran and which steps are still unmet (#765).
 
+The review also reads the plan's overall Done when and Not doing sections, and the named, enabled
+Project skills supplied to the build. These requirements can specify defaults that no step repeats.
+Query definitions are code: the review receives their SQL and parameter names and types, with no
+stored rows or parameter values. A change to only the query catalog still runs the review.
+Each phase receives the overall app requirements beside its own brief. The final phase runs the
+same whole-plan checks as an ordinary approved build, with one repair and a second review; an unmet
+requirement cannot become a successful phased build or reset the repair budget with a phase retry.
+If the review times out, fails, or returns an unreadable answer, the app is kept and the turn can
+finish. Its verification remains unverified, and both the transcript and Build history say that
+the plan review was not completed. It is not reported as a clean build.
+
 A screen the walk opened whose plan step names catalog queries, by a name in backticks or one
 holding `_` or `-`, and which asked for none of them as it first opened, fails the data stage. Its
 `verification.reason` names the screen and the step (#765). A query the app calls by name only

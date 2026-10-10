@@ -24,7 +24,7 @@ const SETTLE_MS = 1000;
 const TEXTS_MAX = 200;
 const TEXT_MAX = 120;
 const NAV = ":is(nav, [role=navigation], [role=tablist])";
-const SCREENS = `[role=tab], ${NAV} :is(button, [role=button])`;
+const SCREENS = `[role=tab], ${NAV} :is(button, [role=button], a[href])`;
 const WAITING = `:is(${SCREENS}):is([aria-disabled=true], :disabled)`;
 const CONTROL = "a, button, input, select, textarea, label, [role=button], [role=checkbox], [role=switch], [role=link], [contenteditable]";
 const SELECTED = `:is(${SCREENS}):is([aria-selected=true], [aria-current]:not([aria-current=false]))`;
@@ -87,33 +87,57 @@ async function rowCell(page) {
   return cell?.asElement() || null;
 }
 
-// A crash replaces the app and a navigation replaces the document; either detaches the controls,
-// and the walk stops there. A control that is a link, or is the screen already showing, is skipped.
+// Resolve the controls again after each switch: a render can replace the navigation itself.
+// Links within this document can select a screen too. External links, downloads and document
+// changes stay outside this walk, as do buttons outside navigation.
 async function openScreens(page) {
-  const controls = await page.$$(`:is(${SCREENS}):not([aria-selected=true]):not([aria-disabled=true]):not(:disabled)`);
   let opened = 0;
   let chosen = false;
+  const visited = new Set();
   for (;;) {
     if (opened === MAX_SCREENS) break;
     const cell = chosen ? null : await rowCell(page);
-    if (!cell && !controls.length) break;
+    let control = cell;
+    let label = "";
+    if (!control) {
+      for (const candidate of await page.$$(SCREENS)) {
+        const info = await candidate.evaluate((el) => {
+          if (!el.isConnected || !el.checkVisibility() || el.matches(":disabled")
+              || el.getAttribute("aria-disabled") === "true") return null;
+          const link = el.closest("a[href]");
+          if (link) {
+            const target = new URL(link.href, location.href);
+            const current = new URL(location.href);
+            current.searchParams.delete("sageValidation");
+            target.searchParams.delete("sageValidation");
+            if (link.hasAttribute("download") || (link.target && link.target !== "_self")
+                || target.origin !== location.origin || target.pathname !== location.pathname
+                || target.search !== current.search || !target.hash
+                || target.hash.startsWith("#/sage/")) return null;
+            // A base URL can omit the check's query ID. Keep this a hash-only navigation.
+            target.search = location.search;
+            link.href = target.href;
+          }
+          return { label: (el.innerText || "").trim().slice(0, 80),
+            key: [el.getAttribute("role"), el.id, el.getAttribute("aria-controls"),
+              el.getAttribute("href"), (el.innerText || "").trim()].join("|"),
+            selected: el.getAttribute("aria-selected") === "true"
+              || (el.getAttribute("aria-current") || "false") !== "false" };
+        });
+        if (!info || visited.has(info.key)) continue;
+        visited.add(info.key);
+        if (info.selected) continue;
+        control = candidate;
+        label = info.label;
+        break;
+      }
+    }
+    if (!control) break;
     chosen ||= Boolean(cell);
-    const waiting = cell ? await page.$$(WAITING) : [];
-    const control = cell || controls.shift();
-    const [state, label] = await control.evaluate((el) => [!el.isConnected ? "gone"
-      : el.closest("a[href]") || !el.checkVisibility() || el.getAttribute("aria-selected") === "true"
-        || (el.getAttribute("aria-current") || "false") !== "false" ? "skip" : "open",
-      (el.innerText || "").trim().slice(0, 80)]).catch(() => ["gone", ""]);
-    if (state === "gone") break;
-    if (state === "skip") continue;
     opened += 1;
-    await control.click({ timeout: CLICK_MS, noWaitAfter: true }).catch(() => {});
+    await control.click({ timeout: CLICK_MS, noWaitAfter: true });
     await page.waitForTimeout(SETTLE_MS);
     await report(page, cell ? await shownLabel(page) : label);
-    for (const enabled of waiting.reverse()) {
-      if (await enabled.evaluate((el) => el.isConnected && !el.matches(":disabled")
-          && el.getAttribute("aria-disabled") !== "true").catch(() => false)) controls.unshift(enabled);
-    }
   }
 }
 
@@ -128,7 +152,8 @@ try {
   await page.waitForTimeout(SETTLE_MS);
   await report(page, await shownLabel(page));
   await openScreens(page);
+  console.log("done");
 } catch (error) {
+  console.log(JSON.stringify({ checkError: true }));
   console.error(String(error?.message || error));
 }
-console.log("done");

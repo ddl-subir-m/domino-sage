@@ -24,6 +24,7 @@ const { history = [], events = [], turnState = {}, reloadOnly = false } =
 
 let healthCalls = 0;
 const typings = [];
+const phases = [];
 
 const json = (body) => ({
   ok: true, status: 200,
@@ -103,6 +104,7 @@ const SW = sandbox.SW;
 SW.store.subscribe((state) => {
   const current = state.buildTyping || null;
   if (typings.at(-1) !== current) typings.push(current);
+  if (phases.at(-1) !== state.buildPhase) phases.push(state.buildPhase);
 });
 
 async function settle() {
@@ -138,6 +140,7 @@ console.log(JSON.stringify({
   plans: blocks.filter((b) => b.type === 'build_plan')
     .map((b) => ({ pending: !!b.pending, cancelled: !!b.cancelled })),
   typings,
+  phases,
 }));
 // A running turn starts the store's lock watcher, whose interval would keep this process alive.
 if (reloadOnly) process.exit(0);

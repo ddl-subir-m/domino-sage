@@ -497,16 +497,18 @@ def test_phased_build_shares_one_rollover_allowance_and_stops_the_active_phase(
 def _phase_two_context_offer(
         tmp_path, monkeypatch, *, plan=PHASED_PLAN,
         phase_two_marker="2. Trades table (this step)",
-        phase_one_label="Data module"):
+        phase_one_label="Data module", phase_paths=("src/data.ts", "src/Table.tsx")):
     monkeypatch.setattr(Orchestrator, "_await_runtime_error", lambda *_args, **_kwargs: None)
-    phase_one = _writes("src/data.ts")
+    phase_one = _writes(phase_paths[0])
     phase_one.text = "The data module is complete."
+    phase_two = _writes(phase_paths[1])
+    phase_two.writes[phase_paths[1]] += "// phase two\n"
     turns = [
         Turn(text=plan),
         phase_one,
         Turn(text="first local context refusal"),
         Turn(text="second local context refusal"),
-        _writes("src/Table.tsx"),
+        phase_two,
         _writes("src/Filter.tsx"),
     ]
     orch, oc, project = _phased_build(tmp_path, turns)
@@ -623,7 +625,8 @@ def test_phased_continue_resolves_duplicate_phase_text_by_recorded_index(
     orch, _oc, _project, continuation = _phase_two_context_offer(
         tmp_path, monkeypatch, plan=DUPLICATE_PHASE_PLAN,
         phase_two_marker="2. Repeated phase B (this step)",
-        phase_one_label="Repeated phase A")
+        phase_one_label="Repeated phase A",
+        phase_paths=("src/Repeated.tsx", "src/Repeated.tsx"))
     assert continuation.intent.phase_brief.startswith("### 2. Repeated phase B")
     monkeypatch.setattr(appmod, "orchestrator", orch)
     response = TestClient(appmod.control_app).post("/api/project/build/continue", json={

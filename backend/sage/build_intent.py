@@ -47,8 +47,9 @@ class BuildIntent:
 
     @classmethod
     def for_phase(cls, source_requests, step: str, step_index: str, answers: str,
-                  prior_notes) -> BuildIntent:
+                  prior_notes, *, authoritative_plan: str = "") -> BuildIntent:
         return cls(uuid4().hex, "phase", tuple(source_requests), answers=answers,
+                   authoritative_plan=authoritative_plan,
                    phase_brief=step, phase_index=step_index,
                    prior_phase_notes=tuple(prior_notes))
 

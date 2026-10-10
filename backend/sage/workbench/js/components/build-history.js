@@ -194,6 +194,10 @@ window.SW = window.SW || {};
     const status = record && record.buildOutcome && record.buildOutcome.status;
     const verification = record && record.buildOutcome && record.buildOutcome.verification;
     if (status === 'unverified' && verification && verification.stages
+        && verification.stages.plan === 'unverified') {
+      return 'Plan review not completed';
+    }
+    if (status === 'unverified' && verification && verification.stages
         && verification.stages.runtime === 'passed' && verification.stages.data === 'unverified') {
       return 'Data access not verified';
     }

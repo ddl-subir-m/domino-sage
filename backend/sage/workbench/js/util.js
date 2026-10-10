@@ -1064,6 +1064,9 @@ window.SW = window.SW || {};
     // reads back. `Binding.scope_shown` is the same rule on the server, for the rows it computes.
     scopeShown(record) {
       const at = record || {};
+      if (at.tables && at.tables.length > 1) {
+        return at.tables.map((position) => SW.util.scopeText(position)).join(', ');
+      }
       if (at.table) return SW.util.scopeText(at);
       const above = SW.util.scopeText(at);
       return above ? `any in ${above}` : '';

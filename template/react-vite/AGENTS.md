@@ -186,7 +186,8 @@ Build the user's app by editing `src/`. There is no install or build step to run
 - **A shareable view uses `useViewState` from `src/appViewState.ts`, and only when the plan says
   the view is shareable** — a dashboard or list whose applied selection reopens from a reload or a
   copied link. Never a form, never unasked. Define the schema at module level with
-  `satisfies ViewSchema`, call the hook once in `src/App.tsx`, and pass the state and its patch
+  `satisfies ViewSchema`, call `const [view, patchView] = useViewState(VIEW);` once in `src/App.tsx`,
+  and pass the state and its patch
   function to the screens, so each screen keeps its selection when another one shows. Mark
   `shareable` only the screen and applied filters; draft search text, row values and form input
   stay out. A filter change is `patchView({...})`; switching screens or an Apply button adds

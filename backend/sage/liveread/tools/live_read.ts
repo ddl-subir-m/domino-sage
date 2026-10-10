@@ -254,7 +254,8 @@ export const files = {
     "and operation analyze_text sends only the selected text column with stable record ids through the LLM Gateway, " +
     "validates exact id coverage, writes a result table and returns coverage. Use dataset=upload for uploads. " +
     "Operation document selects at most 8,000 characters from one explicitly attached text, Markdown, DOCX or searchable PDF path; " +
-    "use heading for an exact unique Markdown section or pages for up to 20 one-based PDF pages. Use this for attached requirements, specifications and shells " +
+    "always use dataset=upload and the attached path, including for a selected Dataset file. " +
+    "Use heading for an exact unique Markdown section or pages for up to 20 one-based PDF pages. Use this for attached reference documents, requirements, specifications and shells " +
     "before any generic read, cat, grep or sed. Use CSV operations for totals and complaint analysis; do not read " +
     "unrelated raw rows into model context. " +
     "Respect explicit user limits.",

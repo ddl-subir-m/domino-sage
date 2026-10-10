@@ -168,3 +168,15 @@ Gateway issues #32–#34 and Sage #360 are deferred. Existing Dataset/model rest
 artifact retention/access controls remain. The stronger guarantee over every direct app
 call and gateway fallback is outside this release. App tests prove handling of changed
 responses; they do not establish new gateway enforcement. No existing projects are migrated.
+
+## Selected Chat documents (2026-10-10)
+
+Picking a document from a Dataset and continuing a question that names that Dataset is a
+deliberate selection of the picked file. Chat prepares its bounded text through the same document
+handler as Build and records Data used. The original question need not repeat the filename the
+person just picked. Unselected siblings are not included. A mounted file must still resolve to
+the exact Dataset file recorded by the pick.
+
+Chat treats the text as reference material. Instructions inside it become requirements only when
+the person asks to follow them. A truncated Markdown excerpt names available headings so the
+document tool can select a needed section outside the first excerpt.

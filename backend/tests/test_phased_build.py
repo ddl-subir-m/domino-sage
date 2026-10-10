@@ -79,13 +79,14 @@ class OkFeedback:
 
 
 class ScriptedGateway:
-    """Only the scope classifier reaches this; the fake agent never does."""
+    """Answer scope classification and the final plan review; the fake agent never calls it."""
 
     def __init__(self, verdict: str = "BUILD") -> None:
         self.verdict = verdict
 
     def route(self, request, labels):
-        body = json.dumps({"choices": [{"delta": {"content": self.verdict}}]})
+        answer = '{"unmet": []}' if labels.component == "plan-review" else self.verdict
+        body = json.dumps({"choices": [{"delta": {"content": answer}}]})
         yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
 
