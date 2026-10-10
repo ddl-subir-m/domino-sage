@@ -162,7 +162,8 @@ Build the user's app by editing `src/`. There is no install or build step to run
   be done without a new package, say so plainly instead of trying to install it.
 - **Each screen is its own file; `src/App.tsx` is the shell.**
   A follow-up changes only the files its request is about: a change to one screen leaves
-  `src/App.tsx` and every other screen as they are.
+  `src/App.tsx` and every other screen as they are, and leaves alone a query in
+  `.sage/queries.json` that another screen calls — give the new code its own query instead.
   - `src/App.tsx` decides which screen shows. It holds state only when more than one screen needs
     it. `src/main.tsx` already wraps it in the error boundary.
   - A screen is `src/screens/<Name>.tsx`; the first is `src/screens/MainScreen.tsx` (replace its

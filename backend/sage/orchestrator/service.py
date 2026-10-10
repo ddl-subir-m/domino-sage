@@ -75,7 +75,14 @@ from ..delegated import mcp as delegated_mcp
 from ..driver.opencode import OpenCodeClient, run_feedback_loop
 from ..driver.server import OpenCodeServer
 from ..feedback.circuit_breaker import CircuitBreaker
-from ..feedback.runner import FeedbackRunner, catalog_names, check_file, restore_removed_queries
+from ..feedback.runner import (
+    FeedbackRunner,
+    catalog_names,
+    changed_shared_queries,
+    check_file,
+    query_readers,
+    restore_removed_queries,
+)
 from ..gateway.client import CostLabels, GatewayClient, GatewayUpstreamError
 from ..gateway.protocol import Protocol
 from ..liveread import data_use as live_data_use
@@ -548,7 +555,7 @@ _PERSISTED_EVENTS = frozenset({
     "app_change", "build-stalled", "build-rollover", "build-context-limit",
     "gateway-call", "gateway-alias-unbound",
     "data-source-unasked", "data-source-failed", "build-recovery", "build-pre-edit-limit",
-    "keep-going", "queries-restored",
+    "keep-going", "queries-restored", "shared-query-changed",
 })
 
 # How long the rail's reading of the remote stays good for. The check runs off the request path, so
@@ -6250,6 +6257,26 @@ def _restored_notice(names: list[str]) -> str:
     return brand.text("This turn removed {named} from {catalog}, but the app still calls them. "
                       "{assistantName} put them back as they were when the turn began.",
                       named=named, catalog=QUERIES)
+
+
+def _shared_query_nudge(edits: list) -> str:
+    """The repair for queries this turn changed under screens that read them when it began (#745)."""
+    return "\n\n".join(
+        f"This turn changed `{e.name}` in `{QUERIES}`, and {', '.join(e.readers)} read it before "
+        f"this turn, so that screen no longer shows what it did. Unless this request asked to "
+        f"change what that screen shows, put `{e.name}` back exactly as it was and give the new code "
+        f"its own query under a new name. Do not rewrite that screen to fit the changed query. If "
+        f"the request did ask for it, keep the change and say which screen it changes.\n\n"
+        f"`{e.name}` as it was:\n```json\n{json.dumps(e.before, indent=2)}\n```"
+        for e in edits)
+
+
+def _shared_query_notice(edits: list) -> str:
+    """One line per query for the person: what changed under which screens (#745)."""
+    return " ".join(
+        f"This turn changed `{e.name}` in {QUERIES}, which {', '.join(e.readers)} read before it. "
+        f"Check that {'screen' if len(e.readers) == 1 else 'those screens'} still shows what it "
+        f"should." for e in edits)
 
 
 def _crossing_minted_app(workspace: Workspace, conversation: str) -> bool:
@@ -21689,6 +21716,9 @@ class Orchestrator:
             queries_at_start = (project.app_for_turn().path / QUERIES).read_text(errors="ignore")
         except OSError:
             queries_at_start = None
+        # Which screens read each query when the turn began, so a query the turn rewrites under one
+        # of them is caught even after a repair rewrites that screen to fit (#745).
+        readers_at_start = query_readers(project.app_for_turn().path)
         history_baseline = project.app_for_turn().history_len()
         if not gate and not answer_only and not arch and project.pre_edit_guard is None:
             with project.pre_edit_tree_lock:
@@ -22402,6 +22432,9 @@ class Orchestrator:
         # App code that reads a store itself, outside `.sage/queries.json` (#705). Once, for the
         # reason the line above gives.
         store_fixes = 0
+        # A query this turn changed under a screen that read it when the turn began (#745). Once:
+        # the request may have asked for the change, and then the turn ends saying which screens.
+        shared_fixes = 0
         # A query the store refused to compile (#708). Bounded by the runtime limit rather than a
         # setting of its own: both feed an observed failure's own words back, and a fix can surface
         # the next one (a second bad column), so once is too few for either. Its own counter, so a
@@ -24732,6 +24765,18 @@ class Orchestrator:
                 turn_span.fields.update(retry_reason="typecheck_repair",
                                         retry_exhausted=decision.action == "stop")
             if decision.action == "stop":
+                # Before the page check, because the check's repair is told only that a screen
+                # broke, and the screen is what it fixes (#745).
+                shared = (changed_shared_queries(project.app_for_turn().path, queries_at_start,
+                                                 readers_at_start) if wrote_code else [])
+                if (report.ok and shared and not shared_fixes
+                        and not project.stop_requested):
+                    shared_fixes += 1
+                    iterate_reason = ("a query another screen reads was changed — putting it back "
+                                      f"({', '.join(e.name for e in shared)[:140]})")
+                    yield {"type": "iterate", "reason": iterate_reason}
+                    current = _shared_query_nudge(shared)
+                    continue
                 verification = None
                 rt = None
                 if report.ok and wrote_code and (owns_turn if validate_page is None else validate_page):
@@ -24751,6 +24796,10 @@ class Orchestrator:
                     nudge = {"server": SERVER_FIX_NUDGE,
                              "startup": STARTUP_FIX_NUDGE}.get(rt.get("source"), RUNTIME_FIX_NUDGE)
                     current = nudge.format(message=rt.get("message", ""), stack=rt.get("stack", ""))
+                    shared = changed_shared_queries(project.app_for_turn().path, queries_at_start,
+                                                    readers_at_start)
+                    if shared:
+                        current += "\n\n" + _shared_query_nudge(shared)
                     rules = _rules_naming(self._wm.template, rt.get("message", ""))
                     if rules:
                         current += ("\n\nThe app's AGENTS.md has a rule naming what this error "
@@ -24959,6 +25008,13 @@ class Orchestrator:
                 # six phases would put six identical cards in the transcript (#56).
                 if wrote_code and owns_turn:
                     yield persist(_app_change_event(project.app_for_turn()))
+                # The repair above was declined: the request asked for the change, or the model
+                # would not make it. Either way a screen the person did not mention reads something
+                # else now, and they hear which (#745).
+                if shared:
+                    yield persist({"type": "shared-query-changed",
+                                   "names": [e.name for e in shared],
+                                   "message": _shared_query_notice(shared)})
                 # A turn cannot end green and silent on an app that asks its store nothing. Live, a
                 # creator bound a Snowflake Data Source, and the build shipped a dashboard whose
                 # every number the model had written itself — typecheck clean, no query to fail, so
