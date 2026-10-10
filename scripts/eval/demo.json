@@ -11,8 +11,8 @@
     },
     {
       "id": "2",
-      "prompt": "Chart which competitors came up most on Gong calls in the last 30 days, with our win rate against each. Use @GONG__CALL_TRANSCRIPTS_FLATTENED and the battlecards in @sales-playbooks.",
-      "sha256": "f30237244a8f82d3e486839b0e0706f9c78d6c94bdcac7987b6cdcd11bbc0163",
+      "prompt": "Chart which competitors came up most on Gong calls in the last 30 days, with our win rate against each. Use @GONG__CALL_TRANSCRIPTS_FLATTENED and the battlecards in @sales-playbooks, and follow @revops-conventions.",
+      "sha256": "3ee0f250a7e55584a73cfc814e89182c8ff19636d104b29ce39a492dbc973b3e",
       "expect": {
         "artifact": "chart"
       },
