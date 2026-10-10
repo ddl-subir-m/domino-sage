@@ -6479,6 +6479,9 @@ class Project:
     runtime_error: dict | None = None
     page_validation: PageValidation | None = None
     phase_verification: dict | None = None
+    # The @-named Project skills each phase of a phased build gave the model, by name (#751): a
+    # phase's own `done` is swallowed, so the build's one `done` says it for all of them.
+    phase_skills: dict[str, dict] = field(default_factory=dict)
     # Set by the preview proxy's `on_platform_read` when the app's own relay refused a platform read
     # (#556). Carries {"status", "path", "ts", "app"}, stamped as `runtime_error` is and read in the
     # same window: the page catches the failed fetch and logs it where the model cannot read it.
@@ -21819,8 +21822,11 @@ class Orchestrator:
         build_history_for_turn = project.app_for_turn().read_history(project.build_conversation)
         _warn_if_history_lossy(build_history_for_turn, "_build_stream (withheld)")
         withheld_token = project.control.arm_withheld(recall.withheld(build_history_for_turn))
+        # An approved plan or a phase builds from a fixed control prompt; the person's own sentences,
+        # and so the Project skills they named with @, ride in the intent's source requests (#751).
         extensions_token = project.control.arm_extensions_off(
-            self._extensions_off(project.app_for_turn().extension_overrides()), prompt)
+            self._extensions_off(project.app_for_turn().extension_overrides()),
+            "\n".join((prompt, *(build_intent.source_requests if build_intent else ()))))
         # The token that lets this turn read a bound table (ADR-0041). Unlike the notes below it
         # rides EVERY send and is never cleared: the nudge/fix follow-ups run in the same session,
         # and a compaction that dropped the first send would otherwise leave the agent holding a
@@ -25656,7 +25662,13 @@ class Orchestrator:
         except Exception:
             log.exception("plan resources: could not read which models this app may call")
             aliases = ()
-        return plan_resources.Resources(servers=servers, secrets=secrets, aliases=aliases)
+        overrides = ((ThreadStore(project.record.path).get(conversation) or {}).get("extensions")
+                     if conversation else project.app_for_turn().extension_overrides())
+        off = self._extensions_off(overrides)
+        skills = tuple(sorted(name for name, ext_id in project_extensions.load_catalog(
+            self._chat_project().record.path).skills.items() if ext_id not in off))
+        return plan_resources.Resources(servers=servers, secrets=secrets, aliases=aliases,
+                                        skills=skills)
 
     def _plan_review(self, project: Project, plan_md: str, tree_before: str,
                      no_edit: dict[int, str] | None = None) -> list[dict]:
@@ -25869,10 +25881,13 @@ class Orchestrator:
             if ev["type"] == "done":
                 build_evidence.revert_foreign_writes(project.record.path, evidence_before, {})
                 ev.update(self._turn_id_fields())  # ADR-0069, as _build_stream's persist() does
+                if project.phase_skills:
+                    ev["skills"] = [project.phase_skills[n] for n in sorted(project.phase_skills)]
             if ev["type"] in _PERSISTED_EVENTS:
                 project.app_for_turn().append_history(ev, project.build_conversation)
             return ev
 
+        project.phase_skills = {}
         # Same ordering rule as _build_stream: refresh what the agent reads before the revert
         # point below.
         self._refresh_agent_inputs(project)
@@ -26107,6 +26122,8 @@ class Orchestrator:
                         return "stopped"
                     if ev["type"] == "done":
                         outcome = ev  # swallowed: one `done` per build, not one per phase
+                        for record in ev.get("skills") or ():
+                            project.phase_skills.setdefault(record["name"], record)
                         if ev.get("verification") is not None:
                             project.phase_verification = ev["verification"]
                         continue
