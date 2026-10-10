@@ -5,7 +5,7 @@ typed — which is how a chart carried 118/94/67/12 calls over a table that said
 model names a result and its columns, plus display order and colors: the values are still the rows.
 
 Sized for where it is shown. The Thread's message column is ~450 px wide, so the figure is drawn
-4.5 in wide at 200 dpi — 900 px, shown at half — and a 10 pt label lands at ~14 px there. Categories
+4.5 in wide at 200 dpi — 900 px, shown at half — and a 9 pt label lands at ~12.5 px there. Categories
 go down the side as horizontal bars, one label per row, so labels cannot run into each other however
 many there are or however long; a series over dates is a line with matplotlib's own date ticks.
 
@@ -31,18 +31,24 @@ from ..liveread.held import HeldRead
 COLUMN_PX = 450
 _WIDTH_IN = 4.5
 _DPI = 2 * COLUMN_PX / _WIDTH_IN
-_FONT_PT = 10
+_FONT_PT = 9
 _MAX_BARS = 30
 _LABEL_CHARS = 22
 _TITLE_CHARS = 44
 # A bar's text sits right of the bar, sharing the plot's width with it: two short lines keep
 # `81 calls · 28.7% win rate · 164 closed deals` inside the figure with room left for the bar.
 _BAR_LABEL_CHARS = 24
-# One category's row, in inches: a 10 pt label is ~0.14 in, so a one-line label keeps clear of the
+# One category's row, in inches: a 9 pt label is ~0.125 in, so a one-line label keeps clear of the
 # next and a 12-bar chart stays inside the 420 px the Thread gives a drawn page (`chat.css`).
 _ROW_IN = 0.24
 _TALL_ROW_IN = 0.38
-_COLORS = ["#4C6EF5", "#F59F00", "#12B886", "#E64980", "#7950F2", "#FA5252"]
+# Domino's chart palette and text tokens (workbench/css/tokens.css). Apply to each figure,
+# never rcParams: chart requests run concurrently and must not change global plot defaults.
+_COLORS = ["#543FDE", "#0070CC", "#28A464", "#CCB718", "#FF6543", "#E835A7",
+           "#2EDCC4", "#A9734C"]
+_INK = "#2E2E38"
+_SECONDARY = "#65657B"
+_GRID = "#F0F0F3"
 
 
 def _number(value) -> float | None:
@@ -175,21 +181,23 @@ def _bars(ax, labels: list, values: dict[str, list], unit: str, stacked: bool, c
         left = [0.0] * len(labels)
         for color, (name, series) in zip(colors, values.items(), strict=False):
             widths = [v or 0.0 for v in series]
-            ax.barh(rows, widths, left=left, height=0.7, color=color, label=name)
+            ax.barh(rows, widths, left=left, height=0.6, color=color, label=name)
             left = [a + b for a, b in zip(left, widths, strict=True)]
         filled = [any(s[i] is not None for s in values.values()) for i in rows]
         for i, total in enumerate(left):
             if filled[i]:
                 ax.annotate(_shown(total, unit), (total, i), xytext=(3, 0),
-                            textcoords="offset points", va="center", fontsize=_FONT_PT - 1)
+                            textcoords="offset points", va="center", fontsize=_FONT_PT,
+                            color=_INK)
         return
     height = 0.8 / len(values)
     for k, (color, (name, series)) in enumerate(zip(colors, values.items(), strict=False)):
         spots = [i + (k - (len(values) - 1) / 2) * height for i in rows]
-        bars = ax.barh(spots, [v or 0 for v in series], height=height, color=color, label=name)
+        bars = ax.barh(spots, [v or 0 for v in series], height=height * 0.8,
+                       color=color, label=name)
         ax.bar_label(bars, labels=texts if texts is not None else
                      [_shown(v, unit) if v is not None else "" for v in series],
-                     padding=3, fontsize=_FONT_PT - 1)
+                     padding=4, fontsize=_FONT_PT, color=_INK)
 
 
 def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
@@ -234,7 +242,9 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
             per *= max(1.0, 0.8 * max(len(p) for p in panels))
         height = (0.8 + 0.2 * title.count("\n") + (0.35 if legend else 0)
                   + (0.2 if len(panels) > 1 else 0) + per * len(labels))
-    fig = Figure(figsize=(_WIDTH_IN, height), dpi=_DPI, facecolor="white", layout="constrained")
+    fig = Figure(figsize=(_WIDTH_IN, max(2.1, height)), dpi=_DPI,
+                 facecolor="white", layout="constrained")
+    fig.get_layout_engine().set(w_pad=0.12, h_pad=0.10)
     axes = fig.subplots(1, len(panels), sharey=True, squeeze=False)[0]
     colors = [series_colors.get(name, _COLORS[i % len(_COLORS)])
               for i, name in enumerate(values)]
@@ -253,7 +263,7 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
             for color, (name, series) in zip(shade, part.items(), strict=False):
                 ax.plot([when[i] for i in order],
                         [math.nan if series[i] is None else series[i] for i in order],
-                        color=color, linewidth=2, label=name)
+                        color=color, linewidth=1.8, label=name)
         else:
             _bars(ax, labels, part, unit, stacked=by is not None, colors=shade, texts=texts)
             ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _, u=unit: _tick(v, u)))
@@ -262,16 +272,20 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
                 # Too narrow for ticks to clear each other, and every bar in it is labelled.
                 ax.set_xticks([])
         ax.set_facecolor("white")
-        ax.tick_params(labelsize=_FONT_PT)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
+        ax.tick_params(labelsize=_FONT_PT, colors=_SECONDARY, length=0, pad=6)
+        ax.set_axisbelow(True)
+        ax.grid(axis="y" if dated else "x", color=_GRID, linewidth=0.7)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
         if len(panels) > 1:
-            ax.set_title(textwrap.fill(names[0], 24), fontsize=_FONT_PT)
+            ax.set_title(textwrap.fill(names[0], 24), fontsize=_FONT_PT, color=_INK,
+                         fontweight="bold", pad=10)
     if not dated:
         axes[0].set_yticks(range(len(labels)), shown)
         axes[0].invert_yaxis()
-        axes[0].set_ylabel(x, fontsize=_FONT_PT)
-    fig.suptitle(title, fontsize=_FONT_PT + 1)
+        axes[0].tick_params(axis="y", colors=_INK)
+    fig.suptitle(title, x=0.03, ha="left", fontsize=_FONT_PT + 2,
+                 fontweight="bold", color=_INK)
     if legend:
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.font_manager import FontProperties
@@ -279,15 +293,16 @@ def figure(read: HeldRead, x: str, ys: list[str], by: str | None = None,
         handles, names = axes[0].get_legend_handles_labels()
         names = [textwrap.fill(name, _LABEL_CHARS) for name in names]
         renderer = FigureCanvasAgg(fig).get_renderer()
-        font = FontProperties(size=_FONT_PT - 1)
+        font = FontProperties(size=_FONT_PT)
         widest = max(renderer.get_text_width_height_descent(line, font, False)[0]
                      for name in names for line in name.splitlines())
         # Include each handle, its gap and the column gap (in legend font units). The old fixed
         # three-column legend could extend beyond both edges, even with only two long names.
-        column_px = widest + 4.8 * (_FONT_PT - 1) * _DPI / 72
+        column_px = widest + 4.8 * _FONT_PT * _DPI / 72
         ncols = min(len(names), 3, max(1, int((fig.bbox.width - 30) / column_px)))
         fig.legend(handles, names, loc="outside lower center", ncols=ncols,
-                   fontsize=_FONT_PT - 1, frameon=False)
+                   fontsize=_FONT_PT, frameon=False, labelcolor=_SECONDARY,
+                   handlelength=1.2, handleheight=0.8, columnspacing=1.4)
     return fig
 
 
