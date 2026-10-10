@@ -657,7 +657,7 @@ def _withheld_placeholders(workspace: Path) -> list[FeedbackError]:
 
 # `runQuery(` / `useQuery(`, `sage.` or imported, a TypeScript type argument allowed, opening a
 # quoted first argument. Read off blanked code, so the quotes are still there and the name is not.
-_QUERY_CALL_RE = re.compile(r"\b(?:runQuery|useQuery)\s*(?:<[^()]*?>)?\s*\(\s*([\"'`])")
+_QUERY_CALL_RE = re.compile(r"\b(runQuery|useQuery)\s*(?:<[^()]*?>)?\s*\(\s*([\"'`])")
 _ARG_END_RE = re.compile(r"\s*[,)]")
 _IMPORT_SPEC_RE = re.compile(r"""(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}/[^"']+)["']""")
 
@@ -689,9 +689,10 @@ def _running_scripts(workspace: Path) -> list[Path]:
             if rel not in stack.owned_sources and not rel.startswith(stack.vendored)]
 
 
-def _query_calls(workspace: Path) -> list[tuple[str, int, str]]:
-    """(file, line, name) for each literal query name the app's running scripts call. A name built at
-    run time — concatenated, interpolated, held in a variable — is not guessed at."""
+def _query_call_sites(workspace: Path) -> list[tuple[str, int, str, str]]:
+    """(file, line, name, `runQuery` or `useQuery`) for each literal query name the app's running
+    scripts call. A name built at run time — concatenated, interpolated, held in a variable — is not
+    guessed at."""
     calls = []
     for path in _running_scripts(workspace):
         source = path.read_text(errors="ignore")
@@ -699,14 +700,29 @@ def _query_calls(workspace: Path) -> list[tuple[str, int, str]]:
             continue
         code = _blank_text(source)
         for m in _QUERY_CALL_RE.finditer(code):
-            close = code.find(m[1], m.end())
+            close = code.find(m[2], m.end())
             if close < 0 or not _ARG_END_RE.match(code, close + 1):
                 continue
             name = source[m.end():close]
             if name.strip() and "${" not in name:
                 calls.append((path.relative_to(workspace).as_posix(),
-                              source.count("\n", 0, m.start()) + 1, name))
+                              source.count("\n", 0, m.start()) + 1, name, m[1]))
     return calls
+
+
+def _query_calls(workspace: Path) -> list[tuple[str, int, str]]:
+    """(file, line, name) for each literal query name the app's running scripts call."""
+    return [(rel, line, name) for rel, line, name, _ in _query_call_sites(workspace)]
+
+
+def queries_read_on_demand(workspace: Path) -> set[str]:
+    """Each query the app's running scripts call by literal name only through `runQuery`, never
+    `useQuery` (#767). `useQuery` is a hook, so it reads as its component mounts; a button's handler
+    can only call `runQuery`. A name no running script spells is not in here."""
+    calls: dict[str, set[str]] = {}
+    for _, _, name, call in _query_call_sites(workspace):
+        calls.setdefault(name, set()).add(call)
+    return {name for name, how in calls.items() if how == {"runQuery"}}
 
 
 def _catalog_entries(text: str) -> list | None:

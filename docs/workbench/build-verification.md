@@ -35,7 +35,9 @@ repair. The diag log says, per turn, how many reviews ran and which steps are st
 
 A screen the walk opened whose plan step names catalog queries, by a name in backticks or one
 holding `_` or `-`, and which asked for none of them as it first opened, fails the data stage. Its
-`verification.reason` names the screen and the step (#765).
+`verification.reason` names the screen and the step (#765). A query the app calls by name only
+through `runQuery`, never `useQuery`, is not held to the open: the walk presses no button, and a
+button's handler cannot call the `useQuery` hook (#767).
 
 Each repair gets a fresh ID and supervisor generation. Old documents, old attempts, other apps,
 and completed checks cannot contribute runtime evidence. Phased Build validates after its final

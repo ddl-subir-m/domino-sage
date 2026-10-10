@@ -80,6 +80,7 @@ from ..feedback.runner import (
     catalog_names,
     changed_shared_queries,
     check_file,
+    queries_read_on_demand,
     query_readers,
     restore_removed_queries,
 )
@@ -25854,11 +25855,14 @@ class Orchestrator:
 
         A step's screen is an opened screen whose label the step spells; a screen the check never
         opened is not judged, since it never had its defaults. A query is named in backticks, or
-        bare when its name holds `_` or `-` and so cannot be an ordinary word."""
+        bare when its name holds `_` or `-` and so cannot be an ordinary word. A query the app reads
+        only through `runQuery` is not held: the check presses no button, and a handler cannot call
+        `useQuery` (#767)."""
         validation = project.page_validation
         if validation is None or not validation.screens:
             return ""
-        catalog = catalog_names(project.app_for_turn().path) or set()
+        app_path = project.app_for_turn().path
+        catalog = (catalog_names(app_path) or set()) - queries_read_on_demand(app_path)
         read = validation.queries_read | {r["path"].rsplit("/", 1)[-1]
                                           for r in validation.data_reads if r["kind"] == "query"}
         out = []
